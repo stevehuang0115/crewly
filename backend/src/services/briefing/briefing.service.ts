@@ -258,6 +258,8 @@ export class BriefingService {
       out.push({ item, state: state.items[item.id] ?? {}, request: r });
     }
     for (const t of reviews) {
+      // awaiting_followup is held by the agent's own open items, not by an OK.
+      if (t.status === 'awaiting_followup') continue;
       const item = reviewItem(t, who(t.assignee ?? t.reply?.by), now);
       out.push({ item, state: state.items[item.id] ?? {} });
     }

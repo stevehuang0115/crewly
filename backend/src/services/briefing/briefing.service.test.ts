@@ -162,6 +162,11 @@ function harness(init: Partial<Harness['state']> = {}): Harness {
 afterEach(() => jest.restoreAllMocks());
 
 describe('queue', () => {
+  it('leaves out a ticket held by its own open items (awaiting_followup): no deadline, nothing to accept', async () => {
+    const h = harness({ reviews: [reviewRow({ id: 'req-1', status: 'awaiting_followup' }), reviewRow({ id: 'req-2', status: 'waiting_confirmation' })] });
+    expect((await h.service.queue()).items.map((i) => i.id)).toEqual(['t:req-2']);
+  });
+
   it('orders by urgency, then the longest wait; summaries are speakable', async () => {
     const h = harness({
       decisions: [

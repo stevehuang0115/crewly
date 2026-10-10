@@ -276,6 +276,64 @@ describe('auto-accept', () => {
   });
 });
 
+describe('auto-accept: the owner moved on in the thread', () => {
+  /** Put a ticket in 待验收 and return it. */
+  async function submitted(n: number) {
+    const t = await ticket(n, { chatChannelId: `ch${n}`, messageId: `m${n}` });
+    await review.onChatMessage(agentMsg(`ch${n}`, 'atlas', 'answer', `m${n}`));
+    await review.onAgentIdle('atlas');
+    return (await requests.getById(t.id))!;
+  }
+
+  /** The owner said something in the ticket's thread after the answer. */
+  async function ownerSays(id: string, text: string) {
+    const t = (await requests.getById(id))!;
+    const at = new Date(Date.parse(t.submittedAt!) + 60_000).toISOString();
+    await requests.update(id, { discussion: [...(t.discussion ?? []), { at, author: 'U1', text, ref: `r-${Math.random()}` }] });
+  }
+
+  it('settles well before the deadline, silently, with the reason recorded', async () => {
+    const t = await submitted(1);
+    await ownerSays(t.id, '那个房间变大 宠物变小的上线了吗');
+    expect((await review.sweep()).autoAccepted).toBe(1);
+    const after = (await requests.getById(t.id))!;
+    expect(after.status).toBe('done');
+    expect(after.acceptedBy).toBe('silence');
+    expect(after.tags).toContain(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG);
+    expect(after.discussion?.some((d) => d.text === 'auto-accepted: no objection' && d.author === 'crewly')).toBe(true);
+    // The owner is told nothing: no nudge, no extra receipt beyond the done swap.
+  });
+
+  it('a send-back or a "where is it" is an objection and keeps it in review', async () => {
+    const a = await submitted(1);
+    await ownerSays(a.id, '打回 少了截图');
+    const b = await submitted(2);
+    await ownerSays(b.id, '链接发到哪了？没看到');
+    expect((await review.sweep()).autoAccepted).toBe(0);
+    expect((await requests.getById(a.id))?.status).toBe('waiting_confirmation');
+    expect((await requests.getById(b.id))?.status).toBe('waiting_confirmation');
+  });
+
+  it('no later owner message, inside the window: stays; past 24h: settles with the reason', async () => {
+    const t = await submitted(1);
+    expect((await review.sweep()).autoAccepted).toBe(0);
+    clock = Date.now() + TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS + 60_000;
+    expect((await review.sweep()).autoAccepted).toBe(1);
+    expect((await requests.getById(t.id))?.discussion?.some((d) => d.text === 'auto-accepted: no objection')).toBe(true);
+  });
+
+  it('does not settle early while the agent still owes the owner an open item', async () => {
+    const t = await submitted(1);
+    await ownerSays(t.id, '好 那继续吧');
+    const cur = (await requests.getById(t.id))!;
+    await requests.update(t.id, {
+      openItems: [{ id: 'q-1', type: 'question', agent: 'atlas', sourceMessageId: 'x', createdAt: new Date().toISOString(), status: 'open', text: '你同意吗？' }],
+    });
+    expect(cur.status).toBe('waiting_confirmation');
+    expect((await review.sweep()).autoAccepted).toBe(0);
+  });
+});
+
 describe('plain answers close (2026-09-28: only deliverables wait for the owner)', () => {
   it('an answer to a plain ask closes the ticket as done, tagged answered, with no acceptedBy', async () => {
     const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1', description: '看看这个 https://x.com/a/status/1' });

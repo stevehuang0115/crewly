@@ -87,6 +87,8 @@ export interface BriefingWaiting {
   summary: string;
   since: string;
   urgency?: 'high' | 'normal' | 'low';
+  /** A collapsed review entry (one agent, several finished things): every ticket it stands for */
+  refs?: string[];
 }
 
 /** The snapshot this machine pushes. */

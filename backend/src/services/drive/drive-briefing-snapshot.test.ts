@@ -5,7 +5,7 @@
  * out, the size cap.
  */
 
-import { agentStateOf, buildBriefingSnapshot, capSnapshot, logMessage, safeText, ticketStatus, waitingRef, workItemStatus, type SnapshotSources } from './drive-briefing-snapshot.js';
+import { agentStateOf, buildBriefingSnapshot, collapseReviews, capSnapshot, logMessage, safeText, ticketStatus, waitingRef, workItemStatus, type SnapshotSources } from './drive-briefing-snapshot.js';
 import type { BriefingSnapshot } from './drive-briefing.contract.js';
 
 const NOW = new Date('2026-10-09T10:00:00.000Z');
@@ -199,5 +199,52 @@ describe('ticket freshness', () => {
     const wi = buildBriefingSnapshot(sources()).items.find((x) => x.kind === 'work')!;
     expect(wi.maybeOutdated).toBeUndefined();
     expect(wi.lastActivityAt).toBeUndefined();
+  });
+});
+
+describe('collapsing review entries per agent', () => {
+  const review = (id: string, who: string, title: string, minutes: number, tkt: string) => ({
+    id: `t:${id}`,
+    kind: 'review' as const,
+    agentSession: `${who.toLowerCase()}-1`,
+    agentName: who,
+    summary: `${who} finished: ${title}. Accept it or send it back?`,
+    since: ago(minutes),
+    urgency: 'low' as const,
+    answerTarget: { kind: 'ticket', ticketId: id, tkt },
+  });
+
+  it('one entry per agent with several reviews; decisions and single reviews stay as they are', () => {
+    const waiting = [
+      review('a', 'Milo', 'Bigger pet home', 300, 'TKT-1'),
+      { id: 'd:D-7', kind: 'decision' as const, agentSession: 'ella-1', agentName: 'Ella', summary: 'Ella asks which cut', since: ago(20), urgency: 'normal' as const, answerTarget: { kind: 'decision', decisionId: 'D-7' } },
+      review('b', 'Milo', 'Multi photo upload', 200, 'TKT-2'),
+      review('c', 'Milo', 'Setting overlay', 100, 'TKT-3'),
+      review('d', 'Ella', 'Competitor UI notes', 50, 'TKT-4'),
+    ];
+    const out = collapseReviews(waiting);
+    expect(out).toHaveLength(3);
+    expect(out[0]).toMatchObject({
+      agentName: 'Milo',
+      summary: 'Milo finished 3 things: Bigger pet home, Multi photo upload, Setting overlay - any you want changed?',
+      since: ago(300),
+      refs: ['TKT-1', 'TKT-2', 'TKT-3'],
+    });
+    expect(out[1].id).toBe('d:D-7');
+    expect(out[2].summary).toContain('Ella finished: Competitor UI notes');
+  });
+
+  it('flows into the snapshot with refs; a lone review keeps the old shape', () => {
+    const s = buildBriefingSnapshot(
+      sources({ waiting: [review('a', 'Milo', 'A', 30, 'TKT-1'), review('b', 'Milo', 'B', 20, 'TKT-2'), review('c', 'Ella', 'C', 10, 'TKT-3')] }),
+    );
+    expect(s.waiting).toHaveLength(2);
+    expect(s.waiting[0]).toMatchObject({ ref: 'TKT-1', kind: 'review', refs: ['TKT-1', 'TKT-2'] });
+    expect(s.waiting[1]).not.toHaveProperty('refs');
+  });
+
+  it('says "and N more" past four', () => {
+    const many = ['A', 'B', 'C', 'D', 'E', 'F'].map((t, i) => review(String(i), 'Milo', t, 60 - i, `TKT-${i}`));
+    expect(collapseReviews(many)[0].summary).toBe('Milo finished 6 things: A, B, C, D and 2 more - any you want changed?');
   });
 });

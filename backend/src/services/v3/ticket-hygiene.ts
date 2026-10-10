@@ -20,7 +20,7 @@
 
 import { TICKET_CONSTANTS } from '../../constants.js';
 import type { Request, UpdateRequestInput } from '../../types/v2/request.types.js';
-import { formatTicketNumber, ticketNeedsReview, type TicketDiscussionEntry } from '../../types/v2/ticket.types.js';
+import { formatTicketNumber, parseReviewReply, ticketNeedsReview, type TicketDiscussionEntry } from '../../types/v2/ticket.types.js';
 import { askText } from './ticket-ask-classifier.js';
 
 // ---------------------------------------------------------------------------
@@ -57,6 +57,44 @@ export function answerNeedsOwner(
   const answer = (ticket.reply?.excerpt ?? '').trim();
   // Ends on a question to him, or asks for an OK / a choice anywhere.
   return /[？?]$/.test(answer) || R.OWNER_QUESTION.test(answer);
+}
+
+/** The owner asks where it is / to send it again — never an approval. */
+export const RESEND_OR_WHERE = /(再发|重新发|重发|再给我|发一下|发我一下|在哪|哪里|哪儿|没看到|没收到|看不到|找不到|收不到|链接呢|发到哪|where|resend|send (?:it |the \w+ )?again|didn'?t (?:get|see|receive)|can'?t (?:find|see)|no link)/i;
+
+/**
+ * Whether a message the owner left in a 待验收 ticket's thread is an
+ * objection: a 打回, or "where is it / send it again".
+ *
+ * @param text - The owner's message
+ * @returns True when the work is not settled by it
+ */
+export function isOwnerObjection(text: string): boolean {
+  const t = (text ?? '').trim();
+  return parseReviewReply(t)?.action === 'reject' || RESEND_OR_WHERE.test(t);
+}
+
+/**
+ * Whether the owner already moved on in a 待验收 ticket's thread: they posted
+ * after the answer and nothing they said is an objection. Pure
+ * acknowledgements are not stored in the discussion (they accept at once), so
+ * a later entry is a follow-up the agent answers in the thread, not a
+ * complaint about the finished work. Notes written by Crewly itself do not
+ * count.
+ *
+ * @param ticket - The ticket in 待验收
+ * @returns True when silence-about-the-work can be taken as acceptance now
+ */
+export function ownerMovedOn(ticket: Pick<Request, 'submittedAt' | 'discussion'>): boolean {
+  const since = ticket.submittedAt ? Date.parse(ticket.submittedAt) : NaN;
+  if (!Number.isFinite(since)) return false;
+  const later = (ticket.discussion ?? []).filter(
+    (d) =>
+      d.author !== TICKET_CONSTANTS.STALE.NOTE_AUTHOR &&
+      d.author !== TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_NOTE_AUTHOR &&
+      Date.parse(d.at) > since,
+  );
+  return later.length > 0 && !later.some((d) => isOwnerObjection(d.text));
 }
 
 /**

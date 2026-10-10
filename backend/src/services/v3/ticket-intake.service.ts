@@ -39,7 +39,7 @@ import { modifyJsonFile } from '../../utils/file-io.utils.js';
 import { TICKET_CONSTANTS } from '../../constants.js';
 import { isApproval } from '../open-items/open-items.service.js';
 import { askText, classifyOwnerMessage, weightedTextLength, type AskClassification } from './ticket-ask-classifier.js';
-import { ticketLastActivity } from './ticket-hygiene.js';
+import { ticketLastActivity, RESEND_OR_WHERE } from './ticket-hygiene.js';
 import type { IntakeLogEvent, IntakeOutcomeRecorder } from './ticket-intake-log.js';
 import { redactSensitive } from '../wiki/wiki-redaction.js';
 import {
@@ -1296,9 +1296,6 @@ export function setTicketIntakeService(service: TicketIntakeService | null): voi
 export function getTicketIntakeService(): TicketIntakeService | null {
   return instance;
 }
-
-/** The owner asks where it is / to send it again — never an approval. */
-const RESEND_OR_WHERE = /(再发|重新发|重发|再给我|发一下|发我一下|在哪|哪里|哪儿|没看到|没收到|看不到|找不到|收不到|链接呢|发到哪|where|resend|send (?:it |the \w+ )?again|didn'?t (?:get|see|receive)|can'?t (?:find|see)|no link)/i;
 
 /** Extra approval words beyond {@link isApproval} and the review aliases. */
 const SHIP_IT = /^\s*(?:ship it|ship|looks great|perfect|nice|great)[\s。.!！~～👍✅]*$/i;

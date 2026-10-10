@@ -100,6 +100,8 @@ export interface SnapshotWaitingSource {
   since: string;
   urgency: 'high' | 'normal' | 'low';
   answerTarget: { kind: string; decisionId?: string; tkt?: string };
+  /** Set on a collapsed review entry: the ticket refs it stands for */
+  refs?: string[];
 }
 
 /** Everything the snapshot is built from. */
@@ -308,15 +310,18 @@ export function buildBriefingSnapshot(src: SnapshotSources): BriefingSnapshot {
   });
 
   // --- waiting --------------------------------------------------------------
-  const waiting: BriefingWaiting[] = src.waiting.slice(0, C.MAX_WAITING).map((w) => ({
-    ref: waitingRef(w),
-    kind: w.kind,
-    from: safeText(w.agentName, C.NAME_MAX) || w.agentSession,
-    ...(w.teamName || teamOfAgent.get(w.agentSession) ? { team: safeText(w.teamName ?? teamOfAgent.get(w.agentSession) ?? '', C.NAME_MAX) } : {}),
-    summary: safeText(w.summary, C.TEXT_MAX) || 'Waiting on you',
-    since: w.since,
-    urgency: w.urgency,
-  }));
+  const waiting: BriefingWaiting[] = collapseReviews(src.waiting)
+    .slice(0, C.MAX_WAITING)
+    .map((w) => ({
+      ref: waitingRef(w),
+      kind: w.kind,
+      from: safeText(w.agentName, C.NAME_MAX) || w.agentSession,
+      ...(w.teamName || teamOfAgent.get(w.agentSession) ? { team: safeText(w.teamName ?? teamOfAgent.get(w.agentSession) ?? '', C.NAME_MAX) } : {}),
+      summary: safeText(w.summary, C.TEXT_MAX) || 'Waiting on you',
+      since: w.since,
+      urgency: w.urgency,
+      ...(w.refs && w.refs.length > 1 ? { refs: w.refs } : {}),
+    }));
 
   // --- teams ----------------------------------------------------------------
   const teams: BriefingTeam[] = src.teams.slice(0, C.MAX_TEAMS).map((t) => {
@@ -343,6 +348,58 @@ export function buildBriefingSnapshot(src: SnapshotSources): BriefingSnapshot {
     waiting,
   };
   return capSnapshot(snapshot, C.MAX_BYTES);
+}
+
+/** The title inside a review item's spoken summary ("<Agent> finished: <title>. Accept it or send it back?"). */
+const REVIEW_SUMMARY = /^[\s\S]*?finished:\s*([\s\S]*?)\.?\s*Accept it or send it back\?\s*$/;
+
+/** Longest title spoken inside a collapsed review entry (characters) */
+const COLLAPSED_TITLE_MAX = 40;
+
+/** Titles named in a collapsed review entry before "and N more" */
+const COLLAPSED_TITLES_SHOWN = 4;
+
+/**
+ * Collapse each agent's review items into one entry ("Milo finished 3
+ * things: A, B, C - any you want changed?"), so the voice leads with real
+ * decisions. Decisions and questions pass through; an agent with a single
+ * review keeps its entry as is. The collapsed entry carries the oldest
+ * item's id, answer target and age, plus `refs` for the rest.
+ *
+ * @param waiting - The briefing queue's live owner items
+ * @returns Entries in the original order of their first member
+ */
+export function collapseReviews(waiting: readonly SnapshotWaitingSource[]): SnapshotWaitingSource[] {
+  const byAgent = new Map<string, SnapshotWaitingSource[]>();
+  for (const w of waiting) {
+    if (w.kind !== 'review') continue;
+    byAgent.set(w.agentSession, [...(byAgent.get(w.agentSession) ?? []), w]);
+  }
+  const out: SnapshotWaitingSource[] = [];
+  const done = new Set<string>();
+  for (const w of waiting) {
+    const group = w.kind === 'review' ? byAgent.get(w.agentSession) : undefined;
+    if (!group || group.length < 2) {
+      out.push(w);
+      continue;
+    }
+    if (done.has(w.agentSession)) continue;
+    done.add(w.agentSession);
+    const oldest = group.reduce((a, b) => (Date.parse(b.since) < Date.parse(a.since) ? b : a));
+    const titles = group.map((g) => {
+      const m = REVIEW_SUMMARY.exec(g.summary);
+      return clip(speakable(m ? m[1] : g.summary), COLLAPSED_TITLE_MAX);
+    });
+    const shown = titles.slice(0, COLLAPSED_TITLES_SHOWN).join(', ');
+    const more = titles.length > COLLAPSED_TITLES_SHOWN ? ` and ${titles.length - COLLAPSED_TITLES_SHOWN} more` : '';
+    out.push({
+      ...oldest,
+      summary: `${w.agentName} finished ${group.length} things: ${shown}${more} - any you want changed?`,
+      urgency: group.some((g) => g.urgency === 'high') ? 'high' : group.some((g) => g.urgency === 'normal') ? 'normal' : 'low',
+      refs: group.map((g) => waitingRef(g)),
+    });
+  }
+  return out;
 }
 
 /**

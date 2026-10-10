@@ -5600,6 +5600,12 @@ export const OWNER_RECEIPT_CONSTANTS = {
 } as const;
 
 /**
+ * Hours a ticket waits in 待验收 with no objection before silence accepts it
+ * (default 24).
+ */
+export const REVIEW_AUTO_ACCEPT_HOURS = 24;
+
+/**
  * Ticket loop (specs/ticket-loop.md, Phase 1): owner messages become tickets
  * (a `Request` with a TKT number), receipts go back where the owner spoke,
  * and WorkItems link back to the ticket.
@@ -5764,7 +5770,11 @@ export const TICKET_CONSTANTS = {
 		 * did (owner, 2026-09-28: 43 tickets sat in 待验收; the old 24h → nudge →
 		 * 24h → nudge → 24h chain took 72h+ and restarted on every re-answer).
 		 */
-		AUTO_ACCEPT_MS: 24 * 60 * 60 * 1000,
+		AUTO_ACCEPT_MS: REVIEW_AUTO_ACCEPT_HOURS * 60 * 60 * 1000,
+		/** Why a ticket was accepted without the owner's word (ticket discussion note + log) */
+		AUTO_ACCEPT_REASON: 'auto-accepted: no objection',
+		/** Author of that note */
+		AUTO_ACCEPT_NOTE_AUTHOR: 'crewly',
 		/**
 		 * The agent that answered asks the owner itself (owner, 2026-09-24):
 		 * with no word from the owner this long after the answer, the agent is
