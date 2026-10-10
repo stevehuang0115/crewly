@@ -139,6 +139,12 @@ describe('onChatMessage — answer detection', () => {
     expect((await requests.getById(t.id))?.reply).toBeUndefined();
   });
 
+  it('"I\'m building it now" is a promise, not the answer (2026-10-10)', async () => {
+    const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1' });
+    expect(await review.onChatMessage(agentMsg('ch1', 'atlas', "I'm breaking down the shot list now, then building the crab version.", 'm1'))).toBeNull();
+    expect((await requests.getById(t.id))?.reply).toBeUndefined();
+  });
+
   it('caps the excerpt', async () => {
     const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1' });
     await review.onChatMessage(agentMsg('ch1', 'atlas', 'x'.repeat(5000), 'm1'));

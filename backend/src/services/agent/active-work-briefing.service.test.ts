@@ -673,4 +673,37 @@ describe('ActiveWorkBriefingService', () => {
       );
     });
   });
+
+  describe('owner tickets assigned to the agent (2026-10-10)', () => {
+    const ticket = (over: Partial<Request> = {}): Request =>
+      makeRequest({ id: 'req-418', title: 'Three videos', ticketNumber: 418, assignee: 'flopost-pia', ...over });
+
+    it('lists a ticket by its assignee even without ownerAgent, and not for other agents', async () => {
+      const svc = makeService([ticket()]);
+      const mine = await svc.generateActiveWorkBriefing('flopost-pia', 'product-manager');
+      expect(mine.openRequests.map((r) => r.id)).toEqual(['req-418']);
+      expect(mine.openRequests[0]?.ticket).toBe('TKT-418');
+      const other = await svc.generateActiveWorkBriefing('flopost-luna', 'writer');
+      expect(other.openRequests).toEqual([]);
+    });
+
+    it('shows the checklist and how much is delivered', async () => {
+      const svc = makeService([
+        ticket({ acceptance: [{ text: 'schedule video', selfCheck: 'pass' }, { text: 'Claw replica' }, { text: 'dashboard replica' }] }),
+      ]);
+      const b = await svc.generateActiveWorkBriefing('flopost-pia', 'product-manager');
+      expect(b.openRequests[0]?.checklist).toMatchObject({ delivered: 1, total: 3 });
+      const md = svc.formatBriefingAsMarkdown(b);
+      expect(md).toContain('TKT-418');
+      expect(md).toContain('1 of 3 delivered');
+      expect(md).toContain('[x] schedule video');
+      expect(md).toContain('[ ] Claw replica');
+    });
+
+    it('a single-item request shows no "of N" line', async () => {
+      const svc = makeService([ticket({ acceptance: [{ text: 'only one' }] })]);
+      const md = svc.formatBriefingAsMarkdown(await svc.generateActiveWorkBriefing('flopost-pia', 'product-manager'));
+      expect(md).not.toContain('delivered');
+    });
+  });
 });

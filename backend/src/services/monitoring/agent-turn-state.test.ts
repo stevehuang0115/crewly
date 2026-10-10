@@ -191,4 +191,24 @@ describe('AgentTurnStateService', () => {
 		});
 		expect(turns.getVerdict(S).state).toBe('unknown');
 	});
+
+	describe('tool starts (follow-through guard)', () => {
+		it('counts PreToolUse events after a time, and is null without hooks', () => {
+			expect(turns.toolStartsSince(S, T0)).toBeNull();
+			turns.recordHook(S, 'UserPromptSubmit', {}, T0 + 1000);
+			turns.recordHook(S, 'PreToolUse', { toolUseId: 'a' }, T0 + 2000);
+			turns.recordHook(S, 'PostToolUse', { toolUseId: 'a' }, T0 + 2500);
+			turns.recordHook(S, 'PreToolUse', { toolUseId: 'b' }, T0 + 5000);
+			expect(turns.toolStartsSince(S, T0)).toBe(2);
+			expect(turns.toolStartsSince(S, T0 + 2000)).toBe(1);
+			expect(turns.toolStartsSince(S, T0 + 5000)).toBe(0);
+		});
+
+		it('a runtime restart forgets them and records when the runtime started', () => {
+			turns.recordHook(S, 'PreToolUse', { toolUseId: 'a' }, T0 + 2000);
+			turns.noteRuntimeStart(S, T0 + 9000);
+			expect(turns.toolStartsSince(S, T0)).toBeNull();
+			expect(turns.runtimeStartedAt(S)).toBe(T0 + 9000);
+		});
+	});
 });
