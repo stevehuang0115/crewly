@@ -86,6 +86,8 @@ export interface RequestOpenItem {
   ownerNotifiedAt?: string;
   /** Commitment waiting on the owner: the ask-owner decision whose answer opens it, if any */
   gateDecisionId?: string;
+  /** Commitment waiting on the owner: the question item from the same message whose answer opens it (CREW-440) */
+  gateItemId?: string;
   /** Question: the decision card it became (`D-<n>`) */
   decisionId?: string;
   /** Question: the owner's answer (option label or words) */

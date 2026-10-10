@@ -30,6 +30,7 @@ import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { assignRequestTrace, traceRequestStatus } from '../trace/trace-recorder.js';
 import { ticketNeedsReview } from '../../types/v2/ticket.types.js';
 import { ACTIVE_OPEN_ITEM_STATUSES } from '../../types/v2/open-item.types.js';
+import { isDeadGate } from '../open-items/open-item-gate.js';
 import { TICKET_CONSTANTS } from '../../constants.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
@@ -457,7 +458,18 @@ export class RequestService {
     // Open items (specs/2026-10-01-reply-open-items.md): the agent promised
     // the owner something or asked a question in its reply. Every close path
     // lands in `awaiting_followup` until each one is delivered or answered.
-    const openItemsAfter = updates.openItems ?? request.openItems ?? [];
+    let openItemsAfter = updates.openItems ?? request.openItems ?? [];
+    // Auto-accept by silence: a conditional promise whose question was dropped
+    // has no gate anyone can answer — close it rather than park the ticket
+    // in `awaiting_followup` with nobody to wake (CREW-440).
+    if (updates.status === 'done' && updates.acceptedBy === 'silence' && openItemsAfter.some((i) => isDeadGate(i, openItemsAfter))) {
+      const closedAt = new Date().toISOString();
+      const all = openItemsAfter;
+      openItemsAfter = all.map((i) =>
+        isDeadGate(i, all) ? { ...i, status: 'superseded' as const, closedAt, closedReason: 'accepted by silence: its question was dropped, nothing could open it' } : i,
+      );
+      updates = { ...updates, openItems: openItemsAfter };
+    }
     if (updates.status === 'done' && openItemsAfter.some((i) => ACTIVE_OPEN_ITEM_STATUSES.has(i.status))) {
       updates = { ...updates, status: 'awaiting_followup' };
     }

@@ -1253,7 +1253,8 @@ describe('PR2: restated delivery, waiting on the owner, duplicate promises, TKT-
     expect(item.status).toBe('waiting_owner');
     expect(item.due).toBeUndefined();
     expect(h.followUps).toHaveLength(0);
-    h.clock.now = new Date(h.clock.now.getTime() + 3 * 24 * HOUR);
+    // Under the 24h after which a gate-less promise is surfaced to the owner (CREW-440, see the sweep tests below).
+    h.clock.now = new Date(h.clock.now.getTime() + 12 * HOUR);
     await h.service.sweep();
     expect(h.woken).toHaveLength(0);
     expect(h.ownerNotes).toHaveLength(0);
@@ -1334,5 +1335,189 @@ describe('adopt (backfill apply) leaves a trace', () => {
     const planned = await h.service.plan(t, msg(h, '明天中午发你 PDF。', ATLAS, 'p'), h.clock.now);
     await h.service.adopt(t.id, planned, { caller: 'think-tank-sage-2ffacc8f' });
     expect(logger.info).toHaveBeenCalledWith('Open items adopted (backfill apply)', expect.objectContaining({ count: 1, caller: 'think-tank-sage-2ffacc8f' }));
+  });
+});
+
+describe('CREW-440: a card tap settles the conditional promise stored beside the question (TKT-374 / D-541)', () => {
+  const OWEN_Q10 = '你看这样写行吗？你点头后我就替换线上的问答，再把链接发到群里给 Kathy。';
+  const OPTIONS = [
+    { key: 'a', label: 'Yes' },
+    { key: 'b', label: 'No' },
+    { key: 'c', label: 'Reply in thread' },
+  ];
+
+  /** The reply_question card the service posted, settled the way the owner tapped it. */
+  const settled = (requestId: string, itemId: string, status: string, chosenKey?: string): OwnerDecision =>
+    ({
+      id: 'D-1',
+      kind: 'reply_question',
+      question: 'q',
+      options: OPTIONS,
+      yesKey: 'a',
+      defaultKey: 'b',
+      status,
+      ...(chosenKey ? { chosenKey } : {}),
+      resolvedAt: new Date(2026, 9, 1, 21, 0, 0).toISOString(),
+      requestRef: { requestId, itemId },
+    }) as unknown as OwnerDecision;
+
+  /** Wait for the queued write of onDecisionSettled (without running the sweep, which would settle it too). */
+  const flush = (h: Harness): Promise<unknown> => (h.service as unknown as { serial: (f: () => Promise<unknown>) => Promise<unknown> }).serial(async () => undefined);
+
+  const askAndPromise = async (h: Harness, status: 'running' | 'done' = 'done'): Promise<{ t: Request; promise: RequestOpenItem; question: RequestOpenItem }> => {
+    const t = await ticket(h, status);
+    await h.service.onAgentMessage(msg(h, OWEN_Q10, ATLAS, 'e21ac6f0-aaaa'));
+    const items = (await h.requests.getById(t.id))!.openItems!;
+    return { t, promise: items.find((i) => i.type === 'commitment')!, question: items.find((i) => i.type === 'question')! };
+  };
+
+  it('1. one message → two items; the promise is gated on the question item, then on its card', async () => {
+    const h = harness();
+    const { promise, question } = await askAndPromise(h);
+    expect(promise).toMatchObject({ status: 'waiting_owner', gateItemId: question.id, gateDecisionId: 'D-1' });
+    expect(question).toMatchObject({ status: 'open', decisionId: 'D-1' });
+    expect(h.followUps).toHaveLength(0);
+  });
+
+  it('2. card Yes opens the promise: due set and the follow-up WorkItem created for the agent', async () => {
+    const h = harness();
+    const { t, question, promise } = await askAndPromise(h);
+    await h.service.onDecisionSettled(settled(t.id, question.id, 'resolved', 'a'), 'note');
+    await flush(h);
+    const after = (await h.requests.getById(t.id))!.openItems!.find((i) => i.id === promise.id)!;
+    expect(after.status).toBe('open');
+    expect(after.due).toBeDefined();
+    expect(h.followUps).toHaveLength(1);
+    expect(h.followUps[0].item.agent).toBe(ATLAS);
+  });
+
+  it('3. card Skip (the TKT-374 case) closes the promise, drops it once, creates no WorkItem, and the ticket is done', async () => {
+    const h = harness();
+    const { t, question, promise } = await askAndPromise(h);
+    await h.service.onDecisionSettled(settled(t.id, question.id, 'skipped'), 'note');
+    await flush(h);
+    const r = (await h.requests.getById(t.id))!;
+    expect(r.openItems!.find((i) => i.id === promise.id)).toMatchObject({ status: 'skipped' });
+    expect(h.woken.filter((w) => w.text.includes('drop it'))).toHaveLength(1);
+    expect(h.followUps).toHaveLength(0);
+    expect(r.status).toBe('done');
+    await h.service.sweep();
+    expect(h.woken.filter((w) => w.text.includes('drop it'))).toHaveLength(1); // once
+  });
+
+  it.each([
+    ['No', 'resolved', 'b'],
+    ['cancelled', 'cancelled', undefined],
+    ['expired', 'expired', undefined],
+  ])('4. card %s supersedes the promise and wakes nobody', async (_n, status, key) => {
+    const h = harness();
+    const { t, question, promise } = await askAndPromise(h);
+    await h.service.onDecisionSettled(settled(t.id, question.id, status, key), null);
+    await flush(h);
+    expect((await h.requests.getById(t.id))!.openItems!.find((i) => i.id === promise.id)).toMatchObject({ status: 'superseded' });
+    expect(h.followUps).toHaveLength(0);
+    expect(h.woken).toHaveLength(0);
+  });
+
+  it('"Reply in thread" keeps the promise waiting; the typed yes in the thread then opens it', async () => {
+    const h = harness();
+    const { t, question, promise } = await askAndPromise(h);
+    await h.service.onDecisionSettled(settled(t.id, question.id, 'resolved', 'c'), null);
+    await flush(h);
+    expect((await h.requests.getById(t.id))!.openItems!.find((i) => i.id === promise.id)!.status).toBe('waiting_owner');
+    await h.service.onAgentMessage({ id: 'o-yes', channelId: CHANNEL, threadId: ROOT, senderType: 'user', senderId: 'UOWNER', content: '可以', createdAt: h.clock.now.getTime() });
+    expect((await h.requests.getById(t.id))!.openItems!.find((i) => i.id === promise.id)!.status).toBe('open');
+    expect(h.followUps).toHaveLength(1);
+  });
+
+  it('5. a typed approval in the thread still opens the promise while the card is open', async () => {
+    const h = harness();
+    const { t, promise } = await askAndPromise(h);
+    await h.service.onAgentMessage({ id: 'o-yes', channelId: CHANNEL, threadId: ROOT, senderType: 'user', senderId: 'UOWNER', content: '好的', createdAt: h.clock.now.getTime() });
+    expect((await h.requests.getById(t.id))!.openItems!.find((i) => i.id === promise.id)!.status).toBe('open');
+  });
+
+  describe('6. the sweep', () => {
+    it('closes an ungated promise whose sibling question is closed (a promise stored before CREW-440)', async () => {
+      const h = harness();
+      const { t, promise, question } = await askAndPromise(h);
+      const legacy = { ...promise };
+      delete legacy.gateItemId;
+      delete legacy.gateDecisionId;
+      await h.requests.update(t.id, { openItems: [legacy, { ...question, status: 'skipped', closedAt: h.clock.now.toISOString() }] });
+      await h.service.sweep();
+      expect((await h.requests.getById(t.id))!.openItems!.find((i) => i.id === promise.id)!.status).toBe('skipped');
+      expect(h.woken.filter((w) => w.text.includes('drop it'))).toHaveLength(1);
+    });
+
+    it('with no resolvable gate for 24h, tells the owner once', async () => {
+      const h = harness();
+      const { t, promise } = await askAndPromise(h);
+      const orphan = { ...promise };
+      delete orphan.gateItemId;
+      delete orphan.gateDecisionId;
+      await h.requests.update(t.id, { openItems: [orphan] });
+      h.clock.now = new Date(h.clock.now.getTime() + 23 * HOUR);
+      await h.service.sweep();
+      expect(h.ownerNotes).toHaveLength(0);
+      h.clock.now = new Date(h.clock.now.getTime() + 2 * HOUR);
+      await h.service.sweep();
+      await h.service.sweep();
+      expect(h.ownerNotes).toHaveLength(1);
+      expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('waiting_owner');
+    });
+  });
+
+  it('7. auto-accept by silence does not park the ticket on a promise nobody can open', async () => {
+    const h = harness();
+    const { t, promise, question } = await askAndPromise(h, 'running');
+    await h.requests.update(t.id, { status: 'waiting_confirmation', openItems: [promise, { ...question, status: 'skipped', closedAt: h.clock.now.toISOString() }] });
+    const r = await h.requests.update(t.id, { status: 'done', accepted: true, acceptedBy: 'silence', ignoreDeadChildren: true });
+    expect(r.status).toBe('done');
+    expect(r.openItems!.find((i) => i.id === promise.id)).toMatchObject({ status: 'superseded' });
+  });
+
+  it('7b. silence still parks on a promise whose question card is open', async () => {
+    const h = harness();
+    const { t } = await askAndPromise(h, 'running');
+    await h.requests.update(t.id, { status: 'waiting_confirmation' });
+    const r = await h.requests.update(t.id, { status: 'done', accepted: true, acceptedBy: 'silence', ignoreDeadChildren: true });
+    expect(r.status).toBe('awaiting_followup');
+  });
+
+  it('9. replay of tr-20261009-4788bd23: Skip at 19:28, the 04:31 auto-accept ends in done', async () => {
+    const h = harness();
+    const { t, question } = await askAndPromise(h, 'running');
+    await h.requests.update(t.id, { status: 'waiting_confirmation' });
+    h.clock.now = new Date(h.clock.now.getTime() + 3 * HOUR);
+    await h.service.onDecisionSettled(settled(t.id, question.id, 'skipped'), null);
+    await flush(h);
+    h.clock.now = new Date(h.clock.now.getTime() + 9 * HOUR);
+    const r = await h.requests.update(t.id, { status: 'done', accepted: true, acceptedBy: 'silence', ignoreDeadChildren: true });
+    expect(r.status).toBe('done');
+    expect(r.openItems!.some((i) => ['waiting_owner', 'open'].includes(i.status))).toBe(false);
+  });
+
+  describe('F. backfill of ungated waiting promises', () => {
+    it('dry-run counts what it examined and changes nothing; apply settles TKT-374 (Skip → closed, one drop note)', async () => {
+      const h = harness();
+      const { t, promise, question } = await askAndPromise(h);
+      const legacy = { ...promise };
+      delete legacy.gateItemId;
+      delete legacy.gateDecisionId;
+      await h.requests.update(t.id, { openItems: [legacy, { ...question, status: 'skipped', closedAt: h.clock.now.toISOString() }] });
+      const dry = await h.service.backfillWaitingPromises();
+      expect(dry).toMatchObject({ dryRun: true, examinedRequests: 1, examinedItems: 1 });
+      expect(dry.rows).toEqual([expect.objectContaining({ item: promise.id, action: 'skipped' })]);
+      expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('waiting_owner');
+      expect(h.woken).toHaveLength(0);
+      const applied = await h.service.backfillWaitingPromises({ apply: true });
+      expect(applied.examinedItems).toBe(1);
+      const r = (await h.requests.getById(t.id))!;
+      expect(r.openItems![0].status).toBe('skipped');
+      expect(r.status).toBe('done');
+      expect(h.woken.filter((w) => w.text.includes('drop it'))).toHaveLength(1);
+      expect((await h.service.backfillWaitingPromises({ apply: true })).examinedItems).toBe(0);
+    });
   });
 });

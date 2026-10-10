@@ -123,6 +123,26 @@ describe('trace-metrics', () => {
 			expect(m.time.idleMs).toBe(0);
 		});
 
+		it('CREW-440: an awaiting_followup ticket with only conditional promises waits on the owner, not on an agent', () => {
+			const events = [
+				requestCreated(0, 'req-1', 'running'),
+				requestStatus(5, 'req-1', 'running', 'awaiting_followup', { followupWaitsOn: 'owner' }),
+				skill(20, 'sam'),
+			];
+			const m = computeTraceMetrics(root({ refs: { requestId: 'req-1' } }), events, { now: new Date(T0 + 21 * MIN), stallMinutes: 30 });
+			expect(m.time.waitingOwnerMs).toBe(15 * MIN);
+			expect(m.time.waitingAgentMs).toBe(5 * MIN); // only the 0-5 running part
+		});
+
+		it('CREW-440: awaiting_followup with an overdue commitment (or no marker) still counts as waiting on an agent', () => {
+			for (const data of [{ followupWaitsOn: 'agent' }, {}] as Array<Record<string, string>>) {
+				const events = [requestCreated(0, 'req-1', 'running'), requestStatus(5, 'req-1', 'running', 'awaiting_followup', data), skill(20, 'sam')];
+				const m = computeTraceMetrics(root({ refs: { requestId: 'req-1' } }), events, { now: new Date(T0 + 21 * MIN), stallMinutes: 30 });
+				expect(m.time.waitingOwnerMs).toBe(0);
+				expect(m.time.waitingAgentMs).toBe(20 * MIN);
+			}
+		});
+
 		it('uses mixed when one agent has turn events and another does not', () => {
 			const m = computeTraceMetrics(root(), [delivered(0, 'ella', 'dispatch'), turnEnded(5, 'ella', 5), skill(6, 'sam'), skill(7, 'sam')], { now });
 			expect(m.time.activeSource).toBe('mixed');

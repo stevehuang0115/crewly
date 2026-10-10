@@ -6928,6 +6928,8 @@ export const OPEN_ITEMS_CONSTANTS = {
 	DELIVERY_FINISH_GRACE_MS: 10 * 60 * 1000,
 	/** Sweep cadence (ms) */
 	SWEEP_INTERVAL_MS: 60 * 1000,
+	/** A conditional promise (waiting on the owner) with no gate anyone can answer is surfaced to the owner after this long (ms) */
+	GATE_SURFACE_AFTER_MS: 24 * 60 * 60 * 1000,
 	/** An ask-owner decision this close in time to the reply, by the same agent, is the same question (ms) */
 	ASK_OWNER_DEDUPE_WINDOW_MS: 2 * 60 * 60 * 1000,
 	/** Two questions with at least this character-bigram overlap are the same question */
