@@ -56,7 +56,7 @@ import {
   parseTicketNumber,
   ticketNeedsReview,
 } from '../../types/v2/ticket.types.js';
-import { answerNeedsOwner, isStaleTicket, staleCloseUpdate } from './ticket-hygiene.js';
+import { answerNeedsOwner, isStaleTicket, ownerMovedOn, staleCloseUpdate } from './ticket-hygiene.js';
 import { ACTIVE_OPEN_ITEM_STATUSES } from '../../types/v2/open-item.types.js';
 
 // ---------------------------------------------------------------------------
@@ -122,6 +122,11 @@ export interface TicketPatch {
   priority?: RequestPriority;
   kind?: TicketKind;
   assignee?: string | null;
+}
+
+/** The agent still owes the owner something (a question or a promise): the done gate would park the ticket. */
+function hasActiveOpenItem(t: Request): boolean {
+  return (t.openItems ?? []).some((i) => ACTIVE_OPEN_ITEM_STATUSES.has(i.status));
 }
 
 /** Statuses in which an agent answer can submit a ticket. */
@@ -261,10 +266,14 @@ export class TicketReviewService {
           continue;
         }
         if (t.status !== 'waiting_confirmation' || !ticketNeedsReview(t) || !t.submittedAt) continue;
-        // Silence accepts: a hard deadline from the answer, whatever the nudges did.
-        if (now - Date.parse(t.submittedAt) >= TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS) {
+        // Silence accepts: a hard deadline from the answer, whatever the nudges
+        // did — or sooner, once the owner has moved on in the thread without
+        // an objection (no ticket mechanics are ever shown to the owner).
+        const expired = now - Date.parse(t.submittedAt) >= TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS;
+        const movedOn = !expired && ownerMovedOn(t) && !hasActiveOpenItem(t);
+        if (expired || movedOn) {
           const tags = [...new Set([...t.tags, TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG])];
-          const r = await this.accept(t, tags);
+          const r = await this.accept(t, tags, TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_REASON);
           if (r.ok) autoAccepted += 1;
           else this.logger.debug('Auto-accept refused', { id: t.id, reason: r.reason });
           continue;
@@ -383,9 +392,11 @@ export class TicketReviewService {
    *
    * @param ticket - The ticket
    * @param tags - Tags to store
+   * @param reason - Why it was accepted without the owner's word: written to the
+   *   ticket's discussion and the log, never sent to the owner
    * @returns Result
    */
-  private async accept(ticket: Request, tags: string[]): Promise<ReviewActionResult> {
+  private async accept(ticket: Request, tags: string[], reason?: string): Promise<ReviewActionResult> {
     if (ticket.status === 'done') return { ok: false, reason: 'already_done', ticket };
     if (ticket.status === 'cancelled') return { ok: false, reason: 'cancelled', ticket };
     try {
@@ -395,8 +406,26 @@ export class TicketReviewService {
       }
       // #813: silence is recorded as acceptance, never as a review.
       const acceptedBy = tags.includes(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG) ? 'silence' : 'owner';
-      const updated = await this.deps.requests.update(current.id, { status: 'done', accepted: true, ignoreDeadChildren: true, acceptedBy, tags });
-      this.logger.info('Ticket accepted', { tkt: tkt(updated), auto: tags.includes(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG) });
+      const note = reason
+        ? [
+            ...(current.discussion ?? []),
+            {
+              at: this.now().toISOString(),
+              author: TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_NOTE_AUTHOR,
+              text: reason,
+              ref: `auto-accept-${this.now().toISOString()}`,
+            },
+          ]
+        : undefined;
+      const updated = await this.deps.requests.update(current.id, {
+        status: 'done',
+        accepted: true,
+        ignoreDeadChildren: true,
+        acceptedBy,
+        tags,
+        ...(note ? { discussion: note } : {}),
+      });
+      this.logger.info('Ticket accepted', { tkt: tkt(updated), auto: tags.includes(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG), ...(reason ? { reason } : {}) });
       await this.receiptDone(updated);
       return { ok: true, ticket: updated };
     } catch (err) {

@@ -2812,7 +2812,10 @@ void (async () => {
 									(r) => typeof r.ticketNumber === 'number' && r.requiresConfirmation && r.status !== 'done' && r.status !== 'cancelled',
 								);
 								const rows = await Promise.all(candidates.map((r) => intake.toListItem(r)));
-								return rows.filter((row) => row.column === 'to_review');
+								// Only work waiting for the owner's OK. A ticket in awaiting_followup
+								// is held by its own open items (a question or a promise with its own
+								// card) and has no accept deadline, so listing it left it there for days.
+								return rows.filter((row) => row.column === 'to_review' && row.status === 'waiting_confirmation');
 							},
 							review: () => getTicketReviewService(),
 							dismissOpenItem: async (requestId, itemId) => {
