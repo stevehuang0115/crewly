@@ -2280,6 +2280,8 @@ export class TaskPoolService {
     }
     if (workItem.status === 'queued') {
       workItem = (await this.resumeOwnQueuedItemForCompletion(workItem, actor)) ?? workItem;
+    } else if (workItem.status === 'blocked') {
+      workItem = (await this.resumeOwnBlockedItemForCompletion(workItem, actor)) ?? workItem;
     }
     if (this.requiresVerification(workItem)) {
       await this.submitForVerification(workItemId, actor, result);
@@ -2333,6 +2335,59 @@ export class TaskPoolService {
         },
       );
       this.logger.info('Completion from the item\'s own agent landed while it was queued — resumed to finish it', {
+        workItemId: workItem.id,
+        agentId: session,
+      });
+      return resumed;
+    });
+  }
+
+  /**
+   * Puts a `blocked` WorkItem back to `running` when the agent that worked it
+   * reports it complete, so the completion lands instead of failing
+   * `blocked → done*` with a 409.
+   *
+   * CE-232 (CREW-439): Vera reported `[BLOCKED]` on her own running item
+   * (`blockItem`, which releases the claim), then finished the work and her
+   * `POST /task-pool/complete` was refused — there is no `blocked → done`
+   * transition and, unlike `queued`, no rescue. Only the item's owner gets
+   * one: the holder of its latest claim. A general `blocked → done` for anyone
+   * is deliberately not added. A `waiting_on_human` park (the reconciler
+   * resumes it itself) and a dependency block (never claimed, so it has no
+   * claim holder) are left alone.
+   *
+   * @param workItem - The blocked WorkItem
+   * @param actorInput - Who is completing it
+   * @returns The resumed (running) WorkItem, or null when the caller is not
+   *   the item's claim holder, the block is a human-wait park, or it is no
+   *   longer blocked
+   */
+  private async resumeOwnBlockedItemForCompletion(
+    workItem: WorkItem,
+    actorInput: TransitionActorInput,
+  ): Promise<WorkItem | null> {
+    if (workItem.blockSource === WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN) return null;
+    const session = normalizeTransitionActor(actorInput)?.session;
+    if (!session) return null;
+    if ((await this.latestClaimHolder(workItem.id)) !== session) return null;
+
+    return this.withClaimLock(async () => {
+      const current = await this.storage.findWorkItem(workItem.id);
+      if (!current || current.status !== 'blocked') return current ?? null;
+      const resumed = await this.transitionStatus(
+        workItem.id,
+        'running',
+        { role: 'system', session, via: 'completeItem:resume-own-blocked' },
+        (wi) => {
+          wi.blockedReason = undefined;
+          wi.blockSource = undefined;
+          wi.metadata = {
+            ...(wi.metadata ?? {}),
+            completedWhileBlockedAt: new Date().toISOString(),
+          };
+        },
+      );
+      this.logger.info('Completion from the item\'s claim holder landed while it was blocked — resumed to finish it', {
         workItemId: workItem.id,
         agentId: session,
       });

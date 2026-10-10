@@ -2732,3 +2732,25 @@ describe('team pause (specs/2026-10-04-team-pause.md)', () => {
     expect(wakeActions[0].agentSessionName).toBe('agent-free');
   });
 });
+
+describe('detectStuckWorkItems — live claim lease (CE-232)', () => {
+  const claimFor = (workItemId: string, leaseMs: number): TaskClaim => ({
+    id: 'c1', workItemId, agentId: 'agent-dead', status: 'active',
+    claimedAt: new Date().toISOString(), leaseExpiresAt: new Date(Date.now() + leaseMs).toISOString(),
+  } as TaskClaim);
+
+  it('skips a dead-looking agent while its claim lease is live', () => {
+    const wi = makeWorkItem({ status: 'running', target: 'agent-dead', startedAt: new Date().toISOString() });
+    const agentMap = makeAgentMap([['agent-dead', { status: 'inactive' }]]);
+    const { corrections, stuckIds } = detectStuckWorkItems([wi], agentMap, 600_000, undefined, [claimFor(wi.id, 60_000)]);
+    expect(corrections).toHaveLength(0);
+    expect(stuckIds).toHaveLength(0);
+  });
+
+  it('still blocks when the lease has expired', () => {
+    const wi = makeWorkItem({ status: 'running', target: 'agent-dead', startedAt: new Date().toISOString() });
+    const agentMap = makeAgentMap([['agent-dead', { status: 'inactive' }]]);
+    const { corrections } = detectStuckWorkItems([wi], agentMap, 600_000, undefined, [claimFor(wi.id, -60_000)]);
+    expect(corrections[0].newState).toBe('blocked');
+  });
+});

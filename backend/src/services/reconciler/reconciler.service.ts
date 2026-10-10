@@ -308,6 +308,8 @@ export class ReconcilerService {
         workItems,
         agentHealthMap,
         this.config.workItemTimeoutMs,
+        undefined,
+        claims,
       );
       result.corrections.push(...stuck.corrections);
       result.workItemsTimedOut += stuck.stuckIds.length;
@@ -494,6 +496,8 @@ export class ReconcilerService {
         runningItems,
         agentHealthMap,
         this.config.workItemTimeoutMs,
+        undefined,
+        claims,
       );
       result.corrections.push(...stuck.corrections);
       result.workItemsTimedOut += stuck.stuckIds.length;
