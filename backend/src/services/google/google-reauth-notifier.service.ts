@@ -9,11 +9,17 @@
  *
  * So when a Google call fails because the grant is too narrow or no longer
  * honoured, this posts the existing one-tap connect card (single-use ticket,
- * `google-connect-card.ts`) to the owner in Slack — where the agent is
- * working if that is known, else the owner's DM with that agent — at most
- * once per product and Google account per
- * {@link GOOGLE_WORKSPACE_CONSTANTS.REAUTH.CARD_THROTTLE_MS}. It then watches
- * Cloud until the reconnect lands and tells the waiting agents to retry.
+ * `google-connect-card.ts`) to the owner in Slack — in the thread the agent
+ * is answering the owner in if that is known, else the owner's DM with that
+ * agent. The button opens the Cloud portal's Google page, which mints the
+ * consent ticket at click time: the link carries no credential and never
+ * expires (a 15-minute ticket link was dead before an owner on a phone got to
+ * it, 2026-10-10). Concurrent failures share one card; a failure
+ * {@link GOOGLE_WORKSPACE_CONSTANTS.REAUTH.CARD_RESEND_AFTER_MS} after the last
+ * card posts a fresh one (the owner is evidently still stuck), and an agent
+ * can force one with `resend` when the owner says the card failed. It then
+ * watches Cloud (with backoff, for a day) until the reconnect lands and tells
+ * the waiting agents to retry.
  *
  * Everything that touches Slack, Cloud or an agent is injected, so the
  * machine the failure happened on is the one that posts — any machine with
@@ -24,13 +30,13 @@
 
 import { GOOGLE_WORKSPACE_CONSTANTS, type GoogleProduct } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
-import { buildConnectCard, PRODUCT_LABELS } from '../../controllers/google/google-connect-card.js';
+import { buildConnectCard, buildPortalConnectUrl, PRODUCT_LABELS } from '../../controllers/google/google-connect-card.js';
 import type { GoogleWorkspaceStatus } from './google-workspace-token.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('GoogleReauthNotifier');
 
 /** Why the owner has to reconnect. */
-export type ReauthKind = 'missing_scope' | 'expired';
+export type ReauthKind = 'missing_scope' | 'expired' | 'not_connected';
 
 /** A Google failure that only the owner can fix. */
 export interface ReauthTrigger {
@@ -40,6 +46,8 @@ export interface ReauthTrigger {
   account?: string;
   /** The agent whose call failed; it is told when to retry */
   agentSession?: string;
+  /** Post a new card even inside the resend window (the owner said the last one failed) */
+  resend?: boolean;
 }
 
 /** Where a card goes. */
@@ -52,7 +60,7 @@ export interface ReauthPlace {
 
 /** What {@link GoogleReauthNotifier.notify} did. */
 export type ReauthNotifyResult =
-  | { status: 'posted'; expiresAt: string }
+  | { status: 'posted' }
   | { status: 'already_sent'; sentAt: string; nextCardAfter: string }
   | { status: 'unavailable'; why: string };
 
@@ -62,14 +70,6 @@ export interface ReauthNotifierDeps {
   ownerUserId: () => string | null;
   /** The thread the agent is working in, else the owner's DM with it */
   placeFor: (agentSession: string | undefined, ownerUserId: string) => Promise<ReauthPlace | null>;
-  /** A single-use connect link from Cloud */
-  connectUrl: (args: {
-    products: GoogleProduct[];
-    email?: string;
-    slackUserId: string;
-    slackChannelId: string;
-    slackThreadTs?: string;
-  }) => Promise<{ url: string; expiresAt: string }>;
   /** Post so only the owner sees it; true when Slack accepted */
   postCard: (place: ReauthPlace, ownerUserId: string, text: string, blocks: unknown[]) => Promise<boolean>;
   /** Cloud's view of the connections now (fresh, not cached) */
@@ -89,6 +89,8 @@ interface Pending {
   sentAtMs: number;
   /** Stop watching for the reconnect after this */
   watchUntilMs: number;
+  /** Wait before the next look at Cloud; grows with every look */
+  intervalMs: number;
   waiters: Set<string>;
   timer?: { cancel: () => void };
 }
@@ -124,6 +126,7 @@ const EXTRA_RETRY: Partial<Record<GoogleProduct, string>> = {
 export function reauthCardMessage(trigger: Pick<ReauthTrigger, 'product' | 'kind'>): string {
   const label = PRODUCT_LABELS[trigger.product] ?? trigger.product;
   if (trigger.kind === 'expired') return `${label} access expired — tap to reconnect.`;
+  if (trigger.kind === 'not_connected') return `${label} needs access — tap to connect. Takes 30 seconds on your phone.`;
   const purpose = EXTRA_PURPOSE[trigger.product];
   return `${label} needs re-authorization${purpose ? ` to ${purpose}` : ''} (missing permission). Tap to reconnect — takes 30 seconds on your phone.`;
 }
@@ -146,8 +149,8 @@ export function reauthRetryNotice(trigger: Pick<ReauthTrigger, 'product' | 'kind
  * - `missing_scope`: the account is connected for the product and now
  *   carries the scope the call lacked (or, for a product with no known
  *   extra, reports nothing missing).
- * - `expired`: the account is connected for the product again (Cloud
- *   deleted the dead grant, so being there at all is new).
+ * - `expired` / `not_connected`: the account is connected for the product
+ *   (for `expired`, Cloud deleted the dead grant, so being there at all is new).
  *
  * @param status - Cloud's connections
  * @param trigger - The failure
@@ -160,7 +163,7 @@ export function isReconnected(status: GoogleWorkspaceStatus, trigger: ReauthTrig
     ? status.connections.find((c) => c.email.toLowerCase() === account)
     : status.connections.find((c) => c.isDefault) ?? status.connections[0];
   if (!connection || !connection.products.includes(trigger.product)) return false;
-  if (trigger.kind === 'expired') return true;
+  if (trigger.kind !== 'missing_scope') return true;
   const needed = EXTRA_SCOPE[trigger.product];
   if (needed) return connection.scopes.includes(needed);
   return (connection.missingScopes ?? []).length === 0;
@@ -229,18 +232,13 @@ export class GoogleReauthNotifier {
     const key = keyOf(trigger);
     const nowMs = this.now();
     const existing = this.pending.get(key);
-    if (existing && nowMs - existing.sentAtMs < GOOGLE_WORKSPACE_CONSTANTS.REAUTH.CARD_THROTTLE_MS) {
+    const resendAfter = GOOGLE_WORKSPACE_CONSTANTS.REAUTH.CARD_RESEND_AFTER_MS;
+    if (existing && !trigger.resend && nowMs - existing.sentAtMs < resendAfter) {
       if (trigger.agentSession) existing.waiters.add(trigger.agentSession);
-      // The watch on the card may have run out; someone is waiting again, so
-      // look for a reconnect made some other way (the Connections page).
-      if (!existing.timer) {
-        existing.watchUntilMs = nowMs + GOOGLE_WORKSPACE_CONSTANTS.REAUTH.POLL_GRACE_MS;
-        this.schedule(key, existing);
-      }
       return {
         status: 'already_sent',
         sentAt: new Date(existing.sentAtMs).toISOString(),
-        nextCardAfter: new Date(existing.sentAtMs + GOOGLE_WORKSPACE_CONSTANTS.REAUTH.CARD_THROTTLE_MS).toISOString(),
+        nextCardAfter: new Date(existing.sentAtMs + resendAfter).toISOString(),
       };
     }
     const inFlight = this.posting.get(key);
@@ -266,22 +264,8 @@ export class GoogleReauthNotifier {
     const place = await this.deps.placeFor(trigger.agentSession, owner).catch(() => null);
     if (!place) return { status: 'unavailable', why: 'no Slack conversation with the owner from this machine' };
 
-    let link: { url: string; expiresAt: string };
-    try {
-      link = await this.deps.connectUrl({
-        products: [trigger.product],
-        ...(trigger.account ? { email: trigger.account } : {}),
-        slackUserId: owner,
-        slackChannelId: place.slackChannelId,
-        ...(place.threadTs ? { slackThreadTs: place.threadTs } : {}),
-      });
-    } catch (err) {
-      const why = err instanceof Error ? err.message : String(err);
-      logger.warn('Could not mint a Google reconnect link', { product: trigger.product, error: why });
-      return { status: 'unavailable', why: `Crewly Cloud did not issue a link (${why})` };
-    }
-
-    const card = buildConnectCard(trigger.product, link.url, link.expiresAt, {
+    const url = buildPortalConnectUrl([trigger.product], trigger.account);
+    const card = buildConnectCard(trigger.product, url, {
       message: reauthCardMessage(trigger),
       ...(trigger.account ? { account: trigger.account } : {}),
     });
@@ -289,12 +273,15 @@ export class GoogleReauthNotifier {
     if (!posted) return { status: 'unavailable', why: 'Slack refused the card' };
 
     const sentAtMs = this.now();
-    const expiresMs = Date.parse(link.expiresAt);
+    const previous = this.pending.get(key);
+    const waiters = new Set(previous?.waiters);
+    if (trigger.agentSession) waiters.add(trigger.agentSession);
     const pending: Pending = {
       trigger,
       sentAtMs,
-      watchUntilMs: (Number.isFinite(expiresMs) ? expiresMs : sentAtMs) + GOOGLE_WORKSPACE_CONSTANTS.REAUTH.POLL_GRACE_MS,
-      waiters: new Set(trigger.agentSession ? [trigger.agentSession] : []),
+      watchUntilMs: sentAtMs + GOOGLE_WORKSPACE_CONSTANTS.REAUTH.WATCH_MS,
+      intervalMs: GOOGLE_WORKSPACE_CONSTANTS.REAUTH.POLL_INTERVAL_MS,
+      waiters,
     };
     this.pending.get(key)?.timer?.cancel();
     this.pending.set(key, pending);
@@ -307,14 +294,16 @@ export class GoogleReauthNotifier {
       threaded: !!place.threadTs,
       agentSession: trigger.agentSession,
     });
-    return { status: 'posted', expiresAt: link.expiresAt };
+    return { status: 'posted' };
   }
 
-  /** Check again after the poll interval, until the watch window closes. */
+  /** Check again after the (growing) poll interval, until the watch window closes. */
   private schedule(key: string, pending: Pending): void {
     pending.timer = this.setTimer(() => {
       void this.check(key, pending);
-    }, GOOGLE_WORKSPACE_CONSTANTS.REAUTH.POLL_INTERVAL_MS);
+    }, pending.intervalMs);
+    const R = GOOGLE_WORKSPACE_CONSTANTS.REAUTH;
+    pending.intervalMs = Math.min(Math.round(pending.intervalMs * R.POLL_BACKOFF_FACTOR), R.POLL_MAX_INTERVAL_MS);
   }
 
   /**

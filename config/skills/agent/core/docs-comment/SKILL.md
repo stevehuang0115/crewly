@@ -100,8 +100,10 @@ older connections do not include. When the output has
 `"reconnectLinkSent":true`, the harness has already sent the owner a one-tap
 reconnect card in Slack: tell them in one line what you will do once it is
 granted, and retry when you get `[GOOGLE] Google Drive reconnected — retry your
-comment.` Without it, run `google-connect --product drive --channel <chat-channel-id>` to
-post the card yourself. Do not paste a link yourself.
+comment.` The card's link does not expire. If the owner says it did not work (or
+there is no `reconnectLinkSent`), run `google-connect --product drive --resend` for a
+fresh card, or give them https://crewlyai.com/portal/integrations/google?products=drive&auto=1
+to open directly. Never send them to Crewly settings or the Connections page.
 
 `{"success":false,"reason":"not_connected","hint":"…"}` (exit 1): Google
 Drive is not connected. Use `google-connect --product drive` the same way.
@@ -115,7 +117,7 @@ wrong, or the account cannot see the document.
 
 ## Choosing a Google account
 
-Several Google accounts can be connected at once. Without `--account` the call uses the default one (the first you connected, or whichever you marked default on the Connections page). Name one explicitly when it matters:
+Several Google accounts can be connected at once. Without `--account` the call uses the default one (the first you connected, or whichever the owner marked default). Name one explicitly when it matters:
 
 ```bash
 bash execute.sh list --doc 1AbC… --account work@company.com

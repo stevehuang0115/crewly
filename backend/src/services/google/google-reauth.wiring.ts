@@ -4,7 +4,7 @@
  * Kept apart from the notifier so its rules (throttle, wording, when a
  * reconnect counts) are testable without Slack. Everything here runs on the
  * machine where the Google call failed: its Slack transport posts the card,
- * its Cloud session mints the ticket, its agents are told to retry. That is
+ * its agents are told to retry. That is
  * the same on every machine, so an agent on a second machine (the Personal
  * Assistant on iriss-air, 2026-10-08) gets the same card as one on the main
  * Mac.
@@ -50,7 +50,11 @@ export interface ReauthWiringInput {
   sendToAgent: (session: string, text: string) => Promise<boolean>;
   /** Seams for tests; default to the real singletons */
   slack?: () => ReauthSlackApi;
-  /** The Slack place of the agent's current work */
+  /**
+   * The Slack place of the conversation the agent is answering the owner in.
+   * Default: the reply-destination resolver, the same authority `reply-chat`
+   * uses, so the card lands where the agent's answer would.
+   */
   workDestination?: (session: string) => Promise<{ slackChannelId: string; threadTs?: string } | null>;
   /** The owner↔agent Slack DM, when there is one */
   agentDm?: (session: string) => { slackChannelId: string } | null;
@@ -89,8 +93,14 @@ export function createReauthNotifierDeps(input: ReauthWiringInput): ReauthNotifi
   const workDestination =
     input.workDestination ??
     (async (session: string) => {
-      const { resolveAgentSlackDestination } = await import('../orc/work-item-destination.wiring.js');
-      return resolveAgentSlackDestination(session);
+      // Not resolveAgentSlackDestination: it knows only the work item and the
+      // last owner turn origin, so a team lead answering the owner in a
+      // channel thread resolved to nothing and the card went to the DM
+      // (Ruth, 2026-10-10). The resolver also reads the conversation the
+      // agent was prompted about and the owner threads it owes an answer.
+      const { resolveSlackPlace } = await import('../orc/reply-destination.wiring.js');
+      const place = await resolveSlackPlace({ session, noOwnerDm: true });
+      return place ? { slackChannelId: place.slackChannelId, ...(place.threadTs ? { threadTs: place.threadTs } : {}) } : null;
     });
   const tokens = (): GoogleWorkspaceTokenService => GoogleWorkspaceTokenService.getInstance();
 
@@ -141,7 +151,6 @@ export function createReauthNotifierDeps(input: ReauthWiringInput): ReauthNotifi
       }
       return ownerDm(owner, botToken);
     },
-    connectUrl: (args) => tokens().buildSlackConnectUrl(args),
     postCard: async (place, owner, text, blocks) => {
       if (await postOnce(place, owner, text, blocks, place.botToken)) return true;
       // The agent's own bot may not be in that conversation; the shared bot

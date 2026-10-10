@@ -5,15 +5,19 @@
  * the error says "connect it on the Connections page", and the only link it
  * could build carries the Cloud session token in the query string — which
  * must never be posted into a channel. This posts a Block Kit card whose
- * button holds a single-use ticket instead, visible only to the person who
- * asked, because Slack does not tell us who clicks a link (2026-09-21).
+ * button opens the Cloud portal's Google page instead: no token, no expiry
+ * (the portal mints the consent ticket when the owner taps), visible only to
+ * the person who asked, because Slack does not tell us who clicks a link
+ * (2026-09-21). A single-use ticket link used to sit behind the button; it
+ * died after 15 minutes, before an owner on a phone got to it (2026-10-10).
  *
  * @module controllers/google/google-connect-card
  */
 
 import type { Request, Response } from 'express';
-import { GOOGLE_PRODUCTS, type GoogleProduct } from '../../constants.js';
+import { GOOGLE_PRODUCTS, GOOGLE_WORKSPACE_CONSTANTS, ONBOARDING_CONSTANTS, type GoogleProduct } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
+import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('GoogleConnectCard');
 
@@ -33,6 +37,23 @@ export const PRODUCT_LABELS: Record<string, string> = {
 };
 
 /**
+ * The Cloud portal link behind a card's button. Carries no credential and
+ * never expires; the portal page mints the consent ticket at click time.
+ *
+ * @param products - Products to ask for
+ * @param account - Google account to reconnect, when one is known
+ * @returns Absolute portal URL
+ */
+export function buildPortalConnectUrl(products: readonly string[], account?: string): string {
+  const base = ONBOARDING_CONSTANTS.CLOUD.CONSOLE_URL.replace(/\/$/, '');
+  const url = new URL(`${base}${GOOGLE_WORKSPACE_CONSTANTS.PORTAL_CONNECT_PATH}`);
+  if (products.length) url.searchParams.set('products', products.join(','));
+  if (account) url.searchParams.set('account', account);
+  url.searchParams.set('auto', '1');
+  return url.toString();
+}
+
+/**
  * Build the card. Pure, so the wording is testable without Slack.
  *
  * A reconnect (`reconnect`) replaces the generic "Needs access" with the
@@ -41,22 +62,17 @@ export const PRODUCT_LABELS: Record<string, string> = {
  * to know which one to pick.
  *
  * @param product - Product needing consent
- * @param url - The ticket link behind the button
- * @param expiresAt - When the link stops working
+ * @param url - The portal link behind the button ({@link buildPortalConnectUrl})
  * @param reconnect - Why a working connection needs the owner again, and for which account
  * @returns Block Kit blocks and the fallback text
  */
 export function buildConnectCard(
   product: string,
   url: string,
-  expiresAt: string,
   reconnect?: { message: string; account?: string },
 ): { text: string; blocks: unknown[] } {
   const label = PRODUCT_LABELS[product] ?? product;
-  const minutes = Math.max(1, Math.round((new Date(expiresAt).getTime() - Date.now()) / 60_000));
-  // Say both, because both surprise people: the link dies, and it is for
-  // them alone.
-  const note = `Only you can see this. The link works once, for about ${minutes} minutes.`;
+  const note = 'Only you can see this.';
   if (reconnect) {
     return {
       text: reconnect.message,
@@ -91,15 +107,8 @@ export function buildConnectCard(
 
 /** What the endpoint needs from the rest of the system. */
 export interface ConnectCardDeps {
-  /** Resolve a chat-v2 channel to its Slack conversation, or null. */
+  /** Resolve a chat-v2 channel (or a Slack channel / thread ref) to its Slack conversation, or null. */
   originFor: (chatChannelId: string) => Promise<SlackOrigin | null>;
-  /** Ask Cloud for a single-use connect link. */
-  connectUrl: (args: {
-    products: GoogleProduct[];
-    slackUserId: string;
-    slackChannelId: string;
-    slackThreadTs?: string;
-  }) => Promise<{ url: string; expiresAt: string }>;
   /** Post the card so only `userId` sees it. */
   postEphemeral: (
     channelId: string,
@@ -107,7 +116,13 @@ export interface ConnectCardDeps {
     text: string,
     blocks: unknown[],
     botToken?: string,
+    threadTs?: string,
   ) => Promise<boolean>;
+  /**
+   * Used when the origin is unknown or refused the card: post where the
+   * asking agent is working, else in the owner's DM. True when posted.
+   */
+  fallbackPost?: (args: { product: GoogleProduct; account?: string; agentSession?: string }) => Promise<boolean>;
 }
 
 let deps: ConnectCardDeps | null = null;
@@ -124,20 +139,24 @@ export function setConnectCardDeps(next: ConnectCardDeps | null): void {
 /**
  * `POST /api/google/connect-card` — ask the owner to authorize a product.
  *
- * @param req - `{ product, channelId }`; `channelId` is the chat-v2 channel
- * @param res - `{ posted, expiresAt }`, or why it could not be posted
+ * The card goes where the agent is talking to the owner (`channelId`, the
+ * `[CHAT:…]` id, a Slack channel id or a Slack thread key). When that place
+ * cannot be resolved, or Slack refuses it, the card goes to the place the
+ * harness knows the agent is working in, else the owner's DM — never a 409
+ * for an owner who has to be reached somehow. Every call posts a card: an
+ * agent asks again when the owner says the last one failed.
+ *
+ * @param req - `{ product, channelId?, account? }`
+ * @param res - `{ posted }`, or why it could not be posted
  */
 export async function postConnectCard(req: Request, res: Response): Promise<void> {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const product = String(body['product'] ?? '').trim().toLowerCase();
   const channelId = String(body['channelId'] ?? '').trim();
+  const account = String(body['account'] ?? '').trim() || undefined;
 
   if (!(GOOGLE_PRODUCTS as readonly string[]).includes(product)) {
     res.status(400).json({ success: false, error: `product must be one of ${GOOGLE_PRODUCTS.join(', ')}` });
-    return;
-  }
-  if (!channelId) {
-    res.status(400).json({ success: false, error: 'channelId is required' });
     return;
   }
   if (!deps) {
@@ -146,42 +165,37 @@ export async function postConnectCard(req: Request, res: Response): Promise<void
   }
 
   try {
-    const origin = await deps.originFor(channelId);
-    if (!origin) {
-      // Worth saying plainly: the agent asked in a chat that never came from
-      // Slack, so there is nowhere to show a card.
-      res.status(409).json({
-        success: false,
-        error: 'This conversation did not come from Slack, so there is nobody to show the card to.',
-      });
-      return;
+    const url = buildPortalConnectUrl([product], account);
+    const card = buildConnectCard(product, url, account ? { message: `${PRODUCT_LABELS[product] ?? product} needs access — tap to connect.`, account } : undefined);
+    const origin = channelId ? await deps.originFor(channelId) : null;
+    if (origin) {
+      const posted = await deps.postEphemeral(
+        origin.slackChannelId,
+        origin.slackUserId,
+        card.text,
+        card.blocks,
+        origin.botToken,
+        origin.threadTs,
+      );
+      if (posted) {
+        logger.info('Posted a Google authorization card', { product, slackChannelId: origin.slackChannelId, threaded: !!origin.threadTs });
+        res.json({ success: true, data: { posted: true, product, where: 'conversation' } });
+        return;
+      }
     }
 
-    const { url, expiresAt } = await deps.connectUrl({
-      products: [product as GoogleProduct],
-      slackUserId: origin.slackUserId,
-      slackChannelId: origin.slackChannelId,
-      ...(origin.threadTs ? { slackThreadTs: origin.threadTs } : {}),
-    });
-    const card = buildConnectCard(product, url, expiresAt);
-    const posted = await deps.postEphemeral(
-      origin.slackChannelId,
-      origin.slackUserId,
-      card.text,
-      card.blocks,
-      origin.botToken,
-    );
-
-    if (!posted) {
-      res.status(502).json({ success: false, error: 'Slack refused the card; see the backend log for the reason.' });
+    const agentSession = readAgentSessionHeader(req);
+    const posted = (await deps.fallbackPost?.({ product: product as GoogleProduct, ...(account ? { account } : {}), ...(agentSession ? { agentSession } : {}) })) ?? false;
+    if (posted) {
+      logger.info('Posted a Google authorization card via fallback', { product, channelId, agentSession, origin: origin ? 'refused' : 'unknown' });
+      res.json({ success: true, data: { posted: true, product, where: 'fallback' } });
       return;
     }
-    logger.info('Posted a Google authorization card', {
-      product,
-      slackChannelId: origin.slackChannelId,
-      expiresAt,
+    logger.warn('Could not post the authorization card anywhere', { product, channelId, agentSession });
+    res.status(502).json({
+      success: false,
+      error: 'Slack did not take the card (no conversation, work place or owner DM reachable from this instance).',
     });
-    res.json({ success: true, data: { posted: true, product, expiresAt } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.warn('Could not post the authorization card', { product, error: message });

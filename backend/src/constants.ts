@@ -4751,12 +4751,21 @@ export const GOOGLE_WORKSPACE_CONSTANTS = {
 	 * for want of a scope, or because the grant expired / was revoked.
 	 */
 	REAUTH: {
-		/** At most one card per product + Google account in this window (ms) */
-		CARD_THROTTLE_MS: 6 * 60 * 60 * 1000,
-		/** How often to check whether the owner reconnected (ms) */
+		/**
+		 * A card that went out less than this long ago is not repeated for the
+		 * same product + Google account (concurrent failures share one card);
+		 * after it, a new failure posts a fresh card unless the owner has
+		 * reconnected (ms)
+		 */
+		CARD_RESEND_AFTER_MS: 10 * 60 * 1000,
+		/** First wait between looks at Cloud for the reconnect (ms) */
 		POLL_INTERVAL_MS: 30_000,
-		/** Keep checking this long after the card's link expires (consent may still be finishing) (ms) */
-		POLL_GRACE_MS: 10 * 60 * 1000,
+		/** The wait grows by this factor after each look... */
+		POLL_BACKOFF_FACTOR: 1.5,
+		/** ...up to this ceiling (ms) */
+		POLL_MAX_INTERVAL_MS: 15 * 60 * 1000,
+		/** The card link never expires, so keep watching for the reconnect this long (ms) */
+		WATCH_MS: 24 * 60 * 60 * 1000,
 		/** Give up posting the card after this long, so the skill call is not held (ms) */
 		POST_TIMEOUT_MS: 8_000,
 	},
@@ -4772,6 +4781,12 @@ export const GOOGLE_WORKSPACE_CONSTANTS = {
 	SLIDES_MAX_SLIDES: 60,
 	/** Dashboard path the Cloud consent flow returns to */
 	SETTINGS_RETURN_PATH: '/connections?platform=google-workspace',
+	/**
+	 * Cloud portal page that starts Google consent. It mints the consent
+	 * ticket when the owner opens it, so a link to it never expires and
+	 * carries no credential. Query: `products=<csv>&account=<email>&auto=1`.
+	 */
+	PORTAL_CONNECT_PATH: '/portal/integrations/google',
 	/** Metadata headers requested on Gmail search hits */
 	GMAIL_SEARCH_HEADERS: ['From', 'To', 'Subject', 'Date'],
 	/** RFC 2045 line width for base64 message bodies */

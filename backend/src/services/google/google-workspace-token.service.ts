@@ -283,7 +283,7 @@ export class GoogleWorkspaceTokenService {
     throw new GoogleWorkspaceError(
       404,
       GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.NOT_CONNECTED,
-      `${email ?? 'This Google account'} is not connected for ${wanted}. Connect ${wanted} on the Connections page.`,
+      `${email ?? 'This Google account'} is not connected for ${wanted}. Ask the owner to connect ${wanted} (google-connect skill).`,
     );
   }
 

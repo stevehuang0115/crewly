@@ -3,6 +3,7 @@
  */
 
 import {
+  parseSlackChannelRef,
   extractSlackThreadKeys,
   formatSlackThreadKey,
   parseSlackThreadKey,
@@ -73,5 +74,21 @@ describe('slack-thread-key', () => {
       expect(slackThreadOfMetadata({ source: 'reply-tool' })).toBeNull();
       expect(slackThreadOfMetadata({ slackChannelId: 'D1ABC' })).toBeNull();
     });
+  });
+});
+
+describe('parseSlackChannelRef', () => {
+  it('reads thread keys, slack- chat channel ids in each encoding, and bare channel ids', () => {
+    expect(parseSlackChannelRef('C0C6JJTB2KC:1791664753.876929')).toEqual({ slackChannelId: 'C0C6JJTB2KC', threadTs: '1791664753.876929' });
+    expect(parseSlackChannelRef('slack-C0C6JJTB2KC:1791664753.876929')).toEqual({ slackChannelId: 'C0C6JJTB2KC', threadTs: '1791664753.876929' });
+    expect(parseSlackChannelRef('slack-D0AC7NF5N7L-1772987441-763389')).toEqual({ slackChannelId: 'D0AC7NF5N7L', threadTs: '1772987441.763389' });
+    expect(parseSlackChannelRef('slack-C0C6JJTB2KC-1791664753.876929-msg-1791664800.000100')).toEqual({ slackChannelId: 'C0C6JJTB2KC', threadTs: '1791664753.876929' });
+    expect(parseSlackChannelRef('C0C6JJTB2KC')).toEqual({ slackChannelId: 'C0C6JJTB2KC' });
+  });
+
+  it('rejects chat-v2 ids and junk', () => {
+    expect(parseSlackChannelRef('0391564b-8c11-4bdc-abad-85dc5740f581')).toBeNull();
+    expect(parseSlackChannelRef('chat-abc123')).toBeNull();
+    expect(parseSlackChannelRef(undefined)).toBeNull();
   });
 });
