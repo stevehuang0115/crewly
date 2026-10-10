@@ -1111,7 +1111,7 @@ describe('TaskPoolService', () => {
       await service.addToPool(wi, { creatorSession: 'leo' });
       const stored = (await service.getAllItems()).find((w) => w.id === wi.id)!;
       expect(stored).toMatchObject({ target: 'sam', targetSource: 'escalated', metadata: expect.objectContaining({ routeLevel: 0, createdBy: 'leo' }) });
-      expect(stored.description).toContain('交给你决定');
+      expect(stored.description).toContain('yours to decide');
       // A targeted item is left alone.
       const own = makeWorkItem({ title: 'mine', target: 'max' });
       await service.addToPool(own);

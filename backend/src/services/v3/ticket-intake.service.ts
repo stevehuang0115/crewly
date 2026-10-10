@@ -274,7 +274,7 @@ export interface TicketReceiptSink {
    */
   post(ticket: Request, target: ReceiptTarget): Promise<TicketReceipt | null>;
   /**
-   * Change an existing receipt to "已取消记录".
+   * Change an existing receipt to "no longer tracked".
    *
    * @param ticket - The dismissed ticket
    * @param receipt - The receipt to edit
@@ -439,7 +439,7 @@ export class TicketIntakeService {
   }
 
   /**
-   * Mark a ticket's receipt done (🎫 → ✅ on Slack, 「已完成」 in chat-v2).
+   * Mark a ticket's receipt done (🎫 → ✅ on Slack, "is done" in chat-v2).
    *
    * @param ticket - The done ticket
    */

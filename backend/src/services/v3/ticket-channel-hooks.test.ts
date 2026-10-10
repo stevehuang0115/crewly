@@ -180,9 +180,9 @@ describe('intakeWithin', () => {
 });
 
 describe('receipt texts', () => {
-  it('recorded / dismissed — no "不用记？" question', () => {
-    expect(receiptText(ticket())).toBe('已记成 TKT-007');
-    expect(dismissedReceiptText(ticket())).toBe('TKT-007 已取消记录');
+  it('recorded / dismissed — no "track this?" question', () => {
+    expect(receiptText(ticket())).toBe('Recorded as TKT-007');
+    expect(dismissedReceiptText(ticket())).toBe('TKT-007 is no longer tracked');
   });
 });
 
@@ -242,7 +242,7 @@ describe('Slack receipt sink', () => {
   it('dismissing an older text receipt still edits it', async () => {
     const slack = slackFake();
     await createSlackReceiptSink({ slack }).markDismissed(ticket(), { kind: 'slack', slackChannelId: 'C1', ts: '9.1', threadTs: '1.0' });
-    expect(slack.updated[0]).toEqual(['C1', '9.1', 'TKT-007 已取消记录', [], undefined]);
+    expect(slack.updated[0]).toEqual(['C1', '9.1', 'TKT-007 is no longer tracked', [], undefined]);
   });
 });
 
@@ -274,16 +274,16 @@ describe('chat-v2 receipt sink', () => {
       metadata: { source: 'system', ticketReceipt: { ticketId: ID, tkt: 'TKT-007', status: 'recorded' } },
     });
     await sink.markDismissed(ticket(), receipt!);
-    expect(updates[0]).toEqual(['r-1', 'TKT-007 已取消记录', { ticketReceipt: { ticketId: ID, tkt: 'TKT-007', status: 'dismissed' } }]);
+    expect(updates[0]).toEqual(['r-1', 'TKT-007 is no longer tracked', { ticketReceipt: { ticketId: ID, tkt: 'TKT-007', status: 'dismissed' } }]);
     expect(broadcast).toHaveBeenCalledTimes(2);
     await sink.markDone!(ticket(), receipt!);
-    expect(updates[1]).toEqual(['r-1', 'TKT-007 已完成', { ticketReceipt: { ticketId: ID, tkt: 'TKT-007', status: 'done' } }]);
+    expect(updates[1]).toEqual(['r-1', 'TKT-007 is done', { ticketReceipt: { ticketId: ID, tkt: 'TKT-007', status: 'done' } }]);
   });
 });
 
 describe('Phase 2 hooks', () => {
   it('doneReceiptText', () => {
-    expect(doneReceiptText(ticket())).toBe('TKT-007 已完成');
+    expect(doneReceiptText(ticket())).toBe('TKT-007 is done');
   });
 
   it('Slack markDone swaps 🎫 for ✅ with the same bot; text receipts are left alone', async () => {
@@ -415,8 +415,8 @@ describe('slackIntakeMessage', () => {
 describe('ticket line for the agent (owner, 2026-09-24)', () => {
   it('keeps ticket words away from the owner and asks the agent to check with them itself', () => {
     const line = ticketDeliveryLine(ticket());
-    expect(line).toContain('不要向对方提工单');
-    expect(line).toContain('用自己的话问一句这样行不行');
+    expect(line).toContain('do not mention tickets');
+    expect(line).toContain('ask in your final reply, in your own words, whether this works');
     expect(line).toContain(`--request-id ${ID}`);
   });
 });

@@ -137,7 +137,7 @@ describe('deploy-bundle', () => {
     const code = await deployBundle('demo', { answers: { business_name: 'x' } }, { catalog: CATALOG, log, local, isRunning: async () => false });
     expect(code).toBe(1);
     expect(local).not.toHaveBeenCalled();
-    expect(lines.join('\n')).toContain('还没回答：平台（platforms）');
+    expect(lines.join('\n')).toContain('Not answered yet: 平台 (platforms)');
     expect(lines.join('\n')).toContain('"platforms": []');
   });
 
@@ -274,8 +274,8 @@ describe('deploy-bundle', () => {
     it('re-asks an empty required answer and an invalid choice', async () => {
       const answers = await askBundleQuestions(answering(['', 'Acme', '9', '抖音', '5', '2']), QUESTIONS, {}, log);
       expect(answers).toEqual({ business_name: 'Acme', platforms: ['抖音'], tone: '专业' });
-      expect(lines.join('\n')).toContain('这一项必填');
-      expect(lines.join('\n')).toContain('请输入 1-2');
+      expect(lines.join('\n')).toContain('This one is required');
+      expect(lines.join('\n')).toContain('Enter a number from 1 to 2');
     });
 
     it('keeps answers given in advance', async () => {

@@ -100,11 +100,11 @@ describe('resolveAnswers', () => {
     expect(caught).toBeInstanceOf(BundleAnswersError);
     expect(caught!.code).toBe('invalid_answers');
     expect(caught!.missing.map((m) => m.id)).toEqual(['business_name', 'what_you_sell', 'platforms']);
-    expect(caught!.message).toContain('公司叫什么？（business_name）');
+    expect(caught!.message).toContain('公司叫什么？ (business_name)');
   });
 
   it('rejects a select value that is not an option', () => {
-    expect(() => resolveAnswers(QUESTIONS, { ...complete, tone: '暴躁' })).toThrow(/只能选/);
+    expect(() => resolveAnswers(QUESTIONS, { ...complete, tone: '暴躁' })).toThrow(/choose one of/);
   });
 
   it('accepts a single value for a multiselect and rejects unknown options', () => {
@@ -113,7 +113,7 @@ describe('resolveAnswers', () => {
   });
 
   it('caps the length of text answers', () => {
-    expect(() => resolveAnswers(QUESTIONS, { ...complete, what_you_sell: 'x'.repeat(5000) })).toThrow(/太长/);
+    expect(() => resolveAnswers(QUESTIONS, { ...complete, what_you_sell: 'x'.repeat(5000) })).toThrow(/too long/);
   });
 
   it('treats non-object input as no answers, and ignores unknown keys', () => {

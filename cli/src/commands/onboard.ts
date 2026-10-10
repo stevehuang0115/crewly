@@ -935,7 +935,7 @@ export async function runBundleStep(
     }
   }
   if (ask) {
-    console.log(chalk.bold('  先回答几个问题，团队会按你的情况来做事：\n'));
+    console.log(chalk.bold('  Answer a few questions first, so the team works the way you need:\n'));
     answers = await askBundleQuestions(ask, bundle.bundle.questions ?? [], answers);
   }
   const code = await deploy(bundle.id, answers, options.runtime);

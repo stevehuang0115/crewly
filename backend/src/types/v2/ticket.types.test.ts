@@ -158,7 +158,7 @@ describe('Phase 2 review helpers', () => {
     expect(parseReviewReply('打回：少了表头')).toEqual({ action: 'reject', reason: '少了表头' });
     expect(parseReviewReply('打回 数字是上个月的')).toEqual({ action: 'reject', reason: '数字是上个月的' });
     expect(parseReviewReply('reject - wrong file')).toEqual({ action: 'reject', reason: 'wrong file' });
-    expect(parseReviewReply('打回')).toEqual({ action: 'reject', reason: '（未写原因）' });
+    expect(parseReviewReply('打回')).toEqual({ action: 'reject', reason: '(no reason given)' });
   });
 
   it.each(['通过这个接口拿数据', '可以了吗？', '好的', 'please redo the header', 'hello'])('%s → nothing', (t) => {

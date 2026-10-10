@@ -373,11 +373,11 @@ describe('helpers', () => {
 	it('buildFirstTaskMessage names the team and keeps the owner words last', () => {
 		const message = buildFirstTaskMessage(' Plan my week ', { id: 't1', name: 'Personal Assistant' });
 		const lines = message.split('\n');
-		expect(lines[0]).toBe('[初始设置 · 第一件事]');
+		expect(lines[0]).toBe('[Initial setup · first task]');
 		expect(lines[1]).toContain('Personal Assistant');
 		expect(lines[1]).toContain('t1');
 		expect(lines[lines.length - 1]).toBe('Plan my week');
-		expect(buildFirstTaskMessage('Hi', null)).toBe('[初始设置 · 第一件事]\n\nHi');
+		expect(buildFirstTaskMessage('Hi', null)).toBe('[Initial setup · first task]\n\nHi');
 	});
 
 	it('buildTokenPageSignInUrl starts Google sign-in on Cloud and returns to the token page', () => {

@@ -191,7 +191,7 @@ describe('BundleApplyService', () => {
     expect(voice).toMatch(/^---\ntitle: 小周咖啡 口吻\ntrigger: content,draft\nupdatedBy: bundle:demo-bundle\nupdatedAt: /);
     expect(voice).toContain('我们是 小周咖啡，负责人 Ava');
     const review = readFileSync(path.join(teamDir, 'norms', 'owner-review-points.md'), 'utf-8');
-    expect(review).toContain('**公开发布** → 先拿到老板的同意：Ava 发预览');
+    expect(review).toContain("**公开发布** → get the owner's approval first: Ava 发预览");
     const sop = readFileSync(path.join(teamDir, 'sops', 'content', 'review.md'), 'utf-8');
     expect(sop).toMatch(/title: 发布前审核\ncategory: content/);
     expect(sop).toContain('先给老板看');
@@ -203,7 +203,7 @@ describe('BundleApplyService', () => {
     expect(r.fakes.install.mock.calls.map((c: unknown[]) => c[0])).toEqual(['remote-skill', 'nice-to-have']);
     const skills = d.steps.find((s) => s.id === 'skills')!;
     expect(skills.status).toBe('done');
-    expect(skills.message).toMatch(/1 个可选技能没装上/);
+    expect(skills.message).toMatch(/1 optional skills were not installed/);
   });
 
   it('reports connectors with /connections links; only required ones make the step pending', async () => {
@@ -252,8 +252,8 @@ describe('BundleApplyService', () => {
     const d = await r.service.applyAndWait({ templateId: 'demo-bundle', answers: ANSWERS });
     expect(r.fakes.send).toHaveBeenCalledTimes(1);
     const [content, metadata] = r.fakes.send.mock.calls[0] as unknown as [string, Record<string, unknown>];
-    expect(content).toContain('[成套方案 · 第一周] 第 1 天 · 认识生意');
-    expect(content).toContain('请交给团队「小周咖啡 团队」(team id: demo-bundle) 的 Ava 来做');
+    expect(content).toContain('[Solution bundle · week one] Day 1 · 认识生意');
+    expect(content).toContain('Please hand this to Ava on the team "小周咖啡 团队" (team id: demo-bundle)');
     expect(content).toContain('了解 小周咖啡');
     expect(metadata).toEqual({ source: 'bundle_first_week', templateId: 'demo-bundle', teamId: 'demo-bundle', taskId: 'hello' });
     expect(d.firstWeek.map((t) => [t.id, t.status, t.dueAt])).toEqual([
@@ -277,7 +277,7 @@ describe('BundleApplyService', () => {
     r.fakes.install.mockResolvedValueOnce({ ok: false, message: 'network down' });
     const first = await r.service.applyAndWait({ templateId: 'demo-bundle', answers: ANSWERS });
     const skills = first.steps.find((s) => s.id === 'skills')!;
-    expect(skills).toMatchObject({ status: 'failed', error: '1 个必需技能没装上' });
+    expect(skills).toMatchObject({ status: 'failed', error: '1 required skills were not installed' });
     expect(skills.items?.find((i) => i.id === 'remote-skill')).toMatchObject({ status: 'failed', message: 'network down' });
     expect(first.steps.filter((s) => s.id !== 'skills').every((s) => s.status === 'done')).toBe(true);
     expect(first.status).toBe('partial');
@@ -382,7 +382,7 @@ describe('BundleApplyService', () => {
       }
       expect(caught).toBeInstanceOf(BundleError);
       expect(caught!.code).toBe('invalid_answers');
-      expect(caught!.details?.missing).toEqual([{ id: 'business_name', label: '名字', reason: '必填' }]);
+      expect(caught!.details?.missing).toEqual([{ id: 'business_name', label: '名字', reason: 'required' }]);
       expect(await r.deps.store.read('demo-bundle')).toBeNull();
       expect(r.fakes.save).not.toHaveBeenCalled();
     });
@@ -415,8 +415,8 @@ describe('BundleApplyService', () => {
     expect(await r.service.deliverDue()).toBe(1);
     expect(await r.service.deliverDue()).toBe(0);
     const [content] = r.fakes.send.mock.calls[1] as unknown as [string];
-    expect(content).toContain('第 3 天 · 三篇草稿');
-    expect(content).toContain('的 Leo 来做');
+    expect(content).toContain('Day 3 · 三篇草稿');
+    expect(content).toContain('Please hand this to Leo on the team');
     const stored = await r.deps.store.read('demo-bundle');
     expect(stored?.firstWeek.every((t) => t.status === 'sent')).toBe(true);
     expect(stored?.steps.find((s) => s.id === 'first_week')?.status).toBe('done');
@@ -458,6 +458,6 @@ describe('helpers', () => {
       'Leo',
       '  内容  ',
     );
-    expect(msg).toBe('[成套方案 · 第一周] 第 2 天 · 标题\n请交给团队「团队」(team id: t) 的 Leo 来做；团队还没启动的话先启动它。\n\n内容');
+    expect(msg).toBe('[Solution bundle · week one] Day 2 · 标题\nPlease hand this to Leo on the team "团队" (team id: t); if the team is not running yet, start it first.\n\n内容');
   });
 });

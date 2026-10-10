@@ -766,7 +766,7 @@ export class MessageStore {
   /**
    * Replace a message's content in place. Used for server-authored rows that
    * change state after they are posted (a ticket receipt turning into
-   * "已取消记录"); user and agent turns are never edited.
+   * "is no longer tracked"); user and agent turns are never edited.
    *
    * @param id - Message id
    * @param content - New content

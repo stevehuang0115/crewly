@@ -1935,7 +1935,7 @@ describe('who in the room is awake', () => {
     );
 
     expect(optionsOf().room).toEqual({ awakeHere: ['crewly-alpha-sam'], awakeElsewhere: true, wakeWhenAllAsleep: null });
-    expect(optionsOf().roomPresence).toBe('sam（醒着，本机） · leo（在睡，本机） · ella（醒着，iriss-air）');
+    expect(optionsOf().roomPresence).toBe('sam (awake, this machine) · leo (asleep, this machine) · ella (awake, iriss-air)');
   });
 
   it('judges local agents by what is running here, not by what Cloud last heard', async () => {
@@ -1950,7 +1950,7 @@ describe('who in the room is awake', () => {
 
     expect(optionsOf().room.awakeHere).toEqual([]);
     expect(optionsOf().room.wakeWhenAllAsleep).toMatchObject({ kind: 'team-leader' });
-    expect(optionsOf().roomPresence).toContain('sam（在睡，本机）');
+    expect(optionsOf().roomPresence).toContain('sam (asleep, this machine)');
   });
 
   it('wakes the router only when Cloud named this machine', async () => {

@@ -14,11 +14,11 @@ describe('appendIncompleteNotice', () => {
     expect(appendIncompleteNotice('', undefined)).toBe('');
   });
 
-  it('keeps the real partial answer and warns, in Chinese, that the work may be unfinished', () => {
+  it('keeps the real partial answer and warns, in English, that the work may be unfinished', () => {
     const out = appendIncompleteNotice('团队已经建好，还差登录。', turn());
     expect(out).toContain('团队已经建好，还差登录。');
-    expect(out).toContain('做到一半被打断');
-    expect(out).toContain('回一句「继续」');
+    expect(out).toContain('interrupted partway');
+    expect(out).toContain('reply "continue"');
   });
 
   it('drops the thinking-aloud paragraphs of an interrupted turn (2026-09-26, Orc)', () => {
@@ -34,15 +34,15 @@ describe('appendIncompleteNotice', () => {
   });
 
   it('names the right cause for each reason', () => {
-    expect(appendIncompleteNotice('x', turn({ reason: 'truncated' }))).toContain('长度上限');
-    expect(appendIncompleteNotice('x', turn({ reason: 'steps-exhausted' }))).toContain('步数用完');
-    expect(appendIncompleteNotice('x', turn({ reason: 'content-filter' }))).toContain('拒绝');
+    expect(appendIncompleteNotice('x', turn({ reason: 'truncated' }))).toContain('length limit');
+    expect(appendIncompleteNotice('x', turn({ reason: 'steps-exhausted' }))).toContain('ran out of steps');
+    expect(appendIncompleteNotice('x', turn({ reason: 'content-filter' }))).toContain('refused');
   });
 
   it('still says something when the turn produced no text at all', () => {
     const out = appendIncompleteNotice('   ', turn());
     expect(out.startsWith('_⚠️')).toBe(true);
-    expect(out).toContain('被打断');
+    expect(out).toContain('interrupted');
   });
 });
 

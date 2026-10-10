@@ -234,8 +234,8 @@ export interface AddToPoolOptions {
  */
 /** Note put on an unassigned item when it is routed to a decider. */
 export const UNASSIGNED_ROUTE_NOTE =
-  '[没有指定执行人，交给你决定] 适合你就自己做；更适合别人就用 delegate-task 派给他（带上原内容），然后取消这一条。' +
-  '一段时间没人接会交给再上一级。';
+  '[No assignee set — yours to decide] If it suits you, do it yourself; if someone else is a better fit, hand it to them with delegate-task (include the original content), then cancel this item. ' +
+  'If nobody picks it up for a while, it goes to the next level up.';
 
 /** Who decides unassigned work (owner, 2026-09-24). */
 export interface UntargetedRouterDeps {

@@ -241,7 +241,7 @@ export function buildTokenPageSignInUrl(): string {
 export function buildFirstTaskMessage(text: string, team: Pick<Team, 'id' | 'name'> | null): string {
 	const lines: string[] = [ONBOARDING_CONSTANTS.FIRST_TASK_HEADER];
 	if (team) {
-		lines.push(`请交给团队「${team.name}」(team id: ${team.id}) 来做；团队还没启动的话先启动它。`);
+		lines.push(`Please hand this to the team "${team.name}" (team id: ${team.id}); if the team is not running yet, start it first.`);
 	}
 	lines.push('', text.trim());
 	return lines.join('\n');
