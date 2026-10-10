@@ -2686,6 +2686,64 @@ describe('AgentRegistrationService', () => {
 		});
 	});
 
+	describe('conversation after an idle stop (ResourceMode eviction)', () => {
+		const os = jest.requireActual('os');
+		const nodeFs = jest.requireActual('fs');
+		const nodePath = jest.requireActual('path');
+		let dir: string;
+		let lastFile: string;
+		const persistenceWith = (storedId: string | undefined, cwd?: string) => {
+			const updateSessionId = jest.fn();
+			(sessionModule.getSessionStatePersistence as any).mockReturnValue({
+				registerSession: jest.fn(),
+				unregisterSession: jest.fn(),
+				isSessionRegistered: jest.fn().mockReturnValue(false),
+				isRestoredSession: jest.fn().mockReturnValue(false),
+				getSessionId: jest.fn().mockReturnValue(storedId),
+				getSessionMetadata: jest.fn().mockReturnValue(cwd ? { cwd } : undefined),
+				getRegisteredSessionsMap: () => new Map(),
+				lastConversationsFile: () => lastFile,
+				updateSessionId,
+			});
+			return updateSessionId;
+		};
+		beforeEach(() => {
+			dir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'evict-resume-'));
+			lastFile = nodePath.join(dir, 'last-conversations.json');
+		});
+		afterEach(() => nodeFs.rmSync(dir, { recursive: true, force: true }));
+
+		it('resumes the conversation a stop remembered when no id is stored', async () => {
+			nodeFs.writeFileSync(lastFile, JSON.stringify({ pia: { sessionId: 'remembered-conv', cwd: dir, at: Date.now() } }));
+			const updateSessionId = persistenceWith(undefined);
+			const flags: string[] = [];
+			const plan = await (service as any).planSessionRecovery('pia', RUNTIME_TYPES.CLAUDE_CODE, flags, dir);
+			expect(flags).toEqual(['--resume', 'remembered-conv']);
+			expect(plan.resumeSessionId).toBe('remembered-conv');
+			expect(updateSessionId).toHaveBeenCalledWith('pia', 'remembered-conv');
+		});
+
+		it('starts fresh when nothing is stored or remembered', async () => {
+			persistenceWith(undefined);
+			const flags: string[] = [];
+			const plan = await (service as any).planSessionRecovery('pia', RUNTIME_TYPES.CLAUDE_CODE, flags, dir);
+			expect(plan.resumeSessionId).toBeNull();
+			expect(flags[0]).toBe('--session-id');
+		});
+
+		it('relaunches in the directory the agent last ran in when the caller gives none', () => {
+			persistenceWith('x', dir);
+			expect((service as any).lastKnownCwd('pia')).toBe(dir);
+			// Stopped: the metadata is gone, the last-conversations entry keeps the cwd
+			persistenceWith(undefined);
+			nodeFs.writeFileSync(lastFile, JSON.stringify({ pia: { sessionId: 'c', cwd: dir, at: Date.now() } }));
+			expect((service as any).lastKnownCwd('pia')).toBe(dir);
+			// A directory that no longer exists is not used
+			nodeFs.writeFileSync(lastFile, JSON.stringify({ pia: { sessionId: 'c', cwd: nodePath.join(dir, 'gone'), at: Date.now() } }));
+			expect((service as any).lastKnownCwd('pia')).toBeUndefined();
+		});
+	});
+
 	describe('session resume via --resume CLI flag', () => {
 		it('should inject --resume flag for restored Claude Code sessions with stored session ID', async () => {
 			// Mark session as restored with a stored session ID
@@ -5180,7 +5238,7 @@ describe('AgentRegistrationService', () => {
 				);
 
 				const path = require('path');
-				const os = require('os');
+				const os = jest.requireActual('os');
 				expect(result).toBe(
 					path.join(os.homedir(), '.crewly', 'prompts', 'test-agent-init.md'),
 				);
@@ -5196,7 +5254,7 @@ describe('AgentRegistrationService', () => {
 				);
 
 				const path = require('path');
-				const os = require('os');
+				const os = jest.requireActual('os');
 				expect(result).toBe(
 					path.join(os.homedir(), '.crewly', 'prompts', 'test-agent-init.md'),
 				);
