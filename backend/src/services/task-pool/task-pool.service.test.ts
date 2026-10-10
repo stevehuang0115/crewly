@@ -4348,10 +4348,10 @@ describe('TaskPoolService', () => {
       const deadVera = (): Map<string, AgentHealth> =>
         new Map([[VERA, { sessionName: VERA, status: 'inactive' } as AgentHealth]]);
 
-      it('reproduces CE-232: reconciler flips running → blocked, then the claimant complete succeeds', async () => {
+      it('reproduces CE-232: the worker blocks her own running item, then completes it', async () => {
         const { ce19 } = await seed();
         await service.claimSpecificItem(VERA, ce19);
-        await service.updateItemStatus(ce19, 'blocked', 'system');
+        await service.blockItem(ce19, { agentId: VERA, reason: 'waiting on Owen' });
         expect((await service.findWorkItem(ce19))?.status).toBe('blocked');
 
         await service.completeItem(ce19, { summary: 'done anyway' }, veraActor);
@@ -4369,22 +4369,30 @@ describe('TaskPoolService', () => {
         expect((await service.findWorkItem(ce19))?.status).toBe('running');
       });
 
-      it('a non-claimant still cannot complete a system-blocked item', async () => {
+      it('a non-owner still cannot complete a blocked item', async () => {
         const { ce19 } = await seed();
         await service.claimSpecificItem(VERA, ce19);
-        await service.updateItemStatus(ce19, 'blocked', 'system');
+        await service.blockItem(ce19, { agentId: VERA, reason: 'waiting' });
         await expect(
           service.completeItem(ce19, { summary: 'not mine' }, { role: 'agent', session: OWEN, via: 'POST /task-pool/complete' }),
         ).rejects.toThrow();
         expect((await service.findWorkItem(ce19))?.status).toBe('blocked');
       });
 
-      it('an explicitly blocked item still refuses completion, even from its own agent', async () => {
+      it('a waiting_on_human park is not resumed by a completion', async () => {
         const { ce19 } = await seed();
         await service.claimSpecificItem(VERA, ce19);
-        await service.blockItem(ce19, { agentId: VERA, reason: 'waiting on design' });
+        await service.updateItemStatus(ce19, 'blocked', 'system', 'parked', WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN);
+        expect((await service.findWorkItem(ce19))?.blockSource).toBe(WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN);
         await expect(service.completeItem(ce19, { summary: 'x' }, veraActor)).rejects.toThrow();
         expect((await service.findWorkItem(ce19))?.status).toBe('blocked');
+      });
+
+      it('a dependency-blocked item (never claimed) is not completable by its target', async () => {
+        const wi = makeWorkItem({ title: 'dep', target: VERA, status: 'blocked', dependsOn: ['unfinished-dep'] });
+        await service.addToPool(wi);
+        expect((await service.findWorkItem(wi.id))?.status).toBe('blocked');
+        await expect(service.completeItem(wi.id, { summary: 'x' }, veraActor)).rejects.toThrow();
       });
     });
 
