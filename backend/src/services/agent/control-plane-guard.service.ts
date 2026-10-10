@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { prepareLiveCheckoutGuard, type LiveCheckoutGuard } from './live-checkout-guard.service.js';
-import { CONTROL_PLANE_GUARD_CONSTANTS, AGENT_STATUS_HOOK_CONSTANTS, SUBAGENT_GUARD_CONSTANTS, RUNTIME_INPUT_SAFETY } from '../../constants.js';
+import { CONTROL_PLANE_GUARD_CONSTANTS, AGENT_STATUS_HOOK_CONSTANTS, SUBAGENT_GUARD_CONSTANTS, RUNTIME_INPUT_SAFETY, claudeAutoCompactWindow } from '../../constants.js';
 
 /**
  * List the team directories that exist under `<crewlyHome>/teams` right now.
@@ -79,6 +79,8 @@ export interface ControlPlaneSettings {
 	 * session (2026-10-03 phantom owner input). Mirrors the env var set at launch.
 	 */
 	promptSuggestionEnabled: false;
+	/** Tokens at which Claude Code auto-compacts (absent: Claude Code's default). */
+	autoCompactWindow?: number;
 	hooks: {
 		/** The control-plane guard's Bash hook first; the agent-status hook (all tools) after it, when given. */
 		PreToolUse: Array<HookGroup & { matcher: string }>;
@@ -221,9 +223,11 @@ export function buildControlPlaneSettings(
 		for (const rule of credentialGuard.denyRules) if (!deny.includes(rule)) deny.push(rule);
 	}
 
+	const autoCompactWindow = claudeAutoCompactWindow();
 	const settings: ControlPlaneSettings = {
 		permissions: { deny },
 		promptSuggestionEnabled: RUNTIME_INPUT_SAFETY.CLAUDE_CODE_SETTINGS.promptSuggestionEnabled,
+		...(autoCompactWindow !== null ? { autoCompactWindow } : {}),
 		hooks: {
 			PreToolUse: [
 				{

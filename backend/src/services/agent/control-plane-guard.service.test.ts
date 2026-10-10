@@ -12,7 +12,7 @@ import {
 	applyControlPlaneSettingsFlag,
 	ControlPlaneSettings,
 } from './control-plane-guard.service.js';
-import { CONTROL_PLANE_GUARD_CONSTANTS, AGENT_STATUS_HOOK_CONSTANTS, SUBAGENT_GUARD_CONSTANTS } from '../../constants.js';
+import { CONTROL_PLANE_GUARD_CONSTANTS, AGENT_STATUS_HOOK_CONSTANTS, SUBAGENT_GUARD_CONSTANTS, claudeAutoCompactWindow } from '../../constants.js';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 
@@ -146,6 +146,10 @@ describe('control-plane-guard.service', () => {
 			// A faint predicted user message in an empty input, accepted by Tab,
 			// was once submitted as the owner's approval.
 			expect(settings.promptSuggestionEnabled).toBe(false);
+		});
+
+		it('sets the Claude Code auto-compact window (owner 2026-10-10: ~350k)', () => {
+			expect(settings.autoCompactWindow).toBe(claudeAutoCompactWindow());
 		});
 
 		it('attaches the hook to PreToolUse for Bash', () => {
@@ -411,5 +415,20 @@ describe('control-plane-guard.service', () => {
 				'claude --dangerously-skip-permissions --settings "/h/(x)y.json"',
 			);
 		});
+	});
+});
+
+describe('claudeAutoCompactWindow', () => {
+	it('defaults to 350k', () => {
+		expect(claudeAutoCompactWindow({})).toBe(350_000);
+	});
+	it('takes an override in tokens, clamped to 100k–1M', () => {
+		expect(claudeAutoCompactWindow({ CREWLY_CLAUDE_AUTOCOMPACT_WINDOW: '400000' })).toBe(400_000);
+		expect(claudeAutoCompactWindow({ CREWLY_CLAUDE_AUTOCOMPACT_WINDOW: '5000' })).toBe(100_000);
+		expect(claudeAutoCompactWindow({ CREWLY_CLAUDE_AUTOCOMPACT_WINDOW: '9000000' })).toBe(1_000_000);
+	});
+	it('leaves Claude Code its own default on `auto`, and ignores junk', () => {
+		expect(claudeAutoCompactWindow({ CREWLY_CLAUDE_AUTOCOMPACT_WINDOW: 'auto' })).toBeNull();
+		expect(claudeAutoCompactWindow({ CREWLY_CLAUDE_AUTOCOMPACT_WINDOW: 'lots' })).toBe(350_000);
 	});
 });

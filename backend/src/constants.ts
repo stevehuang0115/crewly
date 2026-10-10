@@ -1078,6 +1078,36 @@ export const RUNTIME_INPUT_SAFETY = {
 } as const;
 
 /**
+ * Claude Code auto-compacts each agent's conversation at this many tokens
+ * (`autoCompactWindow` in the control-plane `--settings` file; Claude Code
+ * accepts 100k–1M). Owner 2026-10-10: compact at ~350k instead of near the
+ * 1M window, so long sessions stop paying for huge contexts on every turn.
+ * Override with CREWLY_CLAUDE_AUTOCOMPACT_WINDOW (tokens, or `auto` for
+ * Claude Code's own default).
+ */
+export const CLAUDE_CODE_CONTEXT = {
+	DEFAULT_AUTO_COMPACT_WINDOW: 350_000,
+	MIN_AUTO_COMPACT_WINDOW: 100_000,
+	MAX_AUTO_COMPACT_WINDOW: 1_000_000,
+	ENV_OVERRIDE: 'CREWLY_CLAUDE_AUTOCOMPACT_WINDOW',
+} as const;
+
+/**
+ * The auto-compact window Crewly sets for Claude Code sessions.
+ *
+ * @param env - Environment (tests)
+ * @returns Tokens, or null to leave Claude Code's default (`auto`)
+ */
+export function claudeAutoCompactWindow(env: NodeJS.ProcessEnv = process.env): number | null {
+	const raw = env[CLAUDE_CODE_CONTEXT.ENV_OVERRIDE]?.trim();
+	if (!raw) return CLAUDE_CODE_CONTEXT.DEFAULT_AUTO_COMPACT_WINDOW;
+	if (raw.toLowerCase() === 'auto') return null;
+	const n = Number(raw);
+	if (!Number.isInteger(n)) return CLAUDE_CODE_CONTEXT.DEFAULT_AUTO_COMPACT_WINDOW;
+	return Math.min(CLAUDE_CODE_CONTEXT.MAX_AUTO_COMPACT_WINDOW, Math.max(CLAUDE_CODE_CONTEXT.MIN_AUTO_COMPACT_WINDOW, n));
+}
+
+/**
  * Input guard for typing into agent runtimes (2026-10-03 phantom-input
  * incident). See services/session/tui-input-guard.ts.
  */
