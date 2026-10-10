@@ -183,6 +183,20 @@ describe('trace-recorder', () => {
 		});
 	});
 
+	describe('awaiting_followup (CREW-440)', () => {
+		const item = (status: string): never => ({ id: 'c-1', type: 'commitment', status, agent: 'a', text: 't', sourceMessageId: 'm', createdAt: '2026-10-09T16:31:00Z' }) as never;
+
+		it('marks who the ticket waits on: the owner when only conditional promises are active, else an agent', async () => {
+			const r = request();
+			const id = assignRequestTrace(r)!;
+			traceRequestStatus({ ...r, status: 'awaiting_followup', openItems: [item('waiting_owner'), item('skipped')] }, 'waiting_confirmation');
+			traceRequestStatus({ ...r, status: 'done' }, 'awaiting_followup');
+			traceRequestStatus({ ...r, status: 'awaiting_followup', openItems: [item('waiting_owner'), item('overdue')] }, 'done');
+			const statuses = (await events(id)).filter((e) => e.type === 'request.status');
+			expect(statuses.map((e) => e.data?.followupWaitsOn)).toEqual(['owner', undefined, 'agent']);
+		});
+	});
+
 	describe('work items', () => {
 		it('inherit from the item they continue, the request, the project ticket, then the creator turn', () => {
 			const r = request();

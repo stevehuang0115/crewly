@@ -452,7 +452,7 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 	const owner: Hold[] = [];
 	const agent: Hold[] = [];
 	const openDecisions = new Map<string, number>();
-	const requestState = new Map<string, { status: string; since: number }>();
+	const requestState = new Map<string, { status: string; since: number; waitsOnOwner?: boolean }>();
 	const workItems = new Map<string, { status: string; since: number; target?: string; open: boolean }>();
 	const pendingMessages: Array<{ target: string; from?: string; since: number }> = [];
 
@@ -460,7 +460,8 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 		const st = requestState.get(id);
 		if (!st) return;
 		const flag = stillOpen ? { stillOpen } : {};
-		if (st.status === 'waiting_confirmation') owner.push({ start: st.since, end: t, label: `Ticket ${id} waits for the owner's review`, ...flag });
+		if (st.status === 'awaiting_followup' && st.waitsOnOwner) owner.push({ start: st.since, end: t, label: `Ticket ${id} has a conditional promise waiting on the owner`, ...flag });
+		else if (st.status === 'waiting_confirmation') owner.push({ start: st.since, end: t, label: `Ticket ${id} waits for the owner's review`, ...flag });
 		else if (REQUEST_AGENT_HOLD.has(st.status)) agent.push({ start: st.since, end: t, label: `Ticket ${id} is ${st.status.replace(/_/g, ' ')}`, ...flag });
 	};
 	const closeWorkItem = (id: string, t: number, stillOpen = false): void => {
@@ -512,7 +513,7 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 				const status = e.type === 'request.created' ? (dataStr(e, 'status') ?? 'open') : (dataStr(e, 'to') ?? '');
 				if (!status) break;
 				closeRequest(id, t);
-				requestState.set(id, { status, since: t });
+				requestState.set(id, { status, since: t, ...(e.type === 'request.status' && status === 'awaiting_followup' && dataStr(e, 'followupWaitsOn') === 'owner' ? { waitsOnOwner: true } : {}) });
 				break;
 			}
 			case 'workitem.created': {

@@ -322,6 +322,18 @@ const REQUEST_STATUS_OUTCOME: Record<string, TraceOutcome> = {
 };
 
 /**
+ * Who an `awaiting_followup` ticket waits on: the owner when every active
+ * open item is a conditional promise waiting on them, else an agent.
+ *
+ * @param request - The Request
+ * @returns `owner` or `agent`
+ */
+export function followupWaitsOn(request: Pick<Request, 'openItems'>): 'owner' | 'agent' {
+	const active = (request.openItems ?? []).filter((i) => i.status === 'open' || i.status === 'waiting_owner' || i.status === 'ready' || i.status === 'overdue');
+	return active.length > 0 && active.every((i) => i.status === 'waiting_owner') ? 'owner' : 'agent';
+}
+
+/**
  * A Request (ticket) changed status: submitted for review, accepted, sent
  * back, reopened, cancelled.
  *
@@ -348,6 +360,7 @@ export function traceRequestStatus(request: Request, previous: string): void {
 				to: request.status,
 				...(request.acceptedBy ? { acceptedBy: request.acceptedBy } : {}),
 				...(typeof request.rejectCount === 'number' ? { rejectCount: request.rejectCount } : {}),
+				...(request.status === 'awaiting_followup' ? { followupWaitsOn: followupWaitsOn(request) } : {}),
 			},
 		});
 	}, undefined);

@@ -47,6 +47,7 @@ import { AgentPromptReferenceService, type ReplyReference } from '../orc/agent-p
 import { withQueueMeta } from '../messaging/queue-priority.js';
 import { parseSlackThreadKey } from '../slack/slack-thread-key.js';
 import { slackArchiveLink } from '../decisions/ticket-thread-store.js';
+import { gateVerdict, siblingQuestion, type GateVerdict } from './open-item-gate.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -623,6 +624,7 @@ export class OpenItemsService {
   /** Start the periodic sweep. */
   start(): void {
     if (this.timer) return;
+    void this.backfillWaitingPromises({ apply: true }).catch((err) => this.logger.warn('Waiting promises backfill failed', { error: errText(err) }));
     this.timer = setInterval(() => {
       void this.sweep().catch((err) => this.logger.warn('Open-items sweep failed', { error: errText(err) }));
     }, OPEN_ITEMS_CONSTANTS.SWEEP_INTERVAL_MS);
@@ -763,6 +765,16 @@ export class OpenItemsService {
         items.push(item);
         changed = true;
       }
+      // The card of a question now exists: it is the gate of the promise made in the same message.
+      const freshIds = new Set(fresh.map((p) => p.item.id));
+      for (let k = 0; k < items.length; k++) {
+        if (items[k].status !== 'waiting_owner' || !freshIds.has(items[k].id)) continue;
+        const next = await this.runGate(request, items[k], items, at, pool);
+        if (next !== items[k]) {
+          items[k] = next;
+          changed = true;
+        }
+      }
       if (!changed) return null;
       return this.save(request, items, fresh.length > 0);
     });
@@ -841,8 +853,21 @@ export class OpenItemsService {
     for (const [i, c] of found.commitments.entries()) {
       if (c.waitsOnOwner) {
         // Conditional on the owner: no due time, no follow-up, no nudges until they say yes.
-        const gate = await this.recentDecision(message.senderId, at);
-        out.push({ item: { ...base('commitment', i + 1), type: 'commitment', text: c.text, status: 'waiting_owner', ...(gate ? { gateDecisionId: gate.id } : {}) } });
+        // Same message asks a question ("你看这样写行吗？你点头后我就…"): the card the
+        // service posts for it is the gate. It does not exist yet, so link the item
+        // now and the card once it is posted (CREW-440). Otherwise: an earlier ask-owner card.
+        const sibling = found.questions.length > 0 ? base('question', 1).id : null;
+        const gate = sibling ? null : await this.recentDecision(message.senderId, at);
+        out.push({
+          item: {
+            ...base('commitment', i + 1),
+            type: 'commitment',
+            text: c.text,
+            status: 'waiting_owner',
+            ...(sibling ? { gateItemId: sibling } : {}),
+            ...(gate ? { gateDecisionId: gate.id } : {}),
+          },
+        });
         continue;
       }
       out.push({ item: { ...base('commitment', i + 1), type: 'commitment', text: c.text, due: c.due.toISOString(), dueSource: c.dueSource } });
@@ -1248,6 +1273,15 @@ export class OpenItemsService {
           ? { ...i, status, closedAt: now, closedReason: `${d.id} ${d.status}`, ...(answer ? { answer } : {}) }
           : i,
       );
+      // The card also answers the promise stored beside the question (CREW-440):
+      // yes opens it (follow-up WorkItem, the agent is woken), skip / no closes it.
+      const pool = await this.deps.listWorkItems().catch(() => [] as WorkItem[]);
+      for (let k = 0; k < items.length; k++) {
+        const i = items[k];
+        if (i.type !== 'commitment' || i.status !== 'waiting_owner') continue;
+        if (i.gateDecisionId !== d.id && siblingQuestion(i, items)?.id !== ref.itemId) continue;
+        items[k] = await this.runGate(request, i, items, this.now(), pool, d);
+      }
       await this.save(request, items, false);
     }).catch((err) => this.logger.warn('Answered question not recorded', { decisionId: d.id, error: errText(err) }));
     if (d.status === 'cancelled') return null;
@@ -1256,6 +1290,137 @@ export class OpenItemsService {
       return `[DECISION ${d.id}] The owner will answer "${d.question}" in words in the thread. Wait for their message there, then act on it.`;
     }
     return fallback ?? null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Gates of conditional promises (CREW-440)
+  // -------------------------------------------------------------------------
+
+  /**
+   * What would happen to a waiting promise now, without doing it.
+   *
+   * @param item - Commitment in `waiting_owner`
+   * @param items - All items of its request
+   * @param now - Clock
+   * @param hint - A decision already in hand (the one just settled)
+   * @returns The action, the item with its gate card linked, and when the owner answered
+   */
+  private async decideGate(
+    item: RequestOpenItem,
+    items: readonly RequestOpenItem[],
+    now: Date,
+    hint?: OwnerDecision,
+  ): Promise<{ action: GateVerdict | 'surface'; item: RequestOpenItem; at: Date; decisionId?: string }> {
+    const sib = siblingQuestion(item, items);
+    const decisionId = item.gateDecisionId ?? sib?.decisionId;
+    const linked = decisionId && decisionId !== item.gateDecisionId ? { ...item, gateDecisionId: decisionId } : item;
+    if (decisionId) {
+      const d = hint?.id === decisionId ? hint : await this.deps.getDecision?.(decisionId).catch(() => null);
+      if (d) return { action: gateVerdict(d), item: linked, at: d.resolvedAt ? new Date(d.resolvedAt) : now, decisionId };
+    }
+    if (sib) {
+      if (ACTIVE_OPEN_ITEM_STATUSES.has(sib.status)) return { action: 'wait', item: linked, at: now };
+      // The question is closed and its card cannot be read: the item's own status says how.
+      if (sib.status === 'skipped') return { action: 'skipped', item: linked, at: now, ...(decisionId ? { decisionId } : {}) };
+      if (sib.status === 'resolved') {
+        const answer = sib.answer ?? '';
+        const action: GateVerdict = isApproval(answer) ? 'open' : answer === OPEN_ITEMS_CONSTANTS.NO_LABEL ? 'declined' : 'wait';
+        return { action, item: linked, at: sib.closedAt ? new Date(sib.closedAt) : now, ...(decisionId ? { decisionId } : {}) };
+      }
+      return { action: 'declined', item: linked, at: now, ...(decisionId ? { decisionId } : {}) };
+    }
+    if (decisionId) return { action: 'wait', item: linked, at: now };
+    const stuck = now.getTime() - Date.parse(item.createdAt) >= OPEN_ITEMS_CONSTANTS.GATE_SURFACE_AFTER_MS;
+    return { action: stuck && !item.ownerNotifiedAt ? 'surface' : 'wait', item: linked, at: now };
+  }
+
+  /**
+   * Settle one waiting promise by its gate: open it on a yes (follow-up
+   * WorkItem, the reconciler starts a stopped agent), close it on a no / skip
+   * (a skip tells the agent once to drop it), tell the owner when no gate can
+   * ever answer it.
+   *
+   * @param request - Request
+   * @param item - Commitment in `waiting_owner`
+   * @param items - All items of the request
+   * @param now - Clock
+   * @param pool - Every WorkItem
+   * @param hint - A decision already in hand
+   * @returns The item after (the same object when nothing changed)
+   */
+  private async runGate(request: Request, item: RequestOpenItem, items: readonly RequestOpenItem[], now: Date, pool: readonly WorkItem[], hint?: OwnerDecision): Promise<RequestOpenItem> {
+    const g = await this.decideGate(item, items, now, hint);
+    const nowIso = now.toISOString();
+    const why = g.decisionId ?? 'its question';
+    switch (g.action) {
+      case 'open': {
+        const { due, source } = parseDue(g.item.text, g.at);
+        this.logger.info('Conditional promise opened by the owner answer', { tkt: ticketLabel(request), item: item.id, gate: g.decisionId });
+        return this.activate(request, { item: { ...g.item, status: 'open', due: due.toISOString(), dueSource: source } }, pool);
+      }
+      case 'skipped': {
+        this.logger.info('Conditional promise dropped: the owner skipped its question', { tkt: ticketLabel(request), item: item.id, gate: g.decisionId });
+        const closed: RequestOpenItem = { ...g.item, status: 'skipped', closedAt: nowIso, closedReason: `${why} skipped: the owner dropped it` };
+        await this.deps.deliverToAgent(item.agent, dropNote(request, item)).catch(() => false);
+        return closed;
+      }
+      case 'declined':
+        this.logger.info('Conditional promise closed: the owner did not agree', { tkt: ticketLabel(request), item: item.id, gate: g.decisionId });
+        return { ...g.item, status: 'superseded', closedAt: nowIso, closedReason: `${why}: the owner did not agree` };
+      case 'surface': {
+        const name = (await this.deps.displayName?.(item.agent).catch(() => undefined)) ?? item.agent;
+        const note = `${name} said "${short(item.text, 160)}" once you agree, but no question is waiting on you for it. Say yes in this thread to start it, or skip it.`;
+        const ok = await this.deps.postOwnerNote(request, note).catch(() => false);
+        this.logger.warn('Conditional promise has no gate — owner told in the thread', { tkt: ticketLabel(request), item: item.id, posted: ok });
+        return ok ? { ...g.item, ownerNotifiedAt: nowIso } : g.item;
+      }
+      default:
+        return g.item;
+    }
+  }
+
+  /**
+   * One pass over every request holding a waiting promise (the CREW-440
+   * backfill: promises stored before they carried a gate, e.g. TKT-374
+   * c-e21ac6f0-1, are settled by the card the owner already answered). The
+   * regular sweep does the same every minute; this adds a dry-run view and a
+   * one-time pass at startup.
+   *
+   * @param opts - `apply: true` to make the changes (default: dry-run)
+   * @returns How many requests / promises it examined, and what each would get
+   */
+  async backfillWaitingPromises(opts: { apply?: boolean } = {}): Promise<{
+    dryRun: boolean;
+    examinedRequests: number;
+    examinedItems: number;
+    rows: Array<{ requestId: string; ticket: string; item: string; action: string }>;
+  }> {
+    return this.serial(async () => {
+      const now = this.now();
+      const all = await this.deps.requests.listAll();
+      const holding = all.filter((r) => r.status !== 'cancelled' && (r.openItems ?? []).some((i) => i.status === 'waiting_owner'));
+      const pool = await this.deps.listWorkItems().catch(() => [] as WorkItem[]);
+      const report = { dryRun: opts.apply !== true, examinedRequests: holding.length, examinedItems: 0, rows: [] as Array<{ requestId: string; ticket: string; item: string; action: string }> };
+      for (const request of holding) {
+        let items = [...(request.openItems ?? [])];
+        let changed = false;
+        for (let k = 0; k < items.length; k++) {
+          if (items[k].status !== 'waiting_owner') continue;
+          report.examinedItems += 1;
+          const g = await this.decideGate(items[k], items, now);
+          report.rows.push({ requestId: request.id, ticket: ticketLabel(request), item: items[k].id, action: g.action });
+          if (opts.apply !== true || g.action === 'wait') continue;
+          const next = await this.runGate(request, items[k], items, now, pool);
+          if (next !== items[k]) {
+            items[k] = next;
+            changed = true;
+          }
+        }
+        if (changed) items = (await this.save(request, items, false)).openItems ?? items;
+      }
+      this.logger.info('Waiting promises backfill', { apply: opts.apply === true, requests: report.examinedRequests, items: report.examinedItems });
+      return report;
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1292,9 +1457,7 @@ export class OpenItemsService {
       const next: RequestOpenItem = { ...cur, status: 'skipped', closedAt: this.now().toISOString(), closedReason: 'skipped by the owner' };
       if (cur.type === 'commitment') {
         if (cur.workItemId) await this.closeFollowUp(cur.workItemId, 'cancelled', 'The owner skipped this promise');
-        note =
-          `[FOLLOW-UP ${ticketLabel(fresh)}] The owner skipped this — drop it, don't ask again. ` +
-          `You had promised: "${short(cur.text, 200)}". Don't deliver it unless the owner asks again.`;
+        note = dropNote(fresh, cur);
       } else {
         note = `[FOLLOW-UP ${ticketLabel(fresh)}] The owner skipped this — drop it, don't ask again: "${short(cur.text, 200)}".`;
       }
@@ -1453,17 +1616,12 @@ export class OpenItemsService {
     }
 
     if (item.status === 'waiting_owner') {
-      // No due time, no nudges. A card answer opens it; a declined card closes it.
-      if (!item.gateDecisionId || !this.deps.getDecision) return item;
-      const d = await this.deps.getDecision(item.gateDecisionId).catch(() => null);
-      if (!d || d.status === 'open' || d.status === 'parked') return item;
-      if (d.status === 'cancelled' || d.status === 'expired' || (d.chosenKey && d.yesKey && d.chosenKey !== d.yesKey)) {
-        counts.closed += 1;
-        return { ...item, status: 'superseded', closedAt: nowIso, closedReason: `${d.id} ${d.status}: the owner did not agree` };
-      }
-      const at = d.resolvedAt ? new Date(d.resolvedAt) : now;
-      const { due, source } = parseDue(item.text, at);
-      return this.activate(request, { item: { ...item, status: 'open', due: due.toISOString(), dueSource: source } }, pool);
+      // No due time, no nudges. A card answer opens it; a declined or skipped card closes it.
+      const before = item;
+      const next = await this.runGate(request, item, request.openItems ?? [], now, pool);
+      if (next.status !== before.status) counts.closed += 1;
+      else if (next.ownerNotifiedAt && !before.ownerNotifiedAt) counts.ownerNotes += 1;
+      return next;
     }
 
     // Commitment whose follow-up WorkItem was finished or cancelled (by anyone,
@@ -1551,6 +1709,20 @@ export class OpenItemsService {
       this.logger.debug('Follow-up WorkItem not closed', { workItemId, error: errText(err) }),
     );
   }
+}
+
+/**
+ * The note that tells an agent once to drop a promise the owner skipped.
+ *
+ * @param request - Its request
+ * @param item - The promise
+ * @returns Note text
+ */
+function dropNote(request: Request, item: RequestOpenItem): string {
+  return (
+    `[FOLLOW-UP ${ticketLabel(request)}] The owner skipped this — drop it, don't ask again. ` +
+    `You had promised: "${short(item.text, 200)}". Don't deliver it unless the owner asks again.`
+  );
 }
 
 /**

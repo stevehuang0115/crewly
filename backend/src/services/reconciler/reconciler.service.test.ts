@@ -1800,6 +1800,29 @@ describe('ReconcilerService', () => {
       expect(parkStalledAgent).toHaveBeenCalledTimes(2);
     });
 
+    it('CREW-440: the follow-up WorkItem of a promise opened by a card tap starts the stopped agent', async () => {
+      const followUp = makeWorkItem({
+        id: 'wi-follow-up',
+        status: 'queued',
+        target: 'ce-owen',
+        createdAt: new Date(Date.now() - 3 * MIN).toISOString(),
+        metadata: { openItemFollowUp: true },
+      });
+      const agents = new Map<string, AgentHealth>([
+        ['ce-owen', { sessionName: 'ce-owen', status: 'inactive', teamId: 't1', memberId: 'm1', activeWorkItemCount: 0 } as AgentHealth],
+      ]);
+      const executeWakeAction = jest.fn().mockResolvedValue(true);
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([followUp]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agents),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      await service.runFull();
+      expect(executeWakeAction).toHaveBeenCalledTimes(1);
+      expect(executeWakeAction.mock.calls[0][0]).toMatchObject({ agentSessionName: 'ce-owen', workItemId: 'wi-follow-up', strategy: 'start' });
+    });
+
     it('a stopped agent in wake backoff gets one forced start (the backoff is cleared)', async () => {
       const agents = new Map<string, AgentHealth>([
         ['ce-owen', { sessionName: 'ce-owen', status: 'inactive', teamId: 't1', memberId: 'm1', activeWorkItemCount: 0 } as AgentHealth],
