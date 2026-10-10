@@ -54,6 +54,23 @@ describe('google-reauth wiring', () => {
       expect(await build().placeFor('ella', 'UOWNER')).toEqual({ slackChannelId: 'C-TEAM', threadTs: '100.1', botToken: 'xoxb-ella' });
     });
 
+    // Ruth, 2026-10-10: answering the owner in a #pro-biblestudy thread, her
+    // card went to the DM because the default resolver did not know the thread.
+    it('asks the reply-destination resolver by default, so the card lands in the thread the agent answers in', async () => {
+      const resolveSlackPlace = jest.fn().mockResolvedValue({ slackChannelId: 'C0C6JJTB2KC', threadTs: '1791664753.876929', destination: {} });
+      jest.resetModules();
+      jest.doMock('../orc/reply-destination.wiring.js', () => ({ resolveSlackPlace }));
+      const { createReauthNotifierDeps: create } = await import('./google-reauth.wiring.js');
+      const deps = create({ sendToAgent: jest.fn(), slack: () => slack as unknown as ReauthSlackApi, agentDm, agentBotToken });
+      expect(await deps.placeFor('biblestudy-ruth-2090d4cc', 'UOWNER')).toEqual({
+        slackChannelId: 'C0C6JJTB2KC',
+        threadTs: '1791664753.876929',
+        botToken: 'xoxb-ella',
+      });
+      expect(resolveSlackPlace).toHaveBeenCalledWith({ session: 'biblestudy-ruth-2090d4cc', noOwnerDm: true });
+      jest.dontMock('../orc/reply-destination.wiring.js');
+    });
+
     it('skips a bare team channel and uses the owner DM with the agent', async () => {
       workDestination.mockResolvedValue({ slackChannelId: 'C-TEAM' });
       agentDm.mockReturnValue({ slackChannelId: 'D-ELLA' });

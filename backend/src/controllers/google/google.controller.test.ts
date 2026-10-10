@@ -138,6 +138,26 @@ describe('GET /gmail/search', () => {
     expect(tokens.buildConnectUrl).toHaveBeenCalledWith('http://localhost:8787/connections?platform=google-workspace', { authorizedBy: 'owner' });
   });
 
+  // The dashboard URL carries the owner's Cloud token and returns to localhost.
+  // An agent must get neither: it can paste what it is handed into Slack.
+  it('gives an agent the card skill and the portal page for not_connected, never the token URL or Settings', async () => {
+    gmail.search.mockRejectedValueOnce(new GoogleWorkspaceError(409, 'not_connected', 'no grant', { product: 'gmail' } as never));
+    tokens.buildConnectUrl.mockClear();
+    const res = await request(app).get('/api/google/gmail/search').query({ q: 'x' }).set('X-Agent-Session', 'ruth');
+    expect(res.status).toBe(409);
+    expect(res.body.hint).toContain('google-connect skill with --product gmail');
+    expect(res.body.hint).toContain('https://crewlyai.com/portal/integrations/google?products=gmail&auto=1');
+    expect(res.body.hint).not.toMatch(/token=|localhost|Settings →/);
+    expect(tokens.buildConnectUrl).not.toHaveBeenCalled();
+  });
+
+  it('GET /connect-url hands an agent the portal page, not the token URL', async () => {
+    tokens.buildConnectUrl.mockClear();
+    const res = await request(app).get('/api/google/connect-url').query({ products: 'drive' }).set('X-Agent-Session', 'ruth');
+    expect(res.body.data.url).toBe('https://crewlyai.com/portal/integrations/google?products=drive&auto=1');
+    expect(tokens.buildConnectUrl).not.toHaveBeenCalled();
+  });
+
   it('falls back to a textual hint for not_connected when not even signed in to Cloud', async () => {
     gmail.search.mockRejectedValueOnce(new GoogleWorkspaceError(409, 'not_connected', 'no grant'));
     tokens.buildConnectUrl.mockImplementation(() => { throw new GoogleWorkspaceError(401, 'not_logged_in', 'sign in'); });
@@ -473,7 +493,7 @@ describe('reconnect cards for failures only the owner can fix', () => {
 
   beforeEach(async () => {
     const { GoogleReauthNotifier } = await import('../../services/google/google-reauth-notifier.service.js');
-    notify = jest.fn().mockResolvedValue({ status: 'posted', expiresAt: '2026-10-08T15:15:00.000Z' });
+    notify = jest.fn().mockResolvedValue({ status: 'posted' });
     GoogleReauthNotifier.setInstance({ notify, stop: jest.fn() } as never);
   });
 
@@ -499,8 +519,9 @@ describe('reconnect cards for failures only the owner can fix', () => {
     expect(res.status).toBe(403);
     expect(notify).toHaveBeenCalledWith({ product: 'gmail', kind: 'missing_scope', agentSession: 'ella', account: 'owner@gmail.com' });
     expect(res.body).toMatchObject({ error: 'reauth_required', reconnectLinkSent: true });
-    expect(res.body.hint).toMatch(/^A reconnect link was sent to the owner in Slack\./);
-    expect(res.body.hint).not.toMatch(/Connections page|open Connections/);
+    expect(res.body.hint).toMatch(/^A reconnect card was sent to the owner in Slack/);
+    expect(res.body.hint).not.toMatch(/Settings|open Connections/);
+    expect(res.body.hint).toContain('https://crewlyai.com/portal/integrations/google?products=gmail&account=owner%40gmail.com&auto=1');
   });
 
   it('posts the expiry card when Cloud says the grant was revoked', async () => {
@@ -515,11 +536,11 @@ describe('reconnect cards for failures only the owner can fix', () => {
 
     expect(res.status).toBe(409);
     expect(notify).toHaveBeenCalledWith({ product: 'gmail', kind: 'expired', agentSession: 'ella', account: 'owner@gmail.com' });
-    expect(res.body.hint).toMatch(/^A reconnect link was sent to the owner in Slack\./);
+    expect(res.body.hint).toMatch(/^A reconnect card was sent to the owner in Slack/);
   });
 
   it('says a card already went out instead of asking for another', async () => {
-    notify.mockResolvedValueOnce({ status: 'already_sent', sentAt: '2026-10-08T14:00:00.000Z', nextCardAfter: '2026-10-08T20:00:00.000Z' });
+    notify.mockResolvedValueOnce({ status: 'already_sent', sentAt: '2026-10-08T14:00:00.000Z', nextCardAfter: '2026-10-08T14:10:00.000Z' });
     gmail.createDraft.mockRejectedValueOnce(scopeRefusal());
     const res = await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella').send({ to: 'a@b.c', subject: 'x', text: 'y' });
     expect(res.body.reconnectLinkSent).toBe(true);

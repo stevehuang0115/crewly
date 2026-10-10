@@ -42,7 +42,7 @@ import {
   type ReauthNotifyResult,
   type ReauthTrigger,
 } from '../../services/google/google-reauth-notifier.service.js';
-import { PRODUCT_LABELS } from './google-connect-card.js';
+import { buildPortalConnectUrl, PRODUCT_LABELS } from './google-connect-card.js';
 
 /** Who a held send is attributed to when the caller named no agent session. */
 const UNIDENTIFIED_SENDER = 'unidentified caller';
@@ -166,6 +166,28 @@ function connectUrlOrNull(req: Request): string | null {
 }
 
 /**
+ * The `not_connected` hint. The dashboard owner gets the Cloud consent URL
+ * (it carries their session token and returns to their own dashboard — fine
+ * in their own browser, never for an agent to paste anywhere). An agent gets
+ * the skill that posts a card, and the portal page as the manual fallback:
+ * the owner is usually on a phone and cannot reach the local dashboard.
+ *
+ * @param req - Incoming request
+ * @param err - The failure
+ * @returns Hint text
+ */
+function notConnectedHint(req: Request, err: GoogleWorkspaceError): string {
+  const product = err.details?.product;
+  if (isOwnerCaller(req)) {
+    return connectUrlOrNull(req)
+      ?? 'Sign in to Crewly Cloud (Settings → Cloud & devices), then connect Google Workspace under Connections.';
+  }
+  const products = product ? [product] : [];
+  const flag = product ? ` --product ${product}` : ' --product <gmail|calendar|drive>';
+  return `Google is not connected for this. Ask the owner to connect it: run the google-connect skill with${flag}; it posts a one-tap card in Slack. Never send the owner to Crewly settings or the Connections page. Manual fallback: ${buildPortalConnectUrl(products, err.details?.account ?? accountOf(req))}`;
+}
+
+/**
  * Which products a connect request is for, and which Google account to sign
  * in as.
  *
@@ -255,8 +277,9 @@ async function notifyReauth(trigger: ReauthTrigger): Promise<ReauthNotifyResult 
 /**
  * The agent-facing next step after a reconnect card was (or was not) sent.
  *
- * The agent must not send the owner to the Connections page: the owner is
- * usually on a phone, and the card already is the whole fix.
+ * The agent must not send the owner to the dashboard's Connections page: the
+ * owner is usually on a phone and cannot reach it. The card (its link never
+ * expires) is the whole fix; the Cloud portal page is the manual fallback.
  *
  * @param trigger - The failure
  * @param result - What the notifier did
@@ -264,11 +287,12 @@ async function notifyReauth(trigger: ReauthTrigger): Promise<ReauthNotifyResult 
  */
 export function reauthHint(trigger: ReauthTrigger, result: ReauthNotifyResult | null): string | null {
   const label = PRODUCT_LABELS[trigger.product] ?? trigger.product;
+  const portal = buildPortalConnectUrl([trigger.product], trigger.account);
   if (result?.status === 'posted') {
-    return `A reconnect link was sent to the owner in Slack. Tell them in one line that you need them to tap it (no need to mention Connections). You will get a message saying ${label} is reconnected — then retry.`;
+    return `A reconnect card was sent to the owner in Slack, in the conversation you are answering them in. Tell them in one line that you need them to tap it; its link does not expire. Never send them to Crewly settings or the Connections page. You will get a message saying ${label} is reconnected — then retry. If they say the card did not work, run the google-connect skill with --product ${trigger.product} for a fresh one, or give them ${portal} to open directly.`;
   }
   if (result?.status === 'already_sent') {
-    return `A reconnect link was already sent to the owner in Slack at ${result.sentAt}; no new one is sent before ${result.nextCardAfter}. Do not ask again — you will get a message saying ${label} is reconnected, then retry.`;
+    return `A reconnect card was already sent to the owner in Slack at ${result.sentAt}. Do not ask again unless the owner says it did not work — then run the google-connect skill with --product ${trigger.product} for a fresh one, or give them ${portal} to open directly (never Crewly settings or the Connections page). You will get a message saying ${label} is reconnected, then retry.`;
   }
   return null;
 }
@@ -293,9 +317,7 @@ export async function sendGoogleError(req: Request, res: Response, err: unknown)
     let hint: string;
     switch (err.code) {
       case CODES.NOT_CONNECTED:
-        hint = reauthText
-          ?? connectUrlOrNull(req)
-          ?? 'Sign in to Crewly Cloud (Settings → Cloud & devices), then connect Google Workspace under Connections.';
+        hint = reauthText ?? notConnectedHint(req, err);
         break;
       case CODES.NOT_LOGGED_IN:
         hint = 'Sign in to Crewly Cloud first (Settings → Cloud & devices).';
@@ -310,7 +332,7 @@ export async function sendGoogleError(req: Request, res: Response, err: unknown)
         // Owner-away: the only step is one tap on the Slack card.
         const product = err.details?.product ?? 'drive';
         hint = reauthText
-          ?? `Ask the owner to reconnect ${PRODUCT_LABELS[product] ?? product}: run the google-connect skill with --product ${product}. It posts a one-tap card in Slack; nothing to do on this machine.`;
+          ?? `Ask the owner to reconnect ${PRODUCT_LABELS[product] ?? product}: run the google-connect skill with --product ${product}. It posts a one-tap card in Slack; nothing to do on this machine. Manual fallback: ${buildPortalConnectUrl([product], err.details?.account ?? accountOf(req))}`;
         break;
       }
       case PEOPLE_CONSTANTS.NOT_PERMITTED_CODE:
@@ -383,7 +405,12 @@ export async function getStatus(req: Request, res: Response): Promise<void> {
  */
 export async function getConnectUrl(req: Request, res: Response): Promise<void> {
   try {
-    const url = getDeps().tokens.buildConnectUrl(resolveReturnUrl(req), connectOptions(req));
+    // The dashboard URL carries the owner's Cloud session token and returns
+    // to this machine's localhost: fine in the owner's own browser, a
+    // credential an agent could paste into Slack. Agents get the portal page.
+    const url = isOwnerCaller(req)
+      ? getDeps().tokens.buildConnectUrl(resolveReturnUrl(req), connectOptions(req))
+      : buildPortalConnectUrl(connectOptions(req).products ?? [], accountOf(req));
     res.json({ success: true, data: { url } });
   } catch (err) {
     await sendGoogleError(req, res, err);

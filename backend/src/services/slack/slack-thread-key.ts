@@ -115,3 +115,21 @@ export function slackThreadOfMetadata(metadata: Record<string, unknown> | undefi
   if (typeof ch === 'string' && ch && typeof ts === 'string' && ts) return { slackChannelId: ch, threadTs: ts };
   return null;
 }
+
+/**
+ * Read any reference to a Slack place an agent might hold: a thread key
+ * (`C…:ts`), a `slack-` chat channel id (`slack-C…:ts`, `slack-C…-ts` or
+ * `slack-C…-sec-micro`), or a bare Slack conversation id (`C…`).
+ *
+ * @param raw - Reference
+ * @returns Channel (+ thread ts when the reference names one), or null for anything else
+ */
+export function parseSlackChannelRef(raw: unknown): { slackChannelId: string; threadTs?: string } | null {
+  if (typeof raw !== 'string') return null;
+  const key = parseSlackThreadKey(raw);
+  if (key) return key;
+  const s = raw.trim().replace(/^slack-/, '');
+  const m = /^([CDG][A-Z0-9]{6,})(?:[:-](\d{6,})[.-](\d{1,}))?(?:-msg-\d+\.\d+)?$/.exec(s);
+  if (!m) return null;
+  return m[2] ? { slackChannelId: m[1], threadTs: `${m[2]}.${m[3]}` } : { slackChannelId: m[1] };
+}

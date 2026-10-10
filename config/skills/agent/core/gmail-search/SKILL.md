@@ -33,7 +33,7 @@ execution:
 # Gmail Search
 
 Runs a Gmail search on the owner's mailbox and prints the hits. Uses the
-Google Workspace connection the owner made under Settings → Integrations;
+Google Workspace connection the owner made in Crewly;
 the mail content goes straight from Google to this instance.
 
 ```bash
@@ -60,12 +60,13 @@ Use the `id` with `gmail-read` to get the body; `threadId` + `gmail-read`'s
 ## Failures
 
 `{"success":false,"reason":"not_connected","hint":"<connect URL>"}` — the
-owner has not connected Google Workspace yet; hand them the hint URL (or
-point them to Settings → Integrations → Google Workspace). Exit code 1.
+owner has not connected Google Workspace yet; run the `google-connect` skill so
+they get a one-tap card in Slack (manual fallback: https://crewlyai.com/portal/integrations/google; never
+Crewly settings or the Connections page). Exit code 1.
 
 ## Choosing a Google account
 
-Several Google accounts can be connected at once. Without `--account` the call uses the default one (the first you connected, or whichever you marked default on the Connections page). Name one explicitly when it matters:
+Several Google accounts can be connected at once. Without `--account` the call uses the default one (the first you connected, or whichever the owner marked default). Name one explicitly when it matters:
 
 ```bash
 bash execute.sh --account work@company.com ...

@@ -23,22 +23,25 @@ execution:
 
 # Google Connect
 
-When a Google skill answers `not_connected`, the owner has not granted that
-product yet. Do **not** improvise an authorization link: the one this
-instance can build carries a Cloud session token, and posting it into a
-channel publishes a credential. It also expires within the hour, so the link
-you paste is usually dead by the time anyone clicks it.
-
-Run this instead. It posts a card with an **Add** button that only the
-person who asked can see, backed by a single-use link.
+When a Google skill answers `not_connected` or `reauth_required`, the owner has
+to grant (or re-grant) a product. Do **not** improvise an authorization link:
+never build one by hand and never paste one. Run this instead. It posts a card
+with a button that only the person who asked can see; the button opens the
+Crewly portal's Google page, so the link carries no credential and **never
+expires**. The owner can tap it hours later, from a phone.
 
 ```bash
-bash execute.sh --product gmail --channel <chat-channel-id>
+bash execute.sh --product gmail [--channel <chat-channel-id>] [--account me@example.com]
 ```
 
-`--channel` is the id in the `[CHAT:…]` header of the message you are
-answering.
+- `--channel` is the id in the `[CHAT:…]` or `[SLACK-THREAD:…]` header of the
+  message you are answering. It is optional: without it, or if it cannot be
+  resolved, the card goes where you are working with the owner, else their DM.
+- Every call posts a fresh card. If the owner says the last card did not work,
+  run it again (`--resend` is accepted to make that intent explicit).
+- Never tell the owner to open Crewly settings or the Connections page — they
+  are usually on a phone and cannot reach it. If they cannot find the card, the
+  manual fallback is https://crewlyai.com/portal/integrations/google
 
-After running it, say in one line that you have asked for access and what
-you will do once it is granted. Do not repeat the link — there is no link
-to repeat.
+After running it, say in one line that you have asked for access and what you
+will do once it is granted. Do not repeat a link.

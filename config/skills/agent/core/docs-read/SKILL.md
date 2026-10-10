@@ -45,13 +45,15 @@ bash execute.sh --id "https://docs.google.com/document/d/1AbC…/edit"
 ## Failures
 
 `{"success":false,"reason":"not_connected","hint":"<connect URL>"}` (exit 1)
-when the owner has not connected Google Workspace (Settings → Integrations).
+when the owner has not connected Google Workspace. Run the `google-connect` skill
+to post the owner a one-tap card in Slack (never send them to Crewly settings or
+the Connections page — they are usually on a phone). Manual fallback: https://crewlyai.com/portal/integrations/google.
 A `403` with `reason: "google_error"` on a write means the file was not
 created by Crewly — the grant only edits files Crewly made (`drive.file`).
 
 ## Choosing a Google account
 
-Several Google accounts can be connected at once. Without `--account` the call uses the default one (the first you connected, or whichever you marked default on the Connections page). Name one explicitly when it matters:
+Several Google accounts can be connected at once. Without `--account` the call uses the default one (the first you connected, or whichever the owner marked default). Name one explicitly when it matters:
 
 ```bash
 bash execute.sh --account work@company.com ...

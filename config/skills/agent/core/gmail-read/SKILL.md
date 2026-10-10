@@ -62,7 +62,7 @@ with a 404 message when the id is unknown.
 
 ## Choosing a Google account
 
-Several Google accounts can be connected at once. Without `--account` the call uses the default one (the first you connected, or whichever you marked default on the Connections page). Name one explicitly when it matters:
+Several Google accounts can be connected at once. Without `--account` the call uses the default one (the first you connected, or whichever the owner marked default). Name one explicitly when it matters:
 
 ```bash
 bash execute.sh --account work@company.com ...
