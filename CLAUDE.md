@@ -22,6 +22,22 @@ This document outlines the technical preferences and workflow standards for main
 - **UI/UX Guidelines** - Defined in `specs/frontend-design.md`
 - **User Workflows** - Mapped in `specs/user-journey.md`
 
+## 🌐 Language: English Only
+
+Crewly is open source. Everything in the repo is written in English: code, identifiers, comments, prompts sent to agents or models, skills (SKILL.md), SOPs, specs, docs, log lines, and UI and harness text. Why:
+- anyone can read and contribute to it;
+- English prompts cost fewer tokens;
+- models follow English instructions more reliably.
+
+The owner or a teammate chatting with you in another language does not change this.
+
+**Allowed exceptions** (keep them purposeful and minimal):
+- regexes and keyword lists that must match user input in that language (e.g. `好的|可以|打回`);
+- test fixtures copied from real conversations;
+- proper names (e.g. 小红书) and short quoted user examples that document an incident.
+
+Agent-authored replies to users stay in the user's language. That is the agent's output, not repo text.
+
 ## 📝 Code Standards
 
 ### TypeScript Requirements
