@@ -3,7 +3,7 @@ jest.mock('../core/logger.service.js', () => ({
 }));
 jest.mock('../core/system-health.util.js', () => ({ getMemoryStats: () => ({ usedPercent: 10, freeMB: 9000, totalMB: 16384 }) }));
 
-import { ResourceModeService, memoryIsTightFor, type RunningAgent } from './resource-mode.service.js';
+import { RESOURCE_MODE_CONSTANTS, ResourceModeService, memoryIsTightFor, type RunningAgent } from './resource-mode.service.js';
 import { getDefaultSettings } from '../../types/settings.types.js';
 
 const calm = { usedPercent: 40, freeMB: 8000, totalMB: 16384 };
@@ -245,6 +245,72 @@ describe('eviction guards (idle threshold, pending work, open delegations)', () 
 		await enter(svc);
 		expect(await svc.requestStart('new', false)).toBe(true);
 		expect(stopped).toEqual(['a']);
+	});
+});
+
+describe('relaxing after a long wait', () => {
+	function setup(running: RunningAgent[], reasons: Record<string, string>) {
+		const svc = ResourceModeService.getInstance();
+		const stopped: string[] = [];
+		let list = [...running];
+		svc.setDeps({
+			limits: async () => ({ maxRunning: running.length, idleTimeoutMinutes: 10 }),
+			listRunning: async () => list,
+			hasOwnerMessage: (n) => n === 'owner-holder',
+			protectedReason: async (n) => reasons[n] ?? null,
+			stopAgent: async (n) => { stopped.push(n); list = list.filter((r) => r.sessionName !== n); },
+		});
+		return { svc, stopped };
+	}
+
+	it('stops the longest-idle protected agent once the start has waited past RELAX_AFTER_MS, across a deferral', async () => {
+		jest.useFakeTimers();
+		try {
+			const { svc, stopped } = setup(
+				[agent('busy', 9e6, true), agent('owner-holder', 9e6), agent('waiting-on-dex', 8e6), agent('queued', 7e6)],
+				{ 'waiting-on-dex': 'it is waiting on work item w2', queued: 'work item w1 is queued for it' },
+			);
+			await enter(svc);
+			const first = svc.requestStart('new', true);
+			await jest.advanceTimersByTimeAsync(RESOURCE_MODE_CONSTANTS.START_WAIT_MS + 10);
+			expect(await first).toBe(false);
+			expect(stopped).toEqual([]);
+			await jest.advanceTimersByTimeAsync(RESOURCE_MODE_CONSTANTS.RELAX_AFTER_MS - RESOURCE_MODE_CONSTANTS.START_WAIT_MS + 10);
+			expect(await svc.requestStart('new', true)).toBe(true);
+			// never busy / owner-message holders; longest idle of the rest
+			expect(stopped).toEqual(['waiting-on-dex']);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	it('even when relaxed, prefers an agent that is only under the idle timeout over a protected one', async () => {
+		jest.useFakeTimers();
+		try {
+			const { svc, stopped } = setup([agent('protected', 9e6), agent('young', 60_000)], { protected: 'it owns open ticket T-1' });
+			await enter(svc);
+			const first = svc.requestStart('new', true);
+			await jest.advanceTimersByTimeAsync(RESOURCE_MODE_CONSTANTS.RELAX_AFTER_MS + 10);
+			expect(await first).toBe(false);
+			expect(await svc.requestStart('new', true)).toBe(true);
+			expect(stopped).toEqual(['young']);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	it('does not relax before RELAX_AFTER_MS', async () => {
+		jest.useFakeTimers();
+		try {
+			const { svc, stopped } = setup([agent('a', 9e6)], { a: 'it owns open ticket T-1' });
+			await enter(svc);
+			const p = svc.requestStart('new', true);
+			await jest.advanceTimersByTimeAsync(RESOURCE_MODE_CONSTANTS.START_WAIT_MS + 10);
+			expect(await p).toBe(false);
+			expect(stopped).toEqual([]);
+		} finally {
+			jest.useRealTimers();
+		}
 	});
 });
 

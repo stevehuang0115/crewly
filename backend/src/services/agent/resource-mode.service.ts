@@ -25,6 +25,15 @@ export const RESOURCE_MODE_CONSTANTS = {
 	SAMPLE_INTERVAL_MS: 30_000,
 	/** How long a queued start waits for a slot before giving up (messages stay queued) */
 	START_WAIT_MS: 2 * 60_000,
+	/**
+	 * A start that has waited this long for a slot stops the best available
+	 * agent even if it is idle for less than the idle timeout or has work in
+	 * flight: a waiting start often carries an owner message and must never be
+	 * blocked forever.
+	 */
+	RELAX_AFTER_MS: 3 * 60_000,
+	/** A wait record older than this since its last touch is a new wait */
+	WAIT_RECORD_TTL_MS: 10 * 60_000,
 	/** A started agent counts against the cap even before it shows as running */
 	ADMIT_TTL_MS: 3 * 60_000,
 	/** errorCode of a start that waited for a slot and got none (deferred, not failed) */
@@ -109,6 +118,8 @@ export class ResourceModeService {
 	private pumping = false;
 	/** When the "no slot" reason was last logged per waiter (the pump retries every 10 s) */
 	private lastNoSlotLog = new Map<string, number>();
+	/** When each agent's start first began waiting for a slot (survives the 2-minute deferral, cleared on admission) */
+	private waitingSince = new Map<string, { since: number; touched: number }>();
 	private lastRunning = 0;
 	private lastCap: number = RESOURCE_MODE_CONSTANTS.DEFAULT_MAX_RUNNING_AGENTS;
 
@@ -262,6 +273,9 @@ export class ResourceModeService {
 				try { this.deps?.onStartDeferred?.(sessionName); } catch { /* best-effort */ }
 				resolve(false);
 			}, RESOURCE_MODE_CONSTANTS.START_WAIT_MS);
+			const nowMs = Date.now();
+			const rec = this.waitingSince.get(sessionName);
+			if (!rec || nowMs - rec.touched > RESOURCE_MODE_CONSTANTS.WAIT_RECORD_TTL_MS) this.waitingSince.set(sessionName, { since: nowMs, touched: nowMs });
 			const waiter: Waiter = { name: sessionName, owner: ownerTriggered, seq: this.seq++, resolve, timer };
 			this.waiters.push(waiter);
 			this.waiters.sort((a, b) => Number(b.owner) - Number(a.owner) || a.seq - b.seq);
@@ -293,7 +307,20 @@ export class ResourceModeService {
 			while (this.waiters.length > 0) {
 				if (this.mode !== 'pressure') { this.release(this.waiters.shift()!); continue; }
 				if (count >= maxRunning) {
-					const { victim, skipped } = await this.pickVictim(pool, idleTimeoutMinutes);
+					const head = this.waiters[0];
+					const rec = this.waitingSince.get(head.name);
+					if (rec) rec.touched = now;
+					const waitedMs = rec ? now - rec.since : 0;
+					const { victim, skipped, relaxedBecause } = await this.pickVictim(pool, idleTimeoutMinutes, waitedMs >= RESOURCE_MODE_CONSTANTS.RELAX_AFTER_MS);
+					if (victim && relaxedBecause !== undefined) {
+						this.logger.warn('A start has waited too long for a slot; relaxing the eviction rules', {
+							waiter: head.name,
+							waitedMin: Math.round(waitedMs / 60000),
+							stopping: victim.sessionName,
+							idleMinutes: Math.round(victim.idleMs / 60000),
+							wasKeptBecause: relaxedBecause || 'it was not protected',
+						});
+					}
 					if (!victim) {
 						this.logNoSlot(this.waiters[0].name, count, maxRunning, idleTimeoutMinutes, skipped);
 						break;
@@ -334,9 +361,14 @@ export class ResourceModeService {
 	 *
 	 * @param running - Running agents
 	 * @param idleTimeoutMinutes - Pressure idle timeout; a younger idle is never stopped
-	 * @returns The victim (if any) and why each skipped agent was kept
+	 * @param relax - The first waiter has waited past RELAX_AFTER_MS: when no agent passes the rules, stop the best one anyway
+	 * @returns The victim (if any), why each skipped agent was kept, and, when the rules were relaxed, why the victim had been kept
 	 */
-	private async pickVictim(running: RunningAgent[], idleTimeoutMinutes: number): Promise<{ victim?: RunningAgent; skipped: string[] }> {
+	private async pickVictim(
+		running: RunningAgent[],
+		idleTimeoutMinutes: number,
+		relax = false,
+	): Promise<{ victim?: RunningAgent; skipped: string[]; relaxedBecause?: string }> {
 		const waiting = new Set(this.waiters.map((w) => w.name));
 		const minIdleMs = Math.max(0, idleTimeoutMinutes) * 60_000;
 		const skipped: string[] = [];
@@ -349,15 +381,17 @@ export class ResourceModeService {
 				&& !isDriveWarm(r.sessionName))
 			.sort((a, b) => b.idleMs - a.idleMs);
 		const candidates: RunningAgent[] = [];
+		const keptBecause = new Map<RunningAgent, string>();
+		const unprotected: RunningAgent[] = [];
 		for (const r of ordered) {
-			if (r.idleMs < minIdleMs) {
-				skipped.push(`${r.sessionName}: idle ${Math.round(r.idleMs / 60000)} min, under the ${idleTimeoutMinutes} min idle timeout`);
-				continue;
-			}
 			let why: string | null | undefined;
 			try { why = await this.deps!.protectedReason?.(r.sessionName); } catch { why = null; }
-			if (why) {
-				skipped.push(`${r.sessionName}: ${why}`);
+			const tooYoung = r.idleMs < minIdleMs;
+			if (tooYoung || why) {
+				const text = [tooYoung ? `idle ${Math.round(r.idleMs / 60000)} min, under the ${idleTimeoutMinutes} min idle timeout` : '', why ?? ''].filter(Boolean).join('; ');
+				skipped.push(`${r.sessionName}: ${text}`);
+				keptBecause.set(r, text);
+				if (!why) unprotected.push(r);
 				continue;
 			}
 			candidates.push(r);
@@ -365,7 +399,12 @@ export class ResourceModeService {
 		const owes = (r: RunningAgent): boolean => {
 			try { return this.deps!.owesOwnerThread?.(r.sessionName) === true; } catch { return false; }
 		};
-		return { victim: candidates.find((r) => !owes(r)) ?? candidates[0], skipped };
+		const choose = (list: RunningAgent[]): RunningAgent | undefined => list.find((r) => !owes(r)) ?? list[0];
+		const victim = choose(candidates);
+		if (victim || !relax) return { victim, skipped };
+		// Relaxed: agents kept only by the idle timeout first, then the rest; longest idle within each.
+		const fallback = choose(unprotected) ?? choose(ordered);
+		return fallback ? { victim: fallback, skipped, relaxedBecause: keptBecause.get(fallback) ?? '' } : { skipped };
 	}
 
 	/** Log why a waiting start got no slot (at most once a minute per agent). */
@@ -383,6 +422,7 @@ export class ResourceModeService {
 	}
 
 	private release(w: Waiter): void {
+		this.waitingSince.delete(w.name);
 		clearTimeout(w.timer);
 		w.resolve(true);
 	}
