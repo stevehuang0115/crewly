@@ -30,6 +30,8 @@
 import { LoggerService } from '../core/logger.service.js';
 import type { ComponentLogger } from '../core/logger.service.js';
 import { ORCHESTRATOR_ROLE, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { activeAcceptance, formatTicketNumber } from '../../types/v2/ticket.types.js';
+import { checklistProgress } from '../v3/ticket-work-guard.js';
 import type { Request, RequestStatus } from '../../types/v2/request.types.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
 
@@ -156,6 +158,10 @@ export interface OpenRequestRow {
   priority: BriefingPriority;
   ageHours: number;
   source?: string;
+  /** `TKT-418`, when the row is an owner ticket assigned to this agent */
+  ticket?: string;
+  /** The owner's separate deliverables with what is delivered (a request that lists several) */
+  checklist?: { delivered: number; total: number; items: Array<{ text: string; delivered: boolean }> };
 }
 
 /**
@@ -523,18 +529,32 @@ export class ActiveWorkBriefingService {
     const filtered = requests.filter((r) => {
       if (!ACTIVE_REQUEST_STATUSES.has(r.status)) return false;
       if (isOrchestrator) return true;
-      // Non-orchestrator agents: must be on the hook (ownerAgent === sessionName).
-      return r.ownerAgent === sessionName;
+      // Non-orchestrator agents: must be on the hook (ownerAgent === sessionName),
+      // or hold the owner's ticket (tickets set `assignee`, never `ownerAgent`:
+      // 2026-10-10 the three-video ticket was missing from the assignee's briefing).
+      return r.ownerAgent === sessionName || (typeof r.ticketNumber === 'number' && r.assignee === sessionName);
     });
 
-    const rows: OpenRequestRow[] = filtered.map((r) => ({
-      id: r.id,
-      title: this.truncateTitle(r.title),
-      status: r.status,
-      priority: r.priority,
-      ageHours: this.ageHours(r.createdAt, nowMs),
-      source: r.sourceConversationItemId,
-    }));
+    const rows: OpenRequestRow[] = filtered.map((r) => {
+      const progress = checklistProgress(r);
+      return {
+        id: r.id,
+        title: this.truncateTitle(r.title),
+        status: r.status,
+        priority: r.priority,
+        ageHours: this.ageHours(r.createdAt, nowMs),
+        source: r.sourceConversationItemId,
+        ...(typeof r.ticketNumber === 'number' ? { ticket: formatTicketNumber(r.ticketNumber) } : {}),
+        ...(progress
+          ? {
+              checklist: {
+                ...progress,
+                items: activeAcceptance(r.acceptance).map((a) => ({ text: a.text, delivered: a.selfCheck === 'pass' })),
+              },
+            }
+          : {}),
+      };
+    });
 
     rows.sort(
       (a, b) =>
@@ -1044,8 +1064,13 @@ export class ActiveWorkBriefingService {
   ): string {
     const lines = ['### Open Requests'];
     for (const row of rows) {
-      const base = `- **${row.id}** — ${row.title} — _${row.status} · ${row.priority} · ${this.formatAge(row.ageHours)}_`;
+      const tkt = row.ticket ? ` · ${row.ticket}` : '';
+      const progress = row.checklist ? ` · ${row.checklist.delivered} of ${row.checklist.total} delivered` : '';
+      const base = `- **${row.id}** — ${row.title} — _${row.status} · ${row.priority} · ${this.formatAge(row.ageHours)}${tkt}${progress}_`;
       lines.push(this.appendMemoryHint(base, `req:${row.id}`, hints));
+      for (const item of row.checklist?.items ?? []) {
+        lines.push(`  - [${item.delivered ? 'x' : ' '}] ${item.text}`);
+      }
     }
     const marker = this.renderTruncationMarker(truncation);
     return lines.join('\n') + marker;

@@ -79,6 +79,8 @@ interface HookRecord {
 	/** Subagents held over a Stop: background only while the transcript agrees */
 	heldSubagents: Map<string, number>;
 	anonSeq: number;
+	/** Epoch ms of recent PreToolUse events (newest last, capped) */
+	toolStarts: number[];
 }
 
 /** Resolves a session to its Claude Code transcript file, or null. */
@@ -188,6 +190,8 @@ export class AgentTurnStateService {
 				break;
 			case 'PreToolUse':
 				markActive();
+				r.toolStarts.push(now);
+				if (r.toolStarts.length > 64) r.toolStarts.shift();
 				if (ids.toolUseId && r.openTools.size < max) r.openTools.set(ids.toolUseId, now);
 				break;
 			case 'PostToolUse':
@@ -247,6 +251,32 @@ export class AgentTurnStateService {
 	lastHookEventAt(sessionName: string): number | null {
 		const r = this.records.get(sessionName);
 		return r && r.lastEventAt > 0 ? r.lastEventAt : null;
+	}
+
+	/**
+	 * How many tool calls the session started after `since` (PreToolUse hooks).
+	 * Used to tell "said it would do X" from "did something after saying so".
+	 *
+	 * @param sessionName - Session
+	 * @param since - Epoch ms (exclusive)
+	 * @returns Count, or null when the session reports no hooks (the caller must not guess)
+	 */
+	toolStartsSince(sessionName: string, since: number): number | null {
+		const r = this.records.get(sessionName);
+		if (!r || r.lastEventAt === 0) return null;
+		let n = 0;
+		for (const t of r.toolStarts) if (t > since) n++;
+		return n;
+	}
+
+	/**
+	 * Epoch ms the session's current runtime process started, when known.
+	 *
+	 * @param sessionName - Session
+	 * @returns Time or null
+	 */
+	runtimeStartedAt(sessionName: string): number | null {
+		return this.records.get(sessionName)?.runtimeStartedAt ?? null;
 	}
 
 	/**
@@ -424,6 +454,7 @@ export class AgentTurnStateService {
 			subagents: new Map(),
 			heldSubagents: new Map(),
 			anonSeq: 0,
+			toolStarts: [],
 		};
 		this.records.set(sessionName, r);
 		return r;

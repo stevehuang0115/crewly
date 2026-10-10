@@ -39,6 +39,7 @@
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TICKET_CONSTANTS } from '../../constants.js';
 import { isInterim } from '../slack/slack-typing-placeholder.service.js';
+import { detectStatedIntent } from '../agent/stated-intent.js';
 import {
   type Request,
   type RequestPriority,
@@ -196,6 +197,9 @@ export class TicketReviewService {
     if (message.senderType !== 'agent') return null;
     // "Got it — here is my plan" is not the answer.
     if (isInterim(message)) return null;
+    // "I'm building it now" is a promise, not the answer: submitting the ticket
+    // on it let a request die as 待验收 with nothing made (2026-10-10).
+    if (detectStatedIntent(message.content)) return null;
     return this.serial(async () => {
       const all = await this.deps.requests.listAll();
       const inChannel = all.filter(

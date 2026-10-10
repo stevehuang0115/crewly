@@ -31,10 +31,20 @@ import { isDriveWarm } from '../drive/drive-keep-warm.js';
  * `running` item is left to the working-status check — an agent idle for
  * the whole timeout on a running item is not held up forever.
  */
-export const PENDING_WORK_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>(['queued', 'proposed', 'accepted']);
+export const PENDING_WORK_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>(['queued', 'proposed', 'accepted', 'running']);
 
-/** Whether an agent has WorkItems waiting for it. */
-export type PendingWorkCheck = (sessionName: string) => Promise<boolean>;
+/**
+ * Why an agent must be kept alive (a reason string), or false/null when
+ * nothing holds it: a WorkItem (queued, accepted or running), an assigned
+ * ticket, an owner promise, an unfulfilled "doing X now". See idle-work-guard.ts.
+ */
+export type PendingWorkCheck = (sessionName: string) => Promise<boolean | string | null>;
+
+/**
+ * Called before an idle agent is stopped for memory: put the work it holds
+ * back in the queue so it is redelivered when the agent starts again.
+ */
+export type WorkReleaser = (sessionName: string, why: string) => Promise<unknown>;
 
 /**
  * Periodically scans active agents and suspends those that have been
@@ -50,6 +60,7 @@ export class IdleDetectionService {
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private agentRegistrationService: AgentRegistrationService | null = null;
 	private pendingWorkCheck: PendingWorkCheck | null = null;
+	private workReleaser: WorkReleaser | null = null;
 
 	// Observability: surfaces silent hangs that previously caused the
 	// loop to "stop" for hours with no log evidence (2026-05-14 incident).
@@ -81,6 +92,16 @@ export class IdleDetectionService {
 	 */
 	setPendingWorkCheck(check: PendingWorkCheck | null): void {
 		this.pendingWorkCheck = check;
+	}
+
+	/**
+	 * Inject the releaser used when memory forces a stop of an agent that
+	 * still holds work: its running items go back to the queue (same target).
+	 *
+	 * @param releaser - Releaser, or null to disable
+	 */
+	setWorkReleaser(releaser: WorkReleaser | null): void {
+		this.workReleaser = releaser;
 	}
 
 	/**
@@ -432,14 +453,26 @@ export class IdleDetectionService {
 							});
 							continue;
 						}
-						// Never stop an agent with work queued for it (a ticket was
-						// just assigned and it was started to take it).
-						if (await this.hasPendingWork(member.sessionName)) {
+						// Never stop an agent that owes work (a WorkItem, an assigned
+						// ticket, a promise to the owner) — unless the machine is in
+						// pressure mode, where memory wins; then the work is put back
+						// in the queue first so the next start redelivers it.
+						const held = await this.holdReason(member.sessionName);
+						if (held && !pressure) {
 							this.logger.info('Agent idle but has queued work, keeping alive', {
 								sessionName: member.sessionName,
 								role: member.role,
+								reason: held,
 							});
 							continue;
+						}
+						if (held) {
+							this.logger.warn('Stopping an idle agent that still owes work (memory pressure) — work is put back in the queue', {
+								sessionName: member.sessionName,
+								role: member.role,
+								reason: held,
+							});
+							await this.releaseWork(member.sessionName, 'idle stop under memory pressure');
 						}
 						// Auto-stop: terminate idle agents to free resources
 						if (this.agentRegistrationService) {
@@ -496,18 +529,28 @@ export class IdleDetectionService {
 	}
 
 	/**
-	 * Whether the agent has WorkItems waiting for it
-	 * ({@link PENDING_WORK_STATUSES}). False when no check is wired or it fails.
+	 * Why the agent must be kept alive, or null.
 	 *
 	 * @param sessionName - Agent session
-	 * @returns True when the agent must be kept alive for its work
+	 * @returns A reason, or null when nothing holds it or the check fails
 	 */
-	private async hasPendingWork(sessionName: string): Promise<boolean> {
-		if (!this.pendingWorkCheck) return false;
+	private async holdReason(sessionName: string): Promise<string | null> {
+		if (!this.pendingWorkCheck) return null;
 		try {
-			return await this.pendingWorkCheck(sessionName);
+			const r = await this.pendingWorkCheck(sessionName);
+			if (typeof r === 'string') return r;
+			return r ? 'work' : null;
 		} catch {
-			return false;
+			return null;
+		}
+	}
+
+	/** Put the work a stopping agent holds back in the queue (best-effort). */
+	private async releaseWork(sessionName: string, why: string): Promise<void> {
+		try {
+			await this.workReleaser?.(sessionName, why);
+		} catch {
+			/* freeing memory must not depend on it */
 		}
 	}
 
@@ -593,6 +636,8 @@ export class IdleDetectionService {
 				});
 
 				try {
+					// The work it holds survives the stop: back in the queue, redelivered on the next start.
+					await this.releaseWork(member.sessionName, 'emergency stop under memory pressure');
 					if (backend && member.sessionName && backend.sessionExists(member.sessionName)) {
 						await backend.killSession(member.sessionName);
 					}

@@ -214,6 +214,7 @@ import { getRuntimeFallbackService } from './services/runtime-fallback/runtime-f
 import { getSlackAgentIdentityService } from './services/slack/slack-agent-identity.service.js';
 import { getChatV2Service } from './services/chat-v2/chat-v2.singleton.js';
 import { isOwnerStopped } from './services/agent/owner-stopped.registry.js';
+import { createFollowThrough, settleFollowThrough, idlePendingWorkCheck, releaseWorkForStop } from './services/agent/follow-through.wiring.js';
 import { isSessionPaused } from './services/team/team-pause.registry.js';
 import { findPackageRoot } from './utils/package-root.js';
 import { getLocalApiBaseUrl, setLocalApiPort } from './utils/local-api-url.utils.js';
@@ -248,7 +249,6 @@ import { FissionGuardService, type FissionDataProvider, type BudgetChecker, crea
 import { BudgetService } from './services/autonomous/budget.service.js';
 import { setFissionGuardService } from './controllers/fission/fission.controller.js';
 import { TaskPoolService } from './services/task-pool/task-pool.service.js';
-import { PENDING_WORK_STATUSES } from './services/agent/idle-detection.service.js';
 import { createProtectedReason } from './services/agent/resource-mode-protection.js';
 import { ProjectTicketWorkflowService } from './services/project-tickets/project-ticket-workflow.service.js';
 import { WorkItemWorktreeService } from './services/worktree/workitem-worktree.service.js';
@@ -2226,15 +2226,18 @@ void (async () => {
 			this.logger.info('Starting idle detection service...');
 			const idleDetection = IdleDetectionService.getInstance();
 			idleDetection.setAgentRegistrationService(this.apiController.agentRegistrationService);
-			// An agent with work queued for it (e.g. a ticket just assigned to a
-			// member that was started for it) is never idle-stopped.
-			idleDetection.setPendingWorkCheck(async (sessionName) => {
-				// Mid-conversation with the owner (an unanswered owner message or a
-				// promise in an owner thread in the last 30 min) counts as work.
-				if (getOwnerThreadSentinel()?.owesRecently(sessionName)) return true;
-				const items = await TaskPoolService.getInstance().getAllItems();
-				return items.some((wi) => wi.target === sessionName && PENDING_WORK_STATUSES.has(wi.status));
+			// Follow-through guard: "I'm doing X now" must be followed by action
+			// (specs/2026-10-10-agent-follow-through.md).
+			createFollowThrough({
+				crewlyHome: this.config.crewlyHome,
+				sendToAgent: (session, text) => this.apiController.agentRegistrationService.sendMessageToAgent(session, text),
 			});
+			// An agent that owes work — a WorkItem (queued, accepted or running),
+			// an assigned ticket, a promise to the owner, an unfulfilled "doing X
+			// now" — is never idle-stopped. Under memory pressure it still can
+			// be, but its work goes back to the queue first and is redelivered.
+			idleDetection.setPendingWorkCheck(idlePendingWorkCheck());
+			idleDetection.setWorkReleaser((sessionName, why) => releaseWorkForStop(sessionName, why));
 			idleDetection.start();
 
 			// Adaptive agent limits (pressure mode cap + start queue).
@@ -2282,6 +2285,8 @@ void (async () => {
 				onStoppedForSlot: (name) => reportOwnerThreadBlocking(name, { kind: 'stopped', why: 'slot' }),
 				onStartDeferred: (name) => reportOwnerThreadBlocking(name, { kind: 'start_deferred' }),
 				stopAgent: async (name, role) => {
+					// Its work survives the stop: back in the queue, redelivered on the next start.
+					await releaseWorkForStop(name, 'stopped to free a running-agent slot');
 					await agentRegistration.terminateAgentSession(name, role);
 					await StorageService.getInstance().updateAgentStatus(name, CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE as any, 'idle_exit');
 				},
@@ -5364,10 +5369,12 @@ void (async () => {
 		void getSlackAgentDmService()
 			?.settleOpenThreads(sessionName)
 			.catch(() => undefined);
+		// Follow-through: nudge a stated intent nothing followed, and give an
+		// owner ticket with no WorkItem one — before the review looks at it.
 		// Ticket loop Phase 2: an agent that finished its turn has answered
 		// the tickets it replied in — submit them (待验收 or done).
-		void getTicketReviewService()
-			?.onAgentIdle(sessionName)
+		void settleFollowThrough(sessionName)
+			.then(() => getTicketReviewService()?.onAgentIdle(sessionName))
 			.catch(() => undefined);
 	}
 

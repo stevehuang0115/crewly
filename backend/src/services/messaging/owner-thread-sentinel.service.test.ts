@@ -355,6 +355,21 @@ describe('slot / idle preference and boot restore', () => {
     expect(h.sentinel.owesRecently(ATLAS)).toBe(true);
   });
 
+  it('owesOwner: a promise holds for hours, an unanswered owner message for under two (idle stop, 2026-10-10)', () => {
+    const h = make();
+    promised(h);
+    h.clock.t += 31 * MIN;
+    expect(h.sentinel.owesRecently(ATLAS)).toBe(false);
+    expect(h.sentinel.owesOwner(ATLAS)).toBe(true);
+    h.clock.t += 6 * 60 * MIN;
+    expect(h.sentinel.owesOwner(ATLAS)).toBe(false);
+    h.sentinel.noteOwnerMessage({ ...THREAD, agent: ATLAS, at: h.clock.t });
+    h.clock.t += 61 * MIN;
+    expect(h.sentinel.owesOwner(ATLAS)).toBe(true);
+    h.clock.t += 61 * MIN;
+    expect(h.sentinel.owesOwner(ATLAS)).toBe(false);
+  });
+
   it('ownerThreadFor: the thread a card should go into', () => {
     const h = make();
     expect(h.sentinel.ownerThreadFor(ATLAS)).toBeNull();

@@ -30,6 +30,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import * as path from 'path';
 import { ORCHESTRATOR_SESSION_NAME, OWNER_THREAD_SENTINEL_CONSTANTS as C } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { reportAgentPostForFollowThrough } from '../agent/follow-through.service.js';
 
 /** A Slack place: a thread, or a DM / channel top level. */
 export interface SlackThreadRef {
@@ -460,6 +461,25 @@ export class OwnerThreadSentinelService {
   }
 
   /**
+   * Whether `agent` owes the owner an answer (unanswered for under
+   * CARD_THREAD_MAX_AGE_MS) or a promised result (within ACTIVE_WINDOW_MS) in a
+   * watched thread — hours, not the 30 minutes of {@link owesRecently}. An open card is not counted: then the owner owes
+   * the agent. Idle stops spare such an agent unless memory is in pressure.
+   *
+   * @param agent - The agent
+   * @returns True while it owes an owner thread
+   */
+  owesOwner(agent: string): boolean {
+    const now = this.now();
+    for (const e of this.entries.values()) {
+      if (e.agent !== agent) continue;
+      if (e.ownerAt && (!e.agentPostAt || e.ownerAt > e.agentPostAt) && now - e.ownerAt <= C.CARD_THREAD_MAX_AGE_MS) return true;
+      if (e.promise && now - e.promise.at <= C.ACTIVE_WINDOW_MS) return true;
+    }
+    return false;
+  }
+
+  /**
    * The owner thread `agent` owes right now (the newest one active within
    * CARD_THREAD_MAX_AGE_MS), for placing a card it asks.
    *
@@ -767,6 +787,9 @@ export function reportOwnerThreadBlocking(agent: string, event: SentinelEvent): 
  * @param input - Who, where, what
  */
 export function reportOwnerThreadAgentPost(input: SlackThreadRef & { agent: string; text: string; interim?: boolean }): void {
+  // The follow-through guard sees every agent post, including those in threads
+  // the sentinel does not watch (a decision card's thread, 2026-10-10).
+  reportAgentPostForFollowThrough({ agent: input.agent, text: input.text, ...(input.interim ? { interim: true } : {}) });
   try {
     instance?.noteAgentPost(input);
   } catch {
