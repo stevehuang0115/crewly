@@ -7657,6 +7657,12 @@ export const REMOTE_MCP_CONSTANTS = {
 			'ZohoMail_resendVerificationReplyToSelf',
 		],
 	} as Record<string, readonly string[]>,
+	/** Zoho tool that saves a draft when `mode` is `draft` (it is the only send tool Zoho has). */
+	ZOHO_DRAFT_TOOL: 'ZohoMail_sendEmail',
+	/** Zoho tool listing the mail accounts (to find an account id from an address). */
+	ZOHO_ACCOUNTS_TOOL: 'ZohoMail_getMailAccounts',
+	/** Timeout for one draft (initialize + call), ms. */
+	ZOHO_DRAFT_TIMEOUT_MS: 30_000,
 	/** Message an agent gets when it calls a denied tool. */
 	DENIED_TOOL_MESSAGE: 'sending mail is not allowed for agents; save a draft instead',
 	/**

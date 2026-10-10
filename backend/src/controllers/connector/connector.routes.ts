@@ -16,6 +16,7 @@
 import { Router } from 'express';
 import { getConnectorAccess, updateConnectorAccess } from './connector.controller.js';
 import { addRemoteMcp, authorizeRemoteMcp, listRemoteMcp, removeRemoteMcp, renameRemoteMcp, setRemoteMcpAccess, testRemoteMcp } from './remote-mcp.controller.js';
+import { saveZohoDraftHandler } from './zoho-draft.controller.js';
 import { proxyRemoteMcp } from './remote-mcp-proxy.controller.js';
 
 /**
@@ -36,6 +37,8 @@ export function createConnectorRouter(): Router {
   router.post('/remote-mcp/:id/authorize', authorizeRemoteMcp);
   // Agents only: streamable-HTTP proxy to the server (URL + tokens stay here).
   router.all('/remote-mcp/:id/mcp', proxyRemoteMcp);
+  // Agents only: save a Zoho draft (mode forced to draft server-side; CREW-400).
+  router.post('/zoho/draft', saveZohoDraftHandler);
   // POST twins for the relay (GET/POST only).
   router.post('/remote-mcp/:id/rename', renameRemoteMcp);
   router.post('/remote-mcp/:id/remove', removeRemoteMcp);
