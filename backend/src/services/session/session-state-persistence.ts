@@ -11,7 +11,8 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import type { ISessionBackend, SessionOptions } from './session-backend.interface.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { RuntimeType, RUNTIME_TYPES } from '../../constants.js';
+import { RuntimeType, RUNTIME_TYPES, ORC_CONVERSATION_CONSTANTS } from '../../constants.js';
+import { rememberLastConversation } from '../agent/runtime-session-recovery.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 
@@ -164,6 +165,12 @@ export class SessionStatePersistence {
 	 * @param name - Session name to unregister
 	 */
 	unregisterSession(name: string): void {
+		// A stop drops the stored conversation id; remember it so the next
+		// start can hand the old conversation over instead of starting blind.
+		const last = this.sessionMetadata.get(name);
+		if (last?.claudeSessionId && last.cwd) {
+			rememberLastConversation(this.lastConversationsFile(), name, { sessionId: last.claudeSessionId, cwd: last.cwd, at: Date.now() });
+		}
 		const deleted = this.sessionMetadata.delete(name);
 		if (deleted) {
 			this.logger.debug('Unregistered session from persistence', { name });
@@ -173,6 +180,15 @@ export class SessionStatePersistence {
 				});
 			});
 		}
+	}
+
+	/**
+	 * File that remembers stopped sessions' last conversation ids.
+	 *
+	 * @returns Absolute path next to the state file
+	 */
+	lastConversationsFile(): string {
+		return path.join(path.dirname(this.filePath), ORC_CONVERSATION_CONSTANTS.LAST_CONVERSATIONS_FILE);
 	}
 
 	/**

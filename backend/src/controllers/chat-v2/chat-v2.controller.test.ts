@@ -67,6 +67,34 @@ function buildApp() {
 }
 
 describe('chat-v2 controller (REST)', () => {
+  it('GET /api/chat/search — a badged agent searches its own view; a bare session header or no query is refused', async () => {
+    const { app, service } = buildApp();
+    try {
+      const principal = { userId: 'dev-user-001', source: 'oss' as const };
+      const room = service.createHuddle({ name: 'awesome-videos', memberSessions: ['pia'], principal });
+      const other = service.createHuddle({ name: 'secret', memberSessions: ['bob'], principal });
+      service.recordTurn({ channelId: room.id, senderType: 'user', senderId: 'Steve', content: 'three-video plan', metadata: { source: 'slack' } });
+      service.recordTurn({ channelId: other.id, senderType: 'user', senderId: 'Steve', content: 'three-video budget', metadata: { source: 'slack' } });
+
+      const ok = await request(app).get('/api/chat/search?q=three-video').set(agentAuthHeaders('pia'));
+      expect(ok.status).toBe(200);
+      expect(ok.body.data.hits.map((h: { text: string }) => h.text)).toEqual(['three-video plan']);
+
+      // A session name without the badge proves nothing.
+      expect((await request(app).get('/api/chat/search?q=three-video').set('X-Agent-Session', 'pia')).status).toBe(403);
+      // The agent cannot widen its view with ?session=.
+      const widened = await request(app).get('/api/chat/search?q=three-video&session=bob').set(agentAuthHeaders('pia'));
+      expect(widened.body.data.hits).toHaveLength(1);
+      // The owner names the agent.
+      const asOwner = await request(app).get('/api/chat/search?q=budget&session=bob');
+      expect(asOwner.body.data.hits.map((h: { text: string }) => h.text)).toEqual(['three-video budget']);
+      expect((await request(app).get('/api/chat/search?session=bob')).status).toBe(400);
+      expect((await request(app).get('/api/chat/search?q=x&session=bob&from=nonsense')).status).toBe(400);
+    } finally {
+      service.close();
+    }
+  });
+
   it('GET /api/chat/agents/:session/timeline — merged timeline with source filter and cursor', async () => {
     const { app, service } = buildApp();
     try {

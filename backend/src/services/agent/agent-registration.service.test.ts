@@ -315,6 +315,43 @@ describe('AgentRegistrationService', () => {
 		}
 	});
 
+	describe('restart handover (fresh conversation after a plain stop/start)', () => {
+		const recovery = require('./runtime-session-recovery.js');
+		let writeSpy: jest.SpiedFunction<typeof recovery.writeRestartHandover>;
+		beforeEach(() => {
+			writeSpy = jest.spyOn(recovery, 'writeRestartHandover');
+		});
+		afterEach(() => writeSpy.mockRestore());
+
+		const persistence = () => ({
+			lastConversationsFile: () => '/state/last-conversations.json',
+			getRegisteredSessionsMap: () =>
+				new Map([
+					['pia', { claudeSessionId: 'mine' }],
+					['sam', { claudeSessionId: 'sams' }],
+				]),
+		});
+
+		it('keeps the handover note for the kickoff and excludes other sessions\' conversations', () => {
+			writeSpy.mockReturnValue({ file: '/h/pia-restart.md', note: 'read /h/pia-restart.md', previousSessionId: 'conv-1' });
+			(service as any).prepareRestartHandover('pia', '/proj', persistence());
+			expect((service as any).pendingRestartNotes.get('pia')).toBe('read /h/pia-restart.md');
+			const args = writeSpy.mock.calls[0][0] as any;
+			expect(args).toMatchObject({ sessionName: 'pia', cwd: '/proj', lastConversationsFile: '/state/last-conversations.json' });
+			expect([...(args.claimedByOthers as Set<string>)]).toEqual(['sams']);
+		});
+
+		it('leaves no note when there is nothing to hand over, and never throws', () => {
+			writeSpy.mockReturnValue(null);
+			(service as any).prepareRestartHandover('pia', '/proj', persistence());
+			expect((service as any).pendingRestartNotes.has('pia')).toBe(false);
+			writeSpy.mockImplementation(() => {
+				throw new Error('disk full');
+			});
+			expect(() => (service as any).prepareRestartHandover('pia', '/proj', persistence())).not.toThrow();
+		});
+	});
+
 	describe('closeOversizedConversation (fresh conversation at launch)', () => {
 		const recovery = require('./runtime-session-recovery.js');
 		let tokensSpy: jest.SpiedFunction<typeof recovery.lastTurnContextTokens>;

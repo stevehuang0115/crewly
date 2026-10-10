@@ -158,6 +158,7 @@ export class SkillsReferenceModule implements PromptModule {
 			'- `core/record-learning` — record learnings while working',
 			'- `core/report-status` — report status to team leader or orchestrator',
 			'- `core/list-channels` — the channels you are in (rooms shared with agents of other teams, matched to Slack channels); post in one with `core/reply-channel --channel \'#name\'` (or its id)',
+			'- `core/search-chat` — search the chat history you can see (keyword, channel, date range). Before telling anyone you can\'t find an earlier conversation or request, search chat history with `core/search-chat`',
 			'',
 			'### Self-improvement skills (attention + calibration)',
 			'- `core/set-focus` — replace your focus list (up to 5 items are shown in your prompt)',

@@ -39,7 +39,7 @@ import {
   type ChatPrincipal,
 } from '../../services/chat-v2/types.js';
 import { stripTraceMarkers } from '../../services/trace/trace-markers.js';
-import { getCallerIdentity, sendOwnerAuthRequired } from '../../middleware/caller-identity.middleware.js';
+import { getCallerIdentity, rejectUnverifiedCaller, sendOwnerAuthRequired } from '../../middleware/caller-identity.middleware.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -332,6 +332,7 @@ export interface ChatV2ControllerHandlers {
   listAgents: (req: Request, res: Response) => void | Promise<void>;
   getAgentPresence: (req: Request, res: Response) => void | Promise<void>;
   getAgentTimeline: (req: Request, res: Response) => void;
+  searchMessages: (req: Request, res: Response) => void;
 }
 
 /**
@@ -842,6 +843,42 @@ export function createChatV2Controller(
      * (specs/unified-conversations-cloud-store.md §A.5). `source` (or
      * `sources`) is a comma-separated filter.
      */
+    /**
+     * `GET /search?q=<keywords>&channel=&from=&to=&limit=&session=` — search the
+     * chat history the caller can see. An agent searches as itself (its badge);
+     * the owner names the agent with `session`. `from` / `to` take a date
+     * (`2026-10-09`) or a timestamp.
+     */
+    searchMessages: (req, res) =>
+      runHandler(res, () => {
+        const identity = getCallerIdentity(req);
+        if (identity.kind !== 'owner' && identity.kind !== 'relay-owner' && rejectUnverifiedCaller(req, res, 'Searching chat history')) return;
+        const principal = principalFromRequest(req);
+        const q = req.query;
+        const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+        const when = (v: unknown, endOfDay: boolean): number | undefined => {
+          const raw = str(v);
+          if (!raw) return undefined;
+          const ms = Date.parse(raw);
+          if (!Number.isFinite(ms)) {
+            throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, `bad date: ${raw}`);
+          }
+          // A bare date means the whole day.
+          return endOfDay && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? ms + 24 * 60 * 60 * 1000 : ms;
+        };
+        const limitRaw = typeof q.limit === 'string' ? Number.parseInt(q.limit, 10) : undefined;
+        const hits = service.searchMessagesForAgent({
+          agentSession: principal.agentSession ?? str(q.session) ?? '',
+          principal,
+          query: str(q.q) ?? '',
+          channel: str(q.channel),
+          from: when(q.from, false),
+          to: when(q.to, true),
+          limit: Number.isFinite(limitRaw) ? limitRaw : undefined,
+        });
+        res.json({ success: true, data: { count: hits.length, hits } });
+      }),
+
     getAgentTimeline: (req, res) =>
       runHandler(res, () => {
         const principal = principalFromRequest(req);

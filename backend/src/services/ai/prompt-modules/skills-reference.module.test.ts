@@ -104,6 +104,9 @@ describe('SkillsReferenceModule', () => {
 			// Crewly channels span teams: every agent can find and post in its own.
 			expect(result).toContain('core/list-channels');
 			expect(result).toContain("reply-channel --channel '#name'");
+			// Before saying "I can't find it", look in the chat log.
+			expect(result).toContain('core/search-chat');
+			expect(result).toContain('search chat history');
 		});
 
 		it('sends the orchestrator to harness-login and forbids interactive logins in bash', async () => {

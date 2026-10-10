@@ -133,6 +133,24 @@ export interface AgentTimelineRow extends ChatMessageRow {
   channel_type: ChatChannelType;
 }
 
+/** One hit of {@link MessageStore.searchForAgent}. */
+export interface ChatSearchRow {
+  id: string;
+  channel_id: string;
+  channel_name: string;
+  channel_type: ChatChannelType;
+  sender_type: string;
+  sender_id: string;
+  content: string;
+  created_at: number;
+  thread_id: string | null;
+}
+
+/** Escape LIKE wildcards. */
+function likeEscape(term: string): string {
+  return term.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 /** Result of inserting a message — includes whether this was a dedupe hit. */
 export interface MessageInsertResult {
   row: ChatMessageRow;
@@ -995,6 +1013,63 @@ export class MessageStore {
          LIMIT ?`,
       )
       .all(...params) as AgentTimelineRow[];
+  }
+
+  /**
+   * Search the messages an agent can see — its DMs, the channels and huddles
+   * it is a member of, and any message that @-mentions it — by keywords (all
+   * must appear), optional channel and date range, newest first.
+   *
+   * @param agentSession - The agent whose view is searched
+   * @param opts.terms - Keywords, all required (case-insensitive substring)
+   * @param opts.channel - Channel id, or name (with or without `#`)
+   * @param opts.fromMs - Only messages created at or after this
+   * @param opts.toMs - Only messages created before this
+   * @param opts.limit - Most hits
+   * @returns Hits, newest first
+   */
+  searchForAgent(
+    agentSession: string,
+    opts: { terms: string[]; channel?: string; fromMs?: number; toMs?: number; limit: number },
+  ): ChatSearchRow[] {
+    const params: Array<string | number> = [
+      agentSession,
+      agentSession,
+      agentSession,
+      `%${likeEscape(JSON.stringify(agentSession))}%`,
+    ];
+    let where = `m.sender_type != 'system'
+      AND (m.agent_session = ? OR c.agent_session = ?
+           OR m.channel_id IN (SELECT channel_id FROM chat_channel_members WHERE member_session = ?)
+           OR m.mentions LIKE ? ESCAPE '\\')`;
+    for (const term of opts.terms) {
+      where += ` AND m.content LIKE ? ESCAPE '\\'`;
+      params.push(`%${likeEscape(term)}%`);
+    }
+    if (opts.channel) {
+      const name = opts.channel.replace(/^#/, '');
+      where += ` AND (m.channel_id = ? OR lower(replace(c.name, '#', '')) = lower(?))`;
+      params.push(opts.channel, name);
+    }
+    if (opts.fromMs !== undefined) {
+      where += ' AND m.created_at >= ?';
+      params.push(opts.fromMs);
+    }
+    if (opts.toMs !== undefined) {
+      where += ' AND m.created_at < ?';
+      params.push(opts.toMs);
+    }
+    params.push(opts.limit);
+    return this.db
+      .prepare(
+        `SELECT m.id, m.channel_id, c.name AS channel_name, c.type AS channel_type,
+                m.sender_type, m.sender_id, m.content, m.created_at, m.thread_id
+         FROM chat_messages m JOIN chat_channels c ON c.id = m.channel_id
+         WHERE ${where}
+         ORDER BY m.created_at DESC, m.rowid DESC
+         LIMIT ?`,
+      )
+      .all(...params) as ChatSearchRow[];
   }
 
   /**

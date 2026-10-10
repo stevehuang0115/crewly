@@ -44,6 +44,7 @@ function requireChatWriter(req: Request, res: Response, next: NextFunction): voi
  * - `DELETE /channels/:id`
  * - `GET    /channels/:id/messages`
  * - `POST   /channels/:id/messages`
+ * - `GET    /search` — keyword search over the chat history the caller can see
  * - `GET    /agents` — directory of agents across all teams
  * - `GET    /presence/:agentId` — live presence for one agent
  * - `GET    /agents/:session/timeline` — one agent's messages across every surface
@@ -71,6 +72,8 @@ export function createChatV2Router(
 
   router.get('/channels/:id/messages', requireAuth, handlers.listMessages);
   router.post('/channels/:id/messages', requireAuth, requireChatWriter, handlers.sendMessage);
+
+  router.get('/search', requireAuth, handlers.searchMessages);
 
   router.get('/agents', requireAuth, handlers.listAgents);
   router.get('/agents/:session/timeline', requireAuth, handlers.getAgentTimeline);

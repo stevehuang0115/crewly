@@ -2711,7 +2711,7 @@ void (async () => {
 						chatService.queryRecentTurnsForDispatch(
 							channelId,
 							threadId,
-							Math.max(CHAT_CONTEXT_CONSTANTS.THREAD_MAX, CHAT_CONTEXT_CONSTANTS.CHANNEL_MAX),
+							Math.max(CHAT_CONTEXT_CONSTANTS.THREAD_MAX, CHAT_CONTEXT_CONSTANTS.CHANNEL_MAX, CHAT_CONTEXT_CONSTANTS.TOP_LEVEL_OWNER_MAX),
 						),
 					// A message that addresses nobody goes to the team leader alone
 					// (optional reply); the team is found by the huddle's roster.

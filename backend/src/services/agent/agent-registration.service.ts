@@ -110,6 +110,8 @@ import {
 	buildHandoverSummary,
 	claudeTranscriptPath,
 	conversationExists,
+	defaultClaudeHome,
+	writeRestartHandover,
 	lastTurnContextTokens,
 	orcFreshContextTokens,
 	memberFreshContextTokens,
@@ -1004,6 +1006,13 @@ export class AgentRegistrationService {
 				storedSessionId && cwd ? conversationExists({ runtimeType, sessionId: storedSessionId, cwd, ...this.claudeHomeOverride(sessionName, runtimeType) }) : undefined,
 		});
 		effectiveFlags.push(...plan.flags);
+		// A fresh Claude Code conversation that nobody chose (stop, or a stored
+		// conversation that is gone) still gets the previous one handed over.
+		// Deliberate fresh starts (oversized, per-task, runtime switch) wrote
+		// their own handover, which prepareRestartHandover sees and respects.
+		if (plan.presetSessionId && !freshInstead && autoResume && cwd && runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
+			this.prepareRestartHandover(sessionName, cwd, persistence);
+		}
 		if (plan.presetSessionId && persistence) {
 			try {
 				persistence.updateSessionId(sessionName, plan.presetSessionId);
@@ -1021,6 +1030,52 @@ export class AgentRegistrationService {
 			sessionId: plan.presetSessionId ?? plan.resumeSessionId ?? null,
 		});
 		return plan;
+	}
+
+	/**
+	 * For a fresh Claude Code conversation, hand over the most recent previous
+	 * one (written within the last week) the way a runtime switch does: a
+	 * handover file plus a note on the kickoff. Skipped when a handover for the
+	 * session is already newer than that conversation (the oversized, per-task
+	 * and runtime-switch paths write their own). Never throws.
+	 *
+	 * @param sessionName - Session being launched
+	 * @param cwd - Its working directory
+	 * @param persistence - Session persistence, when available
+	 */
+	private prepareRestartHandover(
+		sessionName: string,
+		cwd: string,
+		persistence: ReturnType<typeof getSessionStatePersistence> | null,
+	): void {
+		try {
+			const override = this.claudeHomeOverride(sessionName, RUNTIME_TYPES.CLAUDE_CODE);
+			const claudeHomes = [...(override.claudeHome ? [override.claudeHome] : []), defaultClaudeHome()];
+			const claimed = new Set<string>();
+			for (const [name, info] of persistence?.getRegisteredSessionsMap() ?? []) {
+				if (name !== sessionName && info.claudeSessionId) claimed.add(info.claudeSessionId);
+			}
+			const result = writeRestartHandover({
+				sessionName,
+				cwd,
+				claudeHomes,
+				handoverDir: path.join(getCrewlyHomePath(), ORC_CONVERSATION_CONSTANTS.HANDOVER_DIR),
+				...(persistence ? { lastConversationsFile: persistence.lastConversationsFile() } : {}),
+				claimedByOthers: claimed,
+			});
+			if (!result) return;
+			this.pendingRestartNotes.set(sessionName, result.note);
+			this.logger.info('Fresh conversation after a restart — handing over the previous one', {
+				sessionName,
+				previous: result.previousSessionId,
+				handover: result.file,
+			});
+		} catch (err) {
+			this.logger.warn('Could not prepare the restart handover (starting without it)', {
+				sessionName,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
 	}
 
 	/**
@@ -1314,6 +1369,8 @@ export class AgentRegistrationService {
 	private readonly resumedSessions = new Map<string, string>();
 	/** Handover file for an orchestrator that was just given a fresh conversation, by session. */
 	private readonly pendingHandovers = new Map<string, { path: string; tokens: number }>();
+	/** Kickoff note for a session that restarted into a fresh conversation, with the handover to read (given the way a runtime-switch note is). */
+	private readonly pendingRestartNotes = new Map<string, string>();
 
 	/**
 	 * Assemble the orchestrator prompt at the *other* profile and log the
@@ -6945,7 +7002,11 @@ Loop until done, blocked, or explicitly reassigned:
 		// carry on" message instead — for every runtime. A genuinely fresh
 		// conversation (new session, or the orc handover case, which is never
 		// marked resumed) keeps the full kickoff.
-		const switchNote = takeRuntimeSwitchKickoffNote(sessionName);
+		const restartNote = this.pendingRestartNotes.get(sessionName);
+		if (restartNote) this.pendingRestartNotes.delete(sessionName);
+		const switchNote = [takeRuntimeSwitchKickoffNote(sessionName), handover || resumedRole ? null : restartNote]
+			.filter(Boolean)
+			.join(' ') || null;
 		const baseMessage = resumedRole
 			? this.resumedKickoff(sessionName, resumedRole, isClaudeCode ? undefined : promptFilePath)
 			: isClaudeCode
