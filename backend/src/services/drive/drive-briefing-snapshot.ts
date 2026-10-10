@@ -23,6 +23,7 @@
  */
 
 import { DRIVE_BRIEFING_CONSTANTS } from '../../constants.js';
+import { ticketStaleness } from '../project-tickets/ticket-hygiene.js';
 import { redactSecrets } from '../../utils/secret-redactor.js';
 import { clip, speakable } from '../briefing/briefing.utils.js';
 import type { OwnerTurnMark } from '../briefing/briefing-cards.js';
@@ -66,6 +67,10 @@ export interface SnapshotTicketSource {
   updatedAt: string;
   workItemId: string | null;
   log: string[];
+  /** Optional: sharpen the stale check (older callers omit them) */
+  createdAt?: string;
+  ownerReview?: boolean;
+  deferUntil?: string | null;
 }
 
 /** A task-pool work item (the fields used). */
@@ -231,6 +236,10 @@ export function buildBriefingSnapshot(src: SnapshotSources): BriefingSnapshot {
     // The newer of the ticket's last log line and its work item's summary.
     const last = wiLast && wi && Date.parse(workItemUpdatedAt(wi)) > Date.parse(t.updatedAt) ? wiLast : logLast || wiLast;
     const team = (t.team && teamName.get(t.team)) || (t.assignee ? teamOfAgent.get(t.assignee) : undefined);
+    // Last real activity, and whether it has been quiet so long the status may be outdated.
+    const age = ticketStaleness({ ...t, createdAt: t.createdAt ?? t.updatedAt }, nowMs);
+    const outdatedNote = age.stale ? `May be outdated: no update for ${age.idleDays} days.` : '';
+    const lastText = safeText(outdatedNote && last ? `${outdatedNote} Last note: ${last}` : outdatedNote || last, C.TEXT_MAX);
     items.push({
       ref: t.id,
       kind: 'ticket',
@@ -240,7 +249,10 @@ export function buildBriefingSnapshot(src: SnapshotSources): BriefingSnapshot {
       ...(team ? { team: safeText(team, C.NAME_MAX) } : {}),
       project: safeText(t.project, C.NAME_MAX),
       updatedAt: t.updatedAt,
-      ...(safeText(last, C.TEXT_MAX) ? { last: safeText(last, C.TEXT_MAX) } : {}),
+      ...(lastText ? { last: lastText } : {}),
+      lastActivityAt: age.lastActivityAt,
+      idleDays: age.idleDays,
+      ...(age.stale ? { maybeOutdated: true as const } : {}),
       ...(t.assignee ? { session: t.assignee } : {}),
     });
   }
@@ -272,7 +284,7 @@ export function buildBriefingSnapshot(src: SnapshotSources): BriefingSnapshot {
     const running = src.workItems
       .filter((w) => w.target === a.agentSession && (w.status === 'running' || w.status === 'accepted'))
       .sort((x, y) => Date.parse(y.startedAt ?? y.createdAt) - Date.parse(x.startedAt ?? x.createdAt))[0];
-    const ticket = running ? undefined : items.find((i) => i.kind === 'ticket' && i.session === a.agentSession && i.status === 'in_progress');
+    const ticket = running ? undefined : items.find((i) => i.kind === 'ticket' && i.session === a.agentSession && i.status === 'in_progress' && !i.maybeOutdated);
     const linkedTicket = running ? src.tickets.find((t) => t.workItemId === running.id) : undefined;
     const activity = running
       ? { title: safeText(linkedTicket?.title ?? running.title, C.TITLE_MAX), since: running.startedAt ?? running.createdAt, ref: linkedTicket?.id ?? `wi:${running.id.slice(0, 8)}` }

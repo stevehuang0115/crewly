@@ -136,3 +136,68 @@ describe('capSnapshot', () => {
     expect(tighter.agents[0].lastToOwner).toHaveLength(1);
   });
 });
+
+describe('ticket freshness', () => {
+  const day = (n: number): string => new Date(NOW.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
+  const ticket = (over: Partial<SnapshotSources['tickets'][number]>): SnapshotSources['tickets'][number] => ({
+    project: 'ce-site',
+    id: 'CE-1',
+    title: 'A ticket',
+    status: 'in_progress',
+    labels: [],
+    assignee: 'vera-1',
+    team: 't-ce',
+    updatedAt: day(0),
+    workItemId: null,
+    log: [],
+    ...over,
+  });
+  const itemOf = (tickets: SnapshotSources['tickets'], ref: string) => buildBriefingSnapshot(sources({ tickets, workItems: [] })).items.find((i) => i.ref === ref)!;
+
+  it('gives every ticket its last-activity date and idle days', () => {
+    const i = itemOf([ticket({ id: 'CE-1', updatedAt: day(1), log: [`${day(1)} · vera-1 · wrote the intro`] })], 'CE-1');
+    expect(i.lastActivityAt).toBe(day(1));
+    expect(i.idleDays).toBe(1);
+    expect(i.maybeOutdated).toBeUndefined();
+    expect(i.last).toBe('wrote the intro');
+  });
+
+  it('uses a newer Log line over updatedAt', () => {
+    const i = itemOf([ticket({ updatedAt: day(6), log: [`${day(2)} · vera-1 · progress`] })], 'CE-1');
+    expect(i.lastActivityAt).toBe(day(2));
+    expect(i.idleDays).toBe(2);
+  });
+
+  it('marks open tickets silent past the threshold as maybe outdated, with the age in the spoken text', () => {
+    const inProgress = itemOf([ticket({ status: 'in_progress', updatedAt: day(5), log: [`${day(5)} · vera-1 · started`] })], 'CE-1');
+    expect(inProgress.maybeOutdated).toBe(true);
+    expect(inProgress.idleDays).toBe(5);
+    expect(inProgress.last).toBe('May be outdated: no update for 5 days. Last note: started');
+    // Backlog gets the longer 14-day allowance.
+    expect(itemOf([ticket({ status: 'backlog', updatedAt: day(10) })], 'CE-1').maybeOutdated).toBeUndefined();
+    const backlog = itemOf([ticket({ status: 'backlog', updatedAt: day(15) })], 'CE-1');
+    expect(backlog.maybeOutdated).toBe(true);
+    expect(backlog.last).toBe('May be outdated: no update for 15 days.');
+  });
+
+  it('does not mark parked tickets or finished ones', () => {
+    expect(itemOf([ticket({ status: 'backlog', updatedAt: day(40), labels: ['parked'] })], 'CE-1').maybeOutdated).toBeUndefined();
+    expect(itemOf([ticket({ status: 'done', updatedAt: day(0.5) })], 'CE-1').maybeOutdated).toBeUndefined();
+  });
+
+  it('does not report an outdated in-progress ticket as what its assignee is doing now', () => {
+    const snap = buildBriefingSnapshot(sources({ tickets: [ticket({ status: 'in_progress', updatedAt: day(6) })], workItems: [] }));
+    expect(snap.agents.find((a) => a.session === 'vera-1')?.activity).toBeUndefined();
+    const fresh = buildBriefingSnapshot(sources({ tickets: [ticket({ status: 'in_progress', updatedAt: day(0.1) })], workItems: [] }));
+    expect(fresh.agents.find((a) => a.session === 'vera-1')?.activity?.ref).toBe('CE-1');
+  });
+
+  it('stays backward compatible: the old fields are unchanged and the new ones are optional', () => {
+    const i = itemOf([ticket({ status: 'in_progress', updatedAt: day(6) })], 'CE-1');
+    expect(i).toMatchObject({ ref: 'CE-1', kind: 'ticket', status: 'in_progress', updatedAt: day(6), project: 'ce-site' });
+    // Work items keep their old shape.
+    const wi = buildBriefingSnapshot(sources()).items.find((x) => x.kind === 'work')!;
+    expect(wi.maybeOutdated).toBeUndefined();
+    expect(wi.lastActivityAt).toBeUndefined();
+  });
+});

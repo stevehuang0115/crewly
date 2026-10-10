@@ -29,6 +29,7 @@ export type WorkItemType =
   | 'ticket_triage' // Ticket autopilot: the project's lead grooms the backlog (specs/2026-09-30-ticket-autopilot.md)
   | 'autopilot_retro' // Ticket autopilot: the driver's daily retro (specs/2026-10-03-autopilot-experiments.md)
   | 'goal_replan' // Ticket autopilot: nothing to triage, plan the next tickets toward the goal (specs/2026-10-04-autopilot-goal-replan.md)
+  | 'ticket_hygiene_review' // Ticket hygiene: the lead decides a batch of stale tickets (once a day per team)
   | 'autopilot_self_review'; // Ticket autopilot: the driver's short self-review at the speed mode's cadence (specs/2026-10-04-autopilot-speed-modes.md)
 
 /** All valid WorkItemType values. */
@@ -45,6 +46,7 @@ export const WORK_ITEM_TYPES: readonly WorkItemType[] = [
   'autopilot_retro',
   'goal_replan',
   'autopilot_self_review',
+  'ticket_hygiene_review',
 ] as const;
 
 /**
