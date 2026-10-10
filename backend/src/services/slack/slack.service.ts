@@ -463,6 +463,21 @@ export interface SlackOutboundPost {
   kind: 'text' | 'file';
 }
 
+/**
+ * The file id from a `files.uploadV2` result. The helper answers
+ * `{ files: [ <files.completeUploadExternal response> ] }`, so the id sits at
+ * `files[0].files[0].id`; a flat `files[0].id` is accepted too. Reading only
+ * the flat shape returned nothing, so every image an agent without its own
+ * bot attached fell back to the workspace app's name (2026-10-10).
+ *
+ * @param result - `files.uploadV2` result
+ * @returns The first file id, if any
+ */
+export function uploadedFileId(result: unknown): string | undefined {
+  const first = (result as { files?: Array<{ id?: string; files?: Array<{ id?: string }> }> } | undefined)?.files?.[0];
+  return first?.files?.[0]?.id ?? first?.id ?? undefined;
+}
+
 export class SlackService extends EventEmitter {
   private logger = LoggerService.getInstance().createComponentLogger('SlackService');
   private app: SlackApp | null = null;
@@ -2631,7 +2646,7 @@ export class SlackService extends EventEmitter {
       filename,
       ...(options.title ? { title: options.title } : {}),
     });
-    const fileId = uploaded.files?.[0]?.id;
+    const fileId = uploadedFileId(uploaded);
     if (!fileId) throw new Error('private upload returned no file id');
     const { username, iconEmoji, iconUrl } = options.persona;
     const blocks = [
@@ -2727,7 +2742,7 @@ export class SlackService extends EventEmitter {
 
         this.status.messagesSent++;
         if (!options.botToken) this.recordDeliveryOutcome(options.channelId, null);
-        return { fileId: result.files?.[0]?.id };
+        return { fileId: uploadedFileId(result) };
       } catch (error: unknown) {
         fileStream.destroy();
 

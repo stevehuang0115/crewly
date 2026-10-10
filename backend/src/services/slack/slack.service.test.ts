@@ -6,7 +6,7 @@
 
 // Jest globals are available automatically
 import { setTicketIntakeService, type TicketIntakeService } from '../v3/ticket-intake.service.js';
-import { SlackService, getSlackService, resetSlackService, resolveOutgoingText, hasOutgoingContent } from './slack.service.js';
+import { SlackService, getSlackService, resetSlackService, resolveOutgoingText, hasOutgoingContent, uploadedFileId } from './slack.service.js';
 import type { SlackConfig, SlackNotification } from '../../types/slack.types.js';
 import { EventEmitter } from 'events';
 
@@ -812,7 +812,7 @@ describe('SlackService', () => {
         afterEach(() => timer.mockRestore());
 
         it('uploads an image privately and posts it under the agent name in the thread', async () => {
-          mockUploadV2.mockResolvedValue({ files: [{ id: 'F-img' }] });
+          mockUploadV2.mockResolvedValue({ ok: true, files: [{ ok: true, files: [{ id: 'F-img' }] }] });
           const post = (service as any).client.chat.postMessage as jest.Mock;
           post.mockResolvedValue({ ts: '1.2' });
 
@@ -2578,5 +2578,18 @@ describe('sharedMessageText (a message shared into another one)', () => {
   it('ignores plain link previews and empty input', () => {
     expect(sharedMessageText([{ title: 'Some page', title_link: 'https://example.com' }])).toBe('');
     expect(sharedMessageText(undefined)).toBe('');
+  });
+});
+
+describe('uploadedFileId', () => {
+  it('reads the id from the files.uploadV2 shape (completion responses)', () => {
+    expect(uploadedFileId({ ok: true, files: [{ ok: true, files: [{ id: 'F1' }] }] })).toBe('F1');
+  });
+  it('accepts a flat files[0].id', () => {
+    expect(uploadedFileId({ files: [{ id: 'F2' }] })).toBe('F2');
+  });
+  it('returns undefined when there is no file', () => {
+    expect(uploadedFileId({ ok: true, files: [] })).toBeUndefined();
+    expect(uploadedFileId(undefined)).toBeUndefined();
   });
 });
