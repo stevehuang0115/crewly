@@ -68,9 +68,6 @@ export function shouldRequestSummaryFallback(text: string, toolCalls: readonly T
  * a claim of having sent something.
  */
 export const SUMMARY_FALLBACK_PROMPT =
-  '请直接回复给你发消息的人：用对方的语言，简短（1-3 句），只写答案或结果本身。' +
-  '不要写状态汇报（不要"用户问了什么 / 我做了什么 / 下一步"之类的小标题），不要描述你调用了哪些工具，' +
-  '也不要说你已经发送了什么——除非这一轮真的用工具发出去了。\n' +
   'Reply directly to the person who wrote to you: in their language, short (1-3 sentences), only the answer or result itself. ' +
   'No status report (no "What the user asked / What I did / Next step" sections), do not describe your tool calls, ' +
   'and do not say you sent anything unless a tool actually sent it in this turn.';

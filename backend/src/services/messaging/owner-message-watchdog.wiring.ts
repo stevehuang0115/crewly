@@ -178,7 +178,7 @@ export function loginHintFor(runtimeType: string | null | undefined): LoginHint 
  */
 export function buildNudgeMessage(entry: OwnerMessageEntry, waitedMinutes: number, opts: { withHeader?: boolean } = {}): string {
   const identity = /^[A-Za-z0-9._-]+$/.test(entry.responsible) ? `CREWLY_SESSION_NAME=${entry.responsible} ` : '';
-  const replyCmd = `${identity}bash ${AGENT_REPLY_CONSTANTS.SKILL_PATH} "<你的回复>"`;
+  const replyCmd = `${identity}bash ${AGENT_REPLY_CONSTANTS.SKILL_PATH} "<your reply>"`;
   const noneCmd = `${identity}bash ${AGENT_REPLY_CONSTANTS.SKILL_PATH} --none`;
   const withHeader = opts.withHeader ?? true;
   const head = withHeader && entry.chatChannelId ? `[CHAT:${entry.chatChannelId}] <owner@reminder>` : null;
@@ -192,7 +192,7 @@ export function buildNudgeMessage(entry: OwnerMessageEntry, waitedMinutes: numbe
     '',
     C.NUDGE_TEXT.replace('{waited}', String(waitedMinutes)).replace('{replyCmd}', replyCmd).replace('{noneCmd}', noneCmd),
     '',
-    `owner 的原话: ${entry.preview}`,
+    `The owner's exact words: ${entry.preview}`,
   ].join('\n');
 }
 

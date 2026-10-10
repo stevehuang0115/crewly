@@ -1799,10 +1799,10 @@ export const SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES = 4;
  * `{cmd}` is the interim form of the agent's reply skill.
  */
 export const CHAT_REPLY_PACING_HINT =
-	'回复节奏: 动手前先判断工作量。一两分钟内能做完的（查一下、答一句、改一处）→ 直接做，做完一次性回复。' +
-	'要花更久的（多个步骤、要跑命令/开浏览器/查很多资料、预计超过约 3 分钟）→ **先**用一两句话回复（{cmd}）：你理解的需求、打算怎么做、大概多久，有要对方确认的就一并问；' +
-	'发完再开始做，做完发最终回复。中间不要刷进度，除非遇到阻塞或计划变了。' +
-	'对方是在回答你问的问题、或给了你新信息/决定时，至少回一句简短确认（例如「收到，按 X 来」）——不回会让对方以为没人看；只有「好」「ok」「谢谢」这类收尾可以不回。';
+	'Reply pacing: size the job before you start. If you can finish it in a minute or two (a quick lookup, a one-line answer, a single edit) → just do it and send one reply when done. ' +
+	'If it takes longer (several steps, running commands, opening a browser, reading a lot of material, expected to take more than about 3 minutes) → **first** reply with a sentence or two ({cmd}): what you understand the ask to be, how you plan to do it, roughly how long it will take, and anything you need them to confirm; ' +
+	'then start, and send the final reply when done. Do not post progress updates in between unless you hit a blocker or the plan changes. ' +
+	'When the person is answering a question you asked, or gave you new information or a decision, reply with at least a short acknowledgement (e.g. "Got it, going with X") — silence makes them think nobody saw it; only closers like "ok" or "thanks" may go unanswered.';
 
 /** Unassigned work goes to a decider and moves up when not taken (owner, 2026-09-24). */
 export const UNASSIGNED_ROUTE_CONSTANTS = {
@@ -2418,8 +2418,8 @@ export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	] as readonly string[],
 	/** Nudge delivered to the responsible agent ({waited} = minutes) */
 	NUDGE_TEXT:
-		'[REMINDER] 这条来自 owner 的消息已经 {waited} 分钟没有回复了。现在回复它：`{replyCmd}`——会自动发回这条消息来的地方。' +
-		'如果已经在别处回答过，或者确实不需要回复，运行 `{noneCmd}`。',
+		'[REMINDER] This message from the owner has gone {waited} minutes without a reply. Reply to it now: `{replyCmd}` — it is sent automatically back to where the message came from. ' +
+		'If you already answered elsewhere, or it genuinely needs no reply, run `{noneCmd}`.',
 	/**
 	 * Note texts (from Crewly's own bot), English like the rest of the
 	 * owner-facing UI. {name} = agent display name. The login note names the
@@ -5728,17 +5728,17 @@ export const TICKET_CONSTANTS = {
 	SLACK_DISMISS_ACTION_ID: 'ticket_dismiss',
 	/** Receipt texts */
 	RECEIPT: {
-		RECORDED: (tkt: string) => `已记成 ${tkt}`,
-		DISMISSED: (tkt: string) => `${tkt} 已取消记录`,
+		RECORDED: (tkt: string) => `Recorded as ${tkt}`,
+		DISMISSED: (tkt: string) => `${tkt} is no longer tracked`,
 		/** chat-v2 receipt once the ticket is accepted */
-		DONE: (tkt: string) => `${tkt} 已完成`,
+		DONE: (tkt: string) => `${tkt} is done`,
 		/** Slack receipt: this reaction on the owner's message (no reply, no notification) */
 		REACTION: 'ticket',
 		/** Slack: the 🎫 becomes this once the ticket is accepted */
 		DONE_REACTION: 'white_check_mark',
 		/**
 		 * Receipts are off (owner, 2026-09-24): tickets are Crewly's own record
-		 * of the work — no 🎫 / ✅ / 「已记成 TKT-…」 in the owner's conversations.
+		 * of the work — no 🎫 / ✅ / "Recorded as TKT-…" in the owner's conversations.
 		 */
 		ENABLED: false,
 	},
@@ -5817,9 +5817,9 @@ export const TICKET_CONSTANTS = {
 		/** 「打回 <reason>」 — send it back; group 2 is the reason */
 		REJECT_PATTERN: /^\s*(打回|退回|重做|不通过|reject(ed)?|redo)\s*[:：,，。.\-—]*\s*([\s\S]*)$/i,
 		/** Reason recorded when 打回 came without one */
-		REJECT_NO_REASON: '（未写原因）',
+		REJECT_NO_REASON: '(no reason given)',
 		/** WorkItem title for a rework sent from the board */
-		REWORK_TITLE: (tkt: string) => `打回 ${tkt}`,
+		REWORK_TITLE: (tkt: string) => `Sent back ${tkt}`,
 	},
 	/**
 	 * Follow-ups vs new tickets (owner, 2026-09-28): an answer to an agent's
@@ -6186,7 +6186,7 @@ export const ONBOARDING_CONSTANTS = {
 	/** Longest first task accepted */
 	FIRST_TASK_MAX_LENGTH: 4000,
 	/** First line of the message the orchestrator receives for a first task */
-	FIRST_TASK_HEADER: '[初始设置 · 第一件事]',
+	FIRST_TASK_HEADER: '[Initial setup · first task]',
 	/** Chat metadata `source` of a first task sent from setup */
 	FIRST_TASK_SOURCE: 'onboarding_first_task',
 	/** Query parameter that opens `/setup` at a step (e.g. `/setup?step=cloud`) */
@@ -6236,13 +6236,13 @@ export const BUNDLE_CONSTANTS = {
 	STEP_ORDER: ['team', 'norms', 'skills', 'connectors', 'slack', 'schedules', 'first_week'] as readonly string[],
 	/** Owner-facing step labels */
 	STEP_LABELS: {
-		team: '建团队',
-		norms: '写团队规范和 SOP',
-		skills: '装技能',
-		connectors: '检查要接的服务',
-		slack: '建 Slack 频道',
-		schedules: '排定时任务',
-		first_week: '安排第一周的工作',
+		team: 'Set up the team',
+		norms: 'Write team norms and SOPs',
+		skills: 'Install skills',
+		connectors: 'Check the services to connect',
+		slack: 'Create Slack channels',
+		schedules: 'Schedule recurring tasks',
+		first_week: 'Plan the first week of work',
 	} as Readonly<Record<string, string>>,
 	/** Why a step is waiting (status `pending`) */
 	PENDING_REASONS: {
@@ -6264,7 +6264,7 @@ export const BUNDLE_CONSTANTS = {
 	/** Chat metadata `source` of a first-week task */
 	FIRST_WEEK_SOURCE: 'bundle_first_week',
 	/** First line of a first-week task the orchestrator receives */
-	FIRST_WEEK_HEADER: '[成套方案 · 第一周]',
+	FIRST_WEEK_HEADER: '[Solution bundle · week one]',
 	/** How often the backend delivers due first-week tasks and resumes waiting deployments */
 	TICK_INTERVAL_MS: 5 * 60 * 1000,
 	/** How often `crewly deploy-bundle` polls a running backend's job */

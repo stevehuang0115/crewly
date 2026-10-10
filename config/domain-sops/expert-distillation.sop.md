@@ -1,70 +1,70 @@
-# SOP: Expert Mindset Distillation (名人思维蒸馏)
+# SOP: Expert Mindset Distillation
 
 **Version:** 1.0.0
 **Owner:** Product Team (Mia)
 **Scope:** Crewly Pro Core Methodology
 
-## 1. 目标 (Objective)
-本 SOP 旨在标准化「专家思维蒸馏」流程，将非结构化的名人/专家素材转化为 Crewly 可用的结构化 `Expert Profile` (MD + JSON)，从而为 Agent 提供高质量的思维注入。
+## 1. Objective
+This SOP standardizes the "expert mindset distillation" process: turning unstructured material from famous people and experts into a structured `Expert Profile` (MD + JSON) that Crewly can use, so Agents get high-quality mindset injection.
 
-## 2. 输入 (Inputs)
-- **Primary Source:** 专家著作 (PDF/EPUB)、公开访谈录音或转录稿 (Markdown/TXT)。
-- **Secondary Source:** 媒体分析文章、维基百科、YouTube 视频转录。
+## 2. Inputs
+- **Primary Source:** the expert's books (PDF/EPUB), public interview recordings or transcripts (Markdown/TXT).
+- **Secondary Source:** media analysis articles, Wikipedia, YouTube video transcripts.
 - **Tools:** 
-  - Teacher Model: Claude 3.5 Sonnet (首选) 或 GPT-4o。
-  - Crewly Distiller CLI: `crewly-pro distill`。
+  - Teacher Model: Claude 3.5 Sonnet (preferred) or GPT-4o.
+  - Crewly Distiller CLI: `crewly-pro distill`.
 
-## 3. 流程阶段 (Phases)
+## 3. Phases
 
-### Phase 1: 素材清洗 (Data Preprocessing)
-- **任务:** 过滤掉无关信息（广告、日常寒暄、重复片段）。
-- **标准:** 仅保留包含「决策逻辑」、「价值观」、「行业洞察」和「语言风格」的核心文本。
-- **输出:** 清洗后的文本文件 (`raw_distill_input.txt`)。
+### Phase 1: Data Preprocessing
+- **Task:** filter out irrelevant material (ads, small talk, repeated passages).
+- **Standard:** keep only the core text that contains "decision logic", "values", "industry insights" and "language style".
+- **Output:** the cleaned text file (`raw_distill_input.txt`).
 
-### Phase 2: 专家特征提取 (Mindset Extraction)
-- **任务:** 使用 Teacher Model 执行蒸馏提示词 (Distillation Prompt)。
+### Phase 2: Mindset Extraction
+- **Task:** run the Distillation Prompt with the Teacher Model.
 - **Prompt:**
   ```markdown
   # SYSTEM PROMPT: Expert Mindset Distiller
-  你是一名顶级的「思维建模专家」。你的目标是分析提供的专家素材，提取其底层的「思维软件」。
+  You are a top-tier "mindset modeling expert". Your goal is to analyze the provided expert material and extract the underlying "thinking software".
   
-  ## 提取维度:
-  1. **Mental Models (思维模型):** 专家常用的核心框架（如第一性原理、二八定律）。
-  2. **Decision Logic (决策逻辑):** 专家如何权衡风险、处理权衡、评估长短期利益。
-  3. **Industry Insights (行业洞察):** 专家对特定领域的独特「反直觉」见解。
-  4. **Communication Style (沟通风格):** 语气词、标志性短语、论证逻辑结构。
+  ## Dimensions to extract:
+  1. **Mental Models:** the core frameworks the expert uses often (e.g. first principles, the 80/20 rule).
+  2. **Decision Logic:** how the expert weighs risk, handles trade-offs, and evaluates short- vs long-term benefit.
+  3. **Industry Insights:** the expert's distinctive "counter-intuitive" views on a specific field.
+  4. **Communication Style:** filler words, signature phrases, the structure of their argumentation.
 
-  ## 约束:
-  - 必须使用分析性的、冷静的第三方视角描述，而非模仿其语气说话。
-  - 提取的思维模型必须具有「可操作性」，即 Agent 可以在执行任务时引用。
+  ## Constraints:
+  - Describe from an analytical, calm third-person perspective; do not imitate their tone of voice.
+  - The extracted mental models must be "actionable", i.e. an Agent can cite them while executing tasks.
   ```
-- **输出:** 专家思维草稿 (`{expert-id}-draft.md`)。
+- **Output:** the expert mindset draft (`{expert-id}-draft.md`).
 
-### Phase 3: 格式化与 JSON 元数据生成 (Synthesis)
-- **任务:** 将草稿整理为标准 Markdown 格式，并生成元数据 JSON。
-- **JSON 规范:** 参考 `config/experts/EXAMPLE.json`。
-- **MD 规范:** 参考 `config/experts/EXAMPLE.md`。
+### Phase 3: Formatting and JSON Metadata (Synthesis)
+- **Task:** turn the draft into standard Markdown and generate the metadata JSON.
+- **JSON spec:** see `config/experts/EXAMPLE.json`.
+- **MD spec:** see `config/experts/EXAMPLE.md`.
 
-### Phase 4: OSS/Pro 边界处理 (Security & Packaging)
-- **任务:** 根据分发渠道进行打包。
+### Phase 4: OSS/Pro Boundary (Security & Packaging)
+- **Task:** package according to the distribution channel.
 - **OSS:**
-  - 仅包含 MD 文件。
-  - 存储于 `config/experts/`。
+  - MD file only.
+  - Stored in `config/experts/`.
 - **Pro:**
-  - 包含 MD + JSON。
-  - 包含预设的 `intensity` 值。
-  - 存储于 `crewly-pro/data/experts/`。
-  - 必须通过 `LicenseValidator` 检查。
+  - MD + JSON.
+  - Includes a preset `intensity` value.
+  - Stored in `crewly-pro/data/experts/`.
+  - Must pass the `LicenseValidator` check.
 
-### Phase 5: 质量审核 (Quality Gates)
-- **Round 1 (Self):** 蒸馏者检查逻辑是否自洽。
-- **Round 2 (Peer):** 另一名 PM 或专家审核提取的模型是否抓住了本质。
-- **Round 3 (Test):** 将 Profile 注入 Agent，进行 3 个标准任务的 Prompt 压力测试。
+### Phase 5: Quality Gates
+- **Round 1 (Self):** the distiller checks that the logic is self-consistent.
+- **Round 2 (Peer):** another PM or expert reviews whether the extracted models capture the essence.
+- **Round 3 (Test):** inject the Profile into an Agent and run a prompt stress test on 3 standard tasks.
 
-## 4. 交付物 (Outputs)
+## 4. Outputs
 - `config/experts/{id}.md`
 - `crewly-pro/data/experts/{id}.json` (Pro Only)
 
-## 5. 质量指标 (KPIs)
-- **Accuracy:** 蒸馏模型能准确预测专家在 80% 常见商业场景下的决策倾向。
-- **Utility:** Agent 使用该模板后，在特定领域的专业评分提升 ≥ 20%。
+## 5. KPIs
+- **Accuracy:** the distilled model accurately predicts the expert's decision tendencies in 80% of common business scenarios.
+- **Utility:** after an Agent uses the template, its professional rating in the specific domain improves by ≥ 20%.

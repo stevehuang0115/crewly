@@ -398,14 +398,14 @@ export async function askBundleQuestions(
     if (answers[q.id] !== undefined && answers[q.id] !== '') continue;
     const options = q.options ?? [];
     for (;;) {
-      log(chalk.bold(`  ${q.label}${q.required ? '' : chalk.gray('（可选）')}`));
+      log(chalk.bold(`  ${q.label}${q.required ? '' : chalk.gray('(optional)')}`));
       if (q.help) log(chalk.gray(`    ${q.help}`));
       options.forEach((o, i) => log(`    ${i + 1}. ${o.label ?? o.value}`));
       const fallback = Array.isArray(q.default) ? q.default.join(', ') : q.default ?? '';
       const raw = (await ask(`  > ${fallback ? chalk.gray(`[${fallback}] `) : ''}`)).trim();
       if (raw === '') {
         if (q.required) {
-          log(chalk.yellow('    这一项必填。'));
+          log(chalk.yellow('    This one is required.'));
           continue;
         }
         break; // default applies
@@ -418,14 +418,14 @@ export async function askBundleQuestions(
       if (q.type === 'select') {
         const value = pick(raw);
         if (!value) {
-          log(chalk.yellow(`    请输入 1-${options.length}。`));
+          log(chalk.yellow(`    Enter a number from 1 to ${options.length}.`));
           continue;
         }
         answers[q.id] = value;
       } else if (q.type === 'multiselect') {
         const values = raw.split(/[,，、\s]+/).filter(Boolean).map(pick);
         if (values.some((v) => v === null)) {
-          log(chalk.yellow(`    用逗号分开，比如 1,3。`));
+          log(chalk.yellow(`    Separate with commas, e.g. 1,3.`));
           continue;
         }
         answers[q.id] = values as string[];

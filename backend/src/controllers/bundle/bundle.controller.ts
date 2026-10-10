@@ -96,7 +96,7 @@ export function createBundleController(deps: BundleControllerDeps): BundleContro
       try {
         const id = param(req, 'templateId');
         const entry = deps.catalog().get(id);
-        if (!entry) throw new BundleError('unknown_bundle', `没有找到方案「${id}」`);
+        if (!entry) throw new BundleError('unknown_bundle', `Solution "${id}" not found`);
         const deployment = await deps.service().getDeployment(id);
         res.json({ success: true, data: { bundle: toBundleDetail(entry.template), deployment } });
       } catch (error) {

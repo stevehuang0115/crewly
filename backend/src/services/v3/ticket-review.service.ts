@@ -462,7 +462,7 @@ export class TicketReviewService {
         ...(ticket.acceptance ?? []),
         { text: why, source: 'reject', check: 'judgment', addedAt: at },
       ];
-      const discussion = [...(ticket.discussion ?? []), { at, author: 'owner', text: `打回：${why}`, ref: `reject-${at}` }];
+      const discussion = [...(ticket.discussion ?? []), { at, author: 'owner', text: `Sent back: ${why}`, ref: `reject-${at}` }];
       const updated = await this.deps.requests.update(ticket.id, {
         status: 'running',
         rejectCount: (ticket.rejectCount ?? 0) + 1,
@@ -630,12 +630,12 @@ export function nudgeText(t: Request, now: number): string {
   const hours = Math.max(1, Math.round((now - Date.parse(t.lastNudgeAt ?? t.submittedAt ?? t.updatedAt)) / 3_600_000));
   const marker = typeof t.ticketNumber === 'number' ? `[TICKET:${formatTicketNumber(t.ticketNumber)} ${t.id}] ` : '';
   const cmd = t.chatRef
-    ? ` 回复命令: bash config/skills/agent/core/reply-channel/execute.sh --channel ${t.chatRef.channelId} --thread ${t.chatRef.threadRootId} --content "<一两句>"`
+    ? ` Reply command: bash config/skills/agent/core/reply-channel/execute.sh --channel ${t.chatRef.channelId} --thread ${t.chatRef.threadRootId} --content "<one or two sentences>"`
     : '';
   return (
-    `${marker}你之前回答的「${t.title}」已经过了约 ${hours} 小时，对方还没回应。` +
-    `如果这件事需要对方确认结果（交付物、改动、需要拍板的），在原来的对话里用一两句自然的话问一下这样行不行——不要提工单、编号或"验收"这类词；` +
-    `如果只是回答了问题、不需要确认，什么都不用做。` +
+    `${marker}You answered "${t.title}" about ${hours} hours ago and they have not responded yet. ` +
+    `If this needs their confirmation of the result (a deliverable, a change, something to decide), ask in the original conversation, in a sentence or two of natural language, whether this works — do not mention tickets, numbers or the word "acceptance"; ` +
+    `if you only answered a question and no confirmation is needed, do nothing.` +
     cmd
   );
 }

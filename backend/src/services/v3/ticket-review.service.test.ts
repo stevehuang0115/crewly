@@ -241,7 +241,7 @@ describe('owner actions', () => {
     expect(reworks).toHaveLength(0);
     const after = await requests.getById(t.id);
     expect(after?.acceptance?.[0]).toMatchObject({ text: 'the numbers are last month', source: 'reject', check: 'judgment' });
-    expect(after?.discussion?.at(-1)?.text).toBe('打回：the numbers are last month');
+    expect(after?.discussion?.at(-1)?.text).toBe('Sent back: the numbers are last month');
   });
 
   it('reject from the board queues rework for whoever answered', async () => {
@@ -505,7 +505,7 @@ describe('follow-up by the agent (owner, 2026-09-24)', () => {
     const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1' });
     const text = nudgeText({ ...t, submittedAt: new Date(clock - 25 * 3_600_000).toISOString() }, clock);
     expect(text).toContain('--channel ch1 --thread m1');
-    expect(text).toContain('不要提工单');
-    expect(text).toContain('约 25 小时');
+    expect(text).toContain('do not mention tickets');
+    expect(text).toContain('about 25 hours');
   });
 });

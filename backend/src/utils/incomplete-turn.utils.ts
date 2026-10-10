@@ -23,14 +23,14 @@ export interface IncompleteTurn {
 
 /** What each reason means for the reader, in one sentence. */
 const NOTICE: Record<IncompleteTurn['reason'], string> = {
-  truncated: '回复超出了长度上限，可能被截断了',
-  'abnormal-finish': '这一轮做到一半被打断了，上面的内容可能不完整',
-  'steps-exhausted': '这一轮的步数用完了，事情还没做完',
-  'content-filter': '模型服务商拒绝继续这一轮',
+  truncated: 'The reply exceeded the length limit and may have been cut off',
+  'abnormal-finish': 'This turn was interrupted partway, so the content above may be incomplete',
+  'steps-exhausted': 'This turn ran out of steps and the work is not finished',
+  'content-filter': 'The model provider refused to continue this turn',
   // The turn ended normally; the work did not. Worth its own sentence,
   // because "I ran out of steps" and "I thought I was done but the file is
   // not there" call for different things from the reader.
-  'desktop-unverified': '桌面上的部分操作没能确认，可能并没有真正完成',
+  'desktop-unverified': 'Some actions on the desktop could not be confirmed and may not have actually completed',
 };
 
 /**
@@ -58,6 +58,6 @@ export function stripNarration(text: string): string {
 export function appendIncompleteNotice(text: string, incomplete?: IncompleteTurn): string {
   if (!incomplete) return text;
   const body = stripNarration(text ?? '');
-  const notice = `_⚠️ ${NOTICE[incomplete.reason] ?? '这一轮提前结束了'}。要我接着做，回一句「继续」就行。_`;
+  const notice = `_⚠️ ${NOTICE[incomplete.reason] ?? 'This turn ended early'}. To have me carry on, just reply "continue"._`;
   return body ? `${body}\n\n${notice}` : notice;
 }

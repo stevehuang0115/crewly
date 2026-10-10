@@ -132,11 +132,11 @@ export function ticketDeliveryLine(ticket: Pick<Request, 'id' | 'ticketNumber'> 
   if (!marker) return '';
   const tkt = formatTicketNumber(ticket.ticketNumber as number);
   return (
-    `${marker} (Crewly 内部记录 ${tkt}，只给你看：不要向对方提工单、编号、验收这类词；对方说的 todo / ticket 指他们自己的东西，与此无关。)` +
-    ` 为它创建 WorkItem（delegate-task / create-task / decompose-goal）时加上 --request-id ${ticket.id}；回答前可用 ticket-check --ticket ${tkt} 看验收标准。` +
+    `${marker} (Crewly internal record ${tkt}, for your eyes only: do not mention tickets, numbers or acceptance to the other person; a "todo" / "ticket" they mention means their own thing and is unrelated to this.)` +
+    ` When you create a WorkItem for it (delegate-task / create-task / decompose-goal), add --request-id ${ticket.id}; before answering you can run ticket-check --ticket ${tkt} to see the acceptance criteria.` +
     // #827: intake appends when unsure; the agent fixes a missed split.
-    `如果这条其实是一件新的事（有自己的交付物），用 split-ticket --ticket ${tkt} --list 把它拆成新工单。` +
-    `做完后，如果结果需要对方确认（交付物、改动、要拍板的），在最终回复里用自己的话问一句这样行不行；只是回答问题就不用问。`
+    ` If this is actually a new matter (with its own deliverable), split it into a new ticket with split-ticket --ticket ${tkt} --list.` +
+    ` When done, if the result needs the other person's confirmation (a deliverable, a change, something to decide), ask in your final reply, in your own words, whether this works; if you only answered a question, there is no need to ask.`
   );
 }
 
@@ -269,7 +269,7 @@ export function linkLateTicket(outcome: IntakeOutcome, delivered: ChatMessageDTO
  * (owner, 2026-09-24: asking every time is noise); 「不用记」 still works.
  *
  * @param ticket - The ticket
- * @returns `已记成 TKT-123`
+ * @returns `Recorded as TKT-123`
  */
 export function receiptText(ticket: Pick<Request, 'ticketNumber'>): string {
   return TICKET_CONSTANTS.RECEIPT.RECORDED(formatTicketNumber(ticket.ticketNumber ?? 0));
@@ -279,7 +279,7 @@ export function receiptText(ticket: Pick<Request, 'ticketNumber'>): string {
  * Receipt text after "不用记".
  *
  * @param ticket - The ticket
- * @returns `TKT-123 已取消记录`
+ * @returns `TKT-123 is no longer tracked`
  */
 export function dismissedReceiptText(ticket: Pick<Request, 'ticketNumber'>): string {
   return TICKET_CONSTANTS.RECEIPT.DISMISSED(formatTicketNumber(ticket.ticketNumber ?? 0));
@@ -289,7 +289,7 @@ export function dismissedReceiptText(ticket: Pick<Request, 'ticketNumber'>): str
  * Receipt text once the ticket is accepted.
  *
  * @param ticket - The ticket
- * @returns `TKT-123 已完成`
+ * @returns `TKT-123 is done`
  */
 export function doneReceiptText(ticket: Pick<Request, 'ticketNumber'>): string {
   return TICKET_CONSTANTS.RECEIPT.DONE(formatTicketNumber(ticket.ticketNumber ?? 0));

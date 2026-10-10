@@ -3249,7 +3249,7 @@ export class SlackTeamChannelService {
       .map((m) => {
         const here = isHere(m);
         const awake = here ? awakeHere.includes(localAgentSession(m.agentSession)) : m.awake;
-        return `${m.displayName}（${awake ? '醒着' : '在睡'}，${here ? '本机' : m.deviceName}）`;
+        return `${m.displayName} (${awake ? 'awake' : 'asleep'}, ${here ? 'this machine' : m.deviceName})`;
       })
       .join(' · ');
 

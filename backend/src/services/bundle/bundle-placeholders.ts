@@ -45,9 +45,9 @@ export class BundleAnswersError extends Error {
     readonly invalid: BundleAnswerProblem[],
   ) {
     const parts: string[] = [];
-    if (missing.length > 0) parts.push(`还没回答：${missing.map((m) => `${m.label}（${m.id}）`).join('、')}`);
-    if (invalid.length > 0) parts.push(`回答不对：${invalid.map((m) => `${m.label}（${m.id}）：${m.reason}`).join('；')}`);
-    super(parts.join('。'));
+    if (missing.length > 0) parts.push(`Not answered yet: ${missing.map((m) => `${m.label} (${m.id})`).join(', ')}`);
+    if (invalid.length > 0) parts.push(`Invalid answers: ${invalid.map((m) => `${m.label} (${m.id}): ${m.reason}`).join('; ')}`);
+    super(parts.join('. '));
     this.name = 'BundleAnswersError';
   }
 }
@@ -163,7 +163,7 @@ export function resolveAnswers(questions: BundleQuestion[], raw: unknown): Bundl
     let value = normalizeRaw(input[q.id]);
     if (value === undefined) {
       if (q.required) {
-        missing.push({ id: q.id, label: q.label, reason: '必填' });
+        missing.push({ id: q.id, label: q.label, reason: 'required' });
         continue;
       }
       value = q.default ?? '';
@@ -172,7 +172,7 @@ export function resolveAnswers(questions: BundleQuestion[], raw: unknown): Bundl
     if (q.type === 'select') {
       const single = Array.isArray(value) ? value[0] ?? '' : value;
       if (single !== '' && !allowed.has(single)) {
-        invalid.push({ id: q.id, label: q.label, reason: `只能选 ${[...allowed].join(' / ')}` });
+        invalid.push({ id: q.id, label: q.label, reason: `choose one of ${[...allowed].join(' / ')}` });
         continue;
       }
       out[q.id] = single;
@@ -182,7 +182,7 @@ export function resolveAnswers(questions: BundleQuestion[], raw: unknown): Bundl
       const list = Array.isArray(value) ? value : value === '' ? [] : [value];
       const bad = list.filter((v) => !allowed.has(v));
       if (bad.length > 0) {
-        invalid.push({ id: q.id, label: q.label, reason: `没有这些选项：${bad.join('、')}` });
+        invalid.push({ id: q.id, label: q.label, reason: `no such options: ${bad.join(', ')}` });
         continue;
       }
       out[q.id] = list;
@@ -190,7 +190,7 @@ export function resolveAnswers(questions: BundleQuestion[], raw: unknown): Bundl
     }
     const text = Array.isArray(value) ? value.join(BUNDLE_CONSTANTS.MULTISELECT_JOINER) : value;
     if (text.length > BUNDLE_CONSTANTS.MAX_ANSWER_LENGTH) {
-      invalid.push({ id: q.id, label: q.label, reason: `太长了（最多 ${BUNDLE_CONSTANTS.MAX_ANSWER_LENGTH} 字）` });
+      invalid.push({ id: q.id, label: q.label, reason: `too long (at most ${BUNDLE_CONSTANTS.MAX_ANSWER_LENGTH} characters)` });
       continue;
     }
     out[q.id] = text;

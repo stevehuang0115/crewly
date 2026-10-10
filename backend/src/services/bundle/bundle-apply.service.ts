@@ -230,8 +230,8 @@ export function withFrontmatter(fields: Record<string, string | undefined>, body
  */
 export function buildFirstWeekMessage(task: BundleFirstWeekState, team: Pick<Team, 'id' | 'name'>, memberName: string, body: string): string {
   return [
-    `${BUNDLE_CONSTANTS.FIRST_WEEK_HEADER} 第 ${task.day + 1} 天 · ${task.title}`,
-    `请交给团队「${team.name}」(team id: ${team.id}) 的 ${memberName} 来做；团队还没启动的话先启动它。`,
+    `${BUNDLE_CONSTANTS.FIRST_WEEK_HEADER} Day ${task.day + 1} · ${task.title}`,
+    `Please hand this to ${memberName} on the team "${team.name}" (team id: ${team.id}); if the team is not running yet, start it first.`,
     '',
     body.trim(),
   ].join('\n');
@@ -396,11 +396,11 @@ export class BundleApplyService {
    */
   private async prepare(request: BundleApplyRequest): Promise<{ deployment: BundleDeployment; done: Promise<BundleDeployment> }> {
     const entry = this.deps.catalog.get(request.templateId);
-    if (!entry) throw new BundleError('unknown_bundle', `没有找到方案「${request.templateId}」`);
+    if (!entry) throw new BundleError('unknown_bundle', `Solution "${request.templateId}" not found`);
     const { template } = entry;
     const draft = (template.bundle.status ?? BUNDLE_CONSTANTS.STATUS.READY) !== BUNDLE_CONSTANTS.STATUS.READY;
     if (draft && !request.allowDraft) {
-      throw new BundleError('bundle_not_ready', `方案「${template.bundle.label}」还在准备中，暂时不能部署`);
+      throw new BundleError('bundle_not_ready', `Solution "${template.bundle.label}" is still in preparation and cannot be deployed yet`);
     }
     const runtimes = Object.values(RUNTIME_TYPES) as string[];
     if (request.runtime !== undefined && !runtimes.includes(request.runtime)) {
@@ -497,7 +497,7 @@ export class BundleApplyService {
       if (step.status === 'done') continue;
       const teamStep = deployment.steps.find((s) => s.id === BUNDLE_CONSTANTS.STEP_IDS.TEAM);
       if (needsTeam.has(step.id) && teamStep?.status !== 'done') {
-        this.finishStep(step, { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.TEAM_FAILED, message: '团队没建好，这一步先跳过' });
+        this.finishStep(step, { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.TEAM_FAILED, message: 'The team was not set up, so this step is skipped' });
         await this.touch(deployment);
         continue;
       }
@@ -510,7 +510,7 @@ export class BundleApplyService {
       try {
         outcome = await bodies[step.id](ctx);
       } catch (error) {
-        outcome = { status: 'failed', error: errorText(error), message: '这一步出错了，重新部署会从这里接着做' };
+        outcome = { status: 'failed', error: errorText(error), message: 'This step failed; redeploying will pick up from here' };
       }
       this.finishStep(step, outcome);
       await this.touch(deployment);
@@ -623,17 +623,17 @@ export class BundleApplyService {
       const existing = await this.deps.teams.get(id);
       if (existing) {
         deployed.push({ key: spec.key, teamId: id, name: existing.name });
-        items.push({ id: spec.key, label: existing.name, status: 'done', message: '已存在，保留原样' });
+        items.push({ id: spec.key, label: existing.name, status: 'done', message: 'Already exists, left as is' });
         continue;
       }
       const team = buildBundleTeam({ template: ctx.template, team: spec, answers: ctx.answers, runtime: ctx.deployment.runtime, now: this.deps.now() });
       await this.deps.teams.save(team);
       deployed.push({ key: spec.key, teamId: team.id, name: team.name });
-      items.push({ id: spec.key, label: team.name, status: 'done', message: `${team.members.length} 位成员` });
+      items.push({ id: spec.key, label: team.name, status: 'done', message: `${team.members.length} members` });
     }
     ctx.deployment.teams = deployed;
     const names = deployed.map((t) => `「${t.name}」`).join('、');
-    return { status: 'done', items, message: `团队 ${names} 已就绪` };
+    return { status: 'done', items, message: `Team ${names} is ready` };
   }
 
   /** Step `norms`: norms, review points and SOPs into the teams' folders. */
@@ -643,7 +643,7 @@ export class BundleApplyService {
     const sops = b.sops ?? [];
     const reviews = b.reviewPoints ?? [];
     if (norms.length + sops.length + reviews.length === 0) {
-      return { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.NOTHING_TO_DO, message: '这个方案没有额外规范' };
+      return { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.NOTHING_TO_DO, message: 'This solution has no extra norms' };
     }
     const items: BundleStepItem[] = [];
     const main = BUNDLE_CONSTANTS.MAIN_TEAM_KEY;
@@ -665,20 +665,20 @@ export class BundleApplyService {
       const teamReviews = reviews.filter((r) => (r.team ?? main) === spec.key);
       if (teamReviews.length > 0) {
         const rows = teamReviews.map((r) => {
-          const who = r.approver === 'owner' ? '老板' : `负责人 ${values.lead_name}`;
-          const how = r.how ? `：${fillPlaceholders(r.how, values, `review ${r.id}`)}` : '';
-          return `- **${fillPlaceholders(r.what, values, `review ${r.id}`)}** → 先拿到${who}的同意${how}`;
+          const who = r.approver === 'owner' ? 'the owner' : `the lead ${values.lead_name}`;
+          const how = r.how ? `: ${fillPlaceholders(r.how, values, `review ${r.id}`)}` : '';
+          return `- **${fillPlaceholders(r.what, values, `review ${r.id}`)}** → get ${who}'s approval first${how}`;
         });
         const body = [
-          '这些事必须先拿到同意才能做。没得到明确的「可以」之前，只准备、不执行。',
+          'These things need approval before they can be done. Until you get a clear "go ahead", only prepare — do not execute.',
           '',
           ...rows,
           '',
-          '拿不准算不算的时候，按「需要同意」处理。',
+          'When unsure whether something counts, treat it as "needs approval".',
         ].join('\n');
         const file = path.join(teamDir, BUNDLE_CONSTANTS.NORMS_DIR, `${BUNDLE_CONSTANTS.REVIEW_POINTS_NORM_ID}.md`);
-        await this.writeDoc(file, withFrontmatter({ title: '需要老板点头的事', trigger: 'before_publish,approval,owner_review,external', updatedBy, updatedAt }, body));
-        items.push({ id: `norm:${spec.key}/${BUNDLE_CONSTANTS.REVIEW_POINTS_NORM_ID}`, label: '需要老板点头的事', status: 'done' });
+        await this.writeDoc(file, withFrontmatter({ title: 'Things that need the owner\'s approval', trigger: 'before_publish,approval,owner_review,external', updatedBy, updatedAt }, body));
+        items.push({ id: `norm:${spec.key}/${BUNDLE_CONSTANTS.REVIEW_POINTS_NORM_ID}`, label: 'Things that need the owner\'s approval', status: 'done' });
       }
 
       for (const sop of sops.filter((s) => (s.team ?? main) === spec.key)) {
@@ -689,7 +689,7 @@ export class BundleApplyService {
         items.push({ id: `sop:${spec.key}/${sop.id}`, label: sop.title, status: 'done' });
       }
     }
-    return { status: 'done', items, message: `写好 ${items.length} 份规范和 SOP` };
+    return { status: 'done', items, message: `Wrote ${items.length} norms and SOPs` };
   }
 
   /**
@@ -720,14 +720,14 @@ export class BundleApplyService {
     const required = ctx.template.bundle.skills?.required ?? [];
     const optional = ctx.template.bundle.skills?.optional ?? [];
     if (required.length + optional.length === 0) {
-      return { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.NOTHING_TO_DO, message: '不需要额外技能' };
+      return { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.NOTHING_TO_DO, message: 'No extra skills needed' };
     }
     const items: BundleStepItem[] = [];
     let requiredFailed = 0;
     for (const [skillId, isRequired] of [...required.map((s) => [s, true] as const), ...optional.map((s) => [s, false] as const)]) {
       try {
         if (await this.deps.skills.isAvailable(skillId)) {
-          items.push({ id: skillId, label: skillId, status: 'done', message: '已有' });
+          items.push({ id: skillId, label: skillId, status: 'done', message: 'Already installed' });
           continue;
         }
         const result = await this.deps.skills.install(skillId);
@@ -742,17 +742,17 @@ export class BundleApplyService {
       }
     }
     if (requiredFailed > 0) {
-      return { status: 'failed', items, error: `${requiredFailed} 个必需技能没装上`, message: '有技能没装上，重新部署会再试' };
+      return { status: 'failed', items, error: `${requiredFailed} required skills were not installed`, message: 'Some skills were not installed; redeploying will retry' };
     }
     const optionalFailed = items.filter((i) => i.status === 'failed').length;
-    return { status: 'done', items, message: optionalFailed > 0 ? `技能已就绪（${optionalFailed} 个可选技能没装上）` : '技能已就绪' };
+    return { status: 'done', items, message: optionalFailed > 0 ? `Skills are ready (${optionalFailed} optional skills were not installed)` : 'Skills are ready' };
   }
 
   /** Step `connectors`: which services still need connecting. */
   private async stepConnectors(ctx: RunContext): Promise<StepOutcome> {
     const specs = ctx.template.bundle.connectors ?? [];
     if (specs.length === 0) {
-      return { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.NOTHING_TO_DO, message: '不需要接别的服务' };
+      return { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.NOTHING_TO_DO, message: 'No other services to connect' };
     }
     const states: BundleConnectorState[] = [];
     for (const spec of specs) {
@@ -778,10 +778,10 @@ export class BundleApplyService {
       id: s.id,
       label: s.products.length > 0 ? `${s.id} (${s.products.join(', ')})` : s.id,
       status: s.status === 'connected' ? 'done' : 'pending',
-      message: s.status === 'connected' ? '已连接' : `${s.required ? '需要连接' : '建议连接'}：${s.why} → ${s.connectPath}`,
+      message: s.status === 'connected' ? 'Connected' : `${s.required ? 'Needs connecting' : 'Recommended to connect'}: ${s.why} → ${s.connectPath}`,
     }));
     if (!this.deps.connectors) {
-      return { status: 'pending', reason: BUNDLE_CONSTANTS.PENDING_REASONS.BACKEND_NOT_RUNNING, items, message: 'Crewly 启动后再检查；先在 /connections 连好这些服务' };
+      return { status: 'pending', reason: BUNDLE_CONSTANTS.PENDING_REASONS.BACKEND_NOT_RUNNING, items, message: 'Checked once Crewly is running; connect these services at /connections first' };
     }
     const missing = states.filter((s) => s.required && s.status !== 'connected');
     if (missing.length > 0) {
@@ -789,10 +789,10 @@ export class BundleApplyService {
         status: 'pending',
         reason: BUNDLE_CONSTANTS.PENDING_REASONS.CONNECTORS_MISSING,
         items,
-        message: `还要连接：${missing.map((m) => m.id).join('、')}（在「连接」页面，手机上也能点）`,
+        message: `Still to connect: ${missing.map((m) => m.id).join(', ')} (on the Connections page; works from a phone too)`,
       };
     }
-    return { status: 'done', items, message: '要用的服务都连好了' };
+    return { status: 'done', items, message: 'All the services you need are connected' };
   }
 
   /** Step `slack`: team channels and extra channels. */
@@ -801,14 +801,14 @@ export class BundleApplyService {
     const teamChannels = layout.teamChannels !== false;
     const extra = layout.channels ?? [];
     if (!teamChannels && extra.length === 0) {
-      return { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.NOTHING_TO_DO, message: '这个方案不用 Slack 频道' };
+      return { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.NOTHING_TO_DO, message: 'This solution does not use Slack channels' };
     }
     const slack = this.deps.slack;
     if (!slack) {
-      return { status: 'pending', reason: BUNDLE_CONSTANTS.PENDING_REASONS.BACKEND_NOT_RUNNING, message: 'Crewly 启动并连上 Slack 后自动建频道' };
+      return { status: 'pending', reason: BUNDLE_CONSTANTS.PENDING_REASONS.BACKEND_NOT_RUNNING, message: 'Channels are created automatically once Crewly is running and connected to Slack' };
     }
     if (!slack.isConnected()) {
-      return { status: 'pending', reason: BUNDLE_CONSTANTS.PENDING_REASONS.SLACK_NOT_CONNECTED, message: '还没连 Slack；连上后会自动建频道、拉成员进来' };
+      return { status: 'pending', reason: BUNDLE_CONSTANTS.PENDING_REASONS.SLACK_NOT_CONNECTED, message: 'Slack is not connected yet; once it is, channels are created and members added automatically' };
     }
     const items: BundleStepItem[] = [];
     let failed = 0;
@@ -819,7 +819,7 @@ export class BundleApplyService {
       for (const team of allTeams) {
         try {
           const ch = await slack.ensureTeamChannel(team);
-          items.push({ id: `team:${team.id}`, label: `#${ch.slackChannelName}`, status: 'done', message: `团队「${team.name}」的频道` });
+          items.push({ id: `team:${team.id}`, label: `#${ch.slackChannelName}`, status: 'done', message: `Channel of team "${team.name}"` });
         } catch (error) {
           failed += 1;
           items.push({ id: `team:${team.id}`, label: team.name, status: 'failed', message: errorText(error) });
@@ -844,31 +844,31 @@ export class BundleApplyService {
           ...(ctx.deployment.channels[channel.key] ? { existingChannelId: ctx.deployment.channels[channel.key] } : {}),
         });
         ctx.deployment.channels[channel.key] = ch.slackChannelId;
-        items.push({ id: `channel:${channel.key}`, label: `#${ch.slackChannelName}`, status: 'done', message: `${sessions.size} 位成员` });
+        items.push({ id: `channel:${channel.key}`, label: `#${ch.slackChannelName}`, status: 'done', message: `${sessions.size} members` });
       } catch (error) {
         failed += 1;
         items.push({ id: `channel:${channel.key}`, label: channel.name, status: 'failed', message: errorText(error) });
       }
     }
-    if (failed > 0) return { status: 'failed', items, error: `${failed} 个频道没建好`, message: '有频道没建好，重新部署会再试' };
-    return { status: 'done', items, message: `建好 ${items.length} 个 Slack 频道` };
+    if (failed > 0) return { status: 'failed', items, error: `${failed} channels were not created`, message: 'Some channels were not created; redeploying will retry' };
+    return { status: 'done', items, message: `Created ${items.length} Slack channels` };
   }
 
   /** Step `schedules`: recurring tasks through the cron-task scheduler. */
   private async stepSchedules(ctx: RunContext): Promise<StepOutcome> {
     const schedules = ctx.template.bundle.schedules ?? [];
     if (schedules.length === 0) {
-      return { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.NOTHING_TO_DO, message: '这个方案没有定时任务' };
+      return { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.NOTHING_TO_DO, message: 'This solution has no scheduled tasks' };
     }
     const api = this.deps.schedules;
     if (!api) {
-      return { status: 'pending', reason: BUNDLE_CONSTANTS.PENDING_REASONS.BACKEND_NOT_RUNNING, message: 'Crewly 启动后自动排定时任务' };
+      return { status: 'pending', reason: BUNDLE_CONSTANTS.PENDING_REASONS.BACKEND_NOT_RUNNING, message: 'Scheduled tasks are set up automatically once Crewly is running' };
     }
     const items: BundleStepItem[] = [];
     let failed = 0;
     for (const schedule of schedules) {
       if (ctx.deployment.schedules[schedule.id]) {
-        items.push({ id: schedule.id, label: schedule.title, status: 'done', message: '已排好' });
+        items.push({ id: schedule.id, label: schedule.title, status: 'done', message: 'Scheduled' });
         continue;
       }
       try {
@@ -890,8 +890,8 @@ export class BundleApplyService {
         items.push({ id: schedule.id, label: schedule.title, status: 'failed', message: errorText(error) });
       }
     }
-    if (failed > 0) return { status: 'failed', items, error: `${failed} 个定时任务没排上`, message: '有定时任务没排上，重新部署会再试' };
-    return { status: 'done', items, message: `排好 ${items.length} 个定时任务` };
+    if (failed > 0) return { status: 'failed', items, error: `${failed} scheduled tasks were not set up`, message: 'Some scheduled tasks were not set up; redeploying will retry' };
+    return { status: 'done', items, message: `Scheduled ${items.length} tasks` };
   }
 
   /**
@@ -914,7 +914,7 @@ export class BundleApplyService {
   private async stepFirstWeek(ctx: RunContext): Promise<StepOutcome> {
     const tasks = ctx.template.bundle.firstWeek ?? [];
     if (tasks.length === 0) {
-      return { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.NOTHING_TO_DO, message: '这个方案没有第一周任务' };
+      return { status: 'skipped', reason: BUNDLE_CONSTANTS.SKIP_REASONS.NOTHING_TO_DO, message: 'This solution has no first-week tasks' };
     }
     const deployedAt = new Date(ctx.deployment.startedAt);
     for (const task of tasks) {
@@ -984,19 +984,19 @@ export class BundleApplyService {
   private firstWeekOutcome(deployment: BundleDeployment): StepOutcome {
     const items: BundleStepItem[] = deployment.firstWeek.map((t) => ({
       id: t.id,
-      label: `第 ${t.day + 1} 天 · ${t.title}`,
+      label: `Day ${t.day + 1} · ${t.title}`,
       status: t.status === 'sent' ? 'done' : t.status === 'failed' ? 'failed' : 'pending',
-      message: t.status === 'sent' ? '已交给团队' : t.status === 'failed' ? t.error : `排在 ${t.dueAt}`,
+      message: t.status === 'sent' ? 'Handed to the team' : t.status === 'failed' ? t.error : `Scheduled for ${t.dueAt}`,
     }));
     const failed = deployment.firstWeek.filter((t) => t.status === 'failed').length;
     const now = this.deps.now().getTime();
     const overdue = deployment.firstWeek.filter((t) => t.status === 'scheduled' && Date.parse(t.dueAt) <= now).length;
     const sent = deployment.firstWeek.filter((t) => t.status === 'sent').length;
     const later = deployment.firstWeek.length - sent - failed - overdue;
-    if (failed > 0) return { status: 'failed', items, error: `${failed} 件没交出去`, message: '有任务没交给团队，重新部署会再试' };
+    if (failed > 0) return { status: 'failed', items, error: `${failed} tasks were not handed over`, message: 'Some tasks were not handed to the team; redeploying will retry' };
     if (overdue > 0) {
-      return { status: 'pending', reason: BUNDLE_CONSTANTS.PENDING_REASONS.BACKEND_NOT_RUNNING, items, message: 'Crewly 启动后马上把今天的任务交给团队' };
+      return { status: 'pending', reason: BUNDLE_CONSTANTS.PENDING_REASONS.BACKEND_NOT_RUNNING, items, message: 'Today\'s tasks are handed to the team as soon as Crewly is running' };
     }
-    return { status: 'done', items, message: `已交给团队 ${sent} 件${later > 0 ? `，另外 ${later} 件按天排好` : ''}` };
+    return { status: 'done', items, message: `Handed ${sent} to the team${later > 0 ? `, and scheduled ${later} more by day` : ''}` };
   }
 }

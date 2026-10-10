@@ -371,8 +371,8 @@ describe('TICKET_CONSTANTS / POOL_ARCHIVE_CONSTANTS (ticket loop)', () => {
     expect(TICKET_CONSTANTS.NUMBER_PAD).toBe(3);
     // No `.json`: RequestService.listAll must never read the counter as a Request.
     expect(TICKET_CONSTANTS.COUNTER_FILENAME.endsWith('.json')).toBe(false);
-    expect(TICKET_CONSTANTS.RECEIPT.RECORDED('TKT-001')).toBe('已记成 TKT-001');
-    expect(TICKET_CONSTANTS.RECEIPT.DISMISSED('TKT-001')).toBe('TKT-001 已取消记录');
+    expect(TICKET_CONSTANTS.RECEIPT.RECORDED('TKT-001')).toBe('Recorded as TKT-001');
+    expect(TICKET_CONSTANTS.RECEIPT.DISMISSED('TKT-001')).toBe('TKT-001 is no longer tracked');
     expect(TICKET_CONSTANTS.DISMISS_PATTERN.test('不用记')).toBe(true);
     expect(TICKET_CONSTANTS.DISMISS_PATTERN.test('不用记这个')).toBe(false);
     expect(TICKET_CONSTANTS.INTAKE_TIMEOUT_MS).toBeGreaterThan(0);

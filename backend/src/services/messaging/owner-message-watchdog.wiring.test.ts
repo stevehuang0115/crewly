@@ -226,7 +226,7 @@ describe('buildNudgeMessage', () => {
     expect(text.startsWith('[CHAT:dm-ella]')).toBe(true);
     expect(text).toContain('[SLACK-THREAD:D0DM:1790.1]');
     expect(text).toContain('CREWLY_SESSION_NAME=ella bash config/skills/agent/core/reply/execute.sh');
-    expect(text).toContain('10 分钟');
+    expect(text).toContain('10 minutes');
     expect(text).toContain('update the EFT sheet');
     // The reply router reads the header back as the turn origin.
     expect(parseInboundOrigin(text)).toEqual(expect.objectContaining({ conversationId: 'dm-ella' }));
