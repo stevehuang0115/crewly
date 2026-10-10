@@ -28,6 +28,27 @@ describe('writeRuntimeHandover', () => {
 		expect(text).toContain('is not readable here');
 	});
 
+	it('carries the previous handover forward when the source conversation is unreadable', () => {
+		const first = writeRuntimeHandover(
+			home,
+			{ sessionName: 'dev-1', from: 'codex-cli', to: 'antigravity-cli', direction: 'switch', conversationId: null, workItem: null },
+			undefined,
+			new Date(Date.UTC(2026, 9, 1, 12)),
+		);
+		// A readable first handover, as the Claude -> Antigravity hop would write.
+		fs.writeFileSync(first, '# Handover: runtime change\n\n### You — earlier\nThe three-video plan: intro, demo, wrap-up.\n');
+		const second = writeRuntimeHandover(
+			home,
+			{ sessionName: 'dev-1', from: 'antigravity-cli', to: 'crewly-agent', direction: 'switch', conversationId: null, workItem: null },
+			undefined,
+			new Date(Date.UTC(2026, 9, 1, 13)),
+		);
+		const text = fs.readFileSync(second, 'utf-8');
+		expect(text).toContain('is not readable here');
+		expect(text).toContain('The three-video plan: intro, demo, wrap-up.');
+		expect(text).toContain(first);
+	});
+
 	it('includes the end of a Claude Code transcript when there is one', () => {
 		const cwd = path.join(home, 'proj');
 		const claudeHome = path.join(os.homedir(), '.claude');

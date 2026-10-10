@@ -532,6 +532,39 @@ export function renderChatContext(turns: readonly ChatContextTurn[]): string {
 }
 
 /**
+ * Keep the newest turns whose rendered size fits a character budget.
+ *
+ * @param turns - Turns, oldest first
+ * @param budget - Most characters for the rendered lines
+ * @returns The newest turns that fit (always at least the newest one), oldest first
+ */
+export function fitTurnsToBudget(turns: readonly ChatContextTurn[], budget: number): readonly ChatContextTurn[] {
+  let used = 0;
+  let start = turns.length;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i];
+    const size = Math.min(t.content.replace(/\s+/g, ' ').trim().length, CHAT_CONTEXT_CONSTANTS.PER_MESSAGE_CHARS) + t.senderId.length + 8;
+    if (start < turns.length && used + size > budget) break;
+    used += size;
+    start = i;
+  }
+  return turns.slice(start);
+}
+
+/**
+ * Whether a message is a top-level owner message in a room or channel (the
+ * case that gets the wider look back).
+ *
+ * @param channel - Where it was sent
+ * @param threadId - Thread it sits in, when it does
+ * @param owner - Whether the owner wrote it
+ * @returns True for the wider history window
+ */
+export function isTopLevelOwnerRoomMessage(channel: Pick<ChatChannelDTO, 'type'>, threadId: string | undefined | null, owner: boolean): boolean {
+  return owner && !threadId && channel.type !== 'dm';
+}
+
+/**
  * Render the Slack context for one recipient, never throwing: a failure only
  * costs the block, not the delivery.
  *
@@ -827,6 +860,26 @@ export class ChatV2DispatcherService {
   }
 
   /**
+   * Whether this message gets the wider history window (top-level owner
+   * message in a room or channel).
+   *
+   * @param channel - Where it was sent
+   * @param message - The message
+   * @param threadId - Thread override from the dispatch options
+   * @returns True for the wider window
+   */
+  private wideHistoryFor(channel: ChatChannelDTO, message: ChatMessageDTO, threadId?: string): boolean {
+    let owner = false;
+    try {
+      owner = this.isOwnerMessage?.(message) === true;
+    } catch {
+      owner = false;
+    }
+    return isTopLevelOwnerRoomMessage(channel, threadId ?? message.threadId, owner);
+  }
+
+
+  /**
    * The preceding messages to show, already capped.
    *
    * Thread messages get the larger allowance because everything in a thread
@@ -836,20 +889,28 @@ export class ChatV2DispatcherService {
    *
    * @param channelId - Channel being dispatched from
    * @param threadId - Thread the message sits in, when it does
+   * @param ownerTopLevel - True for a top-level owner message in a room or channel: wider window (see TOP_LEVEL_OWNER_*)
    * @returns Messages oldest first, or empty when context is off or absent
    */
-  private contextFor(channelId: string, threadId?: string): readonly ChatContextTurn[] {
+  private contextFor(channelId: string, threadId?: string, ownerTopLevel = false): readonly ChatContextTurn[] {
     if (!CHAT_CONTEXT_CONSTANTS.ENABLED || !this.recentTurnsFor) return [];
     try {
       const turns = this.recentTurnsFor(channelId, threadId);
-      const cap = threadId ? CHAT_CONTEXT_CONSTANTS.THREAD_MAX : CHAT_CONTEXT_CONSTANTS.CHANNEL_MAX;
-      const cutoff = Date.now() - CHAT_CONTEXT_CONSTANTS.MAX_AGE_MS;
-      return turns
+      const wide = ownerTopLevel && !threadId;
+      const cap = threadId
+        ? CHAT_CONTEXT_CONSTANTS.THREAD_MAX
+        : wide
+          ? CHAT_CONTEXT_CONSTANTS.TOP_LEVEL_OWNER_MAX
+          : CHAT_CONTEXT_CONSTANTS.CHANNEL_MAX;
+      const maxAge = wide ? CHAT_CONTEXT_CONSTANTS.TOP_LEVEL_OWNER_MAX_AGE_MS : CHAT_CONTEXT_CONSTANTS.MAX_AGE_MS;
+      const cutoff = Date.now() - maxAge;
+      const recent = turns
         .filter((t) => {
           const at = Date.parse(t.createdAt);
           return Number.isFinite(at) ? at >= cutoff : true;
         })
         .slice(-cap);
+      return wide ? fitTurnsToBudget(recent, CHAT_CONTEXT_CONSTANTS.TOP_LEVEL_OWNER_MAX_CHARS) : recent;
     } catch (err) {
       // Context is a nicety; a failure to gather it must not stop the
       // message reaching the agent.
@@ -1358,6 +1419,11 @@ export class ChatV2DispatcherService {
     const outcomes: HuddleDispatchOutcome[] = [];
     let anyDispatched = false;
 
+    // Slack team channels pass the message's own id as the reply thread for a
+    // top-level post; that is not a thread to read history from (it would be
+    // empty), so it counts as top-level here.
+    const contextThread =
+      options.threadId && options.threadId !== message.id ? options.threadId : (message.threadId ?? undefined);
     const namedExplicitly = new Set(mentioned);
     const promptFor = (sessionName: string, responseMode: 'required' | 'optional', contextOnlyBlock?: string): string =>
       this.formatPrompt({
@@ -1378,7 +1444,7 @@ export class ChatV2DispatcherService {
         roomPresence: options.roomPresence,
         wakeRole: wakeRoles.get(sessionName),
         messageId: message.id,
-        context: this.contextFor(channel.id, options.threadId),
+        context: this.contextFor(channel.id, contextThread, this.wideHistoryFor(channel, message, contextThread)),
         slackContext: slackContextOf(options, sessionName),
         ...(options.bareMentionNote ? { bareMentionNote: options.bareMentionNote } : {}),
         ticketLine: ticketLineOf(message),
@@ -1511,7 +1577,7 @@ export class ChatV2DispatcherService {
           typeof message.metadata?.clientMessageId === 'string'
             ? (message.metadata.clientMessageId as string)
             : undefined,
-        context: this.contextFor(channel.id, message.threadId ?? undefined),
+        context: this.contextFor(channel.id, message.threadId ?? undefined, this.wideHistoryFor(channel, message)),
         ticketLine: ticketLineOf(message),
       });
 

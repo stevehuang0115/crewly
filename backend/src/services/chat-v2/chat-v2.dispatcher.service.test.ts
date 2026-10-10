@@ -627,6 +627,72 @@ describe('ChatV2DispatcherService', () => {
       expect(calls[0].message).toContain('just-now');
     });
 
+    describe('top-level owner message in a room (the next-morning follow-up)', () => {
+      const room = () => makeChannel({ id: 'room-1', type: 'huddle', name: '#awesome-videos' });
+      const ownerSink = (sink: never) => ({ agentSink: sink, huddleMembersFor: () => ['pia'], isOwnerMessage: () => true });
+
+      it('shows the last 15 messages of the last 24 h, not the usual 8 of 6 h', async () => {
+        const { calls, sink } = capturingSink();
+        const turns = [
+          ago(60 * 30, 'user-abc', 'older-than-a-day'),
+          ago(60 * 12, 'user-abc', 'yesterday-evening-plan'),
+          ...Array.from({ length: 20 }, (_, i) => ago(60 * 10 - i, 'Pia', `m${i}`)),
+        ];
+        const dispatcher = new ChatV2DispatcherService({ ...ownerSink(sink), recentTurnsFor: () => turns });
+
+        // The Slack team-channel service passes the message's own id as the reply thread.
+        await dispatcher.dispatchMessage(room(), makeMessage({ id: 'msg-top', channelId: 'room-1', mentions: ['pia'] }), { threadId: 'msg-top' });
+
+        const prompt = calls[0].message;
+        expect(prompt).toContain('m19');
+        expect(prompt).toContain('m5');
+        expect(prompt).not.toContain('m4 ');
+        expect(prompt).not.toContain('older-than-a-day');
+      });
+
+      it('drops messages older than 24 h even when fewer than 15 remain', async () => {
+        const { calls, sink } = capturingSink();
+        const dispatcher = new ChatV2DispatcherService({
+          ...ownerSink(sink),
+          recentTurnsFor: () => [ago(60 * 25, 'user-abc', 'two-days-ago-ish'), ago(60 * 20, 'user-abc', 'yesterday-plan')],
+        });
+
+        await dispatcher.dispatchMessage(room(), makeMessage({ id: 'msg-top', channelId: 'room-1', mentions: ['pia'] }), { threadId: 'msg-top' });
+
+        expect(calls[0].message).toContain('yesterday-plan');
+        expect(calls[0].message).not.toContain('two-days-ago-ish');
+      });
+
+      it('caps the block at about 3 KB, keeping the newest', async () => {
+        const { calls, sink } = capturingSink();
+        const big = 'x'.repeat(290);
+        const turns = Array.from({ length: 15 }, (_, i) => ago(60 - i, 'Pia', `n${String(i).padStart(2, '0')} ${big}`));
+        const dispatcher = new ChatV2DispatcherService({ ...ownerSink(sink), recentTurnsFor: () => turns });
+
+        await dispatcher.dispatchMessage(room(), makeMessage({ id: 'msg-top', channelId: 'room-1', mentions: ['pia'] }), { threadId: 'msg-top' });
+
+        const prompt = calls[0].message;
+        expect(prompt).toContain('n14');
+        expect(prompt).not.toContain('n00');
+        const block = prompt.slice(prompt.indexOf('之前的对话'), prompt.indexOf('以上只是'));
+        expect(block.length).toBeLessThan(3_600);
+      });
+
+      it('keeps the narrow window for a message that is not the owner\'s', async () => {
+        const { calls, sink } = capturingSink();
+        const dispatcher = new ChatV2DispatcherService({
+          ...ownerSink(sink),
+          isOwnerMessage: () => false,
+          recentTurnsFor: () => [ago(60 * 12, 'user-abc', 'half-a-day-ago'), ago(1, 'Pia', 'just-now')],
+        });
+
+        await dispatcher.dispatchMessage(room(), makeMessage({ id: 'msg-top', channelId: 'room-1', mentions: ['pia'] }), { threadId: 'msg-top' });
+
+        expect(calls[0].message).toContain('just-now');
+        expect(calls[0].message).not.toContain('half-a-day-ago');
+      });
+    });
+
     it('still delivers the message when gathering context throws', async () => {
       const { calls, sink } = capturingSink();
       const dispatcher = new ChatV2DispatcherService({

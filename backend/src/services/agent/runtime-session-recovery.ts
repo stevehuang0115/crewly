@@ -720,3 +720,265 @@ export function memberFreshContextTokens(env: NodeJS.ProcessEnv = process.env): 
   const raw = Number(env['CREWLY_MEMBER_FRESH_CONTEXT_TOKENS']);
   return Number.isFinite(raw) && raw > 0 ? raw : FRESH_TASK_CONVERSATION_CONSTANTS.MEMBER_FRESH_CONTEXT_TOKENS;
 }
+
+/** A handover file already written for a session. */
+export interface HandoverFileInfo {
+  path: string;
+  mtimeMs: number;
+}
+
+/**
+ * The newest handover file written for a session (oldest-conversation
+ * handovers, runtime switches and restart handovers all live in the same
+ * directory under `<session>-…`).
+ *
+ * @param dir - Handover directory
+ * @param sessionName - Session
+ * @param exceptFile - A file to ignore (the one being written now)
+ * @returns The newest one, or null
+ */
+export function latestHandoverFile(dir: string, sessionName: string, exceptFile?: string): HandoverFileInfo | null {
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return null;
+  }
+  const prefix = `${sessionName}-`;
+  let best: HandoverFileInfo | null = null;
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith('.md')) continue;
+    const rest = name.slice(prefix.length);
+    if (!/^(runtime-|restart-|\d{4}-\d{2}-\d{2}T)/.test(rest)) continue;
+    const full = path.join(dir, name);
+    if (exceptFile && path.resolve(full) === path.resolve(exceptFile)) continue;
+    try {
+      const mtimeMs = fs.statSync(full).mtimeMs;
+      if (!best || mtimeMs > best.mtimeMs) best = { path: full, mtimeMs };
+    } catch {
+      // vanished — skip
+    }
+  }
+  return best;
+}
+
+/**
+ * Text of an earlier handover to carry into a new one, so a second hop
+ * through a runtime whose conversation cannot be read does not lose what the
+ * first handover held.
+ *
+ * @param prev - The earlier handover
+ * @returns Block to embed (its path, and its body without the title line), or '' when unreadable
+ */
+export function chainedHandoverBlock(prev: HandoverFileInfo | null): string {
+  if (!prev) return '';
+  try {
+    const raw = fs.readFileSync(prev.path, 'utf-8');
+    const body = raw.replace(/^# [^\n]*\n+/, '').trim();
+    const max = ORC_CONVERSATION_CONSTANTS.CHAINED_HANDOVER_MAX_CHARS;
+    const clipped = body.length > max ? `${body.slice(0, max)}\n…(clipped; full file above)` : body;
+    return [`_Your earlier handover is carried forward below (full file: ${prev.path})._`, '', clipped].join('\n');
+  } catch {
+    return `_Your earlier handover: ${prev.path}_`;
+  }
+}
+
+/** A previous Claude Code conversation found for a session. */
+export interface PreviousClaudeConversation {
+  sessionId: string;
+  transcript: string;
+  mtimeMs: number;
+}
+
+/**
+ * The most recent previous Claude Code transcript for a cwd across several
+ * Claude homes (default and account), newer than `maxAgeMs`.
+ *
+ * With `rememberedSessionId` that conversation is looked up directly. Without
+ * it every transcript in the cwd's project directory is a candidate (agents of
+ * one project share a cwd), so a candidate must be unclaimed by another live
+ * session and mention `sessionName` in its first bytes (the kickoff names it).
+ *
+ * @param args - cwd, homes, session name, window, optional remembered id, ids owned by others
+ * @returns The newest match, or null
+ */
+export function findPreviousClaudeConversation(args: {
+  cwd: string;
+  claudeHomes: readonly string[];
+  sessionName: string;
+  maxAgeMs?: number;
+  now?: number;
+  rememberedSessionId?: string | null;
+  claimedByOthers?: ReadonlySet<string>;
+}): PreviousClaudeConversation | null {
+  const now = args.now ?? Date.now();
+  const maxAge = args.maxAgeMs ?? ORC_CONVERSATION_CONSTANTS.RESTART_HANDOVER_MAX_AGE_MS;
+  if (args.rememberedSessionId) {
+    const file = findClaudeTranscript({ sessionId: args.rememberedSessionId, cwd: args.cwd, claudeHomes: args.claudeHomes });
+    if (file) {
+      try {
+        const mtimeMs = fs.statSync(file).mtimeMs;
+        if (now - mtimeMs <= maxAge) return { sessionId: args.rememberedSessionId, transcript: file, mtimeMs };
+      } catch {
+        // fall through to the cwd-wide search
+      }
+    }
+  }
+  let best: PreviousClaudeConversation | null = null;
+  for (const home of new Set(args.claudeHomes)) {
+    for (const slug of resolveProjectSlugCandidatesSync(args.cwd)) {
+      const dir = path.join(home, 'projects', slug);
+      let names: string[];
+      try {
+        names = fs.readdirSync(dir).filter((n) => n.endsWith('.jsonl'));
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        const sessionId = name.slice(0, -'.jsonl'.length);
+        if (args.claimedByOthers?.has(sessionId)) continue;
+        const full = path.join(dir, name);
+        let mtimeMs: number;
+        try {
+          mtimeMs = fs.statSync(full).mtimeMs;
+        } catch {
+          continue;
+        }
+        if (now - mtimeMs > maxAge || (best && mtimeMs <= best.mtimeMs)) continue;
+        if (!transcriptMentions(full, args.sessionName)) continue;
+        best = { sessionId, transcript: full, mtimeMs };
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Whether the first bytes of a transcript contain a text.
+ *
+ * @param filePath - Transcript
+ * @param needle - Text to find
+ * @returns True when found
+ */
+function transcriptMentions(filePath: string, needle: string): boolean {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buf = Buffer.alloc(ORC_CONVERSATION_CONSTANTS.OWNERSHIP_HEAD_BYTES);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      return buf.subarray(0, n).toString('utf8').includes(needle);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
+/** Remembered last conversation of a stopped session. */
+export interface LastConversationEntry {
+  sessionId: string;
+  cwd: string;
+  at: number;
+}
+
+/**
+ * Remember a stopped session's conversation id (a stop drops the stored id
+ * from session persistence; this is what lets the next start find it).
+ *
+ * @param file - JSON file
+ * @param sessionName - Session
+ * @param entry - Conversation id and cwd
+ */
+export function rememberLastConversation(file: string, sessionName: string, entry: LastConversationEntry): void {
+  try {
+    let all: Record<string, LastConversationEntry> = {};
+    try {
+      all = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, LastConversationEntry>;
+    } catch {
+      all = {};
+    }
+    all[sessionName] = entry;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(all), 'utf-8');
+    fs.renameSync(tmp, file);
+  } catch {
+    // best effort
+  }
+}
+
+/**
+ * Read a stopped session's remembered conversation.
+ *
+ * @param file - JSON file
+ * @param sessionName - Session
+ * @returns The entry, or null
+ */
+export function readLastConversation(file: string, sessionName: string): LastConversationEntry | null {
+  try {
+    const all = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, LastConversationEntry>;
+    const e = all[sessionName];
+    return e && typeof e.sessionId === 'string' ? e : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * For a fresh Claude Code conversation that nobody chose (a stop and start,
+ * or a stored conversation that is gone), write a handover from the most
+ * recent previous conversation of the session and return the kickoff note
+ * that points at it. Nothing is written when there is no conversation newer
+ * than a week, when it has nothing readable, or when a handover for the
+ * session is already newer than it (the oversized-conversation, per-task and
+ * runtime-switch paths write their own).
+ *
+ * @param args - Session, cwd, Claude homes, handover dir, remembered-conversation file, ids owned by other sessions
+ * @returns The handover file, the kickoff note and the previous conversation id, or null
+ */
+export function writeRestartHandover(args: {
+  sessionName: string;
+  cwd: string;
+  claudeHomes: readonly string[];
+  handoverDir: string;
+  lastConversationsFile?: string;
+  claimedByOthers?: ReadonlySet<string>;
+  now?: Date;
+}): { file: string; note: string; previousSessionId: string } | null {
+  const now = args.now ?? new Date();
+  const remembered = args.lastConversationsFile ? readLastConversation(args.lastConversationsFile, args.sessionName) : null;
+  const previous = findPreviousClaudeConversation({
+    cwd: args.cwd,
+    claudeHomes: args.claudeHomes,
+    sessionName: args.sessionName,
+    now: now.getTime(),
+    rememberedSessionId: remembered?.sessionId ?? null,
+    claimedByOthers: args.claimedByOthers,
+  });
+  if (!previous) return null;
+  const existing = latestHandoverFile(args.handoverDir, args.sessionName);
+  if (existing && existing.mtimeMs >= previous.mtimeMs) return null;
+  const body = buildHandoverSummary(previous.transcript);
+  if (!body) return null;
+  fs.mkdirSync(args.handoverDir, { recursive: true });
+  const file = path.join(args.handoverDir, `${args.sessionName}-restart-${now.toISOString().replace(/[:.]/g, '-')}.md`);
+  fs.writeFileSync(
+    file,
+    [
+      '# Handover: restart',
+      '',
+      `You were stopped and started again, so this is a fresh conversation. Your previous one (${previous.sessionId}, last active ${new Date(previous.mtimeMs).toISOString()}) is summarised below.`,
+      'Everything Crewly tracks — tasks, teams, OKRs, wiki, chat history (search-chat) — is still there; this file keeps only the end of what was said before.',
+      `The full transcript: ${previous.transcript}`,
+      '',
+      body,
+      '',
+    ].join('\n'),
+    'utf-8',
+  );
+  const note =
+    `This is a fresh conversation after a restart: after registering, read ${file} once — it holds the end of your previous conversation. ` +
+    'Before saying you cannot find an earlier conversation or request, search chat history with search-chat.';
+  return { file, note, previousSessionId: previous.sessionId };
+}

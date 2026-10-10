@@ -172,6 +172,18 @@ describe('SessionStatePersistence', () => {
 			expect(persistence.isSessionRegistered('test-session')).toBe(false);
 		});
 
+		it('remembers the stopped session\'s conversation id so the next start can hand it over', async () => {
+			persistence.registerSession('pia', { cwd: '/home/user/video', command: 'claude' }, RUNTIME_TYPES.CLAUDE_CODE);
+			persistence.updateSessionId('pia', 'conv-123');
+
+			persistence.unregisterSession('pia');
+
+			expect(persistence.getSessionId('pia')).toBeUndefined();
+			const remembered = JSON.parse(await fs.readFile(persistence.lastConversationsFile(), 'utf-8'));
+			expect(remembered.pia).toMatchObject({ sessionId: 'conv-123', cwd: '/home/user/video' });
+			await fs.rm(persistence.lastConversationsFile(), { force: true });
+		});
+
 		it('should handle unregistering non-existent session gracefully', () => {
 			expect(() => {
 				persistence.unregisterSession('non-existent');

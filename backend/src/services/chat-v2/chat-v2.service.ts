@@ -14,6 +14,8 @@ import type { ChatV2Config } from './config.js';
 import { ChannelStore } from './sqlite/channel.store.js';
 import { EventEmitter } from 'events';
 import { MessageStore } from './sqlite/message.store.js';
+import { redactOpenLinkTokens } from '../apps/app-open-link.js';
+import { CHAT_SEARCH_CONSTANTS } from '../../constants.js';
 import { openChatDatabase, type ChatDatabase } from './sqlite/chat-db.js';
 import { CloudOutboxStore } from './sqlite/cloud-outbox.store.js';
 import { reclassifyOwnerSlackRows, type OwnerIdentity } from './sqlite/unified-log.js';
@@ -506,6 +508,64 @@ export class ChatV2Service extends EventEmitter {
       items,
       nextCursor: rows.length === limit && last ? encodeTimelineCursor(last.created_at, last.rowid) : null,
     };
+  }
+
+  /**
+   * Search the chat messages one agent can see (its DMs, the channels and
+   * rooms it is in, and messages that @-mention it) and return compact hits.
+   * An agent principal may only search as itself.
+   *
+   * @param args.agentSession - Whose view is searched
+   * @param args.principal - Caller
+   * @param args.query - Keywords (whitespace separated, all must appear)
+   * @param args.channel - Channel id or name
+   * @param args.from - Start (inclusive), epoch ms
+   * @param args.to - End (exclusive), epoch ms
+   * @param args.limit - Most hits
+   * @returns Hits, newest first
+   * @throws {ChatError} `validation_error` (400) without a session or a keyword; `forbidden` (403) for another agent's view
+   */
+  searchMessagesForAgent(args: {
+    agentSession: string;
+    principal: ChatPrincipal;
+    query: string;
+    channel?: string;
+    from?: number;
+    to?: number;
+    limit?: number;
+  }): Array<{ id: string; time: string; channelId: string; channel: string; sender: string; text: string; threadId: string | null }> {
+    const agentSession = (args.agentSession ?? '').trim();
+    if (!agentSession) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'agent session is required');
+    if (args.principal.agentSession && args.principal.agentSession !== agentSession) {
+      throw new ChatError(CHAT_ERROR_CODES.FORBIDDEN, 403, 'An agent can only search its own chat history');
+    }
+    const terms = (args.query ?? '')
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0)
+      .slice(0, CHAT_SEARCH_CONSTANTS.MAX_TERMS);
+    if (terms.length === 0) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'query is required');
+    const requested = typeof args.limit === 'number' && Number.isFinite(args.limit) && args.limit > 0 ? Math.floor(args.limit) : CHAT_SEARCH_CONSTANTS.DEFAULT_LIMIT;
+    const limit = Math.min(requested, CHAT_SEARCH_CONSTANTS.MAX_LIMIT);
+    const rows = this.messages.searchForAgent(agentSession, {
+      terms,
+      ...(args.channel ? { channel: args.channel.trim() } : {}),
+      ...(args.from !== undefined && Number.isFinite(args.from) ? { fromMs: args.from } : {}),
+      ...(args.to !== undefined && Number.isFinite(args.to) ? { toMs: args.to } : {}),
+      limit,
+    });
+    return rows.map((r) => {
+      const flat = redactOpenLinkTokens(ownerVisibleContent(r.sender_type, r.content)).replace(/\s+/g, ' ').trim();
+      return {
+        id: r.id,
+        time: new Date(r.created_at).toISOString(),
+        channelId: r.channel_id,
+        channel: r.channel_name,
+        sender: r.sender_id,
+        text: flat.length > CHAT_SEARCH_CONSTANTS.SNIPPET_CHARS ? `${flat.slice(0, CHAT_SEARCH_CONSTANTS.SNIPPET_CHARS)}…` : flat,
+        threadId: r.thread_id,
+      };
+    });
   }
 
   /**

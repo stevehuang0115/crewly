@@ -3094,6 +3094,14 @@ export const ORC_CONVERSATION_CONSTANTS = {
 	HANDOVER_MAX_CHARS: 16_000,
 	/** Directory under CREWLY_HOME for handover files */
 	HANDOVER_DIR: 'handover',
+	/** A plain restart hands over the previous conversation only when its transcript was written within this window */
+	RESTART_HANDOVER_MAX_AGE_MS: 7 * 24 * 60 * 60 * 1000,
+	/** Where the last conversation id of a stopped session is remembered (under the state dir) */
+	LAST_CONVERSATIONS_FILE: 'last-conversations.json',
+	/** How much of a transcript's start is read to check it belongs to a session (cwd-wide fallback) */
+	OWNERSHIP_HEAD_BYTES: 256 * 1024,
+	/** Most of an earlier handover carried into a new one when the source conversation is unreadable */
+	CHAINED_HANDOVER_MAX_CHARS: 16_000,
 } as const;
 
 /**
@@ -3307,6 +3315,19 @@ export const CHAT_CONTEXT_CONSTANTS = {
 	 * wrong one.
 	 */
 	MAX_AGE_MS: 6 * 60 * 60 * 1000,
+	/**
+	 * A top-level owner message in a room or channel (not a thread, not a DM)
+	 * is often a follow-up to yesterday ("how is the video plan going?"), so it
+	 * gets a longer look back than other top-level messages: the last
+	 * {@link TOP_LEVEL_OWNER_MAX} messages or the last
+	 * {@link TOP_LEVEL_OWNER_MAX_AGE_MS}, whichever is smaller, within
+	 * {@link TOP_LEVEL_OWNER_MAX_CHARS} characters (oldest dropped first).
+	 */
+	TOP_LEVEL_OWNER_MAX: 15,
+	/** See {@link TOP_LEVEL_OWNER_MAX} */
+	TOP_LEVEL_OWNER_MAX_AGE_MS: 24 * 60 * 60 * 1000,
+	/** See {@link TOP_LEVEL_OWNER_MAX} */
+	TOP_LEVEL_OWNER_MAX_CHARS: 3_000,
 } as const;
 
 /**
@@ -6368,6 +6389,17 @@ export const SKILL_SETUP_CONSTANTS = {
  * Column vocabularies for the first-class copies of what used to live only
  * in `chat_messages.metadata`.
  */
+export const CHAT_SEARCH_CONSTANTS = {
+	/** Default number of hits */
+	DEFAULT_LIMIT: 10,
+	/** Most hits one search returns */
+	MAX_LIMIT: 30,
+	/** Characters of a message kept in a hit */
+	SNIPPET_CHARS: 300,
+	/** Most keywords used (extra words are ignored) */
+	MAX_TERMS: 6,
+} as const;
+
 export const CONVERSATION_LOG_CONSTANTS = {
 	/** `chat_messages.source` values — which surface a message belongs to. */
 	SOURCES: ['slack', 'crewly-chat', 'cloud-talk', 'google-chat', 'telegram', 'whatsapp', 'system', 'runtime'],
