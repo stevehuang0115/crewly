@@ -1396,6 +1396,17 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
             nextCooldownMs: this.redeliverCooldownMs(action.workItemId),
           });
         }
+        if (!delivered) {
+          // CREW-438: say why nothing went out — redispatch() has several quiet exits.
+          this.logger.warn('Redelivery of WorkItem brief returned false', {
+            agent: agentSessionName,
+            workItemId: action.workItemId,
+            status: wi.status,
+            target: wi.target,
+            batched: batch.length,
+            hasTarget: Boolean(wi.target),
+          });
+        }
         return delivered ? { outcome: 'ok' } : { outcome: 'failed', reason: 'redelivery not delivered' };
       } catch (error) {
         this.logger.error('Redeliver wake action failed', {

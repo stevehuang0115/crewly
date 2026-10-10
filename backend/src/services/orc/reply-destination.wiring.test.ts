@@ -173,3 +173,32 @@ describe('deliverReply — work delegated from the owner\'s DM with another agen
     expect(deliver).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('deliverReply — decision-card threads (CREW-438)', () => {
+  beforeEach(() => AgentPromptReferenceService.resetInstance());
+
+  const refuse = () => jest.fn(async () => null);
+
+  it('a refused --conversation + Slack-thread hint in a mapped channel is posted straight to that Slack thread', async () => {
+    const post = jest.fn(async (r: { target: string }) => ({ channelId: r.target, messageTs: '9.9' }));
+    const d = deps({ deliverToConversation: refuse(), workDestination: async () => work(post) });
+    const r = await deliverReply({ session: 'owen', content: 'my answer', hints: { conversationId: 'room-ce', thread: 'C0CE00001:1790000000.000001' } }, d);
+    expect(r.ok).toBe(true);
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({ target: 'C0CE00001', threadTs: '1790000000.000001', text: 'my answer' }));
+    expect(r).toMatchObject({ ok: true, slackChannelId: 'C0CE00001', threadTs: '1790000000.000001' });
+  });
+
+  it('does not post to a Slack thread of a different channel than the conversation is mapped to', async () => {
+    const post = jest.fn(async (r: { target: string }) => ({ channelId: r.target, messageTs: '9.9' }));
+    const d = deps({ deliverToConversation: refuse(), workDestination: async () => work(post) });
+    await deliverReply({ session: 'owen', content: 'x', hints: { conversationId: 'room-ce', thread: 'C0OTHER99:1790000000.000001' } }, d);
+    expect(post).not.toHaveBeenCalledWith(expect.objectContaining({ target: 'C0OTHER99' }));
+  });
+
+  it('the refusal names reply --decision D-n when the thread is a decision card', async () => {
+    const d = deps({ deliverToConversation: refuse(), workDestination: async () => work(jest.fn(async (_r: { target: string }) => { throw new Error('slack down'); })), decisionOfCardThread: async (ch, ts) => (ch === 'C0CE00001' && ts === '1790000000.000001' ? 'D-42' : null) });
+    const r = await deliverReply({ session: 'owen', content: 'x', hints: { conversationId: 'room-ce', thread: 'C0CE00001:1790000000.000001' } }, d);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain('reply --decision D-42');
+  });
+});

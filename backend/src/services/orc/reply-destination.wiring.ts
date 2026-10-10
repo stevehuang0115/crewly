@@ -51,6 +51,12 @@ export interface ReplyDeliveryDeps {
    * (specs/2026-10-03-one-responder-per-message.md §2). Omitted: no gate.
    */
   priorRoomAnswer?: (input: { conversationId: string; thread?: string; agentSession: string }) => Promise<{ by: string; excerpt: string } | null>;
+  /**
+   * The decision whose card lives in a Slack thread (CREW-438): decision
+   * cards leave no chat thread-root row, so an answer to one is addressed
+   * with `reply --decision D-n`. Omitted: no card lookup.
+   */
+  decisionOfCardThread?: (slackChannelId: string, threadTs: string) => Promise<string | null>;
 }
 
 /** What a delivery did. */
@@ -141,10 +147,17 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
     if (viaDm.ok) return viaDm;
   }
 
+  const hintedThread = dest.source === 'hint' && dest.kind === 'conversation' ? dest.thread : undefined;
   if (dest.source === 'hint') {
+    // CREW-438: a Slack thread of a mapped channel the agent is in, with no
+    // chat thread-root row behind it (a decision card's): post to it directly.
+    if (dest.kind === 'conversation') {
+      const direct = await postToHintedSlackThread(input, dest, d);
+      if (direct) return direct;
+    }
     logger.warn('The conversation the agent named did not take its message — resolving without its ids', { session: input.session, error: result.error });
     dest = await resolve(undefined);
-    if (dest.kind === 'unresolved') return { ok: false, destination: dest, error: notDelivered(dest.reason, dest.fix) };
+    if (dest.kind === 'unresolved') return withCardFix({ ok: false, destination: dest, error: notDelivered(dest.reason, dest.fix) }, hintedThread, d);
     result = await attempt(input, dest, prompt, d);
     if (result.ok) return result;
   }
@@ -163,7 +176,75 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
       if (retry.ok) return retry;
     }
   }
-  return result;
+  return withCardFix(result, hintedThread, d);
+}
+
+/**
+ * Post straight to the Slack thread an agent named with `--conversation` +
+ * `--thread` when the chat conversation did not take it (CREW-438).
+ *
+ * Only when the thread key is of the Slack channel that conversation is
+ * mapped to and the agent is a member there, so a key cannot send a message
+ * to a channel the agent was never in.
+ *
+ * @param input - Agent, text
+ * @param dest - The hinted conversation destination that refused
+ * @param d - Collaborators
+ * @returns The delivery, or null when the conditions do not hold / the post failed
+ */
+async function postToHintedSlackThread(
+  input: DeliverReplyInput,
+  dest: Extract<ReplyDestination, { kind: 'conversation' }>,
+  d: ReplyDeliveryDeps,
+): Promise<ReplyDelivery | null> {
+  const key = parseSlackThreadKey(dest.thread);
+  if (!key) return null;
+  if (d.resolver.slackChannelOfConversation(dest.conversationId) !== key.slackChannelId) return null;
+  if (!(await d.resolver.ownsConversation(input.session, dest.conversationId).catch(() => false))) return null;
+  try {
+    const wd = await d.workDestination();
+    const posted = await deliverToWorkDestination(
+      input.session,
+      { kind: 'slack', target: key.slackChannelId, threadTs: key.threadTs, reason: 'the Slack thread you named (no chat row behind it — e.g. a decision card)' },
+      input.content,
+      wd,
+    );
+    if (!posted) return null;
+    logger.warn('Hinted conversation did not take the reply — posted straight to the Slack thread it named', {
+      session: input.session,
+      conversationId: dest.conversationId,
+      slackChannelId: key.slackChannelId,
+      threadTs: key.threadTs,
+    });
+    return {
+      ok: true,
+      destination: dest,
+      slackChannelId: posted.slackChannelId,
+      messageTs: posted.messageTs,
+      threadTs: posted.threadTs ?? key.threadTs,
+    };
+  } catch (err) {
+    logger.warn('Direct post to the named Slack thread failed', { session: input.session, error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}
+
+/**
+ * When a refused reply was aimed at a decision card's thread, make the error
+ * name `reply --decision D-n` (CREW-438).
+ *
+ * @param result - The failed delivery
+ * @param thread - The thread the agent named (Slack thread key), if any
+ * @param d - Collaborators
+ * @returns The result, with the error rewritten when the thread is a card's
+ */
+async function withCardFix(result: ReplyDelivery, thread: string | undefined, d: ReplyDeliveryDeps): Promise<ReplyDelivery> {
+  if (result.ok || !d.decisionOfCardThread) return result;
+  const key = parseSlackThreadKey(thread);
+  if (!key) return result;
+  const id = await d.decisionOfCardThread(key.slackChannelId, key.threadTs).catch(() => null);
+  if (!id) return result;
+  return { ...result, error: notDelivered(`that thread is the card of decision ${id}, not a chat thread`, `reply --decision ${id} "<your message>"`) };
 }
 
 /**
@@ -506,6 +587,11 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
     priorRoomAnswer: async (input) => {
       const { getSlackTeamChannelService } = await import('../slack/slack-team-channel.service.js');
       return (await getSlackTeamChannelService()?.heldReplyFor(input)) ?? null;
+    },
+    decisionOfCardThread: async (slackChannelId, threadTs) => {
+      const all = (await DecisionService.getInstance()?.list('all').catch(() => [])) ?? [];
+      const hit = all.find((x) => x.card && x.card.slackChannelId === slackChannelId && (x.card.threadTs ?? x.card.messageTs) === threadTs);
+      return hit?.id ?? null;
     },
   };
 }

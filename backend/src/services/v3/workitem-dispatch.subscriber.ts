@@ -720,7 +720,10 @@ export class WorkItemDispatchSubscriber {
    * @returns Whether the redelivery write succeeded
    */
   async redispatch(workItem: WorkItem): Promise<boolean> {
-    if (!workItem.target) return false;
+    if (!workItem.target) {
+      this.logger.warn('Redispatch returned false — the WorkItem has no target', { workItemId: workItem.id, status: workItem.status });
+      return false;
+    }
     const key = this.dispatchKey(workItem.id, workItem.target);
     // Its notice still waits on the agent's queue: it goes out when the agent
     // is active; a second one would brief it twice.
@@ -735,6 +738,9 @@ export class WorkItemDispatchSubscriber {
     this.confirmed.delete(key);
     this.dispatched.delete(key);
     const ok = await this.dispatchTo(workItem);
+    if (!ok) {
+      this.logger.warn('Redispatch returned false — dispatchTo did not deliver the brief', { workItemId: workItem.id, target: workItem.target, status: workItem.status });
+    }
     traceHarness('harness.redelivery', {
       workItem,
       session: workItem.target,

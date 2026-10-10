@@ -1574,6 +1574,14 @@ describe('LiveReconcilerDataProvider', () => {
         expect(await wakeResult(provider, buildAction())).toMatchObject({ outcome: 'failed' });
       });
 
+      it('logs why when the redelivery write did not land (CREW-438)', async () => {
+        mockPool.findWorkItem.mockResolvedValue(queuedWi);
+        mockSubscriber.redispatch.mockResolvedValue(false);
+        const warnSpy = jest.spyOn((provider as any).logger, 'warn');
+        await wakeResult(provider, buildAction());
+        expect(warnSpy).toHaveBeenCalledWith('Redelivery of WorkItem brief returned false', expect.objectContaining({ workItemId: 'wi-sora-1', agent: 'sora', status: 'queued' }));
+      });
+
       // 2026-09-16 token-burn fix: a flat 5-minute cooldown re-woke the orc
       // every few minutes for as long as a WI stayed queued. Each further
       // reminder for the same WI now waits twice as long as the last one.
