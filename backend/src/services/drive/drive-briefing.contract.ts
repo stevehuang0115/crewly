@@ -63,6 +63,19 @@ export interface BriefingItem {
   updatedAt: string;
   /** The last thing said about it (ticket log line, work item summary) */
   last?: string;
+  /**
+   * Tickets: when someone last worked on or wrote about it (ISO). Lets the
+   * voice say "last updated 5 days ago". Absent on older machines.
+   */
+  lastActivityAt?: string;
+  /** Tickets: whole days since `lastActivityAt` */
+  idleDays?: number;
+  /**
+   * Tickets: open and silent past the stale threshold (3 days in progress /
+   * review, 14 days ready / backlog), so the status may be outdated. The voice
+   * should say so rather than state it as current. Absent = not flagged.
+   */
+  maybeOutdated?: true;
 }
 
 /** Something waiting on the owner (live card / question / review only). */

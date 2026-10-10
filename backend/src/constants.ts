@@ -7911,6 +7911,53 @@ export const DRIVE_CONSTANTS = {
 } as const;
 
 /**
+ * Ticket hygiene: keeps the project tickets honest so status views (Drive
+ * mode, boards) do not show finished work as open.
+ *
+ * - An hourly sweep closes or advances tickets whose state is objectively
+ *   settled and flags tickets whose assignee / team no longer exists. No agent
+ *   is woken for it.
+ * - Once a day per team, the team lead (the orchestrator when there is none)
+ *   gets ONE batched WorkItem listing the team's stale tickets to decide.
+ */
+export const TICKET_HYGIENE_CONSTANTS = {
+	/** Kill switch: `0` turns the whole mechanism off */
+	ENV_SWITCH: 'CREWLY_TICKET_HYGIENE',
+	/** State file under the Crewly home */
+	STATE_FILENAME: 'ticket-hygiene-state.json',
+	/** How often the sweep runs (ms) */
+	SWEEP_INTERVAL_MS: 60 * 60 * 1000,
+	/** First sweep this long after boot (ms), so boot work settles first */
+	FIRST_SWEEP_DELAY_MS: 3 * 60 * 1000,
+	/** `in_progress` / `review` ticket with no activity this long is stale (days) */
+	STALE_ACTIVE_DAYS: 3,
+	/** `ready` / `backlog` ticket with no activity this long is stale (days) */
+	STALE_IDLE_DAYS: 14,
+	/** A ticket already sent to the lead is not sent again for this long (days) */
+	REVIEW_COOLDOWN_DAYS: 3,
+	/** At most one review batch per team this often (ms) */
+	REVIEW_INTERVAL_MS: 24 * 60 * 60 * 1000,
+	/** A review item still queued (never picked up) after this long is cancelled and may be replaced (ms) */
+	REVIEW_STALE_QUEUED_MS: 24 * 60 * 60 * 1000,
+	/** Max tickets in one batch (oldest activity first); the rest wait for the next day */
+	MAX_TICKETS_PER_REVIEW: 15,
+	/** Max characters of a ticket title in the brief */
+	TITLE_MAX_CHARS: 120,
+	/** WorkItem type of the batch */
+	REVIEW_WORK_ITEM_TYPE: 'ticket_hygiene_review',
+	/** `metadata.kind` of the batch (also how a live one is found) */
+	REVIEW_METADATA_KIND: 'ticket_hygiene_review',
+	/** Actor written in the ticket Log by the sweep (its lines never count as activity) */
+	ACTOR: 'crewly-hygiene',
+	/** Reason written in every automatic Log line */
+	REASON: 'auto-reconcile',
+	/** Label the sweep puts on a ticket whose assignee or team no longer exists */
+	ORPHAN_LABEL: 'orphaned',
+	/** Entries in the per-ticket "already sent" memory are dropped after this long (days) */
+	STATE_RETENTION_DAYS: 30,
+} as const;
+
+/**
  * Drive mode v3 status briefing (specs/2026-10-09-drive-mode-v3.md §1): the
  * compact per-team / per-agent snapshot this machine keeps up to date and
  * pushes to Crewly Cloud, so the voice answers status questions with no

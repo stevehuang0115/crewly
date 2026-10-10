@@ -52,7 +52,7 @@ import { autopilotTicketTraceForStart, traceAutopilotTicketStarted } from './tic
 import type { AssigneeWakeResult, AssigneeWaker } from './ticket-assignee-waker.js';
 
 /** WorkItem statuses that still carry the ticket's work. */
-const LIVE_STATUSES: ReadonlySet<WorkItemStatus> = new Set([
+export const LIVE_STATUSES: ReadonlySet<WorkItemStatus> = new Set([
   'queued',
   'scheduled',
   'proposed',
@@ -179,7 +179,7 @@ interface StartWorkOptions {
 export type TicketSyncOutcome = 'unchanged' | 'done' | 'review' | 'relinked' | 'returned';
 
 /** Where a ticket's WorkItem chain ends. */
-type ChainEnd =
+export type ChainEnd =
   | { kind: 'success'; wi: WorkItem }
   | { kind: 'live'; wi: WorkItem }
   | { kind: 'returned'; id: string; why: string }
@@ -1265,7 +1265,7 @@ export class ProjectTicketWorkflowService {
    * @param startId - The ticket's WorkItem
    * @returns Where the chain ends
    */
-  private async followChain(startId: string): Promise<ChainEnd> {
+  async followChain(startId: string): Promise<ChainEnd> {
     let current = startId;
     for (let hop = 0; hop < PROJECT_TICKET_CONSTANTS.MAX_SUCCESSOR_HOPS; hop++) {
       const wi = await this.pool.findWorkItem(current);

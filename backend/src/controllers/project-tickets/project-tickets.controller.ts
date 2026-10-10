@@ -31,7 +31,8 @@ import { resolveProjectDataDir } from '../../services/core/crewly-home.utils.js'
 import { existsSync } from 'fs';
 import { TokenUsageService } from '../../services/monitoring/token-usage.service.js';
 import { getCrewlyHomePath } from '../../services/core/crewly-home.utils.js';
-import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
+import { TICKET_AUTOPILOT_CONSTANTS, TICKET_HYGIENE_CONSTANTS } from '../../constants.js';
+import { TicketHygieneService } from '../../services/project-tickets/ticket-hygiene.service.js';
 import { createHttpAssigneeWaker } from '../../services/project-tickets/ticket-assignee-waker.js';
 import { getRoleService } from '../../services/settings/role.service.js';
 import { DecisionError, DecisionService } from '../../services/decisions/decision.service.js';
@@ -58,6 +59,23 @@ export function projectTicketWorkflow(): ProjectTicketWorkflowService {
     ProjectTicketWorkflowService.setInstance(wf);
   }
   return wf;
+}
+
+/**
+ * Build the ticket hygiene service (hourly reconcile + daily lead review) from
+ * the process singletons.
+ *
+ * @returns A new service (not installed, not started)
+ */
+export function createDefaultTicketHygiene(): TicketHygieneService {
+  const workflow = projectTicketWorkflow();
+  return new TicketHygieneService({
+    tickets: ProjectTicketService.getInstance(),
+    pool: TaskPoolService.getInstance(),
+    directory: StorageService.getInstance(),
+    followChain: (id) => workflow.followChain(id),
+    stateFile: path.join(getCrewlyHomePath(), TICKET_HYGIENE_CONSTANTS.STATE_FILENAME),
+  });
 }
 
 /**

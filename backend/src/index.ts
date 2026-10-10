@@ -123,7 +123,7 @@ import { parseSlackThreadKey } from './services/slack/slack-thread-key.js';
 import { LIVENESS_MONITOR_CONSTANTS, INPUT_CIRCUIT_CONSTANTS, INPUT_BLOCKED_RETRY_CONSTANTS } from './constants.js';
 import { InputBlockedRetryService } from './services/messaging/input-blocked-retry.service.js';
 import { driveCapabilities } from './services/drive/drive-agent.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS, CREWLY_APPS_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, BRIEFING_CONSTANTS, DRIVE_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, TICKET_HYGIENE_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS, CREWLY_APPS_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, BRIEFING_CONSTANTS, DRIVE_CONSTANTS } from './constants.js';
 import { randomUUID } from 'crypto';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
@@ -3947,6 +3947,20 @@ void (async () => {
 				const { projectTicketWorkflow } = await import('./controllers/project-tickets/project-tickets.controller.js');
 				projectTicketWorkflow().start(this.eventBusService);
 				this.logger.info('Project ticket workflow started — tickets follow their WorkItems');
+
+				// Ticket hygiene: an hourly sweep closes tickets whose work is done and
+				// flags orphaned ones (no agent woken), and once a day each team lead
+				// gets ONE batched WorkItem of its stale tickets. Kill switch:
+				// CREWLY_TICKET_HYGIENE=0.
+				if (process.env[TICKET_HYGIENE_CONSTANTS.ENV_SWITCH] !== '0') {
+					const { createDefaultTicketHygiene } = await import('./controllers/project-tickets/project-tickets.controller.js');
+					const { TicketHygieneService } = await import('./services/project-tickets/ticket-hygiene.service.js');
+					TicketHygieneService.getInstance()?.stop();
+					const hygiene = createDefaultTicketHygiene();
+					TicketHygieneService.setInstance(hygiene);
+					hygiene.start();
+					this.logger.info('Ticket hygiene started (hourly sweep, daily lead review)');
+				}
 
 				// Ticket autopilot (specs/2026-09-30-ticket-autopilot.md): per-project
 				// switch, default off. Wakes a project's lead to triage its backlog and

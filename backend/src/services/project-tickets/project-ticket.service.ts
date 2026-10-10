@@ -104,6 +104,11 @@ export interface TicketMutation {
   description?: string;
   acceptance?: ProjectTicketCriterion[];
   log?: string[];
+  /**
+   * Leave `updatedAt` as it is. For bookkeeping that is not real activity on
+   * the ticket (the hygiene sweep's flags), so it never resets a ticket's age.
+   */
+  keepUpdatedAt?: boolean;
 }
 
 /** Dependencies (injectable for tests). */
@@ -409,7 +414,7 @@ export class ProjectTicketService {
       if (!mutation) return current;
       const now = this.now();
       const changes: TicketChanges = {
-        fields: { ...(mutation.fields ?? {}), updatedAt: now },
+        fields: { ...(mutation.fields ?? {}), ...(mutation.keepUpdatedAt ? {} : { updatedAt: now }) },
         description: mutation.description,
         acceptance: mutation.acceptance,
         logLines: (mutation.log ?? []).map((m) => formatLogLine(actor, m, now)),
