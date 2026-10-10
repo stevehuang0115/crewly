@@ -4212,6 +4212,13 @@ describe('TaskPoolService', () => {
       const wi = makeWorkItem({ title: 'in progress', target: AGENT });
       await service.addToPool(wi);
       await service.claimFromPool(AGENT);
+      // CE-232: with a live lease a dead-looking agent is not blocked; the
+      // lease has to have run out as well.
+      for (const claim of await service.getActiveClaims()) {
+        await storage.updateClaim(claim.id, (c) => {
+          c.leaseExpiresAt = new Date(Date.now() - 60_000).toISOString();
+        });
+      }
 
       const inactive = new Map<string, AgentHealth>([[AGENT, { sessionName: AGENT, status: 'inactive' }]]);
       await new ReconcilerService(makeProvider(inactive)).runFull();
@@ -4335,6 +4342,50 @@ describe('TaskPoolService', () => {
       await service.completeItem(ce19, { summary: 'done' }, veraActor);
       expect((await service.findWorkItem(ce19))?.status).toBe('done_by_worker');
       expect((await service.getClaimService().getClaimById(claimId))?.status).toBe('released');
+    });
+
+    describe('CE-232 / CREW-439 — redelivery-failure block must not refuse the worker', () => {
+      const deadVera = (): Map<string, AgentHealth> =>
+        new Map([[VERA, { sessionName: VERA, status: 'inactive' } as AgentHealth]]);
+
+      it('reproduces CE-232: reconciler flips running → blocked, then the claimant complete succeeds', async () => {
+        const { ce19 } = await seed();
+        await service.claimSpecificItem(VERA, ce19);
+        await service.updateItemStatus(ce19, 'blocked', 'system');
+        expect((await service.findWorkItem(ce19))?.status).toBe('blocked');
+
+        await service.completeItem(ce19, { summary: 'done anyway' }, veraActor);
+        const done = await service.findWorkItem(ce19);
+        expect(done?.status).toBe('done_by_worker');
+        expect(typeof done?.metadata?.completedWhileBlockedAt).toBe('string');
+      });
+
+      it('a failed wake / dead-looking agent with a live claim lease does not flip the item to blocked', async () => {
+        const { ce19 } = await seed();
+        await service.claimSpecificItem(VERA, ce19);
+        const reconciler = new ReconcilerService(makeProvider(deadVera()));
+        await reconciler.runFast();
+        await reconciler.runFull();
+        expect((await service.findWorkItem(ce19))?.status).toBe('running');
+      });
+
+      it('a non-claimant still cannot complete a system-blocked item', async () => {
+        const { ce19 } = await seed();
+        await service.claimSpecificItem(VERA, ce19);
+        await service.updateItemStatus(ce19, 'blocked', 'system');
+        await expect(
+          service.completeItem(ce19, { summary: 'not mine' }, { role: 'agent', session: OWEN, via: 'POST /task-pool/complete' }),
+        ).rejects.toThrow();
+        expect((await service.findWorkItem(ce19))?.status).toBe('blocked');
+      });
+
+      it('an explicitly blocked item still refuses completion, even from its own agent', async () => {
+        const { ce19 } = await seed();
+        await service.claimSpecificItem(VERA, ce19);
+        await service.blockItem(ce19, { agentId: VERA, reason: 'waiting on design' });
+        await expect(service.completeItem(ce19, { summary: 'x' }, veraActor)).rejects.toThrow();
+        expect((await service.findWorkItem(ce19))?.status).toBe('blocked');
+      });
     });
 
     it('accepts completion of a batched item its target worked without claiming it', async () => {

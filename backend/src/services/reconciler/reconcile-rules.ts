@@ -145,6 +145,7 @@ function resolveTimeoutForType(
  * @param timeoutMs - Default running timeout (default: 10 min); per-type overrides
  *                   in {@link DEFAULT_PER_TYPE_TIMEOUT_MS} apply on top of this
  * @param timeoutOverrides - Optional caller-supplied per-type overrides
+ * @param claims - Active claims; an item with an unexpired lease is not blocked for a dead agent
  * @returns Array of corrections and affected WorkItem IDs
  */
 export function detectStuckWorkItems(
@@ -152,10 +153,18 @@ export function detectStuckWorkItems(
   agentHealthMap: Map<string, AgentHealth>,
   timeoutMs: number = 600_000,
   timeoutOverrides?: Partial<Record<WorkItem['type'], number>>,
+  claims: TaskClaim[] = [],
 ): { corrections: ReconcileCorrection[]; stuckIds: string[] } {
   const corrections: ReconcileCorrection[] = [];
   const stuckIds: string[] = [];
   const now = Date.now();
+  // CE-232: an item whose claim lease is still live is not parked as "agent
+  // dead" — a failed wake alone must not block work its holder may be doing.
+  const liveLeaseItems = new Set(
+    claims
+      .filter((c) => (c.status === 'active' || c.status === 'expiring') && !isLeaseExpired(c, now))
+      .map((c) => c.workItemId),
+  );
 
   for (const wi of workItems) {
     if (wi.status !== 'running') continue;
@@ -166,6 +175,8 @@ export function detectStuckWorkItems(
     const startedAt = wi.startedAt ? new Date(wi.startedAt).getTime() : new Date(wi.createdAt).getTime();
     const effectiveTimeoutMs = resolveTimeoutForType(wi.type, timeoutMs, timeoutOverrides);
     const isTimedOut = Number.isFinite(effectiveTimeoutMs) && (now - startedAt) > effectiveTimeoutMs;
+
+    if (isAgentDead && liveLeaseItems.has(wi.id)) continue;
 
     if (isAgentDead) {
       const newStatus: WorkItemStatus = wi.retryCount < wi.maxRetries ? 'blocked' : 'failed';

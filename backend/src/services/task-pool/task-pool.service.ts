@@ -2280,6 +2280,8 @@ export class TaskPoolService {
     }
     if (workItem.status === 'queued') {
       workItem = (await this.resumeOwnQueuedItemForCompletion(workItem, actor)) ?? workItem;
+    } else if (workItem.status === 'blocked') {
+      workItem = (await this.resumeOwnSystemBlockedItemForCompletion(workItem, actor)) ?? workItem;
     }
     if (this.requiresVerification(workItem)) {
       await this.submitForVerification(workItemId, actor, result);
@@ -2333,6 +2335,60 @@ export class TaskPoolService {
         },
       );
       this.logger.info('Completion from the item\'s own agent landed while it was queued — resumed to finish it', {
+        workItemId: workItem.id,
+        agentId: session,
+      });
+      return resumed;
+    });
+  }
+
+  /**
+   * Puts a `blocked` WorkItem back to `running` when its own agent reports it
+   * complete and the block was set by the system, not by a person.
+   *
+   * CE-232 (CREW-439): a failed wake left the agent looking dead, the
+   * reconciler flipped the item `running → blocked`, and the worker's later
+   * `complete` was refused (`blocked → done_by_worker` is not a transition),
+   * so finished work was stuck. An `explicit` block (block API) and a
+   * `waiting_on_human` park keep their meaning and are not resumed here.
+   * Only the item's own agent (target, or latest claim holder) is let through.
+   *
+   * @param workItem - The blocked WorkItem
+   * @param actorInput - Who is completing it
+   * @returns The resumed (running) WorkItem, or null when the block is not
+   *   system-origin, the caller is not its agent, or it is no longer blocked
+   */
+  private async resumeOwnSystemBlockedItemForCompletion(
+    workItem: WorkItem,
+    actorInput: TransitionActorInput,
+  ): Promise<WorkItem | null> {
+    if (
+      workItem.blockSource === WORK_ITEM_BLOCK_SOURCES.EXPLICIT ||
+      workItem.blockSource === WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN
+    ) {
+      return null;
+    }
+    const session = normalizeTransitionActor(actorInput)?.session;
+    if (!session) return null;
+    const owner = workItem.target ?? (await this.latestClaimHolder(workItem.id));
+    if (owner !== session) return null;
+
+    return this.withClaimLock(async () => {
+      const current = await this.storage.findWorkItem(workItem.id);
+      if (!current || current.status !== 'blocked') return current ?? null;
+      const resumed = await this.transitionStatus(
+        workItem.id,
+        'running',
+        { role: 'system', session, via: 'completeItem:resume-own-blocked' },
+        (wi) => {
+          wi.blockedReason = undefined;
+          wi.metadata = {
+            ...(wi.metadata ?? {}),
+            completedWhileBlockedAt: new Date().toISOString(),
+          };
+        },
+      );
+      this.logger.info('Completion from the item\'s own agent landed while it was system-blocked — resumed to finish it', {
         workItemId: workItem.id,
         agentId: session,
       });
