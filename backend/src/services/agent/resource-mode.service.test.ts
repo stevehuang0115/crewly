@@ -98,7 +98,7 @@ describe('start cap', () => {
 
 	it('at the cap stops the longest-idle agent, skipping busy, owner-pending and orchestrator', async () => {
 		const { svc, stopped } = make(
-			[agent('long-busy', 9e6, true), agent('long-owner', 8e6), agent('mid', 5e5), agent('short', 1e5), { sessionName: 'orc', role: 'orchestrator', idleMs: 1e9, busy: false }],
+			[agent('long-busy', 9e6, true), agent('long-owner', 8e6), agent('mid', 2e6), agent('short', 1e6), { sessionName: 'orc', role: 'orchestrator', idleMs: 1e9, busy: false }],
 			['long-owner'], 4);
 		await enter(svc);
 		expect(await svc.requestStart('new', false)).toBe(true);
@@ -178,6 +178,76 @@ describe('start cap', () => {
 	});
 });
 
+describe('eviction guards (idle threshold, pending work, open delegations)', () => {
+	function makeGuarded(running: RunningAgent[], reasons: Record<string, string>, max = 2) {
+		const svc = ResourceModeService.getInstance();
+		const stopped: string[] = [];
+		let list = [...running];
+		svc.setDeps({
+			limits: async () => ({ maxRunning: max, idleTimeoutMinutes: 10 }),
+			listRunning: async () => list,
+			hasOwnerMessage: () => false,
+			protectedReason: async (n) => reasons[n] ?? null,
+			stopAgent: async (n) => { stopped.push(n); list = list.filter((r) => r.sessionName !== n); },
+		});
+		return { svc, stopped };
+	}
+	const waits = async (svc: ResourceModeService) => {
+		let done: boolean | null = null;
+		void svc.requestStart('new', false).then((r) => { done = r; });
+		await new Promise((r) => setTimeout(r, 20));
+		return done;
+	};
+
+	it('never stops an agent idle for less than the pressure idle timeout; the waiter waits', async () => {
+		const { svc, stopped } = makeGuarded([agent('a', 2 * 60_000), agent('b', 9 * 60_000)], {});
+		await enter(svc);
+		expect(await waits(svc)).toBeNull();
+		expect(stopped).toEqual([]);
+		expect(svc.stats().waiting).toBe(1);
+	});
+
+	it('stops one that is past the threshold', async () => {
+		const { svc, stopped } = makeGuarded([agent('a', 2 * 60_000), agent('b', 11 * 60_000)], {});
+		await enter(svc);
+		expect(await svc.requestStart('new', false)).toBe(true);
+		expect(stopped).toEqual(['b']);
+	});
+
+	it('skips agents with pending work, an open ticket or an open delegation', async () => {
+		const { svc, stopped } = makeGuarded(
+			[agent('queued', 9e6), agent('owner-of-ticket', 8e6), agent('waiting-on-dex', 7e6), agent('free', 6e6)],
+			{ queued: 'work item w1 is queued for it', 'owner-of-ticket': 'it owns open ticket T-1', 'waiting-on-dex': 'it is waiting on work item w2' },
+			4,
+		);
+		await enter(svc);
+		expect(await svc.requestStart('new', false)).toBe(true);
+		expect(stopped).toEqual(['free']);
+	});
+
+	it('waits when every candidate is protected', async () => {
+		const { svc, stopped } = makeGuarded([agent('a', 9e6), agent('b', 8e6)], { a: 'x', b: 'y' });
+		await enter(svc);
+		expect(await waits(svc)).toBeNull();
+		expect(stopped).toEqual([]);
+	});
+
+	it('treats a failing protection check as unprotected', async () => {
+		const svc = ResourceModeService.getInstance();
+		const stopped: string[] = [];
+		svc.setDeps({
+			limits: async () => ({ maxRunning: 1, idleTimeoutMinutes: 10 }),
+			listRunning: async () => [agent('a', 9e6)],
+			hasOwnerMessage: () => false,
+			protectedReason: async () => { throw new Error('boom'); },
+			stopAgent: async (n) => { stopped.push(n); },
+		});
+		await enter(svc);
+		expect(await svc.requestStart('new', false)).toBe(true);
+		expect(stopped).toEqual(['a']);
+	});
+});
+
 describe('owner threads (specs/2026-10-08-owner-thread-sentinel.md)', () => {
 	function makeOwing(running: RunningAgent[], owing: string[], max = 2) {
 		const svc = ResourceModeService.getInstance();
@@ -196,7 +266,7 @@ describe('owner threads (specs/2026-10-08-owner-thread-sentinel.md)', () => {
 	}
 
 	it('never picks an agent that owes an owner thread while another candidate exists', async () => {
-		const { svc, stopped, told } = makeOwing([agent('atlas', 9e6), agent('kai', 1e5)], ['atlas']);
+		const { svc, stopped, told } = makeOwing([agent('atlas', 9e6), agent('kai', 1e6)], ['atlas']);
 		await enter(svc);
 		expect(await svc.requestStart('new', false)).toBe(true);
 		expect(stopped).toEqual(['kai']);
@@ -247,7 +317,7 @@ describe('Drive mode keep-warm (specs/2026-10-09-drive-mode-v3.md §5)', () => {
 		const warm = new DriveKeepWarm();
 		warm.set('drv_abcdefghijkl', ['atlas'], Date.now() + 60_000);
 		setDriveKeepWarm(warm);
-		const { svc, stopped } = make([agent('atlas', 9e6), agent('kai', 1e5)]);
+		const { svc, stopped } = make([agent('atlas', 9e6), agent('kai', 1e6)]);
 		await enter(svc);
 		expect(await svc.requestStart('new', false)).toBe(true);
 		expect(stopped).toEqual(['kai']);

@@ -78,6 +78,12 @@ export interface ResourceModeDeps {
 	 * were stopped mid-conversation).
 	 */
 	owesOwnerThread?: (sessionName: string) => boolean;
+	/**
+	 * Why this agent must not be stopped for a slot: it has work queued for it,
+	 * owns an open ticket, or delegated work that is still open (its report is
+	 * still to come). Null/undefined = free to stop. Errors count as free.
+	 */
+	protectedReason?: (sessionName: string) => Promise<string | null | undefined>;
 	/** An agent was stopped to free a slot (the owner thread it owes is told) */
 	onStoppedForSlot?: (sessionName: string) => void;
 	/** A start waited for a slot and got none (deferred; its messages stay queued) */
@@ -101,6 +107,8 @@ export class ResourceModeService {
 	/** The start promise of each agent waiting for a slot (one per agent) */
 	private pendingStarts = new Map<string, Promise<boolean>>();
 	private pumping = false;
+	/** When the "no slot" reason was last logged per waiter (the pump retries every 10 s) */
+	private lastNoSlotLog = new Map<string, number>();
 	private lastRunning = 0;
 	private lastCap: number = RESOURCE_MODE_CONSTANTS.DEFAULT_MAX_RUNNING_AGENTS;
 
@@ -269,7 +277,7 @@ export class ResourceModeService {
 		try {
 			const now = Date.now();
 			for (const [n, at] of this.admitted) if (now - at > RESOURCE_MODE_CONSTANTS.ADMIT_TTL_MS) this.admitted.delete(n);
-			const { maxRunning } = await this.deps.limits();
+			const { maxRunning, idleTimeoutMinutes } = await this.deps.limits();
 			this.lastCap = maxRunning;
 			const running = await this.deps.listRunning();
 			const names = new Set(running.map((r) => r.sessionName));
@@ -285,8 +293,11 @@ export class ResourceModeService {
 			while (this.waiters.length > 0) {
 				if (this.mode !== 'pressure') { this.release(this.waiters.shift()!); continue; }
 				if (count >= maxRunning) {
-					const victim = this.pickVictim(pool);
-					if (!victim) break;
+					const { victim, skipped } = await this.pickVictim(pool, idleTimeoutMinutes);
+					if (!victim) {
+						this.logNoSlot(this.waiters[0].name, count, maxRunning, idleTimeoutMinutes, skipped);
+						break;
+					}
 					try {
 						this.logger.info('Stopping longest-idle agent to free a slot', { sessionName: victim.sessionName, idleMinutes: Math.round(victim.idleMs / 60000), waiter: this.waiters[0].name });
 						await this.deps.stopAgent(victim.sessionName, victim.role);
@@ -314,13 +325,22 @@ export class ResourceModeService {
 	}
 
 	/**
-	 * Longest-idle agent that is not busy and has no owner message pending.
-	 * An agent that owes an owner thread is picked only when no other
-	 * candidate exists.
+	 * Longest-idle agent that may be stopped for a slot. Never one that is
+	 * busy, waiting for a start itself, always-on, holding an owner message,
+	 * Drive-warm, idle for less than the pressure idle timeout, or protected
+	 * by {@link ResourceModeDeps.protectedReason} (pending work, an open
+	 * ticket, an open delegation). An agent that owes an owner thread is
+	 * picked only when no other candidate exists.
+	 *
+	 * @param running - Running agents
+	 * @param idleTimeoutMinutes - Pressure idle timeout; a younger idle is never stopped
+	 * @returns The victim (if any) and why each skipped agent was kept
 	 */
-	private pickVictim(running: RunningAgent[]): RunningAgent | undefined {
+	private async pickVictim(running: RunningAgent[], idleTimeoutMinutes: number): Promise<{ victim?: RunningAgent; skipped: string[] }> {
 		const waiting = new Set(this.waiters.map((w) => w.name));
-		const candidates = running
+		const minIdleMs = Math.max(0, idleTimeoutMinutes) * 60_000;
+		const skipped: string[] = [];
+		const ordered = running
 			.filter((r) => !r.busy
 				&& !waiting.has(r.sessionName)
 				&& !AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES.includes(r.role as typeof AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES[number])
@@ -328,10 +348,38 @@ export class ResourceModeService {
 				// Kept warm for the owner's Drive mode session (specs/2026-10-09-drive-mode-v3.md §5)
 				&& !isDriveWarm(r.sessionName))
 			.sort((a, b) => b.idleMs - a.idleMs);
+		const candidates: RunningAgent[] = [];
+		for (const r of ordered) {
+			if (r.idleMs < minIdleMs) {
+				skipped.push(`${r.sessionName}: idle ${Math.round(r.idleMs / 60000)} min, under the ${idleTimeoutMinutes} min idle timeout`);
+				continue;
+			}
+			let why: string | null | undefined;
+			try { why = await this.deps!.protectedReason?.(r.sessionName); } catch { why = null; }
+			if (why) {
+				skipped.push(`${r.sessionName}: ${why}`);
+				continue;
+			}
+			candidates.push(r);
+		}
 		const owes = (r: RunningAgent): boolean => {
 			try { return this.deps!.owesOwnerThread?.(r.sessionName) === true; } catch { return false; }
 		};
-		return candidates.find((r) => !owes(r)) ?? candidates[0];
+		return { victim: candidates.find((r) => !owes(r)) ?? candidates[0], skipped };
+	}
+
+	/** Log why a waiting start got no slot (at most once a minute per agent). */
+	private logNoSlot(waiter: string, running: number, cap: number, idleTimeoutMinutes: number, skipped: string[]): void {
+		const now = Date.now();
+		if (now - (this.lastNoSlotLog.get(waiter) ?? 0) < 60_000) return;
+		this.lastNoSlotLog.set(waiter, now);
+		this.logger.info('No agent can be stopped for a slot; the start waits', {
+			waiter,
+			running,
+			cap,
+			idleTimeoutMinutes,
+			kept: skipped.length > 0 ? skipped : ['every other running agent is busy, always-on, holds an owner message or is waiting for a start itself'],
+		});
 	}
 
 	private release(w: Waiter): void {

@@ -249,6 +249,8 @@ import { BudgetService } from './services/autonomous/budget.service.js';
 import { setFissionGuardService } from './controllers/fission/fission.controller.js';
 import { TaskPoolService } from './services/task-pool/task-pool.service.js';
 import { PENDING_WORK_STATUSES } from './services/agent/idle-detection.service.js';
+import { createProtectedReason } from './services/agent/resource-mode-protection.js';
+import { ProjectTicketWorkflowService } from './services/project-tickets/project-ticket-workflow.service.js';
 import { WorkItemWorktreeService } from './services/worktree/workitem-worktree.service.js';
 import { WorkItemWorktreeSubscriber, createTerminalNotifier } from './services/worktree/workitem-worktree.subscriber.js';
 import { ResourceModeService, RESOURCE_MODE_CONSTANTS, type RunningAgent } from './services/agent/resource-mode.service.js';
@@ -2264,6 +2266,15 @@ void (async () => {
 					return out;
 				},
 				hasOwnerMessage: (name) => SubAgentMessageQueue.getInstance().peek(name).some((m) => m.meta?.owner === true),
+				// Pending work, open tickets and open delegations keep an agent running.
+				protectedReason: createProtectedReason({
+					getWorkItems: () => TaskPoolService.getInstance().getAllItems(),
+					listTickets: async (name) => {
+						const workflow = ProjectTicketWorkflowService.getInstance();
+						if (!workflow) return [];
+						return (await workflow.listForSession(name)).flatMap((p) => p.tickets);
+					},
+				}),
 				// An agent mid-conversation with the owner is the last one stopped
 				// for a slot, and its owner thread hears when it is
 				// (specs/2026-10-08-owner-thread-sentinel.md).
