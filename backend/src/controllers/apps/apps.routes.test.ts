@@ -48,10 +48,16 @@ describe('Crewly Apps routes', () => {
       ['post', '/templates/:templateId/unlist'],
       ['post', '/:appId/template-request'],
       ['post', '/:appId/template-files'],
+      ['post', '/handoffs'],
+      ['get', '/handoffs'],
+      ['get', '/handoffs/:handoffId'],
+      ['post', '/handoffs/:handoffId/complete'],
+      ['post', '/handoffs/:handoffId/ack'],
+      ['delete', '/handoffs/:handoffId'],
     ] as const) {
       expect(has(m, p)).toBe(true);
     }
-    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(40);
+    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(46);
     // The GET template routes come before any GET /:appId route, so "templates" is never taken for an app id.
     const gets = (router.stack as Layer[]).filter((l) => l.route?.methods['get']).map((l) => l.route!.path);
     expect(gets.indexOf('/templates/mine')).toBeLessThan(gets.findIndex((p) => p.startsWith('/:appId')));

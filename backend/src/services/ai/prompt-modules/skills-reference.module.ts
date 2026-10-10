@@ -72,6 +72,7 @@ export class SkillsReferenceModule implements PromptModule {
 			`- \`${p}/drive-search\` — find files in Drive by text, type or folder`,
 			`- \`${p}/drive-read\` — read a Drive file's content`,
 			`- \`${p}/drive-upload\` — put a file or text into Drive`,
+			`- \`${p}/send-file\` / \`receive-file\` — hand a LARGE file (video, archive, up to 2 GB) to another agent of this account, on this or another machine, via a temporary Crewly Cloud relay (needs Cloud sign-in). **For big files prefer these over Drive or Slack**; the receiver deletes it, unclaimed files vanish after 24 h`,
 			`- \`${p}/docs-read\` / \`docs-write\` — read a Google Doc as text; create one or append to it`,
 			`- \`${p}/docs-comment\` — list, reply to, resolve or add comments in a Google Doc (the owner's feedback)`,
 			`- \`${p}/sheets-read\` / \`sheets-write\` — read a range as rows; create a sheet or append rows`,
