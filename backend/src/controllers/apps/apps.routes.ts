@@ -35,6 +35,10 @@
  * - POST   /:appId/comments/:commentId/replies     — reply `{ text }`
  * - POST   /:appId/comments/:commentId/resolve     — resolve (`/reopen` reopens)
  * - POST   /:appId/comments/:commentId/audio       — download its voice recordings here; answers local paths
+ * - POST   /handoffs                              — `{ fileName, sizeBytes, contentType?, note?, to? }`: reserve a large-file handoff; answers a presigned upload URL
+ * - POST   /handoffs/:handoffId/complete          — upload finished (Cloud checks the size)
+ * - GET    /handoffs/:handoffId                   — metadata + presigned download URL once ready (`GET /handoffs` lists)
+ * - POST   /handoffs/:handoffId/ack               — received: Cloud deletes the file (`DELETE /handoffs/:handoffId` withdraws)
  * - GET    /templates                              — `?q&tag&category&limit`: search Marketplace app templates
  * - GET    /templates/mine                         — this account's own templates
  * - POST   /templates/:templateId/use              — `{ name?, source? }`: a new app from a template (+ its files)
@@ -93,6 +97,12 @@ import {
   useTemplate,
   unlistTemplate,
   checkoutTemplateFiles,
+  createHandoff,
+  completeHandoff,
+  getHandoff,
+  listHandoffs,
+  ackHandoff,
+  cancelHandoff,
 } from './apps.controller.js';
 
 const C = CREWLY_APPS_CONSTANTS;
@@ -193,6 +203,13 @@ export function createAppsRouter(): Router {
   router.post('/templates/:templateId/unlist', unlistTemplate);
   router.post('/:appId/template-request', requestTemplate);
   router.post('/:appId/template-files', checkoutTemplateFiles);
+  // File handoff (large files between agents): registered before the /:appId routes.
+  router.post('/handoffs', createHandoff);
+  router.get('/handoffs', listHandoffs);
+  router.get('/handoffs/:handoffId', getHandoff);
+  router.post('/handoffs/:handoffId/complete', completeHandoff);
+  router.post('/handoffs/:handoffId/ack', ackHandoff);
+  router.delete('/handoffs/:handoffId', cancelHandoff);
   router.post('/thumbnails/refresh-all', refreshAllThumbnails);
   router.post('/:appId/thumbnail/refresh', refreshThumbnail);
   router.post('/:appId/transfer', transferApp);

@@ -593,3 +593,39 @@ describe('Crewly Apps controller', () => {
     });
   });
 });
+
+describe('Crewly Apps controller: file handoff', () => {
+  const HID = 'hf_AbCdEfGhIjKlMnOpQrStUv';
+  let client: { request: jest.Mock };
+  beforeEach(() => {
+    client = { request: jest.fn().mockResolvedValue({ handoffId: HID, sizeBytes: 5 }) };
+    setAppsParts({ client: client as unknown as AppsCloudClient, registry: {} as unknown as AppsRegistryService, service: service as unknown as AppsService });
+  });
+
+  it('create forwards only the known fields to Cloud as the verified agent and answers 201', async () => {
+    const res = await request(app).post('/api/apps/handoffs').set(agentAuthHeaders('dev-ella')).send({ fileName: 'a.mp4', sizeBytes: 5, note: 'n', evil: 'x' });
+    expect(res.status).toBe(201);
+    expect(client.request).toHaveBeenCalledWith('POST', '/handoffs', { body: { fileName: 'a.mp4', sizeBytes: 5, contentType: undefined, note: 'n', to: undefined }, agent: 'dev-ella' });
+  });
+
+  it('get / complete / ack / delete route to the Cloud handoff paths; the owner calls as owner', async () => {
+    await request(app).get(`/api/apps/handoffs/${HID}`).set(agentAuthHeaders('dev-ella')).expect(200);
+    expect(client.request).toHaveBeenLastCalledWith('GET', `/handoffs/${HID}`, { agent: 'dev-ella' });
+    await request(app).post(`/api/apps/handoffs/${HID}/complete`).set(agentAuthHeaders('dev-ella')).expect(200);
+    expect(client.request).toHaveBeenLastCalledWith('POST', `/handoffs/${HID}/complete`, { agent: 'dev-ella' });
+    await request(app).post(`/api/apps/handoffs/${HID}/ack`).expect(200);
+    expect(client.request).toHaveBeenLastCalledWith('POST', `/handoffs/${HID}/ack`, { asOwner: true });
+    await request(app).delete(`/api/apps/handoffs/${HID}`).set(agentAuthHeaders('dev-ella')).expect(200);
+    expect(client.request).toHaveBeenLastCalledWith('DELETE', `/handoffs/${HID}`, { agent: 'dev-ella' });
+  });
+
+  it('a malformed id is 404 and never reaches Cloud; Cloud refusals pass through', async () => {
+    client.request.mockClear();
+    await request(app).get('/api/apps/handoffs/..%2F..%2Fapps').set(agentAuthHeaders('dev-ella')).expect(404);
+    expect(client.request).not.toHaveBeenCalled();
+    client.request.mockRejectedValue(new AppsCloudError(402, 'quota_exceeded', 'Too many bytes waiting.'));
+    const res = await request(app).post('/api/apps/handoffs').set(agentAuthHeaders('dev-ella')).send({ fileName: 'a', sizeBytes: 1 });
+    expect(res.status).toBe(402);
+    expect(res.body).toMatchObject({ success: false, error: 'quota_exceeded' });
+  });
+});

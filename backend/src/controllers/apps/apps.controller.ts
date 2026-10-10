@@ -358,3 +358,58 @@ export const unlistTemplate = handle(async (req, caller) => requireTemplates().u
 
 /** POST /api/apps/:appId/template-files `{ source? }` — the template files of an app made from a template */
 export const checkoutTemplateFiles = handle(async (req, caller) => requireTemplates().checkout(req.params.appId, caller, { source: body(req).source }));
+
+// ---------------------------------------------------------------------------
+// File handoff (crewly-services apps/SPEC.md section 18): a temporary relay for one
+// large file between agents of the same account. The bytes never pass through
+// this backend: the skills PUT to / GET from the presigned URLs Cloud returns.
+// ---------------------------------------------------------------------------
+
+const HANDOFF_ID_RE = /^hf_[A-Za-z0-9_-]{22}$/;
+
+/** A handoff id from the URL, or a 404 that names nothing. */
+function handoffIdOf(req: Request): string {
+  const id = req.params.handoffId;
+  if (!HANDOFF_ID_RE.test(id)) throw new AppsCloudError(404, 'not_found', 'No such handoff.');
+  return id;
+}
+
+/** Call Cloud's handoff API as this agent (or the owner). */
+function handoffCall<T>(method: string, path: string, caller: AppsCaller, reqBody?: unknown): Promise<T> {
+  return getAppsParts().client.request<T>(method, path, {
+    ...(reqBody !== undefined ? { body: reqBody } : {}),
+    ...(caller.agentSession ? { agent: caller.agentSession } : { asOwner: true }),
+  });
+}
+
+/** POST /api/apps/handoffs `{ fileName, sizeBytes, contentType?, note?, to? }` — reserve a handoff; answers a presigned upload URL */
+export const createHandoff = handle(async (req, caller) => {
+  const b = body(req);
+  const result = await handoffCall<{ handoffId?: string; sizeBytes?: number }>(
+    'POST',
+    '/handoffs',
+    caller,
+    { fileName: b.fileName, sizeBytes: b.sizeBytes, contentType: b.contentType, note: b.note, to: b.to },
+  );
+  logger.info('File handoff created', { handoffId: result.handoffId, sizeBytes: result.sizeBytes, agent: caller.agentSession ?? 'owner' });
+  return result;
+}, 201);
+
+/** POST /api/apps/handoffs/:handoffId/complete — the upload finished; Cloud checks the size */
+export const completeHandoff = handle((req, caller) => handoffCall('POST', `/handoffs/${handoffIdOf(req)}/complete`, caller));
+
+/** GET /api/apps/handoffs/:handoffId — metadata, plus a presigned download URL once ready */
+export const getHandoff = handle((req, caller) => handoffCall('GET', `/handoffs/${handoffIdOf(req)}`, caller));
+
+/** GET /api/apps/handoffs — the account's waiting handoffs */
+export const listHandoffs = handle((_req, caller) => handoffCall('GET', '/handoffs', caller));
+
+/** POST /api/apps/handoffs/:handoffId/ack — received; Cloud deletes the file */
+export const ackHandoff = handle(async (req, caller) => {
+  const result = await handoffCall('POST', `/handoffs/${handoffIdOf(req)}/ack`, caller);
+  logger.info('File handoff acknowledged', { handoffId: req.params.handoffId, agent: caller.agentSession ?? 'owner' });
+  return result;
+});
+
+/** DELETE /api/apps/handoffs/:handoffId — withdraw */
+export const cancelHandoff = handle((req, caller) => handoffCall('DELETE', `/handoffs/${handoffIdOf(req)}`, caller));

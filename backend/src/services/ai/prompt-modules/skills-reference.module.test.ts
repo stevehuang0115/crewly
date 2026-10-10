@@ -238,6 +238,14 @@ describe('SkillsReferenceModule', () => {
 			expect(out).toContain('drive-upload');
 		});
 
+		it('points agents at send-file / receive-file for large files instead of Drive or Slack', async () => {
+			const out = await module.build(baseConfig);
+
+			expect(out).toContain('core/send-file');
+			expect(out).toContain('receive-file');
+			expect(out).toContain('prefer these over Drive or Slack');
+		});
+
 		it('names every connector family, not just Drive', async () => {
 			const out = await module.build(baseConfig);
 
