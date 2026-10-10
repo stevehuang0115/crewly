@@ -797,7 +797,7 @@ export interface PreviousClaudeConversation {
  * With `rememberedSessionId` that conversation is looked up directly. Without
  * it every transcript in the cwd's project directory is a candidate (agents of
  * one project share a cwd), so a candidate must be unclaimed by another live
- * session and mention `sessionName` in its first bytes (the kickoff names it).
+ * session and belong to `sessionName` ({@link transcriptBelongsTo}: its `agentSetting` entry or its first user message names it). The newest such transcript by mtime wins; size never matters.
  *
  * @param args - cwd, homes, session name, window, optional remembered id, ids owned by others
  * @returns The newest match, or null
@@ -809,12 +809,18 @@ export function findPreviousClaudeConversation(args: {
   maxAgeMs?: number;
   now?: number;
   rememberedSessionId?: string | null;
+  /** cwd the remembered conversation was last run in (it can differ from `cwd`) */
+  rememberedCwd?: string | null;
   claimedByOthers?: ReadonlySet<string>;
 }): PreviousClaudeConversation | null {
   const now = args.now ?? Date.now();
   const maxAge = args.maxAgeMs ?? ORC_CONVERSATION_CONSTANTS.RESTART_HANDOVER_MAX_AGE_MS;
   if (args.rememberedSessionId) {
-    const file = findClaudeTranscript({ sessionId: args.rememberedSessionId, cwd: args.cwd, claudeHomes: args.claudeHomes });
+    const file =
+      findClaudeTranscript({ sessionId: args.rememberedSessionId, cwd: args.cwd, claudeHomes: args.claudeHomes }) ??
+      (args.rememberedCwd && args.rememberedCwd !== args.cwd
+        ? findClaudeTranscript({ sessionId: args.rememberedSessionId, cwd: args.rememberedCwd, claudeHomes: args.claudeHomes })
+        : null);
     if (file) {
       try {
         const mtimeMs = fs.statSync(file).mtimeMs;
@@ -845,7 +851,7 @@ export function findPreviousClaudeConversation(args: {
           continue;
         }
         if (now - mtimeMs > maxAge || (best && mtimeMs <= best.mtimeMs)) continue;
-        if (!transcriptMentions(full, args.sessionName)) continue;
+        if (!transcriptBelongsTo(full, args.sessionName)) continue;
         best = { sessionId, transcript: full, mtimeMs };
       }
     }
@@ -854,19 +860,36 @@ export function findPreviousClaudeConversation(args: {
 }
 
 /**
- * Whether the first bytes of a transcript contain a text.
+ * Whether a transcript belongs to the named session: Claude Code writes an
+ * `agentSetting` entry naming the agent at the top of the conversations it
+ * launches, and the session's own kickoff (the first user message) names it.
+ * A name that only appears later (a person asking about the agent in their
+ * own conversation, or a teammate's report) is not ownership.
  *
  * @param filePath - Transcript
- * @param needle - Text to find
- * @returns True when found
+ * @param sessionName - Session name
+ * @returns True when the transcript was this session's own conversation
  */
-function transcriptMentions(filePath: string, needle: string): boolean {
+function transcriptBelongsTo(filePath: string, sessionName: string): boolean {
   try {
     const fd = fs.openSync(filePath, 'r');
     try {
       const buf = Buffer.alloc(ORC_CONVERSATION_CONSTANTS.OWNERSHIP_HEAD_BYTES);
       const n = fs.readSync(fd, buf, 0, buf.length, 0);
-      return buf.subarray(0, n).toString('utf8').includes(needle);
+      const lines = buf.subarray(0, n).toString('utf8').split('\n');
+      for (const line of lines) {
+        if (line.includes('"agentSetting"')) {
+          try {
+            const entry = JSON.parse(line) as { agentSetting?: unknown };
+            if (entry.agentSetting === sessionName) return true;
+          } catch {
+            // a cut line
+          }
+          continue;
+        }
+        if (line.includes('"type":"user"')) return line.includes(sessionName);
+      }
+      return false;
     } finally {
       fs.closeSync(fd);
     }
@@ -926,6 +949,33 @@ export function readLastConversation(file: string, sessionName: string): LastCon
 }
 
 /**
+ * The conversation a stopped session should resume on its next start.
+ *
+ * A stop (idle eviction by ResourceMode, a manual stop) unregisters the
+ * session and so drops the stored conversation id; the id is kept in the
+ * last-conversations file. A start with no stored id resumes that one, unless
+ * it is older than the handover window or another live session owns it.
+ *
+ * @param args - last-conversations file, session, ids owned by other sessions, clock
+ * @returns The remembered entry, or null
+ */
+export function rememberedConversationToResume(args: {
+  file: string;
+  sessionName: string;
+  claimedByOthers?: ReadonlySet<string>;
+  now?: number;
+  maxAgeMs?: number;
+}): LastConversationEntry | null {
+  const entry = readLastConversation(args.file, args.sessionName);
+  if (!entry) return null;
+  if (args.claimedByOthers?.has(entry.sessionId)) return null;
+  const now = args.now ?? Date.now();
+  const maxAge = args.maxAgeMs ?? ORC_CONVERSATION_CONSTANTS.RESTART_HANDOVER_MAX_AGE_MS;
+  if (typeof entry.at === 'number' && now - entry.at > maxAge) return null;
+  return entry;
+}
+
+/**
  * For a fresh Claude Code conversation that nobody chose (a stop and start,
  * or a stored conversation that is gone), write a handover from the most
  * recent previous conversation of the session and return the kickoff note
@@ -954,6 +1004,7 @@ export function writeRestartHandover(args: {
     sessionName: args.sessionName,
     now: now.getTime(),
     rememberedSessionId: remembered?.sessionId ?? null,
+    rememberedCwd: remembered?.cwd ?? null,
     claimedByOthers: args.claimedByOthers,
   });
   if (!previous) return null;

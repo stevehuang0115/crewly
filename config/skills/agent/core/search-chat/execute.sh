@@ -10,6 +10,14 @@ CHANNEL=""
 FROM=""
 TO=""
 LIMIT=""
+# Every other core skill takes one JSON argument; accept that form too:
+#   execute.sh '{"query":"TKT-401","channel":"#x","from":"2026-10-01","to":"2026-10-09","limit":8}'
+# Flags after it override the JSON.
+INPUT_JSON=""
+if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
+  INPUT_JSON="$1"
+  shift
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --query|-q) QUERY="${2:-}"; shift 2 ;;
@@ -20,11 +28,21 @@ while [[ $# -gt 0 ]]; do
     --full) shift ;;
     --help|-h)
       echo "Usage: bash execute.sh --query 'keywords' [--channel '#name'] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--limit 10]"
+      echo "   or: bash execute.sh '{\"query\":\"keywords\",\"channel\":\"#name\",\"from\":\"YYYY-MM-DD\",\"to\":\"YYYY-MM-DD\",\"limit\":10}'"
       echo "  Searches chat messages you can see. All keywords must appear. Newest first."
       exit 0 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+if [ -n "$INPUT_JSON" ]; then
+  INPUT=$(read_json_input "$INPUT_JSON")
+  [ -z "$QUERY" ] && QUERY=$(printf '%s' "$INPUT" | jq -r '.query // .q // empty')
+  [ -z "$CHANNEL" ] && CHANNEL=$(printf '%s' "$INPUT" | jq -r '.channel // empty')
+  [ -z "$FROM" ] && FROM=$(printf '%s' "$INPUT" | jq -r '.from // empty')
+  [ -z "$TO" ] && TO=$(printf '%s' "$INPUT" | jq -r '.to // empty')
+  [ -z "$LIMIT" ] && LIMIT=$(printf '%s' "$INPUT" | jq -r '.limit // empty')
+fi
 
 if [ -z "$QUERY" ]; then
   echo '{"success":false,"error":"--query is required (keywords to look for)"}' >&2

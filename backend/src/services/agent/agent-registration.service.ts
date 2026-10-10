@@ -116,6 +116,8 @@ import {
 	orcFreshContextTokens,
 	memberFreshContextTokens,
 	planRuntimeSessionFlags,
+	readLastConversation,
+	rememberedConversationToResume,
 	waitForAntigravityConversationId,
 	waitForCodexSessionId,
 	type RuntimeSessionPlan,
@@ -989,7 +991,30 @@ export class AgentRegistrationService {
 				error: err instanceof Error ? err.message : String(err),
 			});
 		}
-		const storedSessionId = persistence?.getSessionId(sessionName) ?? null;
+		let storedSessionId = persistence?.getSessionId(sessionName) ?? null;
+		// A stop (idle eviction, manual) unregisters the session and drops its
+		// stored id; the last-conversations file still has it. Without this a
+		// stopped agent started a fresh conversation on every start.
+		let storedFromLastConversation = false;
+		if (!storedSessionId && autoResume && cwd && persistence) {
+			try {
+				const claimed = new Set<string>();
+				for (const [name, info] of persistence.getRegisteredSessionsMap()) {
+					if (name !== sessionName && info.claudeSessionId) claimed.add(info.claudeSessionId);
+				}
+				const remembered = rememberedConversationToResume({
+					file: persistence.lastConversationsFile(),
+					sessionName,
+					claimedByOthers: claimed,
+				});
+				if (remembered) {
+					storedSessionId = remembered.sessionId;
+					storedFromLastConversation = true;
+				}
+			} catch {
+				// no remembered conversation available: start fresh as before
+			}
+		}
 		// A Claude Code agent (orchestrator or member) whose conversation has
 		// grown too big starts over here, at a launch, rather than re-reading it
 		// on every turn.
@@ -1006,6 +1031,13 @@ export class AgentRegistrationService {
 				storedSessionId && cwd ? conversationExists({ runtimeType, sessionId: storedSessionId, cwd, ...this.claudeHomeOverride(sessionName, runtimeType) }) : undefined,
 		});
 		effectiveFlags.push(...plan.flags);
+		if (storedFromLastConversation && plan.resumeSessionId && persistence) {
+			try {
+				persistence.updateSessionId(sessionName, plan.resumeSessionId);
+			} catch {
+				// best effort: the launch still resumes
+			}
+		}
 		// A fresh Claude Code conversation that nobody chose (stop, or a stored
 		// conversation that is gone) still gets the previous one handed over.
 		// Deliberate fresh starts (oversized, per-task, runtime switch) wrote
@@ -3413,6 +3445,31 @@ Loop until done, blocked, or explicitly reassigned:
 	}
 
 	/**
+	 * The directory an agent last ran in, for a restart that does not say
+	 * where. Claude Code keeps conversations per directory, so launching in
+	 * the backend's own cwd instead made the stored conversation "not exist"
+	 * and handed over another agent's transcript.
+	 *
+	 * @param sessionName - Agent session
+	 * @returns The registered session's cwd, else the last-conversations entry's, if it is a directory
+	 */
+	private lastKnownCwd(sessionName: string): string | undefined {
+		try {
+			const persistence = getSessionStatePersistence();
+			const candidates = [
+				persistence.getSessionMetadata(sessionName)?.cwd,
+				readLastConversation(persistence.lastConversationsFile(), sessionName)?.cwd,
+			];
+			for (const dir of candidates) {
+				if (dir && existsSync(dir)) return dir;
+			}
+		} catch {
+			// persistence unavailable
+		}
+		return undefined;
+	}
+
+	/**
 	 * Where a Claude Code session keeps its conversations when it runs on
 	 * another of the owner's Claude Code accounts (issue #942).
 	 *
@@ -3750,7 +3807,7 @@ Loop until done, blocked, or explicitly reassigned:
 		// three different directories (server-install finding 4).
 		const projectPath = role === ORCHESTRATOR_ROLE
 			? await this.resolveOrchestratorCwd()
-			: (config.projectPath ?? process.cwd());
+			: (config.projectPath ?? this.lastKnownCwd(sessionName) ?? process.cwd());
 		const forceRecreate = config.forceRecreate ?? false;
 
 		// Get runtime type from config or default to claude-code

@@ -11,6 +11,7 @@ import {
   findPreviousClaudeConversation,
   latestHandoverFile,
   readLastConversation,
+  rememberedConversationToResume,
   rememberLastConversation,
   writeRestartHandover,
 } from './runtime-session-recovery.js';
@@ -78,6 +79,46 @@ describe('restart handover', () => {
       expect(found).toBeNull();
     });
 
+    it('picks the newest transcript the session owns, not a bigger person-owned one that only mentions its name', () => {
+      // The session's own conversation (Claude Code marks it with agentSetting).
+      const own = transcript(claudeHome, 'own-latest', 2 * 60 * 60 * 1000);
+      fs.writeFileSync(
+        own,
+        `${JSON.stringify({ type: 'agent-setting', agentSetting: 'pia', sessionId: 'own-latest' })}\n` + fs.readFileSync(own, 'utf-8'),
+      );
+      const t = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      fs.utimesSync(own, t, t);
+      // An older session of hers.
+      transcript(claudeHome, 'own-older', 1 * DAY);
+      // A person's own conversation in the same folder: larger, written more
+      // recently, and it mentions "pia" later on, not in its first message.
+      const human = transcript(claudeHome, 'human-big', 60 * 1000, 'x', 'someone');
+      fs.appendFileSync(
+        human,
+        `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'what is pia doing?' } })}\n` + 'x'.repeat(200_000) + '\n',
+      );
+      const now = new Date(Date.now() - 60 * 1000);
+      fs.utimesSync(human, now, now);
+      const found = findPreviousClaudeConversation({ cwd, claudeHomes: [claudeHome], sessionName: 'pia' });
+      expect(found?.sessionId).toBe('own-latest');
+    });
+
+    it('finds the remembered conversation under the cwd it last ran in', () => {
+      const other = path.join(root, 'elsewhere');
+      fs.mkdirSync(other, { recursive: true });
+      const dir = path.join(claudeHome, 'projects', path.resolve(other).replace(/[/.]/g, '-'));
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'moved.jsonl'), '{"type":"user","message":{"content":"hi"}}\n');
+      const found = findPreviousClaudeConversation({
+        cwd,
+        claudeHomes: [claudeHome],
+        sessionName: 'pia',
+        rememberedSessionId: 'moved',
+        rememberedCwd: other,
+      });
+      expect(found?.sessionId).toBe('moved');
+    });
+
     it('uses the remembered conversation id without the session-name check', () => {
       transcript(claudeHome, 'remembered', 1 * DAY, 'x', 'zzz');
       const found = findPreviousClaudeConversation({ cwd, claudeHomes: [claudeHome], sessionName: 'pia', rememberedSessionId: 'remembered' });
@@ -143,6 +184,22 @@ describe('restart handover', () => {
       expect(block).toContain('The three-video plan');
       expect(block).not.toContain('# Handover: restart');
       expect(chainedHandoverBlock(null)).toBe('');
+    });
+  });
+
+  describe('rememberedConversationToResume', () => {
+    it('returns the conversation a stop remembered, so the next start resumes it', () => {
+      const file = path.join(root, 'last-conversations.json');
+      rememberLastConversation(file, 'pia', { sessionId: 'conv-1', cwd, at: Date.now() });
+      expect(rememberedConversationToResume({ file, sessionName: 'pia' })?.sessionId).toBe('conv-1');
+    });
+
+    it('ignores an entry another live session owns, an expired one, and a missing file', () => {
+      const file = path.join(root, 'last-conversations.json');
+      rememberLastConversation(file, 'pia', { sessionId: 'conv-1', cwd, at: Date.now() });
+      expect(rememberedConversationToResume({ file, sessionName: 'pia', claimedByOthers: new Set(['conv-1']) })).toBeNull();
+      expect(rememberedConversationToResume({ file, sessionName: 'pia', now: Date.now() + 8 * DAY })).toBeNull();
+      expect(rememberedConversationToResume({ file: path.join(root, 'nope.json'), sessionName: 'pia' })).toBeNull();
     });
   });
 });
