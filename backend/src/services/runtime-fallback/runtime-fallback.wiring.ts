@@ -231,6 +231,13 @@ export function startBackendRuntimeFallback(ctx: RuntimeFallbackWiringContext): 
 	const service = new RuntimeFallbackService({
 		store: new FileRuntimeFallbackStore(path.join(ctx.crewlyHome, RUNTIME_FALLBACK_CONSTANTS.STATE_FILE)),
 		getAgent,
+		listSessions: async () => {
+			const names: string[] = [ORCHESTRATOR_SESSION_NAME];
+			for (const team of await ctx.storage.getTeams()) {
+				for (const m of team.members) if (m.sessionName) names.push(m.sessionName);
+			}
+			return names;
+		},
 		countAgentsOnRuntime: async (runtime) => {
 			let n = 0;
 			const orc = await ctx.storage.getOrchestratorStatus().catch(() => null);
