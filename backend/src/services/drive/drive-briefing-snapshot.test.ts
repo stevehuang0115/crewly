@@ -226,7 +226,7 @@ describe('collapsing review entries per agent', () => {
     expect(out).toHaveLength(3);
     expect(out[0]).toMatchObject({
       agentName: 'Milo',
-      summary: 'Milo finished 3 things: Bigger pet home, Multi photo upload, Setting overlay - any you want changed?',
+      summary: 'Milo reports back on 3 things you asked for: Bigger pet home, Multi photo upload, Setting overlay - any you want changed?',
       since: ago(300),
       refs: ['TKT-1', 'TKT-2', 'TKT-3'],
     });
@@ -245,6 +245,6 @@ describe('collapsing review entries per agent', () => {
 
   it('says "and N more" past four', () => {
     const many = ['A', 'B', 'C', 'D', 'E', 'F'].map((t, i) => review(String(i), 'Milo', t, 60 - i, `TKT-${i}`));
-    expect(collapseReviews(many)[0].summary).toBe('Milo finished 6 things: A, B, C, D and 2 more - any you want changed?');
+    expect(collapseReviews(many)[0].summary).toBe('Milo reports back on 6 things you asked for: A, B, C, D and 2 more - any you want changed?');
   });
 });

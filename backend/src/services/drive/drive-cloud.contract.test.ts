@@ -12,6 +12,8 @@ describe('parseDriveRelayData', () => {
     expect(parseDriveRelayData({ v: 1, kind: 'drive', op: 'end', sessionId: SID, instanceId: 'mac' })?.op).toBe('end');
     expect(parseDriveRelayData({ v: 1, kind: 'drive', op: 'warm', sessionId: SID, instanceId: 'mac' })?.op).toBe('warm');
     expect(parseDriveRelayData({ v: 1, kind: 'drive', op: 'recall', sessionId: SID, instanceId: 'mac' })).toBeNull();
+    expect(parseDriveRelayData({ v: 1, kind: 'drive', op: 'refresh', sessionId: SID, id: 'r1', instanceId: 'mac' })?.op).toBe('refresh');
+    expect(parseDriveRelayData({ v: 1, kind: 'drive', op: 'refresh', sessionId: SID, instanceId: 'mac' })).toBeNull();
   });
 
   it('refuses Talk payloads, bad ops, bad ids', () => {

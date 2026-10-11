@@ -22,6 +22,10 @@
  *  - `warm` (push `op:'warm'`, v3): read which agents to keep warm from
  *    Cloud, record them in the keep-warm registry (idle stop and slot freeing
  *    leave them alone) and pre-start the ones that are stopped;
+ *  - `refresh` (push `op:'refresh'`): the session just opened and the voice
+ *    is about to check with the teams: ask the agents that hold the owner's
+ *    open items to bring them up to date, then rebuild and upload the
+ *    status snapshot so the voice reads fresh state (`deps.refreshStatus`);
  *  - two-phase answers (v3): the delivered words ask for `reply --drive
  *    --ack` within seconds, then the full result.
  *
@@ -126,6 +130,12 @@ export interface DriveAgentDeps {
   keepWarm?: DriveKeepWarm;
   /** Start a stopped agent now (it goes ahead of ordinary starts while warm); never throws */
   prestart?: (agentSession: string) => Promise<void>;
+  /**
+   * Check with the teams (`op:'refresh'`): ask the agents holding the owner's
+   * open items for a current status, wait briefly, then rebuild and upload
+   * the status snapshot. Resolves when the fresh snapshot is uploaded.
+   */
+  refreshStatus?: () => Promise<void>;
   fetchImpl?: (input: string, init: RequestInit) => Promise<Response>;
   now?: () => Date;
   logger?: ComponentLogger;
@@ -197,6 +207,7 @@ export class DriveAgentService {
       if (data.op === 'deliver') await this.deliver(data, instanceId);
       else if (data.op === 'recall') await this.recall(data, instanceId);
       else if (data.op === 'warm') await this.warm(data, instanceId);
+      else if (data.op === 'refresh') await this.deps.refreshStatus?.();
       else await this.end(data, instanceId);
       return 'done';
     } catch (error) {

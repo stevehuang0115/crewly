@@ -7878,6 +7878,16 @@ export const BRIEFING_CONSTANTS = {
 	CARD_STALE_AFTER_DEADLINE_MS: 24 * 60 * 60 * 1000,
 	/** A card (or reply question) asked longer ago than this is stale, not read out (ms) */
 	CARD_MAX_AGE_MS: 7 * 24 * 60 * 60 * 1000,
+	/** A finished ticket in review longer than this is stale, not asked about (ms) */
+	REVIEW_MAX_AGE_MS: 3 * 24 * 60 * 60 * 1000,
+	/** A message this long (CJK counts double) with no request verb is a reflective voice note, not an ask */
+	REVIEW_DISCUSSION_MIN_WEIGHTED: 220,
+	/** Review line: longest quote of what the owner asked (characters) */
+	REVIEW_ASK_MAX_CHARS: 70,
+	/** Review item label (what the owner asked, for lists): longest length (characters) */
+	REVIEW_LABEL_MAX_CHARS: 40,
+	/** Review line: longest quote of what the agent reports (characters) */
+	REVIEW_RESULT_MAX_CHARS: 110,
 	/** Two cards from one asker whose questions are at least this similar (0–1, character bigrams) are duplicates */
 	CARD_DUPLICATE_SIMILARITY: 0.6,
 	/** Words in a title / question that make an item sensitive (spoken confirmation required) */
@@ -7933,6 +7943,12 @@ export const DRIVE_CONSTANTS = {
 	VIA: 'drive-mode',
 	/** Keep-warm (v3): agents one session keeps warm, at most */
 	MAX_WARM: 20,
+	/** Status check (`op:'refresh'`): how long the agents get to update their items before the snapshot is rebuilt (ms) */
+	STATUS_CHECK_WAIT_MS: 12_000,
+	/** Status check: agents asked at most (the ones holding the most open items first) */
+	STATUS_CHECK_MAX_AGENTS: 6,
+	/** Status check: items listed to one agent at most */
+	STATUS_CHECK_MAX_ITEMS: 5,
 } as const;
 
 /**

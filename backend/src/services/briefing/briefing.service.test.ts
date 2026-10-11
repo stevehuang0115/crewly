@@ -105,6 +105,7 @@ interface Harness {
   dismissOpenItem: jest.Mock;
   dir: string;
   ownerTurns: Array<{ channelId: string; root: string; lastAt: number }>;
+  closedTickets: Set<string>;
 }
 
 /** A service over fakes. */
@@ -132,6 +133,7 @@ function harness(init: Partial<Harness['state']> = {}): Harness {
   } as unknown as jest.Mocked<BriefingReview>;
   const dismissOpenItem = jest.fn(async () => undefined);
   const ownerTurns: Harness['ownerTurns'] = [];
+  const closedTickets = new Set<string>();
   const deps: BriefingDeps = {
     decisions: () => decisions,
     listRequests: async () => state.requests,
@@ -139,6 +141,7 @@ function harness(init: Partial<Harness['state']> = {}): Harness {
     review: () => review,
     dismissOpenItem,
     ownerTurns: async () => ownerTurns,
+    isCardTicketClosed: async (t) => closedTickets.has(t.id),
     roster: async () => [
       { agentSession: 'ella', displayName: 'Ella', teamName: 'Marketing' },
       { agentSession: 'leo', displayName: 'Leo', teamName: 'Content' },
@@ -156,7 +159,7 @@ function harness(init: Partial<Harness['state']> = {}): Harness {
     now: () => clock.now,
     logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() } as never,
   };
-  return { service: new BriefingService(deps), decisions, review, posted, replies, state, clock, dismissOpenItem, dir, ownerTurns };
+  return { service: new BriefingService(deps), decisions, review, posted, replies, state, clock, dismissOpenItem, dir, ownerTurns, closedTickets };
 }
 
 afterEach(() => jest.restoreAllMocks());
@@ -185,7 +188,7 @@ describe('queue', () => {
     expect(card?.details).toContain('Option b: Wait for Monday');
     expect(card?.answerTarget).toEqual({ kind: 'decision', decisionId: 'D-1' });
     const ticket = q.items.find((i) => i.id === 't:req-9');
-    expect(ticket?.summary).toBe('Max finished: Fix the signup form. Accept it or send it back?');
+    expect(ticket?.summary).toBe('You asked Max: The form drops the email field. Max reports: Fixed and tested on staging. Accept it or send it back?');
     expect(ticket?.details).toContain('Check: Email is saved');
     expect(q.items.find((i) => i.kind === 'question')?.answerTarget).toEqual({ kind: 'thread', channelId: 'ch-dm-leo', threadId: 'm-0', agentSession: 'leo' });
   });
@@ -224,6 +227,60 @@ describe('live items only (on request)', () => {
     h.ownerTurns.push({ channelId: 'ch-dm-leo', root: '', lastAt: Date.parse('2026-10-08T08:00:00.000Z') });
     const ids = (await h.service.queue()).items.map((i) => i.id);
     expect(ids).toEqual(['d:D-2']);
+  });
+});
+
+describe('review items are deliverables, not the owner\'s own words', () => {
+  const ask = (description: string, over: Partial<TicketListItem> = {}) =>
+    reviewRow({ id: `req-${Math.abs(description.length)}`, title: `[Request] ${description}`, description, ...over });
+
+  it('leaves out the owner\'s question, status check and voice note that the agent answered in the conversation', async () => {
+    const voiceNote = '像他们周六一早,然后就是起来以后,然后就不愿意下床,然后呢就是在那边看书啊什么的,然后一直闹,然后也不换衣服,也不刷牙,也不洗脸,也不下来吃早餐,然后怎么说都没有用。然后搞完了以后呢,说看完这本书,OK,然后现在又去那个了,又要很久,然后又搞很久都不愿意下来,然后一直把时间都浪费掉了。所以就不知道这个东西可以用什么样的方法。';
+    const h = harness({
+      reviews: [
+        ask('你draft到哪里了？我在zoho没看到'),
+        ask('刚才drive mode说要做的 milo你收到了吗'),
+        ask('为什么crewly 日报里要我回复X但又没有crewly相关信息？'),
+        ask(voiceNote),
+        ask('what is the status of the signup form', { kind: 'question' }),
+      ],
+    });
+    expect((await h.service.queue()).items).toEqual([]);
+  });
+
+  it('keeps real deliverables and says who did what for whom', async () => {
+    const h = harness({
+      reviews: [ask('你先试试看1:1 复刻 那个屏幕的素材可以换成生成的', { reply: { at: '2026-10-08T05:00:00.000Z', by: 'max', messageId: 'm-1', excerpt: 'v5 is ready, 43 seconds, same length as the original. It is hand drawn.' } })],
+    });
+    const [item] = (await h.service.queue()).items;
+    expect(item.kind).toBe('review');
+    expect(item.summary).toBe('You asked Max: 你先试试看1:1 复刻 那个屏幕的素材可以换成生成的. Max reports: v5 is ready, 43 seconds, same length as the original. It is hand drawn. Accept it or send it back?');
+    expect(item.summary).not.toMatch(/\[Request\]|finished:/);
+    expect(item.label).toBe('你先试试看1:1 复刻 那个屏幕的素材可以换成生成的');
+  });
+
+  it('leaves out a review that sat longer than the review window', async () => {
+    const h = harness({ reviews: [reviewRow({ submittedAt: '2026-10-04T05:00:00.000Z' })] });
+    expect((await h.service.queue()).items).toEqual([]);
+  });
+});
+
+describe('cards of closed tickets', () => {
+  it('leaves out a card whose project ticket is already done or cancelled', async () => {
+    const ticket = { projectId: 'p1', projectPath: '/p1', id: 'CE-12', title: 'Tutorial video' };
+    const h = harness({ decisions: [decision({ id: 'D-1', ticket }), decision({ id: 'D-2', question: 'Pick the intro music?', ticket: { ...ticket, id: 'CE-13' } })] });
+    h.closedTickets.add('CE-12');
+    expect((await h.service.queue()).items.map((i) => i.id)).toEqual(['d:D-2']);
+  });
+});
+
+describe('statusCheckTargets', () => {
+  it('lists the agents holding open items, one line per item', async () => {
+    const h = harness({ decisions: [decision({ id: 'D-1' })], reviews: [reviewRow()] });
+    const targets = await h.service.statusCheckTargets();
+    expect(targets.map((t) => t.agentSession).sort()).toEqual(['ella', 'max']);
+    expect(targets.find((t) => t.agentSession === 'max')?.items[0]).toContain('ticket TKT-9');
+    expect(targets.find((t) => t.agentSession === 'ella')?.items[0]).toContain('card D-1');
   });
 });
 

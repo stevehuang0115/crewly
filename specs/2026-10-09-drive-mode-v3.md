@@ -69,3 +69,17 @@ Cloud keeps the latest snapshot per machine (`drive_briefings`).
 - **While an agent is warm:**
   - the idle stop and slot freeing (`pickVictim`) skip it. The emergency memory-pressure stop and the reconciler's memory-pressure wake eviction still apply: pressure wins;
   - its start counts as owner-priority in `requestStart` and the restore queue, so it goes ahead of ordinary starts. It stays FIFO among priority starts.
+
+## 6. Briefing quality (2026-10-10)
+
+Owner feedback: items the owner asked for were read out as if the team asked; finished and shipped items still showed as open; the briefing read cached state.
+
+- **Direction.** A finished ticket is the team reporting back on something the owner asked for. `reviewSummary` says "You asked Pia: <ask>. Pia reports: <answer>. Accept it or send it back?" (the ask comes from the description, the category tag and attachments are stripped; the result is the first sentences of the agent's answer). A collapsed entry reads "Milo reports back on 3 things you asked for: A, B, C".
+- **No review for conversation.** `triageReview` (`briefing-review.ts`) leaves a finished ticket out when the owner's message was a question or a status check ("did you get it?", "where is the draft?"), a long reflective voice note with no request, a `question` ticket, or when it has sat in review longer than 3 days. Those were answered in the conversation; there is nothing to accept. Real deliverables stay. Deterministic, text only.
+- **Freshness.** A decision card whose project ticket is already done or cancelled is left out (`isCardTicketClosed`). The existing rules (deadline, age, answered in thread, duplicates) still apply.
+- **Check with the teams.** Drive's opening turn says it is checking, then calls `get_overview` with `fresh=true`. Cloud pushes `op:'refresh'` (with an id) to each live machine and waits up to 25 s for its fresh snapshot. On `refresh` the machine (`DriveStatusCheck`):
+  1. finds the running agents that hold the owner's open items (cards, questions, finished work), at most 6, busiest first; stopped agents are not woken;
+  2. sends each a note: close what is done or shipped, leave a one-line current status on what is open, do not message the owner;
+  3. waits 12 s;
+  4. drops the snapshot caches and uploads a fresh snapshot.
+  A machine that does not answer in time is reported as `checked.timedOut` and read as "as of N minutes ago".

@@ -259,6 +259,23 @@ describe('v3: keep-warm', () => {
   });
 });
 
+describe('status check (refresh)', () => {
+  it('a refresh push runs the status check and fetches nothing from Cloud', async () => {
+    const refreshStatus = jest.fn(async () => undefined);
+    const h = harness({}, { refreshStatus });
+    expect(await h.service.handle(push({ v: 1, kind: 'drive', op: 'refresh', sessionId: SID, id: 'r1', instanceId: 'mac' }))).toBe('done');
+    expect(refreshStatus).toHaveBeenCalledTimes(1);
+    expect(h.calls).toEqual([]);
+  });
+
+  it('a refresh push without a handler is harmless, and a failing check is reported as failed', async () => {
+    const h = harness();
+    expect(await h.service.handle(push({ v: 1, kind: 'drive', op: 'refresh', sessionId: SID, id: 'r1', instanceId: 'mac' }))).toBe('done');
+    const bad = harness({}, { refreshStatus: async () => Promise.reject(new Error('boom')) });
+    expect(await bad.service.handle(push({ v: 1, kind: 'drive', op: 'refresh', sessionId: SID, id: 'r2', instanceId: 'mac' }))).toBe('failed');
+  });
+});
+
 describe('helpers', () => {
   it('owner turn text names the reply command', () => {
     expect(ownerTurnText(SID, 'agent', 'Ella', 'hi')).toMatch(/^\[Drive mode · session drv_abcdefghijkl\]/);
