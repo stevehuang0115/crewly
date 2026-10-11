@@ -102,6 +102,8 @@ export interface SnapshotWaitingSource {
   answerTarget: { kind: string; decisionId?: string; tkt?: string };
   /** Set on a collapsed review entry: the ticket refs it stands for */
   refs?: string[];
+  /** Review items: a few words naming what the owner asked for */
+  label?: string;
 }
 
 /** Everything the snapshot is built from. */
@@ -387,6 +389,7 @@ export function collapseReviews(waiting: readonly SnapshotWaitingSource[]): Snap
     done.add(w.agentSession);
     const oldest = group.reduce((a, b) => (Date.parse(b.since) < Date.parse(a.since) ? b : a));
     const titles = group.map((g) => {
+      if (g.label) return clip(speakable(g.label), COLLAPSED_TITLE_MAX);
       const m = REVIEW_SUMMARY.exec(g.summary);
       return clip(speakable(m ? m[1] : g.summary), COLLAPSED_TITLE_MAX);
     });
@@ -394,7 +397,7 @@ export function collapseReviews(waiting: readonly SnapshotWaitingSource[]): Snap
     const more = titles.length > COLLAPSED_TITLES_SHOWN ? ` and ${titles.length - COLLAPSED_TITLES_SHOWN} more` : '';
     out.push({
       ...oldest,
-      summary: `${w.agentName} finished ${group.length} things: ${shown}${more} - any you want changed?`,
+      summary: `${w.agentName} reports back on ${group.length} things you asked for: ${shown}${more} - any you want changed?`,
       urgency: group.some((g) => g.urgency === 'high') ? 'high' : group.some((g) => g.urgency === 'normal') ? 'normal' : 'low',
       refs: group.map((g) => waitingRef(g)),
     });

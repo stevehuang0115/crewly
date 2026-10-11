@@ -60,6 +60,11 @@ export interface BriefingItem {
   teamName?: string;
   /** One short, speech-friendly line (no URLs, no markdown) */
   summary: string;
+  /**
+   * Review items: a few words naming what the owner asked for (no category
+   * tag, no verdict), for lists such as "Milo reports back on 3 things: A, B, C"
+   */
+  label?: string;
   /** Everything known, plain text, for follow-up questions */
   details: string;
   options: BriefingOption[];

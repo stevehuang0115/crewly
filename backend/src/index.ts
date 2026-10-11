@@ -2855,6 +2855,12 @@ void (async () => {
 									.sort((a, b) => a.createdAt - b.createdAt)[0];
 								return reply ? { text: reply.content, at: new Date(reply.createdAt).toISOString() } : null;
 							},
+							// A card whose project ticket is already done / cancelled waits on nothing.
+							isCardTicketClosed: async (ticket) => {
+								const { ProjectTicketService } = await import('./services/project-tickets/project-ticket.service.js');
+								const found = await ProjectTicketService.getInstance().get(ticket.projectPath, ticket.id);
+								return found?.status === 'done' || found?.status === 'cancelled';
+							},
 							store: new BriefingStateStore(),
 						}),
 					);
@@ -2960,6 +2966,10 @@ void (async () => {
 								error: talkErr instanceof Error ? talkErr.message : String(talkErr),
 							});
 						}
+
+						// "Let me check with the teams" (Drive kickoff): set below, once the
+						// status snapshot sync exists, and read by the Drive handler at run time.
+						let driveStatusCheck: { run: () => Promise<unknown> } | null = null;
 
 						// Drive mode (specs/2026-10-08-drive-mode.md §7): Crewly Cloud hosts
 						// the voice session; this machine delivers the owner's words to its
@@ -3069,6 +3079,9 @@ void (async () => {
 								agentExists: async (agentSession) =>
 									buildAgentRoster(await this.storageService.getTeams()).some((a) => a.agentSession === agentSession),
 								store: new DriveConversationStore(),
+								refreshStatus: async () => {
+									await driveStatusCheck?.run();
+								},
 								// Keep-warm (specs/2026-10-09-drive-mode-v3.md §5): an agent the owner
 								// names is started now if stopped; while warm its start goes ahead of
 								// ordinary starts and nothing stops it for being idle.
@@ -3170,6 +3183,28 @@ void (async () => {
 								],
 							});
 							briefingSync.start();
+							// Drive opened: ask the agents holding the owner's open items to
+							// bring them up to date, then rebuild and upload (no caches).
+							{
+								const { DriveStatusCheck } = await import('./services/drive/drive-status-check.js');
+								const checkAgents = this.apiController.agentRegistrationService;
+								driveStatusCheck = new DriveStatusCheck({
+									targets: async () => (await getBriefingService()?.statusCheckTargets()) ?? [],
+									isRunning: (session) => {
+										try {
+											return getSessionBackendSync()?.sessionExists(session) ?? false;
+										} catch {
+											return false;
+										}
+									},
+									nudge: async (session, text) => (await checkAgents.sendMessageToAgent(session, text)).success,
+									rebuild: async () => {
+										sourceCache.invalidatePool();
+										sourceCache.invalidateTickets();
+										await briefingSync.syncNow(true);
+									},
+								});
+							}
 						} catch (briefingSyncErr) {
 							this.logger.warn('Drive mode status briefing wiring skipped', {
 								error: briefingSyncErr instanceof Error ? briefingSyncErr.message : String(briefingSyncErr),

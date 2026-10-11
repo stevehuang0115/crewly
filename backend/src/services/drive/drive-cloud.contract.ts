@@ -27,7 +27,7 @@ export type DriveTargetKind = 'agent' | 'team' | 'channel';
 export interface DriveRelayData {
   v: 1;
   kind: 'drive';
-  op: 'deliver' | 'end' | 'recall' | 'warm';
+  op: 'deliver' | 'end' | 'recall' | 'warm' | 'refresh';
   sessionId: string;
   id?: string;
   instanceId: string;
@@ -74,9 +74,9 @@ export function parseDriveRelayData(payload: unknown): DriveRelayData | null {
   const op = p['op'];
   const sessionId = str(p['sessionId']);
   const instanceId = str(p['instanceId']);
-  if ((op !== 'deliver' && op !== 'end' && op !== 'recall' && op !== 'warm') || !sessionId || !DRIVE_CONSTANTS.SESSION_ID_PATTERN.test(sessionId) || !instanceId) return null;
+  if ((op !== 'deliver' && op !== 'end' && op !== 'recall' && op !== 'warm' && op !== 'refresh') || !sessionId || !DRIVE_CONSTANTS.SESSION_ID_PATTERN.test(sessionId) || !instanceId) return null;
   const id = str(p['id']);
-  if ((op === 'deliver' || op === 'recall') && !id) return null;
+  if ((op === 'deliver' || op === 'recall' || op === 'refresh') && !id) return null;
   return { v: 1, kind: 'drive', op, sessionId, instanceId, ...(id ? { id } : {}) };
 }
 
