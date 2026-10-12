@@ -10,6 +10,13 @@
  * - `POST   /api/system/usage/boost` — temporary boost (owner only)
  *   `{ scope: "team"|"agent"|"all", id?, extraTokens? | unlimited: true, until? }`
  * - `DELETE /api/system/usage/boost/:id` — end a boost early (owner only)
+ * - `GET    /api/system/usage/claude-window?windows=five_hour,seven_day`
+ *   — tokens spent inside the subscription's rolling windows, counted from
+ *   every Claude Code transcript on this machine (the owner's own sessions
+ *   included, which the ledger deliberately never attributes), plus the last
+ *   refusal Anthropic sent. Tokens spent, not quota left: there is no
+ *   endpoint for the latter. Defaults to the 5-hour window; the 7-day one is
+ *   opt-in because it reads a week of transcripts.
  * - `POST   /api/system/usage/backfill` — rebuild missing ledger days from
  *   attributed Claude transcripts and ledger backups (owner only; dry run
  *   unless `dryRun: false`). `{ from, to, dryRun?, ledgerFiles? }`
@@ -28,6 +35,9 @@
  */
 
 import type { Request, Response, Router } from 'express';
+
+import { CLAUDE_WINDOW_CONSTANTS, type ClaudeWindowId } from '../../constants.js';
+import { buildClaudeWindowReport, type ClaudeWindowReport } from '../../services/usage/claude-window.service.js';
 import { ensureOwnerCaller } from './system-control.controller.js';
 import { getSpendCapService, SpendCapError, type SpendCapService } from '../../services/spend/spend-cap.service.js';
 import { SPEND_CAP_CONSTANTS } from '../../constants.js';
@@ -44,6 +54,8 @@ export interface UsageControllerDeps {
   stats: () => Pick<UsageStatsService, 'query'> | null;
   /** Ledger backfill (default: the backend's ledger and transcript cursors) */
   backfill?: (opts: UsageBackfillOptions) => Promise<UsageBackfillReport>;
+  /** Subscription window report (default: read Claude Code's transcripts) */
+  claudeWindow?: (windows?: ClaudeWindowId[]) => Promise<ClaudeWindowReport>;
 }
 
 /**
@@ -109,6 +121,71 @@ function daysOf(req: Request): number {
 }
 
 /**
+ * Windows asked for, from `?windows=five_hour,seven_day`.
+ *
+ * Unknown names are dropped rather than rejected: a newer front end asking
+ * for a window this build does not know should still get the ones it does.
+ *
+ * @param req - Request
+ * @returns Window ids, or undefined to take the service default
+ */
+function windowsOf(req: Request): ClaudeWindowId[] | undefined {
+  const raw = typeof req.query.windows === 'string' ? req.query.windows : '';
+  const known = CLAUDE_WINDOW_CONSTANTS.WINDOWS.map((window) => window.id) as readonly string[];
+  const asked = raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value): value is ClaudeWindowId => known.includes(value));
+  return asked.length > 0 ? asked : undefined;
+}
+
+/**
+ * The backend's own report: Claude Code's transcripts on this machine.
+ *
+ * @param windows - Windows asked for
+ * @returns The report
+ */
+export function defaultClaudeWindow(windows?: ClaudeWindowId[]): Promise<ClaudeWindowReport> {
+  return buildClaudeWindowReport({ windows });
+}
+
+/** Last report per window selection, with the time it was built. */
+const windowCache = new Map<string, { at: number; report: Promise<ClaudeWindowReport> }>();
+
+/** Forget every cached report (tests, and a settings change that moves the data directory). */
+export function clearClaudeWindowCache(): void {
+  windowCache.clear();
+}
+
+/**
+ * Build the window report, at most once per {@link CLAUDE_WINDOW_CONSTANTS.CACHE_TTL_MS}.
+ *
+ * The 5-hour report costs ~180 ms and the 7-day one over a second; the
+ * dashboard polls, so without a cache it would spend most of its time
+ * re-reading the same transcripts.
+ *
+ * @param build - Report builder
+ * @param windows - Windows asked for
+ * @returns The report
+ */
+async function claudeWindow(
+  build: (windows?: ClaudeWindowId[]) => Promise<ClaudeWindowReport>,
+  windows: ClaudeWindowId[] | undefined,
+): Promise<ClaudeWindowReport> {
+  const key = (windows ?? []).join(',');
+  const cached = windowCache.get(key);
+  if (cached && Date.now() - cached.at < CLAUDE_WINDOW_CONSTANTS.CACHE_TTL_MS) return cached.report;
+
+  const report = build(windows).catch((err: unknown) => {
+    // a failed build must not be cached, or the next 30 s all fail with it
+    windowCache.delete(key);
+    throw err;
+  });
+  windowCache.set(key, { at: Date.now(), report });
+  return report;
+}
+
+/**
  * Register the routes.
  *
  * @param router - The /api router
@@ -118,6 +195,14 @@ export function registerUsageRoutes(
   router: Router,
   deps: UsageControllerDeps = { caps: getSpendCapService, stats: getUsageStatsService, backfill: defaultUsageBackfill },
 ): void {
+  router.get('/system/usage/claude-window', async (req: Request, res: Response) => {
+    try {
+      res.json({ success: true, data: await claudeWindow(deps.claudeWindow ?? defaultClaudeWindow, windowsOf(req)) });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
   router.get('/system/usage', async (req: Request, res: Response) => {
     const stats = deps.stats();
     if (!stats) {
