@@ -85,6 +85,14 @@ describe('limitSentence', () => {
     expect(sentence).toContain('reset in 1h 0m');
   });
 
+  it('does not promise a reset that already happened', () => {
+    const sentence = limitSentence(
+      { at: '2026-10-11T23:05:35.833Z', rateLimitType: 'five_hour', resetsAt: '2026-10-12T02:40:00.000Z', utilization: {}, overageStatus: null },
+      NOW,
+    );
+    expect(sentence).not.toContain('reset');
+  });
+
   it('leaves out a utilisation Anthropic did not send', () => {
     const sentence = limitSentence(
       { at: '2026-10-11T23:05:35.833Z', rateLimitType: 'five_hour', resetsAt: null, utilization: {}, overageStatus: null },

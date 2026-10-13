@@ -79,7 +79,10 @@ export function limitSentence(limit: ClaudeLimitEvent | null, now: Date): string
 
   const when = new Date(limit.at).toLocaleString();
   const window = limit.rateLimitType ? limit.rateLimitType.replace(/_/g, '-') : 'rate';
-  const reset = limit.resetsAt ? `, reset ${untilLabel(limit.resetsAt, now)}` : '';
+  // A reset already in the past says nothing useful — and "reset now" reads
+  // like the window is reopening this second when it reopened last night.
+  const pending = limit.resetsAt !== null && new Date(limit.resetsAt).getTime() > now.getTime();
+  const reset = pending ? `, reset ${untilLabel(limit.resetsAt as string, now)}` : '';
   const used = limit.utilization['5h'] ?? limit.utilization.five_hour;
   const utilisation = typeof used === 'number' ? ` at ${Math.round(used * 100)}% of the window` : '';
 
