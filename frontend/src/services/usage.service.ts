@@ -18,7 +18,46 @@ export const USAGE_API = {
   STATS: '/api/system/usage',
   CAPS: '/api/system/usage/caps',
   BOOST: '/api/system/usage/boost',
+  CLAUDE_WINDOW: '/api/system/usage/claude-window',
 } as const;
+
+/** A rolling window of a Claude subscription. */
+export type ClaudeWindowId = 'five_hour' | 'seven_day';
+
+/** Tokens spent inside one rolling window. */
+export interface ClaudeWindowUsage {
+  id: ClaudeWindowId;
+  label: string;
+  startedAt: string;
+  /** The figures are a floor: a transcript was too large to read in full */
+  partial: boolean;
+  turns: number;
+  input: number;
+  cachedInput: number;
+  cacheWrite: number;
+  output: number;
+  /** Input + output + cache writes; cache reads are excluded (cheap, and most of the raw count) */
+  billable: number;
+}
+
+/** The window state Anthropic reported the last time it refused a request. */
+export interface ClaudeLimitEvent {
+  at: string;
+  rateLimitType: string | null;
+  resetsAt: string | null;
+  utilization: Partial<Record<string, number>>;
+  overageStatus: string | null;
+}
+
+/** `GET /api/system/usage/claude-window`. */
+export interface ClaudeWindowReport {
+  measuredAt: string;
+  windows: ClaudeWindowUsage[];
+  lastLimit: ClaudeLimitEvent | null;
+  filesScanned: number;
+  truncated: boolean;
+  estimatedFiveHourCapacity: number | null;
+}
 
 /** A grouping of the stats endpoint. */
 export type UsageGroupBy = 'agent' | 'team' | 'project' | 'workItem' | 'runtime' | 'day' | 'model';
@@ -170,6 +209,23 @@ export const usageService = {
    */
   stats(days: number, groupBy: UsageGroupBy[]): Promise<UsageStats> {
     return call(() => axios.get<ApiResponse<UsageStats>>(USAGE_API.STATS, { params: { days, groupBy: groupBy.join(',') } }), 'Failed to load usage');
+  },
+
+  /**
+   * Tokens spent inside the Claude subscription's rolling windows.
+   *
+   * Counts every Claude Code session on the machine, including the owner's
+   * own — they draw on the same subscription but never enter the ledger.
+   * Tokens spent, not quota left: Anthropic publishes no figure for the
+   * latter.
+   *
+   * @param windows - Windows to measure (default: the 5-hour one; the 7-day
+   *   one reads a week of transcripts and takes about a second)
+   * @returns The report
+   */
+  claudeWindow(windows?: ClaudeWindowId[]): Promise<ClaudeWindowReport> {
+    const params = windows?.length ? { windows: windows.join(',') } : undefined;
+    return call(() => axios.get<ApiResponse<ClaudeWindowReport>>(USAGE_API.CLAUDE_WINDOW, { params }), 'Failed to load the subscription windows');
   },
 
   /**

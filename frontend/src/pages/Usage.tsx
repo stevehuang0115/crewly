@@ -30,6 +30,7 @@ import { UsageBarList, type UsageBar } from '../components/Usage/UsageBarList';
 import { CapsBoostsSection } from '../components/Usage/CapsBoostsSection';
 import { UsageDetails } from '../components/Usage/UsageDetails';
 import { UsageByModel } from '../components/Usage/UsageByModel';
+import { SubscriptionWindows } from '../components/Usage/SubscriptionWindows';
 import { runtimeLabel, teamCapLabel } from '../components/Usage/usage.utils';
 
 /** Label of the cost figures (owner, 2026-10-02: tokens stay the unit; cost is an estimate beside them). */
@@ -157,7 +158,7 @@ export const Usage: React.FC = () => {
   const [capsOpen, setCapsOpen] = useState(false);
   const [perOpen, setPerOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const { stats, caps, error, note, busy, reload, boost, endBoost, saveCaps } = useUsage(period);
+  const { stats, caps, claudeWindow, error, note, busy, reload, boost, endBoost, saveCaps } = useUsage(period);
 
   const header = (
     <PageHeader
@@ -261,6 +262,8 @@ export const Usage: React.FC = () => {
       </div>
 
       <UsageByModel rows={stats.groups.model ?? []} />
+
+      <SubscriptionWindows report={claudeWindow} />
 
       <div className="flex flex-col">
         <CapsBoostsSection

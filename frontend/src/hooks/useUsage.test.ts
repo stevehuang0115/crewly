@@ -41,6 +41,14 @@ describe('useUsage', () => {
     svc.caps.mockResolvedValue(makeCapsView());
   });
 
+  it('keeps the page working when the backend has no subscription-window endpoint', async () => {
+    svc.claudeWindow?.mockRejectedValue?.(new Error('404'));
+    const { result } = renderHook(() => useUsage('7'));
+    await waitFor(() => expect(result.current.stats).not.toBeNull());
+    expect(result.current.claudeWindow).toBeNull();
+    expect(result.current.error).toBeNull();
+  });
+
   it('loads stats and caps for the period', async () => {
     const { result } = renderHook(() => useUsage('7'));
     await waitFor(() => expect(result.current.stats).not.toBeNull());

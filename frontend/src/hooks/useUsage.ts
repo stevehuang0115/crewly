@@ -20,6 +20,7 @@ import {
   type BoostRequest,
   type CapsPatch,
   type CapsView,
+  type ClaudeWindowReport,
   type UsageGroupBy,
   type UsageStats,
 } from '../services/usage.service';
@@ -53,6 +54,8 @@ export interface CapsDraft {
 export interface UseUsageResult {
   stats: UsageStats | null;
   caps: CapsView | null;
+  /** The Claude subscription's rolling windows; null when the backend has none */
+  claudeWindow: ClaudeWindowReport | null;
   /** Last load or action error */
   error: string | null;
   /** Confirmation of the last action */
@@ -113,6 +116,7 @@ export function capsPatchFromDraft(draft: CapsDraft): CapsPatch {
 export function useUsage(period: UsagePeriod): UseUsageResult {
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [caps, setCaps] = useState<CapsView | null>(null);
+  const [claudeWindow, setClaudeWindow] = useState<ClaudeWindowReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -130,9 +134,26 @@ export function useUsage(period: UsagePeriod): UseUsageResult {
     }
   }, []);
 
+  /**
+   * The subscription windows, loaded on their own.
+   *
+   * Kept out of the pair above on purpose: this endpoint is newer than the
+   * page, so a backend without it answers 404 — and an older bundle has no
+   * `claudeWindow` method at all, which would throw before any promise
+   * exists. Neither may blank the page the owner came for.
+   */
+  const loadClaudeWindow = useCallback(async () => {
+    try {
+      setClaudeWindow((await usageService.claudeWindow?.()) ?? null);
+    } catch {
+      setClaudeWindow(null);
+    }
+  }, []);
+
   useEffect(() => {
     void load(period);
-  }, [load, period]);
+    void loadClaudeWindow();
+  }, [load, loadClaudeWindow, period]);
 
   const run = useCallback(
     async (action: () => Promise<string>): Promise<boolean> => {
@@ -183,5 +204,5 @@ export function useUsage(period: UsagePeriod): UseUsageResult {
 
   const reload = useCallback(() => load(period), [load, period]);
 
-  return { stats, caps, error, note, busy, lastUpdated, reload, boost, endBoost, saveCaps };
+  return { stats, caps, claudeWindow, error, note, busy, lastUpdated, reload, boost, endBoost, saveCaps };
 }

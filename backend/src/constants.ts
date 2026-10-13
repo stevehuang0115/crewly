@@ -7474,6 +7474,54 @@ export const USAGE_CONSTANTS = {
 	UNATTRIBUTED: '(unattributed)',
 } as const;
 
+/**
+ * Subscription window report (`GET /api/system/usage/claude-window`).
+ *
+ * Anthropic bills a Claude subscription against rolling windows, not a daily
+ * quota, and exposes no endpoint for how much of one is left. Claude Code
+ * writes the real window state into its transcript only when a request is
+ * *rejected* (`quotaLimits`), so a live percentage cannot be read — what can
+ * be read is the tokens spent inside each window, from the same transcripts.
+ */
+export const CLAUDE_WINDOW_CONSTANTS = {
+	/** Rolling windows Anthropic applies to a subscription. */
+	WINDOWS: [
+		{ id: 'five_hour', label: '5-hour window', hours: 5 },
+		{ id: 'seven_day', label: '7-day window', hours: 24 * 7 },
+	] as const,
+	/**
+	 * Bytes read from the end of one transcript before giving up on it.
+	 *
+	 * Transcripts are append-only and chronological, so the reader walks
+	 * backwards and stops at the first turn older than the window asked for.
+	 * Five hours of a busy machine is a few megabytes; a full week was 676 MB
+	 * and 25 seconds when measured on 2026-10-12, which is why the 7-day
+	 * window is opt-in and says `partial` when this cap cut it short. A number
+	 * that is quietly 29% low is worse than one labelled incomplete.
+	 */
+	MAX_TAIL_BYTES_PER_FILE: 64 * 1024 * 1024,
+	/** Size of each backward read. */
+	TAIL_CHUNK_BYTES: 1024 * 1024,
+	/** Transcripts older than this are not opened at all. */
+	MAX_FILE_AGE_HOURS: 24 * 8,
+	/**
+	 * Bytes read from the end of each transcript when hunting for the last
+	 * refusal.
+	 *
+	 * The refusal that matters is "when did I last run out", which is usually
+	 * older than the 5-hour window the report measures, so it is a separate
+	 * pass. A refusal is written where work stopped and then scrolls up as the
+	 * conversation continues: 256 KB missed yesterday's on the machine this
+	 * was built on, 8 MB found it and cost 180 ms across 15 transcripts.
+	 */
+	LIMIT_SCAN_TAIL_BYTES: 8 * 1024 * 1024,
+	/** Report is recomputed at most this often (ms). */
+	CACHE_TTL_MS: 30_000,
+} as const;
+
+/** One rolling window of a Claude subscription. */
+export type ClaudeWindowId = (typeof CLAUDE_WINDOW_CONSTANTS.WINDOWS)[number]['id'];
+
 /** Codex rollout usage sync (`~/.codex/sessions/**\/rollout-*.jsonl`). */
 export const CODEX_USAGE_SYNC_CONSTANTS = {
 	/** Poll interval (ms) */
