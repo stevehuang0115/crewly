@@ -239,7 +239,7 @@ export interface JanitorRunSummary {
 	/** Worktrees kept */
 	kept: number;
 	/** Number of scheduled-command cwds read for the keep check (null = unreadable) */
-	scheduledCwdsRead: number | null;
+	scheduledCwdsRead?: number | null;
 	/** Bytes freed by deleting regenerable dirs (node_modules, .next) from kept worktrees under low disk */
 	reclaimedBytes: number;
 	/** Kept worktrees by reason (removal failures under `remove-failed`) */
@@ -839,7 +839,7 @@ export class WorktreeJanitorService {
 				.map(([k, v]) => `${k}: ${v}`)
 				.join(', ');
 			this.logger.info(
-				`Worktree janitor: removed ${summary.removed}, kept ${summary.kept}${reasons ? ` (${reasons})` : ''}${summary.reclaimedBytes > 0 ? `, reclaimed ${formatBytes(summary.reclaimedBytes)} of node_modules/.next from kept worktrees` : ''} across ${summary.repos.length} repo(s) in ${summary.durationMs}ms; ${summary.scheduledCwdsRead === null ? 'scheduled-command cwds unreadable (all clean worktrees kept)' : `${summary.scheduledCwdsRead} scheduled-command cwd(s) read`}`,
+				`Worktree janitor: removed ${summary.removed}, kept ${summary.kept}${reasons ? ` (${reasons})` : ''}${summary.reclaimedBytes > 0 ? `, reclaimed ${formatBytes(summary.reclaimedBytes)} of node_modules/.next from kept worktrees` : ''} across ${summary.repos.length} repo(s) in ${summary.durationMs}ms; ${summary.scheduledCwdsRead == null ? 'scheduled-command cwds unreadable (all clean worktrees kept)' : `${summary.scheduledCwdsRead} scheduled-command cwd(s) read`}`,
 				{ removed: summary.worktrees.filter((w) => w.removed).map((w) => w.path), lowDisk: summary.lowDisk },
 			);
 			const sc = summary.scratch;
