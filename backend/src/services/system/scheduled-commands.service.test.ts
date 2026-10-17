@@ -12,6 +12,7 @@ import {
 	ScheduledCommandsService,
 	defaultIsPidAlive,
 	parseScheduledCommands,
+	readScheduledCommandCwds,
 	type ScheduledCommand,
 } from './scheduled-commands.service.js';
 import { OWNER_AUTH_CONSTANTS, SCHEDULED_COMMANDS } from '../../constants.js';
@@ -257,11 +258,11 @@ describe('ScheduledCommandsService.runEntry', () => {
 		expect(svc.runEntry(entry({ lockFile: '/l' }))).toBe('spawned');
 	});
 
-	it('does not run when cwd is missing (warn)', () => {
+	it('does not run when cwd is missing (error, alerted once)', () => {
 		const { svc, spawn, log } = make({ pathExists: () => false });
 		expect(svc.runEntry(entry())).toBe('skipped-no-cwd');
 		expect(spawn).not.toHaveBeenCalled();
-		expect(log.warn).toHaveBeenCalled();
+		expect(log.error).toHaveBeenCalled();
 	});
 
 	it('reports spawn-failed (not started) when there is no pid', () => {
@@ -372,5 +373,57 @@ describe('the scheduler credential in a child\'s environment (CREW-312)', () => 
 		const { env } = run();
 		const added = Object.keys(env).filter((k) => !(k in process.env));
 		expect(added.sort()).toEqual([OWNER_AUTH_CONSTANTS.SCHEDULER_CREDENTIAL_ENV, OWNER_AUTH_CONSTANTS.SCHEDULER_NAME_ENV].sort());
+	});
+});
+
+describe('readScheduledCommandCwds', () => {
+	const cfg = (v: unknown) => () => JSON.stringify(v);
+	it('returns the cwds of enabled entries only, with ~ expanded', () => {
+		const r = readScheduledCommandCwds('/c.json', cfg([
+			{ name: 'a', cwd: '/x/a', command: 'e', intervalMinutes: 5 },
+			{ name: 'b', cwd: '~/b', command: 'e', intervalMinutes: 5 },
+			{ name: 'c', cwd: '/x/c', command: 'e', intervalMinutes: 5, enabled: false },
+		]));
+		expect(r).toEqual(['/x/a', path.join(os.homedir(), 'b')]);
+	});
+	it('returns [] for a missing file and null for an unreadable or invalid one', () => {
+		const enoent = () => { throw Object.assign(new Error('x'), { code: 'ENOENT' }); };
+		const eacces = () => { throw Object.assign(new Error('x'), { code: 'EACCES' }); };
+		expect(readScheduledCommandCwds('/c.json', enoent)).toEqual([]);
+		expect(readScheduledCommandCwds('/c.json', eacces)).toBeNull();
+		expect(readScheduledCommandCwds('/c.json', () => '{not json')).toBeNull();
+	});
+});
+
+describe('missing cwd alert', () => {
+	it('alerts once across repeated ticks, then again after the cwd returns and vanishes', async () => {
+		const notify = vi.fn().mockResolvedValue(true);
+		const log = logger();
+		let exists = false;
+		const svc = new ScheduledCommandsService({
+			configPath: '/c.json',
+			logDir: '/l',
+			logger: log,
+			notify,
+			pathExists: () => exists,
+			isPidAlive: () => false,
+			readFile: () => { throw new Error('none'); },
+			spawn: (() => fakeChild(4242)) as never,
+			openLog: () => 1,
+			closeLog: () => undefined,
+		});
+		const e = entry();
+		expect(svc.runEntry(e)).toBe('skipped-no-cwd');
+		expect(svc.runEntry(e)).toBe('skipped-no-cwd');
+		expect(svc.runEntry(e)).toBe('skipped-no-cwd');
+		expect(notify).toHaveBeenCalledTimes(1);
+		expect(notify.mock.calls[0][0]).toMatchObject({ urgent: true });
+		expect(notify.mock.calls[0][0].title).toContain('web-release');
+		expect(log.error).toHaveBeenCalledTimes(1);
+		exists = true;
+		expect(svc.runEntry(e)).toBe('spawned');
+		exists = false;
+		svc.runEntry(e);
+		expect(notify).toHaveBeenCalledTimes(2);
 	});
 });

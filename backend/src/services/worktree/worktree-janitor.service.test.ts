@@ -92,6 +92,7 @@ function janitor(fx: Fixture, overrides: WorktreeJanitorOptions = {}): WorktreeJ
 	return new WorktreeJanitorService({
 		listRepoPaths: async () => [fx.repo],
 		listBusyCwds: async () => [],
+		listScheduledCwds: async () => [],
 		ghBin: null,
 		now: () => Date.now() + THREE_HOURS,
 		tmpRoots: [],
@@ -282,6 +283,48 @@ describe('WorktreeJanitorService', () => {
 		landOnOrigin(wt);
 		const summary = await janitor(fx, { listBusyCwds: async () => null }).run();
 		expect(verdictFor(summary, wt)).toMatchObject({ decision: 'keep', reason: 'cwd-probe-failed' });
+	});
+
+	describe('scheduled-command cwds', () => {
+		it('keeps a clean, merged worktree that is the cwd of a scheduled command, and reports how many cwds it read', async () => {
+			const wt = addWorktree(fx, agentPath(fx, 'sched'), 'feat/sched');
+			landOnOrigin(wt);
+			const summary = await janitor(fx, { listScheduledCwds: async () => [wt] }).run();
+			expect(verdictFor(summary, wt)).toMatchObject({ decision: 'keep', reason: 'scheduled-command', detail: wt });
+			expect(summary.scheduledCwdsRead).toBe(1);
+			expect(fs.existsSync(wt)).toBe(true);
+		});
+
+		it('keeps a worktree that contains the scheduled cwd', async () => {
+			const wt = addWorktree(fx, agentPath(fx, 'schedsub'), 'feat/schedsub');
+			landOnOrigin(wt);
+			const summary = await janitor(fx, { listScheduledCwds: async () => [path.join(wt, 'scripts')] }).run();
+			expect(verdictFor(summary, wt)).toMatchObject({ decision: 'keep', reason: 'scheduled-command' });
+		});
+
+		it('still removes an unrelated clean merged worktree (nothing is protected when none match)', async () => {
+			const wt = addWorktree(fx, agentPath(fx, 'unrelated'), 'feat/unrelated');
+			landOnOrigin(wt);
+			const summary = await janitor(fx, { listScheduledCwds: async () => [agentPath(fx, 'other')] }).run();
+			expect(verdictFor(summary, wt)).toMatchObject({ removed: true });
+			expect(summary.scheduledCwdsRead).toBe(1);
+		});
+
+		it('removes the same worktree when no scheduled command points at it (read zero, protected nothing)', async () => {
+			const wt = addWorktree(fx, agentPath(fx, 'zero'), 'feat/zero');
+			landOnOrigin(wt);
+			const summary = await janitor(fx, { listScheduledCwds: async () => [] }).run();
+			expect(verdictFor(summary, wt)).toMatchObject({ removed: true });
+			expect(summary.scheduledCwdsRead).toBe(0);
+		});
+
+		it('keeps every clean worktree when the scheduled config cannot be read', async () => {
+			const wt = addWorktree(fx, agentPath(fx, 'schedprobe'), 'feat/schedprobe');
+			landOnOrigin(wt);
+			const summary = await janitor(fx, { listScheduledCwds: async () => null }).run();
+			expect(verdictFor(summary, wt)).toMatchObject({ decision: 'keep', reason: 'scheduled-probe-failed' });
+			expect(summary.scheduledCwdsRead).toBeNull();
+		});
 	});
 
 	it('keeps a worktree whose work is not merged', async () => {
