@@ -4,7 +4,7 @@ Status: phase 1 (recommendation mode). The team lead proposes; the owner approve
 
 ## Why
 
-Cheap fast models can do routine work (polling, first-pass sorting, formatting). Before this, every member ran on one model: its own `modelId`, or the reviewed-member default (Sonnet). Measured over 7 days at list price, Opus was about 95% of cost, dominated by lead turns at 120–480k context.
+Cheap fast models can do routine work (polling, first-pass sorting, formatting). Before this, every member ran on one model: its own `modelId`, or the reviewed-member default (Sonnet). Measured from the usage ledger over 2026-10-10 to 2026-10-16 (all teams on one machine, estimated at API list price, not a bill), Opus was 79–80% of cost and Sonnet about 20%; team-lead turns were 49–53% of total cost and about 60% of the Opus cost, member turns 40–44%, the orchestrator about 2%. Method, coverage and the reproduce script: `.crewly/findings/2026-10-17-model-cost-share-week-1010-1016.md`.
 
 ## Tiers
 
