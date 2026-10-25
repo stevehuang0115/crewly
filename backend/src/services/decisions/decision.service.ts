@@ -64,6 +64,7 @@ import {
 } from './decision-card.js';
 import { DecisionStore, PENDING_DECISION_STATUSES } from './decision-store.js';
 import type { TicketThreadStore } from './ticket-thread-store.js';
+import type { ActivityActor, ActivityEntryInput } from '../activity/activity-log.service.js';
 
 /** Thrown for requests the caller must fix (HTTP 4xx). */
 export class DecisionError extends Error {
@@ -142,6 +143,8 @@ export interface DecisionServiceDeps {
   currentWorkItemId?: (session: string) => Promise<string | undefined>;
   /** Deliver a message to an agent (wakes a stopped one); false when it could not */
   deliverToAgent: (session: string, text: string) => Promise<boolean>;
+  /** Append to the activity log (crewly#881): who asked / answered what, and when. Absent = not logged. */
+  recordActivity?: (entry: ActivityEntryInput) => void;
   /**
    * Hold a message the agent could not take now on its persistent queue
    * (delivered when it is next idle or registers; a drop is reported).
@@ -634,6 +637,7 @@ export class DecisionService {
       ...(workItemId ? { workItemId } : {}),
       status: 'open',
     });
+    this.audit(decision, 'decision.asked', callerSession ? { type: 'agent', id: callerSession } : { type: 'owner' });
     if (ticket && ask.ticketId && ask.project) {
       await this.deps
         .markTicketAsked({ ...ticket, asker, teamId }, ask.question, decision.id)
@@ -691,6 +695,7 @@ export class DecisionService {
       status: 'open',
     });
     this.logger.info('System decision asked', { decisionId: decision.id, kind: input.kind, key: input.system.key });
+    this.audit(decision, 'decision.asked', { type: 'system', id: 'crewly' });
     return this.postCard(decision);
   }
 
@@ -743,6 +748,7 @@ export class DecisionService {
       status: 'open',
     });
     this.logger.info('Owner decision asked by Crewly', { decisionId: decision.id, kind: ask.kind, asker: ask.asker });
+    this.audit(decision, 'decision.asked', { type: 'agent', id: ask.asker });
     // One open question card per ticket: a newer question replaces the ticket's older open ones (a
     // reply's own sibling questions, made together, stay).
     const requestId = ask.requestRef?.requestId;
@@ -776,6 +782,38 @@ export class DecisionService {
    * @param id - Decision id
    * @returns The expired decision, or null when it was not pending
    */
+  /**
+   * Append a line to the activity log (crewly#881). Never throws: the log
+   * never breaks the decision it describes.
+   *
+   * @param d - The decision as stored after the step
+   * @param action - `decision.asked` / `.resolved` / `.skipped` / `.defaulted` / `.expired`
+   * @param actor - Who did it
+   * @param note - The answer in words, when there is one
+   */
+  private audit(d: OwnerDecision, action: string, actor: ActivityActor, note?: string): void {
+    try {
+      this.deps.recordActivity?.({
+        actor,
+        action,
+        target: { type: 'decision', id: d.id, name: d.question.slice(0, DECISION_CONSTANTS.QUESTION_MAX_CHARS) },
+        ...(d.requestRef?.requestId ? { requestId: d.requestRef.requestId } : {}),
+        ...(d.workItemId ? { workItemId: d.workItemId } : {}),
+        ...(note ? { note } : {}),
+        after: {
+          status: d.status,
+          asker: d.asker,
+          ...(d.kind ? { kind: d.kind } : {}),
+          ...(d.teamId ? { teamId: d.teamId } : {}),
+          ...(d.chosenKey ? { chosenKey: d.chosenKey } : {}),
+          ...(d.answeredVia ? { answeredVia: d.answeredVia } : {}),
+        },
+      });
+    } catch {
+      // see above
+    }
+  }
+
   async expire(id: string): Promise<OwnerDecision | null> {
     const expired = await this.deps.store.update(id, (cur) =>
       PENDING_DECISION_STATUSES.has(cur.status) ? { status: 'expired', resolvedAt: this.now().toISOString(), remindAt: undefined } : null,
@@ -785,6 +823,7 @@ export class DecisionService {
     if (expired.ticket) await this.logTicket(expired, `owner decision ${expired.id}: expired`, true);
     await this.notifyAsker(expired, null);
     this.logger.info('Owner decision expired', { decisionId: id });
+    this.audit(expired, 'decision.expired', { type: 'system', via: 'deadline' });
     return expired;
   }
 
@@ -1588,6 +1627,7 @@ export class DecisionService {
     await this.notifyAsker(resolved, `${this.answerNote(resolved)}${siblingsLine(siblings)}${handedOff ? ` ${handedOff}` : ''}`, batchNotes, { owner: true });
     this.closeWatchdog(resolved);
     this.logger.info('Owner decision resolved', { decisionId: resolved.id, via, chosen: resolved.chosenKey ?? 'text' });
+    this.audit(resolved, 'decision.resolved', { type: 'owner', ...(user ? { id: user } : {}), via }, answer);
     return { handled: true, reason: 'resolved', decision: resolved };
   }
 
@@ -1609,6 +1649,7 @@ export class DecisionService {
     await this.notifyAsker(skipped, `${this.skipNote(skipped)}${siblingsLine(siblings)}`, batchNotes, { owner: true });
     this.closeWatchdog(skipped);
     this.logger.info('Owner decision skipped', { decisionId: skipped.id, via });
+    this.audit(skipped, 'decision.skipped', { type: 'owner', ...(user ? { id: user } : {}), via });
     return { handled: true, reason: 'skipped', decision: skipped };
   }
 
@@ -1885,6 +1926,7 @@ export class DecisionService {
       cur.status === 'open' ? { status: 'defaulted', chosenKey: cur.defaultKey, answeredVia: 'deadline', resolvedAt: now.toISOString() } : null,
     );
     if (!resolved) return false;
+    this.audit(resolved, 'decision.defaulted', { type: 'system', via: 'deadline' });
     await this.refreshCard(resolved);
     await this.postInThread(resolved, line);
     if (resolved.ticket) await this.logTicket(resolved, `owner decision ${resolved.id}: no answer — default "${defaultLabel(resolved)}" applied`, true);

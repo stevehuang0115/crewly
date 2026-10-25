@@ -10057,3 +10057,38 @@ export const TASK_TIMING_CONSTANTS = {
 	/** WorkItem.metadata key holding the agent-named task kind */
 	KIND_METADATA_KEY: 'taskKind',
 } as const;
+
+/**
+ * Activity log (crewly#881): the append-only record of who changed what and
+ * when — team / member config edits, owner decisions, later budget stops and
+ * outbound sends. `specs/2026-10-25-activity-log.md`.
+ */
+export const ACTIVITY_LOG_CONSTANTS = {
+	/** Directory under CREWLY_HOME holding one `YYYY-MM.jsonl` file per month */
+	DIR: 'activity-log',
+	/** File extension of a monthly log file */
+	FILE_EXT: '.jsonl',
+	/** Entries a read returns when the caller names no limit */
+	DEFAULT_LIMIT: 100,
+	/** Most entries one read returns */
+	MAX_LIMIT: 1000,
+	/** Most monthly files one read opens (newest first) */
+	MAX_FILES_PER_READ: 24,
+	/** Longest string kept in a before / after summary */
+	MAX_SUMMARY_CHARS: 400,
+	/** Keys whose values are never written (case-insensitive substring match) */
+	SECRET_KEY_PATTERN: /token|secret|password|passwd|credential|api[_-]?key|authorization|private[_-]?key/i,
+	/** What a masked value is written as */
+	MASK: '***',
+	/** Query parameter names of GET /api/activity */
+	QUERY: {
+		ACTOR_TYPE: 'actorType',
+		ACTOR_ID: 'actorId',
+		ACTION: 'action',
+		TARGET_TYPE: 'targetType',
+		TARGET_ID: 'targetId',
+		SINCE: 'since',
+		UNTIL: 'until',
+		LIMIT: 'limit',
+	},
+} as const;

@@ -69,6 +69,7 @@ import { usageLimitedView } from '../../services/runtime-fallback/usage-limit-st
 import { clearOwnerStopped, markOwnerStopped } from '../../services/agent/owner-stopped.registry.js';
 import { isTeamPausedNow, pausedRefusalMessage } from '../../services/team/team-pause.registry.js';
 import { reportOwnerThreadBlocking } from '../../services/messaging/owner-thread-sentinel.service.js';
+import { actorFromRequest, recordActivity, summarizeChange } from '../../services/activity/activity-log.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TeamController');
 
@@ -1353,6 +1354,12 @@ export async function createTeam(this: ApiContext, req: Request, res: Response):
     };
 
     await this.storageService.saveTeam(team);
+    recordActivity({
+      actor: actorFromRequest(req),
+      action: 'team.created',
+      target: { type: 'team', id: team.id, name: team.name },
+      after: { members: teamMembers.map((m) => m.name), projectIds: team.projectIds, ...(parentTeamId ? { parentTeamId } : {}), ...(templateId ? { templateId } : {}) },
+    });
 
     for (const member of teamMembers) {
       if (member.role === 'tpm') {
@@ -1898,6 +1905,12 @@ export async function deleteTeam(this: ApiContext, req: Request, res: Response):
     }
 
     await this.storageService.deleteTeam(id);
+    recordActivity({
+      actor: actorFromRequest(req),
+      action: 'team.deleted',
+      target: { type: 'team', id, name: team.name },
+      before: { members: (team.members ?? []).map((m) => m.name), projectIds: team.projectIds ?? [] },
+    });
     res.json({ success: true, message: 'Team terminated successfully' } as ApiResponse);
   } catch (error) {
     logger.error('Error deleting team', { error: error instanceof Error ? error.message : String(error) });
@@ -1947,6 +1960,12 @@ export async function addTeamMember(this: ApiContext, req: Request, res: Respons
     team.members.push(newMember as MutableTeamMember);
     team.updatedAt = new Date().toISOString();
     await this.storageService.saveTeam(team);
+    recordActivity({
+      actor: actorFromRequest(req),
+      action: 'team.member.added',
+      target: { type: 'member', id: newMember.id, name: newMember.name },
+      after: { teamId: team.id, team: team.name, role: newMember.role, runtimeType: newMember.runtimeType },
+    });
     res.json({ success: true, data: newMember, message: 'Team member added successfully' } as ApiResponse<TeamMember>);
   } catch (error) {
     logger.error('Error adding team member', { error: error instanceof Error ? error.message : String(error) });
@@ -1982,9 +2001,16 @@ export async function updateTeamMember(this: ApiContext, req: Request, res: Resp
     if (updates.reasoningEffort === '') delete updatedMember.reasoningEffort;
     if ('dedicatedTo' in updates && !updates.dedicatedTo) delete updatedMember.dedicatedTo;
     if ('tier' in updates && !updates.tier) delete updatedMember.tier;
+    const memberBefore = team.members[memberIndex] as unknown as Record<string, unknown>;
     team.members[memberIndex] = updatedMember;
     team.updatedAt = new Date().toISOString();
     await this.storageService.saveTeam(team);
+    recordActivity({
+      actor: actorFromRequest(req),
+      action: 'team.member.updated',
+      target: { type: 'member', id: updatedMember.id, name: updatedMember.name },
+      ...summarizeChange({ ...memberBefore, updatedAt: undefined }, { ...(updatedMember as unknown as Record<string, unknown>), updatedAt: undefined }),
+    });
     res.json({ success: true, data: updatedMember, message: 'Team member updated successfully' } as ApiResponse<TeamMember>);
   } catch (error) {
     logger.error('Error updating team member', { error: error instanceof Error ? error.message : String(error) });
@@ -2007,6 +2033,12 @@ export async function deleteTeamMember(this: ApiContext, req: Request, res: Resp
     team.members.splice(memberIndex, 1);
     team.updatedAt = new Date().toISOString();
     await this.storageService.saveTeam(team);
+    recordActivity({
+      actor: actorFromRequest(req),
+      action: 'team.member.removed',
+      target: { type: 'member', id: member.id, name: member.name },
+      before: { teamId: team.id, team: team.name, role: member.role },
+    });
     res.json({ success: true, message: 'Team member removed successfully' } as ApiResponse);
   } catch (error) {
     logger.error('Error deleting team member', { error: error instanceof Error ? error.message : String(error) });
@@ -3194,6 +3226,13 @@ export async function updateTeamMemberRuntime(this: ApiContext, req: Request, re
       updatedAt: new Date().toISOString()
     };
 
+    recordActivity({
+      actor: actorFromRequest(req),
+      action: 'team.member.updated',
+      target: { type: 'member', id: updatedMember.id, name: updatedMember.name },
+      before: { runtimeType: team.members[memberIndex].runtimeType },
+      after: { runtimeType },
+    });
     team.members[memberIndex] = updatedMember;
     team.updatedAt = new Date().toISOString();
 
@@ -3290,6 +3329,8 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
     }
 
     const team = teams[teamIndex] as MutableTeam;
+    // Activity log (crewly#881): the shallow team fields before this edit; members are logged by their own handlers.
+    const teamBefore: Record<string, unknown> = { ...team, members: undefined, updatedAt: undefined };
 
     // Update allowed fields
     if (updates.projectIds !== undefined) {
@@ -3506,6 +3547,12 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
     team.updatedAt = new Date().toISOString();
 
     await this.storageService.saveTeam(team);
+    recordActivity({
+      actor: actorFromRequest(req),
+      action: 'team.updated',
+      target: { type: 'team', id: team.id, name: team.name },
+      ...summarizeChange(teamBefore, { ...team, members: undefined, updatedAt: undefined }),
+    });
 
     res.json({
       success: true,
@@ -3589,6 +3636,7 @@ export async function setTeamLeadHandler(this: ApiContext, req: Request, res: Re
     const result = setTeamLead(team, member.id, mode);
     (team as { updatedAt: string }).updatedAt = new Date().toISOString();
     await this.storageService.saveTeam(team);
+    recordActivity({ actor: actorFromRequest(req), action: 'team.lead.changed', target: { type: 'team', id: team.id, name: team.name }, after: { lead: member.name, memberId: member.id, mode } });
     logger.info('Team lead changed', {
       teamId: team.id,
       teamName: team.name,
@@ -3661,6 +3709,7 @@ export async function archiveTeam(this: ApiContext, req: Request, res: Response)
     await this.storageService.saveTeam(team);
 
     logger.info(`Team ${archived ? 'archived' : 'unarchived'}`, { teamId: id, teamName: team.name });
+    recordActivity({ actor: actorFromRequest(req), action: archived ? 'team.archived' : 'team.unarchived', target: { type: 'team', id, name: team.name } });
 
     res.json({
       success: true,
