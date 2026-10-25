@@ -1,6 +1,6 @@
 # Activity log: who did what, and when (crewly#881)
 
-**Status**: slice 1 shipped 2026-10-25 (1.20.408); slice 2 (outbound Gmail, budget stops, browser holds, remaining team config writers) 2026-10-25 (1.20.409); slice 3 (settings, connector access / sharing / disconnect, remote MCP servers, WhatsApp drafts) 2026-10-25 (1.20.410). Later slices below.
+**Status**: slice 1 shipped 2026-10-25 (1.20.408); slice 2 (outbound Gmail, budget stops, browser holds, remaining team config writers) 2026-10-25 (1.20.409); slice 3 (settings, connector access / sharing / disconnect, remote MCP servers, WhatsApp drafts) 2026-10-25 (1.20.410); slice 4 (Settings › Activity page) 2026-10-25 (1.20.411). Later slices below.
 
 ## Problem
 
@@ -116,6 +116,11 @@ changed. Verified by `activity-log.service.test.ts`,
 - Slack and Crewly Apps posts are not logged: they are the team's own
   messaging, not outbound to a third party, and a line per reply would bury
   the log. Connector *connects* (the OAuth callback) are not logged yet either.
-- A filterable page in the dashboard (Settings › Activity) and on the portal.
+- The portal (phone) has no activity page yet; the dashboard one is
+  `Settings › Activity` (`/settings?tab=activity`, `components/Settings/ActivityTab.tsx`,
+  `services/activity.service.ts`): filters for who / actor id / action (exact
+  or prefix) / target id / date range, newest first, 100 rows then "Show more"
+  (300, 1000); each row = time, actor (type · id (via)), action, target,
+  `field: before → after` lines, note, request / run ids.
 - Retention: the log is unbounded by design; a month file is ~1 KB per 5
   entries, so a year of a busy home is a few MB. Revisit if that changes.
