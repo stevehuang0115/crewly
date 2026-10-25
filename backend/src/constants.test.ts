@@ -587,6 +587,16 @@ describe('WIKI_GAPS_CONSTANTS (#914 knowledge gaps)', () => {
 	});
 });
 
+describe('MEMORY_CONSTANTS.DEDUP (#914 evidence merge)', () => {
+	it('keeps the near-duplicate threshold strict and the guards positive', async () => {
+		const { MEMORY_CONSTANTS: C } = await import('./constants.js');
+		expect(C.DEDUP.NEAR_DUPLICATE_JACCARD).toBeGreaterThanOrEqual(0.8);
+		expect(C.DEDUP.NEAR_DUPLICATE_JACCARD).toBeLessThan(1);
+		expect(C.DEDUP.MIN_TOKENS_FOR_NEAR).toBeGreaterThan(1);
+		expect(C.DEDUP.SUBSTRING_MIN_CHARS).toBe(20);
+	});
+});
+
 describe('CREWLY_CHANNEL_CONSTANTS', () => {
 	it('names the registry file and keeps limits in line with Slack and huddles', () => {
 		expect(CREWLY_CHANNEL_CONSTANTS.STORE_FILENAME).toBe('crewly-channels.json');

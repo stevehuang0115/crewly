@@ -14,6 +14,7 @@ import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { isHiddenFromDefaultRecall } from './role-knowledge-eligibility.js';
+import { evictionIndex, findNearestKnowledge, mergeKnowledgeEvidence, restateKnowledge, type NearestMatch } from './knowledge-similarity.js';
 import { isTaskCompletionLog } from './task-log-filter.js';
 
 /** Constants for memory scoring and decay (v2) */
@@ -266,21 +267,20 @@ export class AgentMemoryService implements IAgentMemoryService {
   }
 
   /**
-   * Finds a similar existing knowledge entry to avoid duplicates
+   * Finds the existing entry an incoming one duplicates: exact or
+   * containment match first, else the nearest token-set neighbour in the
+   * same category and tag scope at or above the near-duplicate threshold
+   * (#914 P1). Superseded and expired entries are never candidates.
    *
    * @param knowledge - Existing knowledge entries
-   * @param content - Content to check for similarity
-   * @returns Matching entry or undefined
+   * @param entry - Entry about to be written
+   * @returns The match with its score, or null
    */
-  private findSimilarEntry(knowledge: RoleKnowledgeEntry[], content: string): RoleKnowledgeEntry | undefined {
-    const normalizedContent = content.toLowerCase().trim();
-    return knowledge.find(entry => {
-      const normalizedEntry = entry.content.toLowerCase().trim();
-      // Simple similarity check - exact match or high substring overlap
-      return normalizedEntry === normalizedContent ||
-        (normalizedContent.length > 20 &&
-          (normalizedEntry.includes(normalizedContent) || normalizedContent.includes(normalizedEntry)));
-    });
+  private findSimilarEntry(
+    knowledge: RoleKnowledgeEntry[],
+    entry: Pick<RoleKnowledgeEntry, 'content' | 'category' | 'tags'>
+  ): NearestMatch<RoleKnowledgeEntry> | null {
+    return findNearestKnowledge(knowledge, entry);
   }
 
   /**
@@ -404,7 +404,9 @@ export class AgentMemoryService implements IAgentMemoryService {
   /**
    * Adds a new role knowledge entry
    *
-   * If similar content already exists, reinforces the existing entry instead.
+   * The same text again merges into and reinforces the existing entry; the
+   * same fact restated supersedes the old entry with the new wording (see
+   * knowledge-similarity, #914 P1).
    *
    * @param agentId - Agent's unique identifier
    * @param entry - Knowledge entry (without id and createdAt)
@@ -429,20 +431,49 @@ export class AgentMemoryService implements IAgentMemoryService {
       throw new Error(`Agent ${agentId} not initialized`);
     }
 
-    // Check for similar existing entry
-    const existing = this.findSimilarEntry(memory.roleKnowledge, entry.content);
-    if (existing) {
-      await this.reinforceKnowledge(agentId, existing.id);
-      this.logger.debug('Reinforced existing knowledge entry', { agentId, entryId: existing.id });
+    // The same text again merges into the existing entry: evidence union,
+    // importance max, one confidence step (#914 P1).
+    const match = this.findSimilarEntry(memory.roleKnowledge, entry);
+    if (match && match.kind === 'exact') {
+      const existing = match.entry;
+      const merged = mergeKnowledgeEvidence(existing, entry);
+      existing.confidence = Math.min(
+        existing.confidence + MEMORY_CONSTANTS.DEFAULTS.CONFIDENCE_REINFORCEMENT,
+        MEMORY_CONSTANTS.DEFAULTS.MAX_CONFIDENCE
+      );
+      await this.saveAgentMemory(agentId, memory);
+      this.logger.debug('Merged duplicate knowledge into existing entry', {
+        agentId,
+        entryId: existing.id,
+        addedEvidence: merged.addedEvidence.length,
+        importanceRaised: merged.importanceRaised,
+      });
       return existing.id;
     }
 
-    // Enforce storage limits
+    // Enforce storage limits: a superseded entry goes first, else the lowest confidence
     if (memory.roleKnowledge.length >= MEMORY_CONSTANTS.LIMITS.MAX_ROLE_KNOWLEDGE_ENTRIES) {
-      // Remove lowest confidence entries
-      memory.roleKnowledge.sort((a, b) => a.confidence - b.confidence);
-      memory.roleKnowledge.shift();
-      this.logger.debug('Removed lowest confidence entry to stay within limits', { agentId });
+      const evict = evictionIndex(memory.roleKnowledge);
+      if (evict !== -1) {
+        const [gone] = memory.roleKnowledge.splice(evict, 1);
+        this.logger.debug('Removed an entry to stay within limits', { agentId, entryId: gone.id, superseded: Boolean(gone.superseded || gone.supersededBy) });
+      }
+    }
+
+    // The same fact restated (a near match): the new wording wins, the old
+    // entry is superseded by it and kept for audit.
+    if (match) {
+      const fresh = restateKnowledge(match.entry, entry, { id: uuidv4(), now: new Date(), score: match.score });
+      memory.roleKnowledge.push(fresh);
+      await this.saveAgentMemory(agentId, memory);
+      this.logger.info('Restated role knowledge entry', {
+        agentId,
+        entryId: fresh.id,
+        supersedes: match.entry.id,
+        score: Number(match.score.toFixed(2)),
+        category: fresh.category,
+      });
+      return fresh.id;
     }
 
     const newEntry: RoleKnowledgeEntry = {
