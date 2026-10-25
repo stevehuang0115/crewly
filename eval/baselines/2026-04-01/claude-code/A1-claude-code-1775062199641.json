@@ -1,0 +1,35 @@
+{
+  "taskId": "A1",
+  "runtime": "claude-code",
+  "startedAt": "2026-04-01T16:49:18.027Z",
+  "completedAt": "2026-04-01T16:49:59.641Z",
+  "durationSeconds": 41.61,
+  "completionType": "agent_done",
+  "verificationResults": [
+    {
+      "name": "typescript",
+      "passed": true,
+      "output": "",
+      "exitCode": 0
+    },
+    {
+      "name": "tests",
+      "passed": true,
+      "output": "> a1-ts-fix-fixture@1.0.0 test\n> node --test src/**/*.test.ts 2>/dev/null || npx tsc --noEmit\n\nℹ tests 0\nℹ suites 0\nℹ pass 0\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 69.253084",
+      "exitCode": 0
+    }
+  ],
+  "scores": {
+    "d1Correctness": 100,
+    "d2CodeQuality": 85,
+    "d3Reasoning": 43,
+    "d4Autonomy": 100,
+    "d5ContextMgmt": 96,
+    "d6Collaboration": 0,
+    "d7CostEfficiency": 100
+  },
+  "overallScore": 81,
+  "toolCallCount": 7,
+  "estimatedCostUsd": 0,
+  "logPath": "eval/results/claude-code-v3/logs/A1-claude-code-1775062195936.log"
+}

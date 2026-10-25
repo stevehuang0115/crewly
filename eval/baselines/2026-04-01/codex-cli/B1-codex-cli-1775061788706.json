@@ -1,0 +1,41 @@
+{
+  "taskId": "B1",
+  "runtime": "codex-cli",
+  "startedAt": "2026-04-01T16:40:43.501Z",
+  "completedAt": "2026-04-01T16:43:08.706Z",
+  "durationSeconds": 145.205,
+  "completionType": "agent_done",
+  "verificationResults": [
+    {
+      "name": "typescript",
+      "passed": true,
+      "output": "",
+      "exitCode": 0
+    },
+    {
+      "name": "tests",
+      "passed": true,
+      "output": "> b1-health-endpoint-fixture@1.0.0 test\n> vitest run\n\n\n RUN  v3.2.4 eval/runs/B1-codex-cli-1775061629356\n\n ✓ src/app.test.ts (1 test) 197ms\n ✓ src/routes/health.route.test.ts (2 tests) 8ms\n\n Test Files  2 passed (2)\n      Tests  3 passed (3)\n   Start at  12:43:06\n   Duration  1.63s (transform 546ms, setup 0ms, collect 661ms, tests 204ms, environment 0ms, prepare 356ms)",
+      "exitCode": 0
+    },
+    {
+      "name": "health_exists",
+      "passed": true,
+      "output": "src/app.ts:3: * The agent needs to add a /health route here.\nsrc/app.ts:7:import { healthRouter } from './routes/health.route.js';\nsrc/app.ts:12:app.use(healthRouter);\nsrc/routes/health.route.ts:22:  status: 'healthy' | 'degraded';\nsrc/routes/health.route.ts:61:    status: memoryStatus === 'ok' && eventLoopStatus === 'ok' ? 'healthy' : 'degraded',\nsrc/routes/health.route.ts:91:  router.get('/health', async (_req, res) => {\nsrc/routes/health.route.ts:101:export const healthRouter = createHealthRouter();",
+      "exitCode": 0
+    }
+  ],
+  "scores": {
+    "d1Correctness": 100,
+    "d2CodeQuality": 85,
+    "d3Reasoning": 50,
+    "d4Autonomy": 100,
+    "d5ContextMgmt": 100,
+    "d6Collaboration": 0,
+    "d7CostEfficiency": 100
+  },
+  "overallScore": 83,
+  "toolCallCount": 16,
+  "estimatedCostUsd": 0.20156000000000002,
+  "logPath": "eval/results/codex-cli-v2/logs/B1-codex-cli-1775061781467.log"
+}

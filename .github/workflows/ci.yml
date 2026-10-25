@@ -9,6 +9,8 @@
 #              jest.ci.config.js (= jest.config.js minus the quarantine list
 #              in scripts/ci/jest-quarantine.json)
 #   quarantine the quarantined files only, non-blocking, so they stay visible
+#   eval       the standalone agent eval runner in eval/ (own lockfile, not a
+#              workspace): tsc --noEmit + its vitest unit tests
 #
 # Measured on the first run: typecheck ~1.5 min, each unit shard ~4 min.
 name: CI
@@ -93,3 +95,22 @@ jobs:
           if ! npx jest --ci --maxWorkers=2 ${{ steps.list.outputs.files }}; then
             echo "::warning title=Quarantined tests still failing::see scripts/ci/jest-quarantine.json"
           fi
+
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: eval
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: eval/package-lock.json
+      - run: npm ci
+      - name: Typecheck eval runner
+        run: npx tsc --noEmit
+      - name: Eval runner unit tests
+        run: npx vitest run

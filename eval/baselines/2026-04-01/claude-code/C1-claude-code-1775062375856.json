@@ -1,0 +1,47 @@
+{
+  "taskId": "C1",
+  "runtime": "claude-code",
+  "startedAt": "2026-04-01T16:51:44.481Z",
+  "completedAt": "2026-04-01T16:52:55.856Z",
+  "durationSeconds": 71.375,
+  "completionType": "agent_done",
+  "verificationResults": [
+    {
+      "name": "typescript",
+      "passed": true,
+      "output": "",
+      "exitCode": 0
+    },
+    {
+      "name": "tests",
+      "passed": true,
+      "output": "> c1-extract-constants-fixture@1.0.0 test\n> vitest run\n\n\n RUN  v3.2.4 eval/runs/C1-claude-code-1775062289305\n\n ✓ src/config/constants.test.ts (13 tests) 12ms\n ✓ src/services/connection.service.test.ts (6 tests) 10ms\n\n Test Files  2 passed (2)\n      Tests  19 passed (19)\n   Start at  12:52:53\n   Duration  1.43s (transform 560ms, setup 0ms, collect 564ms, tests 22ms, environment 0ms, prepare 330ms)",
+      "exitCode": 0
+    },
+    {
+      "name": "no_hardcoded_ports",
+      "passed": true,
+      "output": "0",
+      "exitCode": 1
+    },
+    {
+      "name": "constants_exist",
+      "passed": true,
+      "output": "exists",
+      "exitCode": 0
+    }
+  ],
+  "scores": {
+    "d1Correctness": 100,
+    "d2CodeQuality": 85,
+    "d3Reasoning": 46,
+    "d4Autonomy": 100,
+    "d5ContextMgmt": 98,
+    "d6Collaboration": 0,
+    "d7CostEfficiency": 100
+  },
+  "overallScore": 82,
+  "toolCallCount": 13,
+  "estimatedCostUsd": 0,
+  "logPath": "eval/results/claude-code-v3/logs/C1-claude-code-1775062369007.log"
+}

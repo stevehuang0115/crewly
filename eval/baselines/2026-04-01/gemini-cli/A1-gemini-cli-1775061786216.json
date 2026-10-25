@@ -1,0 +1,35 @@
+{
+  "taskId": "A1",
+  "runtime": "gemini-cli",
+  "startedAt": "2026-04-01T16:39:20.715Z",
+  "completedAt": "2026-04-01T16:43:06.216Z",
+  "durationSeconds": 225.496,
+  "completionType": "agent_done",
+  "verificationResults": [
+    {
+      "name": "typescript",
+      "passed": true,
+      "output": "",
+      "exitCode": 0
+    },
+    {
+      "name": "tests",
+      "passed": true,
+      "output": "> a1-ts-fix-fixture@1.0.0 test\n> node --test src/**/*.test.ts 2>/dev/null || npx tsc --noEmit\n\nℹ tests 0\nℹ suites 0\nℹ pass 0\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 73.543583",
+      "exitCode": 0
+    }
+  ],
+  "scores": {
+    "d1Correctness": 100,
+    "d2CodeQuality": 85,
+    "d3Reasoning": 9,
+    "d4Autonomy": 100,
+    "d5ContextMgmt": 0,
+    "d6Collaboration": 0,
+    "d7CostEfficiency": 100
+  },
+  "overallScore": 65,
+  "toolCallCount": 32,
+  "estimatedCostUsd": 0.024324749999999996,
+  "logPath": "eval/results/gemini-cli-v2/logs/A1-gemini-cli-1775061782439.log"
+}
