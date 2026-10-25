@@ -288,6 +288,7 @@ teamCmd
   .command('export <team>')
   .description('Write a team (config, member prompts, norms, schedules) to one JSON file: running state stripped, secrets masked, connectors listed for reconnecting')
   .option('--out <file>', 'File to write (default crewly-team-<name>-<date>.json)')
+  .option('--wiki', "Include the team's wiki pages (its knowledge); without it they are only counted")
   .option('--json', 'Print the package as JSON')
   .action(async (team: string, options: TeamExportOptions) => {
     process.exitCode = await teamExportCommand(team, options);

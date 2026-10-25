@@ -82,7 +82,14 @@ describe('Team Export/Import Controller', () => {
       await exportTeam.call(mockContext, mockReq as Request, mockRes as Response);
 
       expect(jsonFn).toHaveBeenCalledWith({ success: true, data: exportData });
-      expect(mockExportTeam.mock.calls[0][1]).toEqual({ knownSecrets: expect.any(Array) });
+      expect(mockExportTeam.mock.calls[0][1]).toEqual({ knownSecrets: expect.any(Array), includeWiki: false });
+    });
+
+    it('packages the wiki only with ?wiki=1', async () => {
+      mockExportTeam.mockResolvedValue({ version: '1.2', exportedAt: 'x', team: { id: 'team-1', name: 'T' }, prompts: {}, norms: {}, cronTasks: [] });
+      mockReq = { params: { teamId: 'team-1' }, query: { wiki: '1' } };
+      await exportTeam.call(mockContext, mockReq as Request, mockRes as Response);
+      expect(mockExportTeam.mock.calls[0][1]).toEqual({ knownSecrets: expect.any(Array), includeWiki: true });
     });
 
     it('sends the package as an attachment with ?download=1', async () => {

@@ -1,13 +1,15 @@
 /**
  * CLI Team Export/Import — a team as one portable, secret-free JSON package.
  *
- *   crewly team export <team> [--out <file>] [--json]
+ *   crewly team export <team> [--out <file>] [--wiki] [--json]
  *   crewly team import <file> [--json]
  *
  * Talks to this machine's backend (`/api/teams/:id/export`,
  * `/api/teams/import`, issue #880). The package holds the team's config,
  * member prompts, norms and schedules; running state is stripped, secrets
  * are masked and the connectors the team uses are listed for reconnecting.
+ * With `--wiki` the team's wiki pages (its knowledge) travel too; without
+ * it the summary says how many pages stayed behind.
  *
  * @module cli/commands/team-export
  */
@@ -23,6 +25,8 @@ export interface TeamExportOptions {
   out?: string;
   /** Print the backend's answer as JSON instead of a summary. */
   json?: boolean;
+  /** Put the team's wiki pages in the package. */
+  wiki?: boolean;
 }
 
 /** Options of `crewly team import`. */
@@ -45,7 +49,14 @@ interface TeamPackage {
   prompts?: Record<string, string>;
   norms?: Record<string, string>;
   cronTasks?: unknown[];
-  portability?: { redactions: number; scanClean: boolean; connectors: string[]; strippedFields: string[] };
+  wiki?: Record<string, string>;
+  portability?: {
+    redactions: number;
+    scanClean: boolean;
+    connectors: string[];
+    strippedFields: string[];
+    knowledge?: { included: boolean; pages: number; bytes: number; skipped: string[] };
+  };
 }
 
 /** The backend's import result (fields this command reads). */
@@ -55,6 +66,8 @@ interface ImportResult {
   normsImported: number;
   cronTasksImported: number;
   connectorsToReconnect?: string[];
+  wikiPagesImported?: number;
+  wikiPagesRejected?: string[];
 }
 
 /** A team as `GET /api/teams` lists it (fields this command reads). */
@@ -162,7 +175,7 @@ export async function teamExportCommand(team: string, options: TeamExportOptions
     print(chalk.red(resolved.error ?? 'Team not found'));
     return 1;
   }
-  const res = await call(fetchImpl, 'GET', `/teams/${encodeURIComponent(resolved.team.id)}/export`).catch(notRunning);
+  const res = await call(fetchImpl, 'GET', `/teams/${encodeURIComponent(resolved.team.id)}/export${options.wiki ? '?wiki=1' : ''}`).catch(notRunning);
   if (!res.ok) {
     print(chalk.red(errorLine(res)));
     return 1;
@@ -180,10 +193,26 @@ export async function teamExportCommand(team: string, options: TeamExportOptions
   if (p) {
     print(`  secrets masked: ${p.redactions}; final scan ${p.scanClean ? 'clean' : chalk.yellow('found something left — open the file before sharing it')}`);
     print(`  connectors to reconnect after import: ${p.connectors.length ? p.connectors.join(', ') : 'none'}`);
+    print(`  ${describeKnowledge(p.knowledge, Object.keys(pkg.wiki ?? {}).length)}`);
     print('  running state (sessions, status, tickets in hand) was left out; no grants or tokens are in the file.');
   }
   print('Import it elsewhere with `crewly team import <file>`.');
   return p && !p.scanClean ? 2 : 0;
+}
+
+/**
+ * One line on the team's knowledge: in the package, left behind, or none.
+ *
+ * @param knowledge - `portability.knowledge` of the package (absent in 1.0/1.1)
+ * @param packaged - Pages actually in the package
+ * @returns Summary line
+ */
+export function describeKnowledge(knowledge: { included: boolean; pages: number; bytes: number; skipped: string[] } | undefined, packaged: number): string {
+  if (!knowledge) return 'wiki: not recorded by this package version';
+  if (knowledge.pages === 0) return 'wiki: the team has no pages';
+  if (!knowledge.included) return `wiki: ${knowledge.pages} page(s) stayed on this machine — add --wiki to include the team's knowledge`;
+  const skipped = knowledge.skipped.length ? `; ${knowledge.skipped.length} skipped as too large: ${knowledge.skipped.join(', ')}` : '';
+  return `wiki: ${packaged} of ${knowledge.pages} page(s) included${skipped}`;
 }
 
 /**
@@ -219,7 +248,8 @@ export async function teamImportCommand(file: string, options: TeamImportOptions
   }
   const result = res.json['data'] as ImportResult;
   print(chalk.green(`Imported ${result.team.name} (${result.team.id})`));
-  print(`  prompts: ${result.promptsImported}, norms: ${result.normsImported}, schedules: ${result.cronTasksImported}`);
+  print(`  prompts: ${result.promptsImported}, norms: ${result.normsImported}, schedules: ${result.cronTasksImported}, wiki pages: ${result.wikiPagesImported ?? 0}`);
+  if (result.wikiPagesRejected?.length) print(chalk.yellow(`  wiki pages refused (unsafe path): ${result.wikiPagesRejected.join(', ')}`));
   const reconnect = result.connectorsToReconnect ?? [];
   if (reconnect.length) print(chalk.yellow(`  reconnect on this machine: ${reconnect.join(', ')} (Settings › Connectors)`));
   print('Members are inactive; start them from the team page or the CLI when you are ready.');

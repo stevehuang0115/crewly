@@ -107,6 +107,9 @@ describe('TeamRow', () => {
       expect(fn).toHaveBeenCalledWith('t1');
     }
     openMenu();
+    fireEvent.click(screen.getByText('Export team with wiki…'));
+    expect(handlers.onExport).toHaveBeenCalledWith('t1', true);
+    openMenu();
     fireEvent.click(screen.getByText('Pin to favorites'));
     expect(handlers.onTogglePin).toHaveBeenCalled();
     openMenu();

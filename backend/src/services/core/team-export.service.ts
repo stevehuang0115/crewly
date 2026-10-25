@@ -14,7 +14,12 @@
  *   before it is returned;
  * - the connectors the team's prompts, skills and schedules refer to are
  *   listed under `portability.connectors` so the importer knows what to
- *   reconnect — grants themselves never travel.
+ *   reconnect — grants themselves never travel;
+ * - the team's wiki vault (its knowledge: decisions, patterns, SOPs, digests)
+ *   travels only when asked for (`includeWiki`), as `.md` pages; the package
+ *   always says how much knowledge the team has and whether it is inside
+ *   (`portability.knowledge`), so nobody imports a team thinking it brought
+ *   its memory when it did not.
  *
  * @module services/core/team-export.service
  */
@@ -34,6 +39,18 @@ import { TEAM_EXPORT_CONSTANTS } from '../../constants.js';
 // Types
 // =============================================================================
 
+/** The team's wiki vault as seen by the export: how much there is and whether it travelled. */
+export interface TeamExportKnowledge {
+  /** Whether the pages are in the package (`wiki`) */
+  included: boolean;
+  /** Wiki pages (`.md`) found in the vault */
+  pages: number;
+  /** Their size in bytes */
+  bytes: number;
+  /** Pages found but left out: over the per-page cap, or past the total cap */
+  skipped: string[];
+}
+
 /** What makes a package portable: what was stripped, masked and must be reconnected. */
 export interface TeamExportPortability {
   /** Secrets masked across the package */
@@ -44,6 +61,8 @@ export interface TeamExportPortability {
   connectors: string[];
   /** Member fields removed because they describe the running agent, not the team */
   strippedFields: string[];
+  /** The team's knowledge: how much, and whether it is in the package (1.2+) */
+  knowledge?: TeamExportKnowledge;
 }
 
 /**
@@ -53,7 +72,7 @@ export interface TeamExportPortability {
  */
 export interface TeamExport {
   /** Format version for forward compatibility */
-  version: '1.0' | '1.1';
+  version: '1.0' | '1.1' | '1.2';
   /** ISO timestamp when the export was created */
   exportedAt: string;
   /** Team configuration (config.json content), runtime state stripped */
@@ -64,6 +83,8 @@ export interface TeamExport {
   norms: Record<string, string>;
   /** Team-scoped cron tasks */
   cronTasks: CronTask[];
+  /** Wiki pages, vault-relative path → markdown (1.2+, only with `includeWiki`) */
+  wiki?: Record<string, string>;
   /** What was stripped, masked and must be reconnected (1.1+) */
   portability?: TeamExportPortability;
 }
@@ -82,12 +103,26 @@ export interface TeamImportResult {
   cronTasksImported: number;
   /** Connectors the package says the team uses; reconnect them on this install */
   connectorsToReconnect: string[];
+  /** Wiki pages written into the new team's vault */
+  wikiPagesImported: number;
+  /** Wiki pages the package carried but this install refused (bad path) */
+  wikiPagesRejected: string[];
 }
 
 /** Options of {@link TeamExportService.exportTeam}. */
 export interface TeamExportOptions {
   /** Exact secret values to mask wherever they appear (see collectSecretEnvValues) */
   knownSecrets?: readonly SecretEnvValue[];
+  /** Put the team's wiki pages in the package (default: count them only) */
+  includeWiki?: boolean;
+}
+
+/** A team's wiki vault as read for a package. */
+export interface CollectedWiki {
+  /** Pages that fit, vault-relative path → content */
+  pages: Record<string, string>;
+  /** What the vault holds, packaged or not */
+  knowledge: TeamExportKnowledge;
 }
 
 // =============================================================================
@@ -170,6 +205,63 @@ export function referencedConnectors(team: Team, prompts: Record<string, string>
     .filter(([, re]) => re.test(haystack))
     .map(([id]) => id)
     .sort();
+}
+
+/**
+ * Whether a vault-relative path may travel in, or be written from, a package:
+ * a `.md` file, no absolute or dot segments, no traversal. Ledgers
+ * (`usage.jsonl`), compile state and anything hidden never match.
+ *
+ * @param relativePath - Vault-relative path as the package names it
+ * @returns True when the path is a plain wiki page path
+ */
+export function isPackagedWikiPath(relativePath: string): boolean {
+  return (
+    TEAM_EXPORT_CONSTANTS.WIKI_PAGE_PATH_PATTERN.test(relativePath) &&
+    !relativePath.split('/').some((segment) => segment === '..' || segment.startsWith('.'))
+  );
+}
+
+/**
+ * Read a team's wiki vault for a package: every `.md` page with its size,
+ * packaged while it fits under the per-page and total caps (the rest is
+ * listed as skipped so the owner sees what stayed behind). With
+ * `include = false` the pages are only counted.
+ *
+ * @param vaultDir - `<team dir>/wiki`
+ * @param include - Whether to return the page contents
+ * @returns Pages (empty when not included) and the knowledge summary
+ */
+export async function collectTeamWiki(vaultDir: string, include: boolean): Promise<CollectedWiki> {
+  const knowledge: TeamExportKnowledge = { included: include, pages: 0, bytes: 0, skipped: [] };
+  const pages: Record<string, string> = {};
+  if (!existsSync(vaultDir)) return { pages, knowledge };
+  let entries: string[];
+  try {
+    entries = (await fs.readdir(vaultDir, { recursive: true })).map((e) => String(e).split(path.sep).join('/'));
+  } catch {
+    return { pages, knowledge };
+  }
+  let packagedBytes = 0;
+  for (const rel of entries.filter(isPackagedWikiPath).sort()) {
+    let content: string;
+    try {
+      content = await fs.readFile(path.join(vaultDir, ...rel.split('/')), 'utf8');
+    } catch {
+      continue; // a directory named like a page, or unreadable — not knowledge we can carry
+    }
+    const bytes = Buffer.byteLength(content, 'utf8');
+    knowledge.pages += 1;
+    knowledge.bytes += bytes;
+    if (!include) continue;
+    if (bytes > TEAM_EXPORT_CONSTANTS.WIKI_MAX_PAGE_BYTES || packagedBytes + bytes > TEAM_EXPORT_CONSTANTS.WIKI_MAX_TOTAL_BYTES) {
+      knowledge.skipped.push(rel);
+      continue;
+    }
+    pages[rel] = content;
+    packagedBytes += bytes;
+  }
+  return { pages, knowledge };
 }
 
 /**
@@ -262,10 +354,13 @@ export class TeamExportService {
     // Read cron tasks
     const cronTasks = await this.readCronTasks(teamDir);
 
+    // The wiki vault: counted always, packaged on request.
+    const wiki = await collectTeamWiki(path.join(teamDir, TEAM_EXPORT_CONSTANTS.WIKI_DIR), options.includeWiki === true);
+
     const { team, strippedFields } = stripRuntimeState(stored);
     const connectors = referencedConnectors(team, prompts, norms, cronTasks);
-    const masked = redactDeep({ team, prompts, norms, cronTasks }, options.knownSecrets);
-    const portability: TeamExportPortability = { redactions: masked.count, scanClean: true, connectors, strippedFields };
+    const masked = redactDeep({ team, prompts, norms, cronTasks, ...(options.includeWiki ? { wiki: wiki.pages } : {}) }, options.knownSecrets);
+    const portability: TeamExportPortability = { redactions: masked.count, scanClean: true, connectors, strippedFields, knowledge: wiki.knowledge };
     const bundle: TeamExport = {
       version: TEAM_EXPORT_CONSTANTS.VERSION,
       exportedAt: new Date().toISOString(),
@@ -287,6 +382,9 @@ export class TeamExportService {
    * - Prompts written to teams/{teamId}/prompts/
    * - Norms written to teams/{teamId}/norms/
    * - Cron tasks with NEW IDs to teams/{teamId}/cron-tasks.json
+   * - Wiki pages (1.2 packages exported with the wiki) to teams/{teamId}/wiki/,
+   *   each path checked against {@link isPackagedWikiPath} first; the index
+   *   page travels with them, so no rebuild is needed
    *
    * @param data - The team export bundle to import
    * @returns Import result with counts
@@ -340,6 +438,23 @@ export class TeamExportService {
       cronTasksImported = remapped.length;
     }
 
+    // Write wiki pages (only paths a package is allowed to name)
+    let wikiPagesImported = 0;
+    const wikiPagesRejected: string[] = [];
+    if (data.wiki && typeof data.wiki === 'object') {
+      const vaultDir = path.join(teamDir, TEAM_EXPORT_CONSTANTS.WIKI_DIR);
+      for (const [rel, content] of Object.entries(data.wiki)) {
+        if (!isPackagedWikiPath(rel) || typeof content !== 'string') {
+          wikiPagesRejected.push(rel);
+          continue;
+        }
+        const target = path.join(vaultDir, ...rel.split('/'));
+        mkdirSync(path.dirname(target), { recursive: true });
+        await fs.writeFile(target, content, 'utf8');
+        wikiPagesImported++;
+      }
+    }
+
     const connectorsToReconnect =
       data.portability?.connectors ?? referencedConnectors(team, data.prompts ?? {}, data.norms ?? {}, data.cronTasks ?? []);
 
@@ -349,6 +464,8 @@ export class TeamExportService {
       normsImported,
       cronTasksImported,
       connectorsToReconnect,
+      wikiPagesImported,
+      wikiPagesRejected,
     };
   }
 

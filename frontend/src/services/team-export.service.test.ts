@@ -3,6 +3,7 @@ import {
   TEAM_EXPORT_API,
   TeamPackageApiError,
   describeImport,
+  describeKnowledge,
   describePackage,
   downloadTeamPackage,
   fetchTeamPackage,
@@ -63,10 +64,21 @@ describe('team-export.service', () => {
 
   it('describes a package', () => {
     expect(describePackage(pkg)).toBe(
-      '3 members, 2 prompts, 0 norms, 1 schedule. Secrets masked: 2; final scan clean. Reconnect after import: google-workspace. Running state and credentials are not in the file.',
+      '3 members, 2 prompts, 0 norms, 1 schedule. Secrets masked: 2; final scan clean. Reconnect after import: google-workspace. Wiki: not recorded by this package version. Running state and credentials are not in the file.',
     );
+    const knowledge = { included: true, pages: 3, bytes: 900, skipped: ['llm-curated/digests/huge.md'] };
+    expect(describePackage({ ...pkg, wiki: { 'llm-curated/index.md': '# Index', 'a.md': 'A' }, portability: { ...portability, knowledge } })).toContain('Wiki: 2 of 3 pages included. 1 skipped as too large.');
     expect(describePackage({ ...pkg, portability: { ...portability, scanClean: false, connectors: [] } })).toContain('open the file before sharing it');
     expect(describePackage({ ...pkg, portability: undefined })).toBe('3 members, 2 prompts, 0 norms, 1 schedule. Running state and credentials are not in the file.');
+  });
+
+  it('describes the knowledge and asks for it in the export path', () => {
+    expect(describeKnowledge(undefined, 0)).toBe('Wiki: not recorded by this package version.');
+    expect(describeKnowledge({ included: false, pages: 0, bytes: 0, skipped: [] }, 0)).toBe('Wiki: the team has no pages.');
+    expect(describeKnowledge({ included: false, pages: 1, bytes: 10, skipped: [] }, 0)).toBe("Wiki: 1 page stayed on this machine (export with the wiki to include the team's knowledge).");
+    expect(describeKnowledge({ included: true, pages: 14, bytes: 9000, skipped: [] }, 14)).toBe('Wiki: 14 of 14 pages included.');
+    expect(TEAM_EXPORT_API.exportPath('t1', true)).toBe('/api/teams/t1/export?wiki=1');
+    expect(TEAM_EXPORT_API.exportPath('t1')).toBe('/api/teams/t1/export');
   });
 
   it('reads a package file, unwrapping a saved API answer', async () => {
@@ -85,7 +97,8 @@ describe('team-export.service', () => {
     expect(url).toBe('/api/teams/import');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body).team.name).toBe('CE Site');
-    expect(describeImport(result)).toBe('2 prompts, 0 norms, 1 schedule. Members are inactive until you start them. Reconnect on this machine: google-workspace (Settings › Connectors).');
+    expect(describeImport(result)).toBe('2 prompts, 0 norms, 1 schedule, 0 wiki pages. Members are inactive until you start them. Reconnect on this machine: google-workspace (Settings › Connectors).');
+    expect(describeImport({ ...result, wikiPagesImported: 3, wikiPagesRejected: ['../x.md'] })).toContain('3 wiki pages. Members are inactive until you start them. 1 wiki page refused (unsafe path).');
     expect(describeImport({ ...result, connectorsToReconnect: [] })).not.toContain('Reconnect');
   });
 });
