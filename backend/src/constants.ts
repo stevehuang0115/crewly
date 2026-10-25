@@ -2520,6 +2520,8 @@ export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	INBOUND_IN_FLIGHT_MS: 30_000,
 	/** Synthetic team-id prefix for channels linked on the fly (no Crewly team behind them) */
 	ADHOC_TEAM_PREFIX: 'adhoc:',
+	/** Slack's error code for a channel that was archived (`conversations.join` / `invite`) */
+	ARCHIVED_ERROR_CODE: 'is_archived',
 	/**
 	 * How long an owner's room message that reached nobody on this machine
 	 * waits for any agent (here or on another machine) to take it before this

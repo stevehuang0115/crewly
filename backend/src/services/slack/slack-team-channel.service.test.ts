@@ -927,6 +927,71 @@ describe('team lifecycle sync', () => {
     expect(warnings).toContainEqual(expect.objectContaining({ error: 'channel_not_found' }));
   });
 
+  // #pro-acme-studio-chat was archived in Slack while its team stayed; every
+  // restart then logged four warnings (rejoin + three owner invites) for a
+  // channel nobody could do anything about (2026-10-25).
+  it('start() remembers an archived channel, says so once, skips the owner invite, and forgets it once it is live again', async () => {
+    ownerUserId = null;
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    ownerUserId = 'UOWNER';
+    const logs: Array<{ level: string; msg: string; ctx: Record<string, unknown> }> = [];
+    const logger = (service as unknown as { logger: Record<string, unknown> }).logger;
+    logger.warn = (msg: string, ctx: Record<string, unknown>) => logs.push({ level: 'warn', msg, ctx });
+    logger.info = (msg: string, ctx: Record<string, unknown>) => logs.push({ level: 'info', msg, ctx });
+    slack.joinChannel = async () => {
+      throw Object.assign(new Error('An API error occurred: is_archived'), { data: { error: 'is_archived' } });
+    };
+
+    // The rejoin runs in the background and saves the store; wait for the
+    // save to land so no write is in flight when the temp dir goes.
+    const storeOnDisk = async (): Promise<string> =>
+      fs.readFile(path.join(tmpDir, 'slack-team-channels.json'), 'utf8').catch(() => '');
+    const untilStore = async (test: (text: string) => boolean): Promise<void> => {
+      for (let i = 0; i < 200; i += 1) {
+        if (test(await storeOnDisk())) return;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      throw new Error('store never reached the expected state');
+    };
+    // Background saves (reconcile, rejoin) may still be landing: wait until
+    // the file has been quiet for a moment before the test's temp dir goes.
+    const untilQuiet = async (): Promise<void> => {
+      let last = await storeOnDisk();
+      for (let quiet = 0; quiet < 6; ) {
+        await new Promise((r) => setTimeout(r, 10));
+        const now = await storeOnDisk();
+        quiet = now === last ? quiet + 1 : 0;
+        last = now;
+      }
+    };
+
+    await service.start();
+    await untilStore((text) => /"slackArchived":\s*true/.test(text));
+    expect(service.findBySlackChannelId('C1')?.slackArchived).toBe(true);
+    expect(slack.invites).toEqual([]);
+    expect(logs.filter((l) => l.level === 'warn')).toEqual([]);
+    expect(logs.filter((l) => /archived in Slack/.test(l.msg))).toHaveLength(1);
+
+    // Second boot: nothing new to say.
+    logs.length = 0;
+    service.stop();
+    await service.start();
+    await untilQuiet();
+    expect(logs.filter((l) => /archived/.test(l.msg) || l.level === 'warn')).toEqual([]);
+
+    // Unarchived: the join succeeds, the flag goes, the owner gets invited.
+    slack.joinChannel = async (id: string) => {
+      slack.joined.push(id);
+    };
+    service.stop();
+    await service.start();
+    await untilStore((text) => /"ownerInvited":\s*true/.test(text));
+    expect(service.findBySlackChannelId('C1')?.slackArchived).toBeUndefined();
+    expect(slack.invites).toEqual([{ channelId: 'C1', userIds: ['UOWNER'] }]);
+    await untilQuiet();
+  });
+
   it('does nothing on a new team when autoCreate is off', async () => {
     await service.updateSettings({ autoCreate: false });
     await service.start();

@@ -707,6 +707,13 @@ export interface SlackTeamChannelMapping {
    * so a channel the owner chose to leave stays left.
    */
   ownerInvited?: boolean;
+  /**
+   * True once Slack answered `is_archived` for this channel. The boot rejoin
+   * still tries it (an unarchived channel clears the flag) but says so only
+   * the first time, and the owner is not invited into it meanwhile — an
+   * archived channel used to produce four warnings on every restart.
+   */
+  slackArchived?: boolean;
 }
 
 /**
