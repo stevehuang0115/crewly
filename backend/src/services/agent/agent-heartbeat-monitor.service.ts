@@ -283,8 +283,9 @@ export class AgentHeartbeatMonitorService {
 					continue;
 				}
 
-				// Being relaunched on purpose (runtime fallback switching runtimes):
-				// its session is briefly gone or silent — not a ghost, not dead.
+				// Being relaunched (runtime fallback switching runtimes) or stopped
+				// on purpose (idle timeout, owner stop): its session is briefly gone
+				// or silent — not a ghost, not dead.
 				if (isPlannedRelaunch(member.sessionName)) {
 					const state = this.agentStates.get(member.sessionName);
 					if (state) {

@@ -8589,6 +8589,14 @@ export const ANTIGRAVITY_USAGE_SYNC_CONSTANTS = {
 export const PLANNED_RELAUNCH_CONSTANTS = {
 	/** How long a session counts as "being relaunched on purpose" */
 	WINDOW_MS: 5 * 60_000,
+	/**
+	 * How long a deliberate stop (idle timeout, owner stop) keeps the ghost
+	 * check away while the session is torn down and storage catches up.
+	 * Short on purpose: a terminate that dies half-way must become visible.
+	 */
+	STOP_WINDOW_MS: 30_000,
+	/** Reason recorded for a deliberate stop */
+	STOP_REASON: 'deliberate_stop',
 } as const;
 
 export const RUNTIME_FALLBACK_CONSTANTS = {

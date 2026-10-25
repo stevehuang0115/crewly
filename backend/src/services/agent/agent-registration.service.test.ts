@@ -16,6 +16,7 @@ import * as sessionModule from '../session/index.js';
 import { getSessionStatePersistence } from '../session/index.js';
 import { RuntimeServiceFactory } from './runtime-service.factory.js';
 import { CREWLY_CONSTANTS, RUNTIME_TYPES, TUI_INPUT_GUARD } from '../../constants.js';
+import { isPlannedRelaunch } from './planned-relaunch.registry.js';
 
 // Mock dependencies
 // The stored conversation is assumed to exist on disk in these tests; the
@@ -1457,6 +1458,19 @@ describe('AgentRegistrationService', () => {
 				'test-session',
 				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
 			);
+		});
+
+		it('marks the session as a planned stop from the kill until inactive is written (#1464)', async () => {
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			let plannedDuringKill = false;
+			mockSessionHelper.killSession.mockImplementationOnce(async () => {
+				plannedDuringKill = isPlannedRelaunch('test-session');
+			});
+
+			await service.terminateAgentSession('test-session', 'developer');
+
+			expect(plannedDuringKill).toBe(true);
+			expect(isPlannedRelaunch('test-session')).toBe(false);
 		});
 
 		it('should update status even if session does not exist', async () => {
