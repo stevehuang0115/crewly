@@ -51,6 +51,28 @@ the memory entries to use, each with a citation token such as `dec:<id>`.
 | `open-gotchas` | project | Which gotchas are still open? | `got:` |
 | `owner-preferences` | project | What does the owner prefer? | `pref:` |
 | `unfinished-work` | agent | What is my unfinished work, and what is blocking it? | `mem:` |
+| `owner-rules` | project | What rules has the owner set explicitly? | none — **owner-only, read it, never write it** |
+| `<custom id>` | project | A question the project defined in `.crewly/standing-questions.json` | by its `source` (`dec:`, `got:` or `pref:`) |
+
+**Owner rules.** `owner-rules` (`.crewly/wiki/owner/rules.md`) is written by the
+owner only — a write from an agent is refused (`owner_only`). Its sections appear
+first in `## Standing Answers` and override the curated pages. When the owner tells
+you a rule in chat, do not write it there: record it as a user preference with the
+`remember` skill; it reaches the `owner-preferences` page on the next refresh, and
+the owner promotes it to a rule if they want it permanent.
+
+**Custom questions.** A project may add up to 10 questions in
+`.crewly/standing-questions.json`:
+
+```json
+{ "questions": [
+  { "id": "release-rules", "question": "What must happen before a release?", "source": "decisions", "match": ["release", "publish"] }
+] }
+```
+
+Each becomes a page at `.crewly/wiki/llm-curated/standing/<id>.md`, refreshed and
+written exactly like the built-in project pages; `match` keeps only entries whose
+title or text contains one of the keywords.
 
 Rules the backend enforces:
 

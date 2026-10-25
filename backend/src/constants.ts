@@ -1765,6 +1765,12 @@ export const WIKI_KB_CONSTANTS = {
 	/** One-line conclusion ("what this means for us") — required on every page. */
 	SUMMARY_MAX_CHARS: 240,
 	TITLE_MAX_CHARS: 120,
+	/**
+	 * Human-owned folder at the vault root (#914 P2). Holds the owner's
+	 * explicit rules page; frozen for every automated path (ingest, curation,
+	 * cleanup, lint) whether or not the vault's SCHEMA.md lists it.
+	 */
+	OWNER_FOLDER: 'owner',
 	/** Per-vault one-line-per-page index read as retrieval step 1. */
 	INDEX_FILENAME: 'index.md',
 	/** Index bytes returned to an agent before it is cut down to the query's folders. */
@@ -2078,6 +2084,25 @@ export const STARTUP_BRIEFING_CONSTANTS = {
 export const STANDING_ANSWERS_CONSTANTS = {
 	/** Project pages live here, under the project's `.crewly` data dir. */
 	PROJECT_DIR: 'wiki/llm-curated/standing',
+	/**
+	 * The owner's explicit rules page (#914 P2), under the project's `.crewly`
+	 * data dir: inside the wiki vault so it is browsable, but in the frozen
+	 * `owner/` folder, outside `llm-curated/`, so no automated pass rewrites it.
+	 */
+	OWNER_RULES_FILE: 'wiki/owner/rules.md',
+	/** Page id of the owner rules page. */
+	OWNER_RULES_PAGE_ID: 'owner-rules',
+	/**
+	 * Per-project standing questions (#914 P2), under the project's `.crewly`
+	 * data dir: `{ "questions": [{ id, question, source, match? }] }`.
+	 */
+	QUESTIONS_FILE: 'standing-questions.json',
+	/** Custom questions read per project; the rest of the file is ignored. */
+	CUSTOM_QUESTIONS_MAX: 10,
+	/** Cap on a custom question. */
+	QUESTION_MAX_CHARS: 200,
+	/** Cap on `match` keywords of a custom question. */
+	MATCH_MAX_TERMS: 10,
 	/** The agent page, under `<CREWLY_HOME>/agents/<session>/`. */
 	AGENT_FILE: 'standing.md',
 	/** Page id of the agent page. */

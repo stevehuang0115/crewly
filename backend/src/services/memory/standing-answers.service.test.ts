@@ -6,7 +6,10 @@ import {
 	StandingAnswersError,
 	PROJECT_STANDING_PAGES,
 	AGENT_STANDING_PAGE,
+	OWNER_RULES_PAGE,
 	findStandingPageDef,
+	parseCustomQuestions,
+	matchesQuestion,
 	parseStandingPage,
 	serializeStandingPage,
 	upsertSection,
@@ -113,10 +116,57 @@ describe('standing-answers pure helpers', () => {
 		expect(sectionWriteOp(page, { heading: 'SHELL', body: 'v1', cites: ['got:g1'] })).toBe('unchanged');
 	});
 
-	it('knows the three project pages and the agent page', () => {
+	it('knows the three project pages, the owner rules page and the agent page', () => {
 		expect(PROJECT_STANDING_PAGES.map((p) => p.id)).toEqual(['decisions-in-force', 'open-gotchas', 'owner-preferences']);
 		expect(AGENT_STANDING_PAGE.scope).toBe('agent');
+		expect(findStandingPageDef('owner-rules')).toMatchObject({ scope: 'project', source: 'owner', ownerOnly: true });
+		expect(OWNER_RULES_PAGE.id).toBe('owner-rules');
 		expect(findStandingPageDef('nope')).toBeUndefined();
+	});
+
+	it('parseCustomQuestions keeps valid entries in order and names why each bad one was dropped (#914 P2)', () => {
+		const { defs, dropped } = parseCustomQuestions({
+			questions: [
+				{ id: 'release-rules', question: 'What must happen before a release?', source: 'decisions', match: ['Release', ' publish ', '', 7] },
+				{ id: 'decisions-in-force', question: 'built-in id', source: 'decisions' },
+				{ id: 'Bad Id', question: 'x', source: 'decisions' },
+				{ id: 'no-source', question: 'x', source: 'wiki' },
+				{ id: 'long', question: 'q'.repeat(201), source: 'gotchas' },
+				{ id: 'release-rules', question: 'dup', source: 'gotchas' },
+				{ id: 'prefs', question: 'What does the owner want in replies?', source: 'user_preferences' },
+				null,
+			],
+		});
+		expect(defs).toEqual([
+			{ id: 'release-rules', scope: 'project', question: 'What must happen before a release?', source: 'decisions', custom: true, match: ['release', 'publish'] },
+			{ id: 'prefs', scope: 'project', question: 'What does the owner want in replies?', source: 'user_preferences', custom: true },
+		]);
+		expect(dropped).toHaveLength(6);
+		expect(dropped[0]).toContain('built in');
+		expect(dropped[1]).toContain('id must match');
+		expect(dropped[2]).toContain('source must be one of');
+		expect(dropped[3]).toContain('1-200 characters');
+		expect(dropped[4]).toContain('repeated');
+		expect(dropped[5]).toContain('#8');
+
+		// A bare array works; anything else is one dropped reason, nothing fatal.
+		expect(parseCustomQuestions([{ id: 'a-b', question: 'q', source: 'gotchas' }]).defs).toHaveLength(1);
+		expect(parseCustomQuestions({ nope: 1 }).dropped).toEqual(['expected { "questions": [...] } or an array']);
+		expect(parseCustomQuestions(null)).toEqual({ defs: [], dropped: [] });
+
+		// The cap holds.
+		const many = { questions: Array.from({ length: 12 }, (_, i) => ({ id: `q-${i}`, question: 'q', source: 'decisions' })) };
+		const capped = parseCustomQuestions(many);
+		expect(capped.defs).toHaveLength(10);
+		expect(capped.dropped).toHaveLength(2);
+	});
+
+	it('matchesQuestion filters on title or text, case-insensitively, and passes everything without a filter', () => {
+		const def: StandingPageDef = { id: 'x', scope: 'project', question: 'q', source: 'decisions', match: ['release'] };
+		expect(matchesQuestion(def, { title: 'Pre-RELEASE checklist', text: '' })).toBe(true);
+		expect(matchesQuestion(def, { title: '', text: 'publish after release' })).toBe(true);
+		expect(matchesQuestion(def, { title: 'Deploy', text: 'relay' })).toBe(false);
+		expect(matchesQuestion({ ...def, match: [] }, { title: 'Deploy', text: 'relay' })).toBe(true);
 	});
 });
 
@@ -281,7 +331,7 @@ describe('StandingAnswersService (on disk)', () => {
 		});
 
 		it('lists project pages for a project and the agent page for a session', async () => {
-			expect((await service.listPageStatuses({ projectPath })).map((s) => s.def.id)).toEqual(['decisions-in-force', 'open-gotchas', 'owner-preferences']);
+			expect((await service.listPageStatuses({ projectPath })).map((s) => s.def.id)).toEqual(['decisions-in-force', 'open-gotchas', 'owner-preferences', 'owner-rules']);
 			expect((await service.listPageStatuses({ sessionName: session })).map((s) => s.def.id)).toEqual(['unfinished-work']);
 			expect(await service.listPageStatuses({})).toEqual([]);
 		});
@@ -404,6 +454,87 @@ describe('StandingAnswersService (on disk)', () => {
 			const input = { pageId: 'decisions-in-force', projectPath, heading: 'H', body: 'b', cites: ['dec:d1'], ...override };
 			await expect(service.writeSection(input)).rejects.toMatchObject({ code });
 			await expect(service.writeSection(input)).rejects.toBeInstanceOf(StandingAnswersError);
+		});
+	});
+
+	describe('owner rules page (#914 P2)', () => {
+		it('lives in the frozen owner/ folder, is never stale, and is listed with the project pages', async () => {
+			const status = await service.getPageStatus(OWNER_RULES_PAGE, { projectPath });
+			expect(status).toMatchObject({ stale: false, entriesInScope: 0, newerEntries: 0, currentWatermark: null, invalidatedSections: [] });
+			expect(status?.filePath).toBe(path.join(projectPath, '.crewly', 'wiki', 'owner', 'rules.md'));
+			const ids = (await service.listPageStatuses({ projectPath })).map((s) => s.def.id);
+			expect(ids).toEqual(['decisions-in-force', 'open-gotchas', 'owner-preferences', 'owner-rules']);
+		});
+
+		it('refuses an agent write (owner_only) and takes an owner write without citations', async () => {
+			await expect(service.writeSection({ pageId: 'owner-rules', projectPath, heading: 'Replies', body: 'Always in Chinese.', cites: [] }))
+				.rejects.toMatchObject({ code: 'owner_only' });
+			await expect(service.writeSection({ pageId: 'owner-rules', projectPath, heading: 'Replies', body: 'x', cites: [], actor: 'agent' }))
+				.rejects.toMatchObject({ code: 'owner_only' });
+			expect(await fs.readFile(path.join(projectPath, '.crewly', 'wiki', 'owner', 'rules.md'), 'utf8').catch(() => null)).toBeNull();
+
+			const res = await service.writeSection({ pageId: 'owner-rules', projectPath, heading: 'Replies', body: 'Always in Chinese.', cites: ['dec:ignored'], actor: 'owner' });
+			expect(res).toMatchObject({ op: 'added', watermark: null, removed: false });
+			const page = parseStandingPage(await fs.readFile(res.filePath, 'utf8'));
+			expect(page.question).toBe('What rules has the owner set explicitly?');
+			expect(page.watermark).toBeUndefined();
+			expect(page.sections).toEqual([{ heading: 'Replies', body: 'Always in Chinese.', cites: [] }]);
+			expect((await service.getPageStatus(OWNER_RULES_PAGE, { projectPath }))?.stale).toBe(false);
+		});
+
+		it('a hand-written rules file is read as it is', async () => {
+			const file = path.join(projectPath, '.crewly', 'wiki', 'owner', 'rules.md');
+			await fs.mkdir(path.dirname(file), { recursive: true });
+			await fs.writeFile(file, '## Never push main\nOpen a PR.\n\n## Costs\nAsk before any paid API.\n');
+			const status = await service.getPageStatus(OWNER_RULES_PAGE, { projectPath });
+			expect(status?.page?.sections.map((s) => s.heading)).toEqual(['Never push main', 'Costs']);
+			expect(status?.stale).toBe(false);
+		});
+	});
+
+	describe('custom questions (#914 P2)', () => {
+		const questionsFile = (): string => path.join(projectPath, '.crewly', 'standing-questions.json');
+
+		it('adds the project\'s questions after the built-in pages, filtered by match', async () => {
+			await writeJson(questionsFile(), { questions: [
+				{ id: 'prompt-rules', question: 'How do we build prompts?', source: 'decisions', match: ['prompt'] },
+				{ id: 'shell-gotchas', question: 'Which shell gotchas are open?', source: 'gotchas', match: ['zsh'] },
+				{ id: 'nothing', question: 'Matches nothing?', source: 'decisions', match: ['kubernetes'] },
+			] });
+			const defs = await service.listProjectPageDefs(projectPath);
+			expect(defs.map((d) => d.id)).toEqual(['decisions-in-force', 'open-gotchas', 'owner-preferences', 'owner-rules', 'prompt-rules', 'shell-gotchas', 'nothing']);
+
+			const statuses = await service.listPageStatuses({ projectPath });
+			const byId = new Map(statuses.map((s) => [s.def.id, s]));
+			// d1 and d2 mention prompts (d3 is a [COMPLETED] record); g1 is the zsh gotcha, g2 is not.
+			expect(byId.get('prompt-rules')).toMatchObject({ entriesInScope: 2, stale: true });
+			expect(byId.get('shell-gotchas')).toMatchObject({ entriesInScope: 1 });
+			expect(byId.get('nothing')).toMatchObject({ entriesInScope: 0 });
+			expect(byId.get('prompt-rules')?.filePath).toBe(path.join(projectPath, '.crewly', 'wiki', 'llm-curated', 'standing', 'prompt-rules.md'));
+		});
+
+		it('resolves and writes a custom page like a built-in one, citing only matched entries', async () => {
+			await writeJson(questionsFile(), [{ id: 'shell-gotchas', question: 'Which shell gotchas are open?', source: 'gotchas', match: ['zsh'] }]);
+			expect(await service.resolvePageDef('shell-gotchas', { projectPath })).toMatchObject({ custom: true, source: 'gotchas' });
+			expect(await service.resolvePageDef('shell-gotchas', {})).toBeUndefined();
+
+			const res = await service.writeSection({ pageId: 'shell-gotchas', projectPath, heading: 'zsh', body: 'Quote globs.', cites: ['got:g1'] });
+			const page = parseStandingPage(await fs.readFile(res.filePath, 'utf8'));
+			expect(page.question).toBe('Which shell gotchas are open?');
+			expect(page.sections).toEqual([{ heading: 'zsh', body: 'Quote globs.', cites: ['got:g1'] }]);
+			// g2 exists in gotchas.json but does not match the filter, so it is not a valid citation here.
+			await expect(service.writeSection({ pageId: 'shell-gotchas', projectPath, heading: 'other', body: 'x', cites: ['got:g2'] }))
+				.rejects.toMatchObject({ code: 'unknown_cite' });
+		});
+
+		it('an unknown page names the custom ids too; a broken questions file hides nothing else', async () => {
+			await writeJson(questionsFile(), [{ id: 'shell-gotchas', question: 'q', source: 'gotchas' }]);
+			await expect(service.writeSection({ pageId: 'nope', projectPath, heading: 'h', body: 'b', cites: ['got:g1'] }))
+				.rejects.toThrow(/Known: .*owner-rules, unfinished-work, shell-gotchas/);
+
+			await fs.writeFile(questionsFile(), '{ not json');
+			expect(await service.loadCustomQuestions(projectPath)).toEqual({ defs: [], dropped: ['standing-questions.json is not valid JSON'] });
+			expect((await service.listPageStatuses({ projectPath })).map((s) => s.def.id)).toEqual(['decisions-in-force', 'open-gotchas', 'owner-preferences', 'owner-rules']);
 		});
 	});
 

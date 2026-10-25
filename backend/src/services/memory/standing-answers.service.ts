@@ -59,8 +59,14 @@ import { isHiddenFromDefaultRecall } from './role-knowledge-eligibility.js';
 /** Whose knowledge a page summarises. */
 export type StandingScope = 'project' | 'agent';
 
-/** Which memory collection a page is built from. */
-export type StandingSource = 'decisions' | 'gotchas' | 'user_preferences' | 'agent_memory';
+/**
+ * Which memory collection a page is built from. `owner` is not a collection:
+ * the owner rules page has no sources and is written by the owner only (#914 P2).
+ */
+export type StandingSource = 'decisions' | 'gotchas' | 'user_preferences' | 'agent_memory' | 'owner';
+
+/** Sources a per-project custom question may use. */
+export const CUSTOM_QUESTION_SOURCES: readonly StandingSource[] = ['decisions', 'gotchas', 'user_preferences'];
 
 /** A standing-answer page definition. */
 export interface StandingPageDef {
@@ -70,6 +76,34 @@ export interface StandingPageDef {
 	/** The recurring question the page answers. */
 	question: string;
 	source: StandingSource;
+	/**
+	 * Human-owned page (#914 P2): only the owner writes it, no citations are
+	 * required, no refresh WorkItem is ever raised for it, and it is never
+	 * stale. Automated curation must not change it.
+	 */
+	ownerOnly?: boolean;
+	/**
+	 * Defined by the project's `standing-questions.json` rather than built in
+	 * (#914 P2). Custom pages are refreshed and written like built-in ones.
+	 */
+	custom?: boolean;
+	/**
+	 * Keep only source entries whose title or text contains one of these
+	 * keywords (case-insensitive). Empty or absent: every entry of the source.
+	 */
+	match?: readonly string[];
+}
+
+/** One entry of a project's `standing-questions.json` (#914 P2). */
+export interface CustomStandingQuestion {
+	/** Page id: `^[a-z][a-z0-9-]{1,40}$`, not a built-in id. */
+	id: string;
+	/** The question, one line. */
+	question: string;
+	/** One of {@link CUSTOM_QUESTION_SOURCES}. */
+	source: string;
+	/** Optional keyword filter on the source entries. */
+	match?: string[];
 }
 
 /** One memory entry a page may be built from, normalised across sources. */
@@ -147,14 +181,19 @@ export interface StandingPageStatus {
 	invalidatedSections: InvalidatedSection[];
 }
 
+/** Who is writing a section: the owner (dashboard, API token, relay) or an agent. */
+export type StandingActor = 'owner' | 'agent';
+
 /** Input to {@link StandingAnswersService.writeSection}. */
 export interface WriteSectionInput extends StandingLocation {
 	pageId: string;
 	heading: string;
 	/** Section body; an empty body removes the section. */
 	body: string;
-	/** Citations (`dec:<id>` …); at least one unless removing. */
+	/** Citations (`dec:<id>` …); at least one unless removing. Ignored on an owner-only page. */
 	cites: string[];
+	/** Caller kind; defaults to `agent`. Only `owner` may write an owner-only page. */
+	actor?: StandingActor;
 }
 
 /** What a section write did to the page. */
@@ -178,8 +217,8 @@ export interface WriteSectionResult {
 	masked: boolean;
 }
 
-/** Error codes for rejected writes. */
-export type StandingErrorCode = 'unknown_page' | 'invalid_input' | 'unknown_cite' | 'missing_cite';
+/** Error codes for rejected writes. `owner_only`: an agent tried to write the owner rules page. */
+export type StandingErrorCode = 'unknown_page' | 'invalid_input' | 'unknown_cite' | 'missing_cite' | 'owner_only';
 
 /** A write rejected for a reason the caller can fix. */
 export class StandingAnswersError extends Error {
@@ -209,13 +248,104 @@ export const AGENT_STANDING_PAGE: StandingPageDef = {
 };
 
 /**
- * Look up a page definition by id.
+ * The owner's explicit rules (#914 P2), at `<project>/.crewly/wiki/owner/rules.md`.
+ * Human-owned: written by the owner only (API with an owner credential, or
+ * by hand), never refreshed, never stale, shown first in the prompt. Separate
+ * from the LLM-curated pages so no automated pass can rewrite a rule.
+ */
+export const OWNER_RULES_PAGE: StandingPageDef = {
+	id: STANDING_ANSWERS_CONSTANTS.OWNER_RULES_PAGE_ID,
+	scope: 'project',
+	question: 'What rules has the owner set explicitly?',
+	source: 'owner',
+	ownerOnly: true,
+};
+
+/** Every built-in definition. */
+const BUILT_IN_PAGES: readonly StandingPageDef[] = [...PROJECT_STANDING_PAGES, OWNER_RULES_PAGE, AGENT_STANDING_PAGE];
+
+/**
+ * Look up a built-in page definition by id. Custom per-project questions are
+ * resolved through {@link StandingAnswersService.resolvePageDef}.
  *
  * @param pageId - Page id
  * @returns The definition, or undefined
  */
 export function findStandingPageDef(pageId: string): StandingPageDef | undefined {
-	return [...PROJECT_STANDING_PAGES, AGENT_STANDING_PAGE].find((d) => d.id === pageId);
+	return BUILT_IN_PAGES.find((d) => d.id === pageId);
+}
+
+/** Shape a custom page id must have (one path segment, lower-case). */
+const CUSTOM_ID_RE = /^[a-z][a-z0-9-]{1,40}$/;
+
+/**
+ * Validate the entries of a project's `standing-questions.json` and turn the
+ * good ones into page definitions (#914 P2). Accepts `{ questions: [...] }`
+ * or a bare array. Bad entries are dropped, not fatal: a typo in one
+ * question must not hide the others. Built-in ids, duplicates, overlong
+ * questions and unknown sources are dropped; at most
+ * `CUSTOM_QUESTIONS_MAX` are kept.
+ *
+ * @param parsed - Parsed JSON file contents
+ * @returns Definitions in file order, plus one reason per dropped entry
+ *
+ * @example
+ * ```typescript
+ * parseCustomQuestions({ questions: [{ id: 'release-rules', question: 'What must happen before a release?', source: 'decisions', match: ['release', 'publish'] }] });
+ * ```
+ */
+export function parseCustomQuestions(parsed: unknown): { defs: StandingPageDef[]; dropped: string[] } {
+	const list: unknown = Array.isArray(parsed) ? parsed : (parsed as { questions?: unknown } | null)?.questions;
+	const defs: StandingPageDef[] = [];
+	const dropped: string[] = [];
+	if (!Array.isArray(list)) return { defs, dropped: parsed == null ? [] : ['expected { "questions": [...] } or an array'] };
+	const seen = new Set<string>();
+	for (const [i, raw] of list.entries()) {
+		const q = (raw ?? {}) as Partial<CustomStandingQuestion>;
+		const id = typeof q.id === 'string' ? q.id.trim() : '';
+		const label = id || `#${i + 1}`;
+		if (defs.length >= STANDING_ANSWERS_CONSTANTS.CUSTOM_QUESTIONS_MAX) {
+			dropped.push(`${label}: more than ${STANDING_ANSWERS_CONSTANTS.CUSTOM_QUESTIONS_MAX} questions`);
+			continue;
+		}
+		if (!CUSTOM_ID_RE.test(id)) {
+			dropped.push(`${label}: id must match ${CUSTOM_ID_RE.source}`);
+			continue;
+		}
+		if (findStandingPageDef(id) || seen.has(id)) {
+			dropped.push(`${label}: id is built in or repeated`);
+			continue;
+		}
+		const question = typeof q.question === 'string' ? q.question.trim() : '';
+		if (!question || question.length > STANDING_ANSWERS_CONSTANTS.QUESTION_MAX_CHARS || /[\r\n]/.test(question)) {
+			dropped.push(`${label}: question must be one line of 1-${STANDING_ANSWERS_CONSTANTS.QUESTION_MAX_CHARS} characters`);
+			continue;
+		}
+		const source = typeof q.source === 'string' ? (q.source.trim() as StandingSource) : ('' as StandingSource);
+		if (!CUSTOM_QUESTION_SOURCES.includes(source)) {
+			dropped.push(`${label}: source must be one of ${CUSTOM_QUESTION_SOURCES.join(', ')}`);
+			continue;
+		}
+		const match = Array.isArray(q.match)
+			? [...new Set(q.match.filter((m): m is string => typeof m === 'string').map((m) => m.trim().toLowerCase()).filter(Boolean))].slice(0, STANDING_ANSWERS_CONSTANTS.MATCH_MAX_TERMS)
+			: [];
+		seen.add(id);
+		defs.push({ id, scope: 'project', question, source, custom: true, ...(match.length ? { match } : {}) });
+	}
+	return { defs, dropped };
+}
+
+/**
+ * Whether an entry passes a definition's keyword filter.
+ *
+ * @param def - Page definition
+ * @param entry - Source entry
+ * @returns True when there is no filter or a keyword occurs in the title or text
+ */
+export function matchesQuestion(def: StandingPageDef, entry: Pick<StandingSourceEntry, 'title' | 'text'>): boolean {
+	if (!def.match?.length) return true;
+	const hay = `${entry.title} ${entry.text}`.toLowerCase();
+	return def.match.some((m) => hay.includes(m));
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +654,7 @@ export class StandingAnswersService {
 	pagePath(def: StandingPageDef, loc: StandingLocation): string | null {
 		if (def.scope === 'project') {
 			if (!loc.projectPath) return null;
+			if (def.source === 'owner') return path.join(resolveProjectDataDir(loc.projectPath), STANDING_ANSWERS_CONSTANTS.OWNER_RULES_FILE);
 			return path.join(resolveProjectDataDir(loc.projectPath), STANDING_ANSWERS_CONSTANTS.PROJECT_DIR, `${def.id}.md`);
 		}
 		if (!loc.sessionName || !isSafeSegment(loc.sessionName)) return null;
@@ -584,7 +715,53 @@ export class StandingAnswersService {
 					inForce: !isHiddenFromDefaultRecall(k),
 				}));
 		}
-		return entries.filter((e) => e.at).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+		return entries
+			.filter((e) => e.at && matchesQuestion(def, e))
+			.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+	}
+
+	/**
+	 * Page definitions a project holds: the built-in project pages, the owner
+	 * rules page, then the project's custom questions from
+	 * `<data dir>/standing-questions.json` (#914 P2). A missing or unreadable
+	 * file means no custom questions.
+	 *
+	 * @param projectPath - Project root
+	 * @returns Definitions, built-ins first
+	 */
+	async listProjectPageDefs(projectPath: string): Promise<StandingPageDef[]> {
+		return [...PROJECT_STANDING_PAGES, OWNER_RULES_PAGE, ...(await this.loadCustomQuestions(projectPath)).defs];
+	}
+
+	/**
+	 * The project's custom questions and the reasons any entry was dropped.
+	 *
+	 * @param projectPath - Project root
+	 * @returns Parsed definitions; empty when the file is missing or not JSON
+	 */
+	async loadCustomQuestions(projectPath: string): Promise<{ defs: StandingPageDef[]; dropped: string[] }> {
+		const raw = await readText(path.join(resolveProjectDataDir(projectPath), STANDING_ANSWERS_CONSTANTS.QUESTIONS_FILE));
+		if (raw === null) return { defs: [], dropped: [] };
+		try {
+			return parseCustomQuestions(JSON.parse(raw));
+		} catch {
+			return { defs: [], dropped: [`${STANDING_ANSWERS_CONSTANTS.QUESTIONS_FILE} is not valid JSON`] };
+		}
+	}
+
+	/**
+	 * Resolve a page id for a location: built-in pages first, then the
+	 * project's custom questions.
+	 *
+	 * @param pageId - Page id
+	 * @param loc - Location (custom pages need `projectPath`)
+	 * @returns The definition, or undefined
+	 */
+	async resolvePageDef(pageId: string, loc: StandingLocation): Promise<StandingPageDef | undefined> {
+		const builtIn = findStandingPageDef(pageId);
+		if (builtIn) return builtIn;
+		if (!loc.projectPath) return undefined;
+		return (await this.loadCustomQuestions(loc.projectPath)).defs.find((d) => d.id === pageId);
 	}
 
 	/**
@@ -599,6 +776,10 @@ export class StandingAnswersService {
 		if (!filePath) return null;
 		const [raw, entries] = await Promise.all([readText(filePath), this.loadSourceEntries(def, loc)]);
 		const page = raw === null ? undefined : parseStandingPage(raw);
+		if (def.ownerOnly) {
+			// No sources, no watermark: the owner's rules are current by definition.
+			return { invalidatedSections: [], def, filePath, page, currentWatermark: null, entriesInScope: 0, newerEntries: 0, stale: false };
+		}
 		const newerEntries = countNewer(entries, page?.watermark);
 		return {
 			invalidatedSections: findInvalidatedSections(page, entries),
@@ -613,14 +794,15 @@ export class StandingAnswersService {
 	}
 
 	/**
-	 * Status of every page a location can hold: the project pages when a
-	 * project path is given, the agent page when a session is given.
+	 * Status of every page a location can hold: the project pages (built-in,
+	 * owner rules, custom questions) when a project path is given, the agent
+	 * page when a session is given.
 	 *
 	 * @param loc - Location
 	 * @returns Statuses, project pages first
 	 */
 	async listPageStatuses(loc: StandingLocation): Promise<StandingPageStatus[]> {
-		const defs = [...(loc.projectPath ? PROJECT_STANDING_PAGES : []), ...(loc.sessionName ? [AGENT_STANDING_PAGE] : [])];
+		const defs = [...(loc.projectPath ? await this.listProjectPageDefs(loc.projectPath) : []), ...(loc.sessionName ? [AGENT_STANDING_PAGE] : [])];
 		const all = await Promise.all(defs.map((d) => this.getPageStatus(d, loc)));
 		return all.filter((s): s is StandingPageStatus => s !== null);
 	}
@@ -638,13 +820,24 @@ export class StandingAnswersService {
 	 *
 	 * @param input - Page, location, section and citations
 	 * @returns Where it was written and the new watermark
-	 * @throws StandingAnswersError for an unknown page, bad input, or a
-	 *   citation that is missing or does not resolve
+	 * The owner rules page (#914 P2) is written by the owner only: an agent
+	 * write is refused with `owner_only`, citations are not required, and the
+	 * page never carries a watermark.
+	 *
+	 * @throws StandingAnswersError for an unknown page, bad input, an agent
+	 *   writing an owner-only page, or a citation that is missing or does not resolve
 	 */
 	async writeSection(input: WriteSectionInput): Promise<WriteSectionResult> {
-		const def = findStandingPageDef(input.pageId);
+		const def = await this.resolvePageDef(input.pageId, { projectPath: input.projectPath });
 		if (!def) {
-			throw new StandingAnswersError('unknown_page', `Unknown standing page "${input.pageId}". Known: ${[...PROJECT_STANDING_PAGES, AGENT_STANDING_PAGE].map((d) => d.id).join(', ')}`);
+			const known = [...BUILT_IN_PAGES, ...(input.projectPath ? (await this.loadCustomQuestions(input.projectPath)).defs : [])];
+			throw new StandingAnswersError('unknown_page', `Unknown standing page "${input.pageId}". Known: ${known.map((d) => d.id).join(', ')}`);
+		}
+		if (def.ownerOnly && input.actor !== 'owner') {
+			throw new StandingAnswersError(
+				'owner_only',
+				`"${def.id}" holds the owner's explicit rules and is written by the owner only (dashboard, API token, or by hand at ${STANDING_ANSWERS_CONSTANTS.OWNER_RULES_FILE}). To keep something the owner said, record it as a user preference with the remember skill; it reaches the owner-preferences page.`,
+			);
 		}
 		const loc: StandingLocation = def.scope === 'project' ? { projectPath: input.projectPath } : { sessionName: input.sessionName };
 		const filePath = this.pagePath(def, loc);
@@ -664,9 +857,9 @@ export class StandingAnswersService {
 			throw new StandingAnswersError('invalid_input', 'body must not contain "# "/"## " headings, "---" lines or a "Sources:" line (use ### for sub-headings; citations go in cites)');
 		}
 
-		const cites = [...new Set(input.cites.map((c) => c.trim()).filter(Boolean))];
+		const cites = def.ownerOnly ? [] : [...new Set(input.cites.map((c) => c.trim()).filter(Boolean))];
 		const entries = await this.loadSourceEntries(def, loc);
-		if (body) {
+		if (body && !def.ownerOnly) {
 			if (cites.length === 0) {
 				throw new StandingAnswersError('missing_cite', 'cite at least one entry the section is built from');
 			}
