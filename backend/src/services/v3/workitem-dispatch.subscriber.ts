@@ -53,7 +53,7 @@ import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import type { TeamBudgetGateService } from '../budget/team-budget-gate.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
-import { DIRECT_DELIVERY_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { DIRECT_DELIVERY_CONSTANTS, ORCHESTRATOR_SESSION_NAME, TUI_INPUT_GUARD } from '../../constants.js';
 import { spendCapStopOf } from '../spend/spend-cap.gate.js';
 import { usageLimitOf } from '../runtime-fallback/usage-limit-state.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
@@ -610,7 +610,9 @@ export class WorkItemDispatchSubscriber {
         { data: message, mode: 'message' },
         {
           headers: internalAgentHeaders(SERVICE_NAME),
-          timeout: 5_000,
+          // Outlives the server's guarded paste (#1431): a 5 s timeout
+          // reported "failed" while the brief was still being delivered.
+          timeout: TUI_INPUT_GUARD.WRITE_CLIENT_TIMEOUT_MS,
         },
       );
       if (isSpendCappedReply(res?.data)) {
@@ -904,7 +906,9 @@ export class WorkItemDispatchSubscriber {
         { data: message, mode: 'message' },
         {
           headers: internalAgentHeaders(SERVICE_NAME),
-          timeout: 5_000,
+          // Outlives the server's guarded paste (#1431): a 5 s timeout
+          // reported "failed" while the brief was still being delivered.
+          timeout: TUI_INPUT_GUARD.WRITE_CLIENT_TIMEOUT_MS,
         },
       );
       if (isSpendCappedReply(res?.data)) {

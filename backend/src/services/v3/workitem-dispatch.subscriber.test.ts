@@ -17,7 +17,7 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { EventBusService } from '../event-bus/event-bus.service.js';
 import { FreshTaskConversationService } from '../agent/fresh-task-conversation.service.js';
 import { prepareWorkItemHandOver } from '../../controllers/monitoring/terminal.controller.js';
-import { DIRECT_DELIVERY_CONSTANTS } from '../../constants.js';
+import { DIRECT_DELIVERY_CONSTANTS, TUI_INPUT_GUARD } from '../../constants.js';
 import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../team/team-pause.registry.js';
 import type { Team } from '../../types/index.js';
 
@@ -192,6 +192,20 @@ describe('WorkItemDispatchSubscriber', () => {
       expect((body as { data: string }).data).toContain('wi-1');
       expect((body as { data: string }).data).toContain('poll-tasks');
       expect((config as { headers: { 'X-Agent-Session': string } }).headers['X-Agent-Session']).toBe('WorkItemDispatch');
+    });
+
+    it('waits for the guarded paste instead of giving up after 5 s (#1431)', async () => {
+      // The server answers the write only after the paste landed, which can take
+      // ~37 s. A shorter client timeout records "failed" for a brief that was
+      // still delivered and redispatches it behind the one that landed.
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      await svc.dispatchTo(makeWorkItem({ id: 'wi-slow-paste', target: 'crewly-product-max-358c7cb7' }));
+      const [, , config] = mockedAxios.post.mock.calls[0];
+      const { timeout } = config as { timeout: number };
+      expect(timeout).toBe(TUI_INPUT_GUARD.WRITE_CLIENT_TIMEOUT_MS);
+      expect(timeout).toBeGreaterThan(
+        TUI_INPUT_GUARD.PASTE_PENDING_HOLD_MS + TUI_INPUT_GUARD.PASTE_RENDER_MAX_WAIT_MS + 5_000,
+      );
     });
 
     it('skips WIs without a target', async () => {
