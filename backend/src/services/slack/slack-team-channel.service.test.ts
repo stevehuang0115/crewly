@@ -625,6 +625,27 @@ describe('the owner is put into every channel Crewly created', () => {
     expect(slack.invites).toHaveLength(1);
   });
 
+  it('an archived channel is remembered from the invite too, quietly', async () => {
+    ownerUserId = null;
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    ownerUserId = 'UOWNER';
+    const warnings: string[] = [];
+    (service as unknown as { logger: { warn: unknown } }).logger.warn = (msg: string) => warnings.push(msg);
+    slack.inviteToChannel = async () => {
+      throw Object.assign(new Error('An API error occurred: is_archived'), { data: { error: 'is_archived' } });
+    };
+    await service.inviteOwnerWhereMissing();
+    expect(service.findBySlackChannelId('C1')?.slackArchived).toBe(true);
+    expect(service.findBySlackChannelId('C1')?.ownerInvited).toBeUndefined();
+    expect(warnings).toEqual([]);
+    // Known now: not even tried again.
+    slack.inviteToChannel = async () => {
+      throw new Error('should not be called');
+    };
+    await service.inviteOwnerWhereMissing();
+  });
+
   it('counts "already in the channel" as done', async () => {
     ownerUserId = null;
     service = makeService();

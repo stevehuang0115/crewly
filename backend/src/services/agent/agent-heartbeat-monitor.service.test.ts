@@ -97,6 +97,11 @@ import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
 import { AGENT_HEARTBEAT_MONITOR_CONSTANTS } from '../../constants.js';
 import { registerInProcessRuntime, unregisterInProcessRuntime } from './crewly-agent/in-process-runtime-registry.js';
 import { markPlannedRelaunch, resetPlannedRelaunches } from './planned-relaunch.registry.js';
+
+const restoring = new Set<string>();
+jest.mock('./restore-queue.js', () => ({
+	getRestoreQueue: () => ({ isRestoring: (name: string) => restoring.has(name) }),
+}));
 import type { Team } from '../../types/index.js';
 
 /**
@@ -380,6 +385,22 @@ describe('AgentHeartbeatMonitorService', () => {
 		// monitor had read the teams a moment earlier, saw the session gone and
 		// logged "Ghost agent detected" for a stop that had just written
 		// `inactive` itself (2026-10-25 09:17Z).
+		// Boot restore launches one agent every 15 s; the fourth and fifth of
+		// five start after the 60 s grace period and were flagged as ghosts
+		// (lyra, vera — 2026-10-25 09:36Z), flipped inactive, then restored.
+		it('does not call a session a ghost while the restore queue still has it', async () => {
+			mockSessionBackend.sessionExists.mockReturnValue(false);
+			setStartedAtInPast(service);
+			restoring.add('dev-agent-1');
+			try {
+				jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+				await service.performCheck();
+				expect(mockStorageService.updateAgentStatus).not.toHaveBeenCalledWith('dev-agent-1', 'inactive');
+			} finally {
+				restoring.clear();
+			}
+		});
+
 		it('does not call a session a ghost when storage already says inactive by the time it looks', async () => {
 			mockSessionBackend.sessionExists.mockReturnValue(false);
 			setStartedAtInPast(service);

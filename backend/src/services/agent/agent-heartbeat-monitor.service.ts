@@ -42,6 +42,7 @@ import type { ISessionBackend } from '../session/session-backend.interface.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import { isInProcessRuntimeActive } from './crewly-agent/in-process-runtime-registry.js';
 import { isPlannedRelaunch } from './planned-relaunch.registry.js';
+import { getRestoreQueue } from './restore-queue.js';
 import { createSessionCommandHelper } from '../session/session-command-helper.js';
 
 /**
@@ -290,6 +291,13 @@ export class AgentHeartbeatMonitorService {
 						state.consecutiveDeadChecks = 0;
 						state.consecutiveIdleChecks = 0;
 					}
+					continue;
+				}
+
+				// Still in the boot restore queue (one launch every 15 s, so the
+				// last of five starts well after the startup grace period): its
+				// session does not exist yet by design — not a ghost (2026-10-25).
+				if (getRestoreQueue().isRestoring(member.sessionName)) {
 					continue;
 				}
 

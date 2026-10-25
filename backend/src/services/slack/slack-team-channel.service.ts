@@ -1049,11 +1049,7 @@ export class SlackTeamChannelService {
       } catch (err) {
         const code = describeSlackError(err).code;
         if (code === SLACK_TEAM_CHANNEL_CONSTANTS.ARCHIVED_ERROR_CODE) {
-          if (!mapping.slackArchived) {
-            mapping.slackArchived = true;
-            changed = true;
-            this.logger.info('Team channel is archived in Slack — leaving it alone; unarchive it or unlink the team to get a fresh one', { channel });
-          }
+          await this.markSlackArchived(mapping.slackChannelId, channel);
           continue;
         }
         this.logger.warn('Could not rejoin a team channel — invite the bot manually if it is private', {
@@ -1087,12 +1083,35 @@ export class SlackTeamChannelService {
     } catch (err) {
       const code = describeSlackError(err).code;
       if (code === 'already_in_channel') return true;
+      if (code === SLACK_TEAM_CHANNEL_CONSTANTS.ARCHIVED_ERROR_CODE) {
+        // Nothing to join: remember it so the boot rejoin and later invites
+        // stay quiet (the reconcile pass invites before the rejoin has run).
+        await this.markSlackArchived(channelId, channelName);
+        return false;
+      }
       this.logger.warn('Could not invite the owner into a team channel — search for it in Slack and join', {
         channel: channelName,
         error: code,
       });
       return false;
     }
+  }
+
+  /**
+   * Remember that Slack reported a mapped channel archived; said once.
+   *
+   * @param channelId - Slack channel id
+   * @param channelName - For the log
+   * @returns When the store is saved (no-op when already known or unmapped)
+   */
+  private async markSlackArchived(channelId: string, channelName: string): Promise<void> {
+    const mapping = this.store?.mappings.find((m) => m.slackChannelId === channelId);
+    if (!mapping || mapping.slackArchived) return;
+    mapping.slackArchived = true;
+    this.logger.info('Team channel is archived in Slack — leaving it alone; unarchive it or unlink the team to get a fresh one', {
+      channel: channelName,
+    });
+    await this.save();
   }
 
   /**
