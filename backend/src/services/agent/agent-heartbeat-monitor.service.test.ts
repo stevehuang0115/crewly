@@ -376,6 +376,24 @@ describe('AgentHeartbeatMonitorService', () => {
 			);
 		});
 
+		// ce-owen was stopped on purpose (idle stop under memory pressure); the
+		// monitor had read the teams a moment earlier, saw the session gone and
+		// logged "Ghost agent detected" for a stop that had just written
+		// `inactive` itself (2026-10-25 09:17Z).
+		it('does not call a session a ghost when storage already says inactive by the time it looks', async () => {
+			mockSessionBackend.sessionExists.mockReturnValue(false);
+			setStartedAtInPast(service);
+			const stoppedTeams = JSON.parse(JSON.stringify(mockTeams)) as Team[];
+			for (const m of stoppedTeams[0].members) m.agentStatus = 'inactive';
+			mockStorageService.getTeams.mockResolvedValueOnce(mockTeams).mockResolvedValue(stoppedTeams);
+
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+			await service.performCheck();
+
+			expect(mockStorageService.updateAgentStatus).not.toHaveBeenCalled();
+			expect(mockGateway.broadcastTeamMemberStatus).not.toHaveBeenCalled();
+		});
+
 		it('does not mark an in-process (Crewly Agent) member as a ghost while its runtime runs', async () => {
 			const fakeRuntime = { isReady: () => true, shutdown: () => undefined };
 			registerInProcessRuntime('dev-agent-1', fakeRuntime as never);

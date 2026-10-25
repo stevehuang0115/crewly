@@ -296,6 +296,14 @@ export class AgentHeartbeatMonitorService {
 				if (!this.sessionBackend.sessionExists(member.sessionName)) {
 					this.agentStates.delete(member.sessionName);
 
+					// The teams were read before this loop. A deliberate stop (idle
+					// stop under memory pressure, an owner stop) tears the session
+					// down first and writes `inactive` a moment later — re-read
+					// before calling it a ghost, or every such stop logs a false one.
+					if (!(await this.isStillActiveInStorage(member.sessionName))) {
+						continue;
+					}
+
 					// Mark agent as inactive in storage so API reflects reality
 					try {
 						await this.storageService.updateAgentStatus(
@@ -461,6 +469,24 @@ export class AgentHeartbeatMonitorService {
 	 * @param memberId - Team member ID to check
 	 * @returns Milliseconds since last API activity, or 0 if unknown
 	 */
+	/**
+	 * Whether storage still says this agent is active, read fresh.
+	 *
+	 * @param sessionName - Agent session
+	 * @returns True when active; true as well when storage cannot be read, so
+	 *   a storage hiccup keeps the ghost handling of before
+	 */
+	private async isStillActiveInStorage(sessionName: string): Promise<boolean> {
+		if (!this.storageService) return false;
+		try {
+			const teams = await this.storageService.getTeams();
+			const member = teams.flatMap((t) => t.members || []).find((m) => m.sessionName === sessionName);
+			return member?.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE;
+		} catch {
+			return true;
+		}
+	}
+
 	private async getApiIdleTimeMs(memberId: string): Promise<number> {
 		try {
 			const heartbeat = await AgentHeartbeatService.getInstance().getAgentHeartbeat(memberId);

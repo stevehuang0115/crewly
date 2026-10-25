@@ -1025,7 +1025,9 @@ export class SlackTeamChannelService {
    *
    * Best-effort and idempotent: `conversations.join` on a channel we are
    * already in is a no-op, and a private channel cannot be joined at all —
-   * that one needs a human to invite the bot, so say so.
+   * that one needs a human to invite the bot, so say so. A channel archived
+   * in Slack (`is_archived`) is remembered on the mapping and mentioned once;
+   * it is still tried on later boots so unarchiving it brings it back.
    *
    * @returns When every mapping has been checked
    */
@@ -1033,18 +1035,35 @@ export class SlackTeamChannelService {
     if (!this.deps.slack.isConnected()) return;
     const mappings = (this.store?.mappings ?? []).filter((m) => !isAdhocMapping(m));
     let rejoined = 0;
+    let changed = false;
     for (const mapping of mappings) {
+      const channel = mapping.slackChannelName ?? mapping.slackChannelId;
       try {
         await this.deps.slack.joinChannel(mapping.slackChannelId);
         rejoined += 1;
+        if (mapping.slackArchived) {
+          delete mapping.slackArchived;
+          changed = true;
+          this.logger.info('Team channel is live in Slack again', { channel });
+        }
       } catch (err) {
+        const code = describeSlackError(err).code;
+        if (code === SLACK_TEAM_CHANNEL_CONSTANTS.ARCHIVED_ERROR_CODE) {
+          if (!mapping.slackArchived) {
+            mapping.slackArchived = true;
+            changed = true;
+            this.logger.info('Team channel is archived in Slack — leaving it alone; unarchive it or unlink the team to get a fresh one', { channel });
+          }
+          continue;
+        }
         this.logger.warn('Could not rejoin a team channel — invite the bot manually if it is private', {
-          channel: mapping.slackChannelName ?? mapping.slackChannelId,
-          error: describeSlackError(err).code,
+          channel,
+          error: code,
         });
       }
     }
     if (rejoined > 0) this.logger.info('Team channel membership checked', { channels: rejoined });
+    if (changed) await this.save();
     await this.inviteOwnerWhereMissing();
   }
 
@@ -1090,7 +1109,11 @@ export class SlackTeamChannelService {
    */
   async inviteOwnerWhereMissing(): Promise<void> {
     if (!this.deps.slack.isConnected() || !this.deps.getOwnerUserId?.()) return;
-    const pending = (this.store?.mappings ?? []).filter((m) => m.autoCreated && !m.ownerInvited && !isAdhocMapping(m));
+    // An archived channel cannot take an invite; it is retried once the
+    // boot rejoin finds it live again and clears the flag.
+    const pending = (this.store?.mappings ?? []).filter(
+      (m) => m.autoCreated && !m.ownerInvited && !m.slackArchived && !isAdhocMapping(m),
+    );
     let changed = false;
     for (const mapping of pending) {
       if (await this.inviteOwner(mapping.slackChannelId, mapping.slackChannelName)) {
