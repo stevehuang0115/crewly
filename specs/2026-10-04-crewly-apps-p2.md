@@ -193,8 +193,16 @@ One poller for every non-deleted app in the registry.
   the orchestrator's goes through the message queue.
 - **Failed delivery.** The batch stays pending (so the cursor stays before
   it) and is retried after 1, 2, 4 … min (up to 15 min). After 3 failures
-  the orchestrator is told once per batch. The cooldown starts only on a
-  successful wake.
+  the orchestrator is told once per batch; after 12 the batch is dropped
+  (the changes stay in the app) and the orchestrator is told once more. The
+  failure counter lives in memory, so a restart starts it over. The cooldown
+  starts only on a successful wake.
+- **Publisher gone.** A publisher that is no longer on this machine's roster
+  (team deleted, agent removed) is not retried at all: the batch goes to the
+  orchestrator with a header saying whose app it is and that its agent is
+  gone, so the owner's changes reach someone on the first attempt and the
+  cursor moves on (2026-10-25: AZ星球's publisher had been removed and 38
+  owner changes were retried for hours, the counter reset by every restart).
 - **Cursor.** Persisted in the registry. While a batch is pending the
   persisted cursor stays before its first change, so a restart re-reads it
   rather than losing it. Seqs above that cursor that another batch already

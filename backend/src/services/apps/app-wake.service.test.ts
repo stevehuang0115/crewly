@@ -737,6 +737,54 @@ describe('AppWakeService — nothing stalls delivery (2026-10-05, 科技晨报)'
     expect(deliver.mock.calls.filter(([s, t]) => s === null && String(t).includes('stalled'))).toHaveLength(1);
   });
 
+  it('owner changes to an app whose publisher is no longer on this machine go to the orchestrator once, naming it, and the cursor moves on (2026-10-25: AZ星球)', async () => {
+    svc.stop();
+    svc = new AppWakeService({
+      client: cloud,
+      registry: registry as unknown as AppsRegistryService,
+      deliver,
+      resolveAgent,
+      isRunning: (s) => running.has(s),
+      isLocalAgent: async (s) => s !== 'dev-ella',
+      skillsPath: '/skills/agent',
+    });
+    registry.add(ID);
+    cloud.push(ID, ownerData());
+    cloud.push(ID, ownerData('eggs', 'set'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    for (let i = 0; i < 3; i++) await jest.advanceTimersByTimeAsync(CREWLY_APPS_CONSTANTS.WAKE_RETRY_MAX_MS);
+
+    expect(deliver.mock.calls.filter(([s]) => s === 'dev-ella')).toHaveLength(0);
+    const orc = deliver.mock.calls.filter(([s]) => s === null);
+    expect(orc).toHaveLength(1);
+    expect(orc[0][1]).toContain('whose agent is no longer on this machine');
+    expect(orc[0][1]).toContain('Its publisher dev-ella is not an agent on this machine any more');
+    expect(orc[0][1]).toContain('Data changes by the owner (2)');
+    expect(orc[0][2]).toMatchObject({ activate: false });
+    expect(registry.apps.get(ID)?.cursor).toBe(2);
+    expect(svc.pendingKeys()).toHaveLength(0);
+  });
+
+  it('a publisher that is on the roster is still woken when isLocalAgent is wired', async () => {
+    svc.stop();
+    svc = new AppWakeService({
+      client: cloud,
+      registry: registry as unknown as AppsRegistryService,
+      deliver,
+      resolveAgent,
+      isRunning: (s) => running.has(s),
+      isLocalAgent: async (s) => s === 'dev-ella',
+      skillsPath: '/skills/agent',
+    });
+    registry.add(ID);
+    cloud.push(ID, ownerData());
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver.mock.calls.filter(([s]) => s === 'dev-ella')).toHaveLength(1);
+    expect(deliver.mock.calls.filter(([s]) => s === null)).toHaveLength(0);
+  });
+
   it('gives up after WAKE_MAX_FAILURES, tells the orchestrator once more, and stops retrying (2026-10-22: 48 retries for a gone agent)', async () => {
     registry.add(ID);
     deliver.mockImplementation(async (s: string | null) => s === null);
