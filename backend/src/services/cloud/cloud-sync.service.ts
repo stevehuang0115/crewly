@@ -22,7 +22,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { randomUUID } from 'crypto';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
-import { NetworkStatusService } from '../core/network-status.service.js';
+import { NetworkStatusService, warnUnlessOfflineRepeat } from '../core/network-status.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
 import type {
@@ -625,13 +625,14 @@ export class CloudSyncService extends EventEmitter {
       // Not "may not work": without a queue id the Slack instance heartbeat
       // is skipped, so Cloud marks this machine stale and every inbound
       // Slack event is queued instead of delivered (2026-09-21).
-      const level = this.queueId === null ? 'error' : 'warn';
-      this.logger[level](
-        this.queueId === null
-          ? 'Queue registration failed — this machine will not receive Cloud or Slack messages until it succeeds'
-          : 'Queue re-registration failed — still polling the queue registered earlier',
-        { error: this.queueError, attempt: this.queueFailures, retryInMs: delay },
-      );
+      const detail = { error: this.queueError, attempt: this.queueFailures, retryInMs: delay };
+      if (this.queueId === null) {
+        this.logger.error('Queue registration failed — this machine will not receive Cloud or Slack messages until it succeeds', detail);
+      } else {
+        // Offline, the re-registration fails every minute for the whole outage
+        // (38 lines on 2026-10-25); one line per 10 min says the same.
+        warnUnlessOfflineRepeat(this.logger, 'cloud-sync-register', 'Queue re-registration failed — still polling the queue registered earlier', detail);
+      }
     }
     this.scheduleRegister(gen, delay);
   }

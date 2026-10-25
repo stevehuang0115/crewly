@@ -12,9 +12,11 @@ import type { AppRegistryEntry, AppsRegistryService } from './apps-registry.serv
 import type { AppChange, AppCommentThread } from './app-wake-message.js';
 import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
 
+const logSpy = { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() };
 jest.mock('../core/logger.service.js', () => ({
-  LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }) }) },
+  LoggerService: { getInstance: () => ({ createComponentLogger: () => logSpy }) },
 }));
+import { NetworkStatusService } from '../core/network-status.service.js';
 
 const ID = '28au74d9cj';
 const ID2 = 'xyzabcdefg';
@@ -389,6 +391,30 @@ describe('AppWakeService', () => {
     cloud.calls = [];
     await svc.tick();
     expect(cloud.calls).toHaveLength(0);
+  });
+
+  it('offline, failing apps warn once per throttle window instead of once per app per pass (#1466)', async () => {
+    registry.add(ID);
+    registry.add(ID2);
+    cloud.failFor.set(ID, new AppsCloudError(502, 'network', 'Could not reach Crewly Apps (TypeError)'));
+    cloud.failFor.set(ID2, new AppsCloudError(502, 'network', 'Could not reach Crewly Apps (TypeError)'));
+    const net = NetworkStatusService.getInstance();
+    const cause = Object.assign(new Error('getaddrinfo ENOTFOUND api.crewlyai.com'), { code: 'ENOTFOUND' });
+    for (let i = 0; i < 3; i++) net.recordFailure('relay', Object.assign(new TypeError('fetch failed'), { cause }));
+    expect(net.isOffline()).toBe(true);
+    logSpy.warn.mockClear();
+    logSpy.debug.mockClear();
+    try {
+      await svc.tick();
+      const warns = logSpy.warn.mock.calls.filter((c) => c[0] === 'Polling app changes failed');
+      const debugs = logSpy.debug.mock.calls.filter((c) => String(c[0]).startsWith('Polling app changes failed'));
+      expect(warns).toHaveLength(1);
+      expect(debugs).toHaveLength(1);
+      expect(svc.appBackoff(ID)).toMatchObject({ failures: 1 });
+      expect(svc.appBackoff(ID2)).toMatchObject({ failures: 1 });
+    } finally {
+      NetworkStatusService.resetInstance();
+    }
   });
 
   it('backs off per app: a failing app waits, the others keep polling', async () => {

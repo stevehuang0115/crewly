@@ -77,6 +77,7 @@
 
 import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { warnUnlessOfflineRepeat } from '../core/network-status.service.js';
 import { AppsCloudError } from './apps-cloud.client.js';
 import type { AppsRegistryService, AppRegistryEntry, VisitorWakeState } from './apps-registry.service.js';
 import { buildAppWakeMessage, mentionsOf, safeAppName, type AppChange, type AppCommentThread } from './app-wake-message.js';
@@ -405,7 +406,14 @@ export class AppWakeService {
       const failures = (this.backoff.get(app.appId)?.failures ?? 0) + 1;
       const wait = Math.min(C.POLL_INTERVAL_MS * 2 ** failures, C.POLL_MAX_BACKOFF_MS);
       this.backoff.set(app.appId, { failures, nextAt: this.now() + wait });
-      this.logger.warn('Polling app changes failed', { appId: app.appId, failures, retryInMs: wait, error: err instanceof Error ? err.message : String(err) });
+      // One throttle slot for every app: offline, the six of them failing
+      // together is one fact, not six lines per pass (2026-10-25: 210 lines).
+      warnUnlessOfflineRepeat(this.logger, 'app-wake', 'Polling app changes failed', {
+        appId: app.appId,
+        failures,
+        retryInMs: wait,
+        error: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       // A poll that missed its deadline may still finish later: its token is gone, so it changes nothing.
       if (this.pollTokens.get(app.appId) === token) this.pollTokens.delete(app.appId);
@@ -592,7 +600,11 @@ export class AppWakeService {
       const wait = err instanceof AppsCloudError && err.status === 404 ? C.POLL_MAX_BACKOFF_MS : Math.min(C.POLL_INTERVAL_MS * 2 ** failures, C.POLL_MAX_BACKOFF_MS);
       this.mentionBackoff = { failures, nextAt: this.now() + wait };
       if (!(err instanceof AppsCloudError && err.status === 404)) {
-        this.logger.warn('Reading the app mention inbox failed', { failures, retryInMs: wait, error: err instanceof Error ? err.message : String(err) });
+        warnUnlessOfflineRepeat(this.logger, 'app-wake-mentions', 'Reading the app mention inbox failed', {
+          failures,
+          retryInMs: wait,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
   }
