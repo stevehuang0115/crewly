@@ -116,6 +116,22 @@ describe('ChatConversationList', () => {
     expect(screen.queryByTestId('conv-search')).not.toBeInTheDocument();
   });
 
+  it('Find offers a message search when wired, with the typed words (#1400)', () => {
+    const onSearchMessages = vi.fn();
+    const { unmount } = render(<ChatConversationList {...base} onSearchMessages={onSearchMessages} />);
+    fireEvent.click(screen.getByTestId('conv-search-toggle'));
+    expect(screen.queryByTestId('conv-search-messages')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('conv-search'), { target: { value: ' docker reset ' } });
+    expect(screen.getByTestId('conv-search-messages')).toHaveTextContent('Search messages for “docker reset”');
+    fireEvent.click(screen.getByTestId('conv-search-messages'));
+    expect(onSearchMessages).toHaveBeenCalledWith('docker reset');
+    unmount();
+    render(<ChatConversationList {...base} />);
+    fireEvent.click(screen.getByTestId('conv-search-toggle'));
+    fireEvent.change(screen.getByTestId('conv-search'), { target: { value: 'zzz' } });
+    expect(screen.queryByTestId('conv-search-messages')).not.toBeInTheDocument();
+  });
+
   it('shows the empty state when there are no conversations', () => {
     render(<ChatConversationList {...base} groups={[]} emptyState="Nothing yet" />);
     expect(screen.getByText('Nothing yet')).toBeInTheDocument();

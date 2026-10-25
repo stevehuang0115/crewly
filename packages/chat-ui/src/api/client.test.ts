@@ -321,6 +321,21 @@ describe('HttpChatApiClient — read state (#1400)', () => {
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST', body: '{"seq":2}' });
   });
 
+  it('searchMessages GETs /api/chat/search with the query and filters, unwrapping hits (#1400)', async () => {
+    const hit = { id: 'm1', time: '2026-10-25T08:00:00.000Z', channelId: 'c1', channel: '#ops', channelType: 'huddle', sender: 'Steve', senderType: 'user', text: 'docker reset', threadId: null };
+    const fetchMock = vi.fn().mockResolvedValue(ok({ count: 1, hits: [hit] }));
+    const hits = await build(fetchMock).searchMessages('docker reset', { channel: '#ops', from: '2026-10-01', limit: 5 });
+    expect(hits).toEqual([hit]);
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url.startsWith('http://h/api/chat/search?')).toBe(true);
+    const qs = new URL(url).searchParams;
+    expect(qs.get('q')).toBe('docker reset');
+    expect(qs.get('channel')).toBe('#ops');
+    expect(qs.get('from')).toBe('2026-10-01');
+    expect(qs.get('limit')).toBe('5');
+    expect(qs.has('session')).toBe(false);
+  });
+
   it('getUnread GETs the summary', async () => {
     const summary = { total: 2, channels: [{ channelId: 'c1', lastReadSeq: 0, unreadCount: 2 }] };
     const fetchMock = vi.fn().mockResolvedValue(ok(summary));

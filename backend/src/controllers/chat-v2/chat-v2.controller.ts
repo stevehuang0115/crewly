@@ -1192,8 +1192,9 @@ export function createChatV2Controller(
     /**
      * `GET /search?q=<keywords>&channel=&from=&to=&limit=&session=` — search the
      * chat history the caller can see. An agent searches as itself (its badge);
-     * the owner names the agent with `session`. `from` / `to` take a date
-     * (`2026-10-09`) or a timestamp.
+     * the owner names the agent with `session`, or leaves it out to search
+     * every conversation (#1400). `from` / `to` take a date (`2026-10-09`) or
+     * a timestamp.
      */
     searchMessages: (req, res) =>
       runHandler(res, () => {
@@ -1214,7 +1215,7 @@ export function createChatV2Controller(
         };
         const limitRaw = typeof q.limit === 'string' ? Number.parseInt(q.limit, 10) : undefined;
         const hits = service.searchMessagesForAgent({
-          agentSession: principal.agentSession ?? str(q.session) ?? '',
+          agentSession: principal.agentSession ?? str(q.session),
           principal,
           query: str(q.q) ?? '',
           channel: str(q.channel),

@@ -28,6 +28,8 @@ import type {
   ChatWebsocketEvent,
   ChannelReadState,
   UnreadSummary,
+  ChatSearchHit,
+  ChatSearchOptions,
 } from '../types/chat.types';
 import {
   channelFromDTO,
@@ -98,6 +100,11 @@ export interface ChatApiClient {
   markChannelUnread?(channelId: string, seq: number): Promise<ChannelReadState>;
   /** Total unread plus the channels that have any. */
   getUnread?(): Promise<UnreadSummary>;
+  /**
+   * Cross-conversation keyword search (#1400). Every whitespace-separated
+   * word must appear; hits come newest first. Optional for the same reason.
+   */
+  searchMessages?(query: string, opts?: ChatSearchOptions): Promise<ChatSearchHit[]>;
   subscribeToChannel(
     channelId: string,
     onEvent: (event: ChatWebsocketEvent) => void,
@@ -445,6 +452,17 @@ export class HttpChatApiClient implements ChatApiClient {
 
   async getUnread(): Promise<UnreadSummary> {
     return this.request<UnreadSummary>('/api/chat/unread');
+  }
+
+  async searchMessages(query: string, opts: ChatSearchOptions = {}): Promise<ChatSearchHit[]> {
+    const qs = new URLSearchParams({ q: query });
+    if (opts.channel) qs.set('channel', opts.channel);
+    if (opts.from) qs.set('from', opts.from);
+    if (opts.to) qs.set('to', opts.to);
+    if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+    if (opts.session) qs.set('session', opts.session);
+    const data = await this.request<{ count: number; hits: ChatSearchHit[] }>(`/api/chat/search?${qs.toString()}`);
+    return data.hits;
   }
 
   async getAgentPresence(agentId: string): Promise<AgentPresence> {

@@ -106,6 +106,11 @@ describe('chat-v2 controller (REST)', () => {
       expect(asOwner.body.data.hits.map((h: { text: string }) => h.text)).toEqual(['three-video budget']);
       expect((await request(app).get('/api/chat/search?session=bob')).status).toBe(400);
       expect((await request(app).get('/api/chat/search?q=x&session=bob&from=nonsense')).status).toBe(400);
+      // The owner without ?session= searches everything (#1400).
+      const everywhere = await request(app).get('/api/chat/search?q=three-video');
+      expect(everywhere.status).toBe(200);
+      expect(everywhere.body.data.count).toBe(2);
+      expect(everywhere.body.data.hits.map((h: { channelType: string }) => h.channelType)).toEqual(['huddle', 'huddle']);
     } finally {
       service.close();
     }
