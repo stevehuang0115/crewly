@@ -1064,6 +1064,35 @@ describe('chat-v2 controller (REST)', () => {
       }
     });
 
+    it('PATCH /channels/:id and PUT /channels/:id/members — rename a group chat and replace its roster (#1400)', async () => {
+      const { app, service } = buildAppWithProviders();
+      try {
+        const created = await request(app)
+          .post('/api/chat/channels/huddle')
+          .send({ name: 'Launch crew', memberSessions: ['sess-ella'] });
+        const id = created.body.data.id as string;
+
+        const renamed = await request(app).patch(`/api/chat/channels/${id}`).send({ name: 'Launch crew 2' });
+        expect(renamed.status).toBe(200);
+        expect(renamed.body.data.name).toBe('Launch crew 2');
+
+        const roster = await request(app)
+          .put(`/api/chat/channels/${id}/members`)
+          .send({ memberSessions: ['sess-ella', 'sess-grace', 42] });
+        expect(roster.status).toBe(200);
+        expect((roster.body.data.members as Array<{ sessionName: string }>).map((m) => m.sessionName).sort()).toEqual(['sess-ella', 'sess-grace']);
+
+        const empty = await request(app).put(`/api/chat/channels/${id}/members`).send({ memberSessions: [] });
+        expect(empty.status).toBe(400);
+        expect(empty.body.error.code).toBe('validation_error');
+
+        const missing = await request(app).patch('/api/chat/channels/ghost').send({ name: 'x' });
+        expect(missing.status).toBe(404);
+      } finally {
+        service.close();
+      }
+    });
+
     it('POST /channels/huddle — 400 when no members are supplied', async () => {
       const { app, service } = buildAppWithProviders();
       try {

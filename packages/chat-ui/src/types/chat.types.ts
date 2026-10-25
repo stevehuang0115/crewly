@@ -56,6 +56,14 @@ export type ChannelType = 'dm' | 'channel' | 'huddle';
  * surfaces; those rows have an empty `agentSession` and a populated
  * `teamId`.
  */
+/** One agent on a group chat's roster (`type='huddle'`). */
+export interface HuddleMember {
+  /** Agent session name. */
+  sessionName: string;
+  /** ISO 8601 timestamp of when the agent was added, when the server sends it. */
+  joinedAt?: string;
+}
+
 export interface Channel {
   id: string;
   /**
@@ -89,6 +97,8 @@ export interface Channel {
    * rows, always undefined.
    */
   targetMemberId?: string;
+  /** Explicit roster of a group chat (`type='huddle'`); absent for other kinds. */
+  members?: HuddleMember[];
   /**
    * The owner's read marker (#1400): messages with `seq <= lastReadSeq` are
    * read. Absent on servers that predate server-side unread.

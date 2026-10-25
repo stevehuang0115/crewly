@@ -2099,6 +2099,38 @@ describe('ChatV2Service', () => {
       expect(service.setHuddleMembers('ghost', ['x'])).toEqual({ added: [], removed: [] });
     });
 
+    describe('owner-facing roster + rename (#1400 private channels)', () => {
+      it('setHuddleRoster replaces the roster and returns the channel with its members', () => {
+        const huddle = service.createHuddle({ name: 'Launch crew', memberSessions: ['sess-a', 'sess-b'], principal: owner });
+        const dto = service.setHuddleRoster(huddle.id, ['sess-b', 'sess-c', ' sess-c '], owner);
+        expect(dto.id).toBe(huddle.id);
+        expect(dto.members?.map((m) => m.sessionName).sort()).toEqual(['sess-b', 'sess-c']);
+        expect(service.queryHuddleMembersForDispatch(huddle.id).sort()).toEqual(['sess-b', 'sess-c']);
+      });
+
+      it('setHuddleRoster refuses an empty roster, a DM, another owner\'s huddle and a Crewly channel', () => {
+        const huddle = service.createHuddle({ name: 'h', memberSessions: ['sess-a'], principal: owner });
+        expect(() => service.setHuddleRoster(huddle.id, [], owner)).toThrow(/at least one agent/);
+        expect(() => service.setHuddleRoster(createSam().id, ['x'], owner)).toThrow(/only a group chat/);
+        const other: ChatPrincipal = { userId: 'someone-else', source: 'oss' };
+        expect(() => service.setHuddleRoster(huddle.id, ['x'], other)).toThrow(ChatError);
+        expect(service.queryHuddleMembersForDispatch(huddle.id)).toEqual(['sess-a']);
+        service.setSharedChannelResolver((id) => id === huddle.id);
+        try {
+          expect(() => service.setHuddleRoster(huddle.id, ['x'], owner)).toThrow(/Crewly channel/);
+          expect(() => service.renameChannel(huddle.id, 'new', owner)).toThrow(/Crewly channel/);
+        } finally {
+          service.setSharedChannelResolver(null);
+        }
+      });
+
+      it('renameChannel renames a huddle the owner holds', () => {
+        const huddle = service.createHuddle({ name: 'h', memberSessions: ['sess-a'], principal: owner });
+        expect(service.renameChannel(huddle.id, '  Launch crew ', owner).name).toBe('Launch crew');
+        expect(service.getChannel(huddle.id, owner).name).toBe('Launch crew');
+      });
+    });
+
     // The whole point of a team channel is that every member can answer.
     // Before this, `resolveSender` only accepted the DM-bound agent, so a
     // fanned-out huddle member's reply-channel call was refused with 403.

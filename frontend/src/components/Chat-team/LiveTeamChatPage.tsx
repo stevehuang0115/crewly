@@ -547,6 +547,46 @@ function LiveTeamChatPageBody({
   // Crewly channels are huddles: their @-mentions are agent session names.
   const crewlyChannelIds = useMemo(() => new Set(crewlyChannels.map((c) => c.id)), [crewlyChannels]);
 
+  // The open conversation, when it is a plain group chat (#1400 private
+  // channels): the same settings dialog, backed by chat-v2 rename / roster
+  // calls instead of the Crewly-channel API. Needs a client that has them.
+  const nameBySession = useMemo(
+    () => new Map(directoryAgents.map((a) => [a.agentSession, a.name] as const)),
+    [directoryAgents],
+  );
+  const toSettingsChannel = useCallback(
+    (ch: Channel): CrewlyChannel => ({
+      id: ch.id,
+      name: ch.name,
+      purpose: ch.purpose,
+      origin: 'crewly',
+      createdAt: ch.createdAt,
+      slack: null,
+      members: (ch.members ?? []).map((m) => ({ sessionName: m.sessionName, name: nameBySession.get(m.sessionName) })),
+    }),
+    [nameBySession],
+  );
+  const managedHuddle = useMemo(() => {
+    if (managedChannel || !client.renameChannel || !client.setHuddleMembers) return null;
+    const ch = channels.find((c) => c.id === resolvedConversationId);
+    return ch && ch.type === 'huddle' ? toSettingsChannel(ch) : null;
+  }, [managedChannel, client, channels, resolvedConversationId, toSettingsChannel]);
+  const huddleSettingsApi = useMemo<Pick<ChannelsApi, 'rename' | 'addMember' | 'removeMember'>>(() => {
+    const roster = (id: string): string[] =>
+      channels.find((c) => c.id === id)?.members?.map((m) => m.sessionName) ?? [];
+    const unsupported = (): never => {
+      throw new Error('This chat server cannot edit group chats; update Crewly.');
+    };
+    const rename = client.renameChannel?.bind(client) ?? unsupported;
+    const setMembers = client.setHuddleMembers?.bind(client) ?? unsupported;
+    return {
+      rename: async (id, name) => toSettingsChannel(await rename(id, name)),
+      addMember: async (id, sessionName) => toSettingsChannel(await setMembers(id, [...roster(id), sessionName])),
+      removeMember: async (id, sessionName) =>
+        toSettingsChannel(await setMembers(id, roster(id).filter((s) => s !== sessionName))),
+    };
+  }, [client, channels, toSettingsChannel]);
+
   const activeConversation = useMemo(
     () => flattenRows(groups).find((r) => r.id === resolvedConversationId),
     [groups, resolvedConversationId],
@@ -628,7 +668,7 @@ function LiveTeamChatPageBody({
         pinned={activeConversation ? pinnedChats.isPinned(pinKeyOf(activeConversation)) : false}
         onTogglePin={() => activeConversation && pinnedChats.toggle(pinKeyOf(activeConversation))}
         onBack={() => setMobileView('list')}
-        onManageChannel={managedChannel ? () => setShowChannelSettings(true) : undefined}
+        onManageChannel={managedChannel || managedHuddle ? () => setShowChannelSettings(true) : undefined}
         unreadAfterSeq={unreadAfterSeq}
         onMarkUnread={handleMarkUnread}
         onReadState={applyReadState}
@@ -640,6 +680,14 @@ function LiveTeamChatPageBody({
           api={channelsApi}
           onClose={() => setShowChannelSettings(false)}
           onChanged={() => void refreshCrewlyChannels()}
+        />
+      )}
+      {showChannelSettings && !managedChannel && managedHuddle && (
+        <ChannelSettingsModal
+          channel={managedHuddle}
+          api={huddleSettingsApi}
+          onClose={() => setShowChannelSettings(false)}
+          onChanged={() => void refresh()}
         />
       )}
 

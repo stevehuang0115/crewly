@@ -76,6 +76,13 @@ export interface ChatApiClient {
   createChannel(input: CreateChannelInput): Promise<Channel>;
   /** Create an ad-hoc multi-agent group chat ("拉群"). */
   createHuddle(input: CreateHuddleInput): Promise<Channel>;
+  /**
+   * Private channels (#1400): rename a group chat or team channel, or replace
+   * a group chat's roster. Optional so older transports keep satisfying the
+   * contract; callers must check before use.
+   */
+  renameChannel?(channelId: string, name: string): Promise<Channel>;
+  setHuddleMembers?(channelId: string, memberSessions: string[]): Promise<Channel>;
   listMessages(channelId: string, opts?: { cursor?: string; limit?: number }): Promise<MessagePage>;
   sendMessage(channelId: string, input: SendMessageInput): Promise<Message>;
   getAgentPresence(agentId: string): Promise<AgentPresence>;
@@ -311,6 +318,22 @@ export class HttpChatApiClient implements ChatApiClient {
       method: 'POST',
       body: JSON.stringify(input),
     });
+    return channelFromDTO(dto);
+  }
+
+  async renameChannel(channelId: string, name: string): Promise<Channel> {
+    const dto = await this.request<ChannelDTO>(`/api/chat/channels/${encodeURIComponent(channelId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    });
+    return channelFromDTO(dto);
+  }
+
+  async setHuddleMembers(channelId: string, memberSessions: string[]): Promise<Channel> {
+    const dto = await this.request<ChannelDTO>(
+      `/api/chat/channels/${encodeURIComponent(channelId)}/members`,
+      { method: 'PUT', body: JSON.stringify({ memberSessions }) },
+    );
     return channelFromDTO(dto);
   }
 

@@ -327,6 +327,12 @@ const DEFAULT_PRESENCE = () => ({
  * - Maps rows → DTOs.
  * - Fans out to WebSocket / adapters in later phases.
  */
+/**
+ * Defensive upper bound on a huddle roster — a 200-member huddle would tax
+ * both the dispatcher fan-out and downstream rate limits.
+ */
+const MAX_HUDDLE_MEMBERS = 50;
+
 export class ChatV2Service extends EventEmitter {
   /** Phase A spec §3.2: max mention count per message. */
   static readonly MAX_MENTIONS_PER_MESSAGE = 50;
@@ -926,36 +932,7 @@ export class ChatV2Service extends EventEmitter {
       );
     }
 
-    // Dedupe + trim member sessions. We accept any non-empty trimmed
-    // string here — actual agent existence is validated by the
-    // dispatcher when it tries to resolve the session at fan-out time.
-    const seen = new Set<string>();
-    const members: string[] = [];
-    for (const raw of args.memberSessions ?? []) {
-      const s = (raw ?? '').trim();
-      if (!s) continue;
-      if (seen.has(s)) continue;
-      seen.add(s);
-      members.push(s);
-    }
-    if (members.length === 0) {
-      throw new ChatError(
-        CHAT_ERROR_CODES.VALIDATION,
-        400,
-        'memberSessions must include at least one agent session',
-      );
-    }
-    // Defensive upper bound — a 200-member huddle would tax both the
-    // dispatcher fan-out and downstream rate limits. The cap can be
-    // raised when we have a real use case.
-    const MAX_HUDDLE_MEMBERS = 50;
-    if (members.length > MAX_HUDDLE_MEMBERS) {
-      throw new ChatError(
-        CHAT_ERROR_CODES.VALIDATION,
-        400,
-        `huddle exceeds the ${MAX_HUDDLE_MEMBERS}-member cap`,
-      );
-    }
+    const members = this.normalizeHuddleRoster(args.memberSessions ?? []);
 
     const nowMs = this.now();
     const row = this.channels.create({
@@ -987,6 +964,81 @@ export class ChatV2Service extends EventEmitter {
     insertMany(members);
 
     return this.toChannelDTO(row);
+  }
+
+  /**
+   * Dedupe + trim a huddle roster and enforce its bounds. Agent existence
+   * is not checked here — the dispatcher validates sessions at fan-out.
+   *
+   * @param raw - Session names as supplied by the caller
+   * @returns The cleaned roster, in input order
+   * @throws {ChatError} `validation_error` (400) when the roster is empty or
+   *   over {@link MAX_HUDDLE_MEMBERS}
+   */
+  private normalizeHuddleRoster(raw: readonly (string | null | undefined)[]): string[] {
+    const seen = new Set<string>();
+    const members: string[] = [];
+    for (const r of raw) {
+      const s = (r ?? '').trim();
+      if (!s) continue;
+      if (seen.has(s)) continue;
+      seen.add(s);
+      members.push(s);
+    }
+    if (members.length === 0) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        'memberSessions must include at least one agent session',
+      );
+    }
+    if (members.length > MAX_HUDDLE_MEMBERS) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `huddle exceeds the ${MAX_HUDDLE_MEMBERS}-member cap`,
+      );
+    }
+    return members;
+  }
+
+  /**
+   * Replace the roster of a group chat the owner holds (#1400 private
+   * channels): invite or remove agents after the fact. Crewly channels are
+   * edited through `/api/channels` (their Slack bots follow) and refused here.
+   *
+   * @param channelId - The huddle
+   * @param memberSessions - The complete desired roster
+   * @param principal - The owner
+   * @returns The channel with its new `members`
+   * @throws {ChatError} `channel_not_found` (404) when unknown or not owned;
+   *   `validation_error` (400) for a non-huddle, a Crewly channel, an empty
+   *   roster or one over the member cap
+   */
+  setHuddleRoster(
+    channelId: string,
+    memberSessions: readonly string[],
+    principal: ChatPrincipal,
+  ): ChatChannelDTO {
+    const row = this.requireOwnedChannel(channelId, principal);
+    if (row.type !== 'huddle') {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'only a group chat has an explicit roster');
+    }
+    this.requireNotCrewlyChannel(row);
+    const members = this.normalizeHuddleRoster(memberSessions);
+    this.setHuddleMembers(row.id, members);
+    return this.toChannelDTO(row);
+  }
+
+  /** Internal: refuse owner edits on a Crewly channel, which `/api/channels` owns. */
+  private requireNotCrewlyChannel(row: ChatChannelRow): void {
+    if (row.type === 'huddle' && this.sharedChannel?.(row.id)) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        'this is a Crewly channel; rename it or change its members through /api/channels',
+      );
+    }
   }
 
   /**
@@ -1677,7 +1729,8 @@ export class ChatV2Service extends EventEmitter {
   /**
    * Phase 6.0b — rename a channel. Replaces the legacy
    * `updateConversationTitle` route. Server validates the same name
-   * constraints as `createChannel`.
+   * constraints as `createChannel`. Exposed as `PATCH /channels/:id` and the
+   * `renameChannel` relay RPC for group chats (#1400 private channels).
    *
    * @param channelId - The channel to rename
    * @param name - New name (trimmed, ≤ maxChannelNameChars)
@@ -1699,6 +1752,9 @@ export class ChatV2Service extends EventEmitter {
       );
     }
     const row = this.requireOwnedChannel(channelId, principal);
+    // #1400 private channels: a Crewly channel is renamed through /api/channels
+    // so its Slack channel follows.
+    this.requireNotCrewlyChannel(row);
     this.channels.rename(channelId, trimmed);
     return this.toChannelDTO({ ...row, name: trimmed });
   }

@@ -580,6 +580,8 @@ export interface ChatV2ControllerHandlers {
   ensureDmChannel: (req: Request, res: Response) => void;
   ensureTeamChannel: (req: Request, res: Response) => void;
   createHuddle: (req: Request, res: Response) => void;
+  renameChannel: (req: Request, res: Response) => void;
+  setHuddleMembers: (req: Request, res: Response) => void;
   listAgents: (req: Request, res: Response) => void | Promise<void>;
   getAgentPresence: (req: Request, res: Response) => void | Promise<void>;
   getAgentTimeline: (req: Request, res: Response) => void;
@@ -1043,6 +1045,41 @@ export function createChatV2Controller(
           principal,
         });
         res.status(201).json({ success: true, data: channel });
+      }),
+
+    /**
+     * PATCH /channels/:id
+     *
+     * Rename a group chat or team channel (#1400 private channels). Body:
+     * `{ name }`. DMs and Crewly channels are refused (400).
+     */
+    renameChannel: (req, res) =>
+      runHandler(res, () => {
+        const principal = principalFromRequest(req);
+        const body = req.body ?? {};
+        const channel = service.renameChannel(
+          req.params.id,
+          typeof body.name === 'string' ? body.name : '',
+          principal,
+        );
+        res.json({ success: true, data: channel });
+      }),
+
+    /**
+     * PUT /channels/:id/members
+     *
+     * Replace a group chat's roster (#1400 private channels). Body:
+     * `{ memberSessions: string[] }` — the complete desired roster.
+     */
+    setHuddleMembers: (req, res) =>
+      runHandler(res, () => {
+        const principal = principalFromRequest(req);
+        const body = req.body ?? {};
+        const memberSessions = Array.isArray(body.memberSessions)
+          ? (body.memberSessions as unknown[]).filter((m): m is string => typeof m === 'string')
+          : [];
+        const channel = service.setHuddleRoster(req.params.id, memberSessions, principal);
+        res.json({ success: true, data: channel });
       }),
 
     /**
