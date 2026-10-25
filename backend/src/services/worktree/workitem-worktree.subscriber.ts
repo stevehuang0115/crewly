@@ -22,7 +22,7 @@
  */
 
 import axios from 'axios';
-import { WORKTREE_CONSTANTS } from '../../constants.js';
+import { TUI_INPUT_GUARD, WORKTREE_CONSTANTS } from '../../constants.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
@@ -136,8 +136,8 @@ export class WorkItemWorktreeSubscriber {
 
 /** Caller identity sent with terminal writes. */
 const NOTIFIER_SESSION = 'WorkItemWorktree';
-/** Terminal write timeout. */
-const NOTIFY_TIMEOUT_MS = 5_000;
+/** Terminal write timeout; must outlive the server's guarded paste (#1431). */
+const NOTIFY_TIMEOUT_MS = TUI_INPUT_GUARD.WRITE_CLIENT_TIMEOUT_MS;
 
 /**
  * A notifier that writes a message into an agent's terminal through the

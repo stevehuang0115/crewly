@@ -1301,6 +1301,18 @@ export const TUI_INPUT_GUARD = {
 	BUSY_HOLD_RECHECK_MS: 30_000,
 	/** How long to keep looking for a paste to render in a busy agent's box (ms) */
 	PASTE_RENDER_MAX_WAIT_MS: 15_000,
+	/**
+	 * HTTP client timeout for an in-process caller of
+	 * `POST /api/terminal/:session/write` with `mode: "message"` (#1431). The
+	 * server answers only after the guarded paste has finished, which in the
+	 * worst case is: pending-paste hold (`PASTE_PENDING_HOLD_MS`, 15 s) +
+	 * scaled paste delay (≤ 5 s) + render retries (1 s) + render wait
+	 * (`PASTE_RENDER_MAX_WAIT_MS`, 15 s) + settle reads ≈ 37 s. A client that
+	 * gives up earlier (the dispatcher used 5 s) records "write failed" while
+	 * the server still goes on to submit the brief, so the same brief is
+	 * redispatched behind a delivery that did land.
+	 */
+	WRITE_CLIENT_TIMEOUT_MS: 45_000,
 	/** Re-read interval while waiting for a late paste to render (ms) */
 	PASTE_RENDER_POLL_MS: 500,
 	/** Wait after pressing Enter on our own lost paste before looking again (ms) */
