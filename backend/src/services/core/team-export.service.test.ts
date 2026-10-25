@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import { TeamExportService, generateCronId } from './team-export.service.js';
+import { TeamExportService, generateCronId, stripRuntimeState, redactDeep, referencedConnectors, isSupportedExportVersion } from './team-export.service.js';
 import type { TeamExport } from './team-export.service.js';
 import type { Team } from '../../types/index.js';
 import type { CronTask } from '../../types/cron-task.types.js';
@@ -38,6 +38,11 @@ const mockTeam: Team = {
       role: 'developer',
       status: 'active',
       sessionName: 'crewly-test-sam',
+      agentId: 'crewly-test-sam',
+      agentStatus: 'active',
+      workingStatus: 'in_progress',
+      currentTickets: ['T-1'],
+      systemPrompt: 'Draft replies in Gmail. SLACK_BOT_TOKEN=xoxb-1234567890-abcdefghij',
     } as any,
   ],
   projectIds: ['proj-1'],
@@ -129,12 +134,50 @@ describe('TeamExportService', () => {
       });
     });
 
-    it('should export team config', async () => {
+    it('should export team config without this install\'s runtime state', async () => {
       const result = await service.exportTeam('team-abc');
 
-      expect(result.version).toBe('1.0');
+      expect(result.version).toBe('1.1');
       expect(result.exportedAt).toBeDefined();
-      expect(result.team).toEqual(mockTeam);
+      expect(result.team.id).toBe('team-abc');
+      const member = result.team.members[0] as unknown as Record<string, unknown>;
+      expect(member.sessionName).toBe('');
+      expect(member.agentStatus).toBe('inactive');
+      expect(member.workingStatus).toBe('idle');
+      expect(member).not.toHaveProperty('agentId');
+      expect(member).not.toHaveProperty('currentTickets');
+      expect(result.portability?.strippedFields).toEqual(['agentId', 'currentTickets']);
+    });
+
+    it('masks secrets everywhere and scans the whole package', async () => {
+      (mockedFs.readFile as jest.Mock).mockImplementation((filePath: any) => {
+        const fp = String(filePath);
+        if (fp.includes('prompts/member-1.md')) return Promise.resolve('Use OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456 for drafts');
+        if (fp.includes('.md')) return Promise.resolve('# norm with xoxb-1234567890-abcdefghij inside');
+        if (fp.includes('cron-tasks.json')) return Promise.resolve(JSON.stringify({ tasks: mockCronTasks }));
+        return Promise.reject(new Error('File not found'));
+      });
+
+      const result = await service.exportTeam('team-abc');
+      const text = JSON.stringify(result);
+
+      expect(text).not.toContain('xoxb-1234567890');
+      expect(text).not.toContain('sk-abcdefghijklmnopqrstuvwxyz');
+      expect(result.prompts['member-1']).toContain('[REDACTED');
+      expect((result.team.members[0] as any).systemPrompt).toContain('[REDACTED');
+      expect(result.portability?.redactions).toBeGreaterThanOrEqual(3);
+      expect(result.portability?.scanClean).toBe(true);
+    });
+
+    it('masks exact known secret values too', async () => {
+      const result = await service.exportTeam('team-abc', { knownSecrets: [{ name: 'MY_PASS', value: 'Daily standup' }] });
+      expect(result.cronTasks[0].taskDescription).not.toContain('Daily standup');
+      expect(result.portability?.redactions).toBeGreaterThanOrEqual(2);
+    });
+
+    it('lists the connectors the team refers to', async () => {
+      const result = await service.exportTeam('team-abc');
+      expect(result.portability?.connectors).toEqual(['google-workspace']);
     });
 
     it('should export prompts keyed by memberId', async () => {
@@ -217,10 +260,29 @@ describe('TeamExportService', () => {
       mockedFs.writeFile.mockResolvedValue(undefined);
     });
 
-    it('should save the team via storageService', async () => {
+    it('should save the team via storageService with runtime state stripped', async () => {
       await service.importTeam(mockExport);
 
-      expect(mockStorageService.saveTeam).toHaveBeenCalledWith(mockTeam);
+      expect(mockStorageService.saveTeam).toHaveBeenCalledTimes(1);
+      const saved = mockStorageService.saveTeam.mock.calls[0][0] as Team;
+      expect(saved.id).toBe('team-abc');
+      expect(saved.members[0].sessionName).toBe('');
+      expect(saved.members[0].agentStatus).toBe('inactive');
+      expect(saved.members[0]).not.toHaveProperty('currentTickets');
+    });
+
+    it('accepts 1.0 and 1.1 packages and refuses others', async () => {
+      await expect(service.importTeam({ ...mockExport, version: '1.1' })).resolves.toBeDefined();
+      await expect(service.importTeam({ ...mockExport, version: '9.0' as any })).rejects.toThrow('Unsupported team export version: 9.0');
+      expect(isSupportedExportVersion('1.0')).toBe(true);
+      expect(isSupportedExportVersion(2)).toBe(false);
+    });
+
+    it('tells the importer which connectors to reconnect', async () => {
+      const fromPackage = await service.importTeam({ ...mockExport, portability: { redactions: 0, scanClean: true, connectors: ['canva'], strippedFields: [] } });
+      expect(fromPackage.connectorsToReconnect).toEqual(['canva']);
+      const derived = await service.importTeam(mockExport);
+      expect(derived.connectorsToReconnect).toEqual(['google-workspace']);
     });
 
     it('should write prompts via saveMemberPrompt', async () => {
@@ -276,7 +338,7 @@ describe('TeamExportService', () => {
     it('should return import result with counts', async () => {
       const result = await service.importTeam(mockExport);
 
-      expect(result.team).toEqual(mockTeam);
+      expect(result.team.id).toBe(mockTeam.id);
       expect(result.promptsImported).toBe(1);
       expect(result.normsImported).toBe(1);
       expect(result.cronTasksImported).toBe(2);
@@ -339,8 +401,9 @@ describe('TeamExportService', () => {
       // Step 2: Import
       const importResult = await service.importTeam(exported);
 
-      // Verify team was saved
-      expect(mockStorageService.saveTeam).toHaveBeenCalledWith(mockTeam);
+      // Verify the portable team was saved (no runtime state, secret masked)
+      expect(mockStorageService.saveTeam).toHaveBeenCalledWith(exported.team);
+      expect(JSON.stringify(exported.team)).not.toContain('xoxb-');
 
       // Step 3: Export again (re-reading what was "imported")
       // The cron tasks written during import should have new IDs
@@ -350,7 +413,7 @@ describe('TeamExportService', () => {
       const importedCronStore = JSON.parse(cronWriteCall![1] as string);
 
       // Verify structural equivalence (ignoring cron task IDs)
-      expect(exported.version).toBe('1.0');
+      expect(exported.version).toBe('1.1');
       expect(importResult.team.id).toBe(exported.team.id);
       expect(importResult.team.name).toBe(exported.team.name);
       expect(importResult.promptsImported).toBe(Object.keys(exported.prompts).length);
@@ -377,5 +440,31 @@ describe('TeamExportService', () => {
       const ids = new Set(Array.from({ length: 100 }, () => generateCronId()));
       expect(ids.size).toBe(100);
     });
+  });
+});
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+describe('team export helpers', () => {
+  it('stripRuntimeState leaves config fields and reports what it removed', () => {
+    const { team, strippedFields } = stripRuntimeState({
+      ...mockTeam,
+      members: [{ id: 'm', name: 'N', role: 'dev', systemPrompt: 'p', sessionName: 's', agentStatus: 'active', workingStatus: 'in_progress', readyAt: 'x', runtimeOverride: { runtimeType: 'codex' } } as any],
+    });
+    expect(team.members[0]).toEqual({ id: 'm', name: 'N', role: 'dev', systemPrompt: 'p', sessionName: '', agentStatus: 'inactive', workingStatus: 'idle' });
+    expect(strippedFields).toEqual(['readyAt', 'runtimeOverride']);
+  });
+
+  it('redactDeep walks arrays and nested objects and counts', () => {
+    const { value, count } = redactDeep({ a: ['xoxb-1234567890-abcdefghij'], b: { c: 'clean', d: 7, e: null } });
+    expect(value.a[0]).toContain('[REDACTED');
+    expect(value.b).toEqual({ c: 'clean', d: 7, e: null });
+    expect(count).toBe(1);
+  });
+
+  it('referencedConnectors matches words, not substrings', () => {
+    const team = { ...mockTeam, members: [{ id: 'm', role: 'designer', systemPrompt: 'Make posters in Canva', skills: ['whatsapp-inbox'] } as any] };
+    expect(referencedConnectors(team, {}, {}, [])).toEqual(['canva', 'whatsapp']);
+    expect(referencedConnectors({ ...mockTeam, members: [] }, { m: 'a canvas painting' }, {}, [])).toEqual([]);
   });
 });

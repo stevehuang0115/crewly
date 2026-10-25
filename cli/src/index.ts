@@ -28,6 +28,7 @@ import { pairCommand } from './commands/pair.js';
 import { tokenCommand } from './commands/token.js';
 import { ticketsCommand, type TicketsOptions } from './commands/tickets.js';
 import { teamMoveCommand, teamMovesCommand, teamMachinesCommand, teamMoveRollbackCommand, type TeamMoveOptions } from './commands/team-move.js';
+import { teamExportCommand, teamImportCommand, type TeamExportOptions, type TeamImportOptions } from './commands/team-export.js';
 import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand, type LoginOptions } from './commands/cloud.js';
 import { DEFAULT_WEB_PORT } from './constants.js';
 import { getLocalVersion, registerCliModuleDir } from './utils/version-check.js';
@@ -281,7 +282,24 @@ program
 
 const teamCmd = program
   .command('team')
-  .description('Teams: move a team to another machine of your account');
+  .description('Teams: move a team to another machine of your account, or export/import one as a portable package');
+
+teamCmd
+  .command('export <team>')
+  .description('Write a team (config, member prompts, norms, schedules) to one JSON file: running state stripped, secrets masked, connectors listed for reconnecting')
+  .option('--out <file>', 'File to write (default crewly-team-<name>-<date>.json)')
+  .option('--json', 'Print the package as JSON')
+  .action(async (team: string, options: TeamExportOptions) => {
+    process.exitCode = await teamExportCommand(team, options);
+  });
+
+teamCmd
+  .command('import <file>')
+  .description('Recreate a team from a package written by `crewly team export`; members start inactive')
+  .option('--json', 'Print JSON')
+  .action(async (file: string, options: TeamImportOptions) => {
+    process.exitCode = await teamImportCommand(file, options);
+  });
 
 teamCmd
   .command('move <team>')

@@ -12,22 +12,48 @@ import type { ApiContext } from '../types.js';
 import { TeamExportService } from '../../services/core/team-export.service.js';
 import type { TeamExport } from '../../services/core/team-export.service.js';
 import { formatError } from '../../utils/format-error.js';
+import { rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
+import { collectSecretEnvValues } from '../../utils/secret-env.js';
+import { TEAM_EXPORT_CONSTANTS } from '../../constants.js';
+
+/** The refusal an agent gets: a package holds every prompt and schedule of a team. */
+const OWNER_ONLY = { success: false, error: 'owner_only', message: 'Only the owner can export or import a team package.' };
 
 /**
- * GET /api/teams/:teamId/export
+ * A safe file name for a downloaded package.
+ *
+ * @param teamName - Team name
+ * @returns e.g. `crewly-team-ce-site.json`
+ */
+export function exportFileName(teamName: string): string {
+  const slug = teamName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'team';
+  return TEAM_EXPORT_CONSTANTS.DOWNLOAD_FILE_NAME.replace('<slug>', slug);
+}
+
+/**
+ * GET /api/teams/:teamId/export[?download=1]
  *
  * Exports a team and all associated data (config, prompts, norms, cron tasks)
- * as a single JSON bundle for backup or migration.
+ * as a single portable, secret-free JSON bundle for backup or migration
+ * (#880). Owner only. With `download=1` the package itself is the body, as
+ * an attachment; otherwise it sits under `data`.
  *
  * @param req - Express request with teamId parameter
  * @param res - Express response with TeamExport JSON
  */
 export async function exportTeam(this: ApiContext, req: Request, res: Response): Promise<void> {
+  if (rejectNonOwner(req, res, OWNER_ONLY)) return;
   const { teamId } = req.params;
 
   try {
     const service = new TeamExportService(this.storageService);
-    const exportData = await service.exportTeam(teamId);
+    const exportData = await service.exportTeam(teamId, { knownSecrets: collectSecretEnvValues(process.env) });
+    if (req.query['download'] === '1' || req.query['download'] === 'true') {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="${exportFileName(exportData.team.name)}"`);
+      res.send(JSON.stringify(exportData, null, 2));
+      return;
+    }
     res.json({ success: true, data: exportData });
   } catch (error) {
     const message = formatError(error);
@@ -47,7 +73,10 @@ export async function exportTeam(this: ApiContext, req: Request, res: Response):
  * @param res - Express response with import result
  */
 export async function importTeam(this: ApiContext, req: Request, res: Response): Promise<void> {
-  const data = req.body as Partial<TeamExport>;
+  if (rejectNonOwner(req, res, OWNER_ONLY)) return;
+  // `crewly team export` writes the package itself; a saved API answer still has it under `data`.
+  const raw = req.body as Partial<TeamExport> | { success?: boolean; data?: Partial<TeamExport> };
+  const data = (raw && typeof raw === 'object' && 'data' in raw && raw.data && typeof raw.data === 'object' ? raw.data : raw) as Partial<TeamExport>;
 
   if (!data.version || !data.team) {
     res.status(400).json({
@@ -62,6 +91,7 @@ export async function importTeam(this: ApiContext, req: Request, res: Response):
     const result = await service.importTeam(data as TeamExport);
     res.json({ success: true, data: result });
   } catch (error) {
-    res.status(500).json({ success: false, message: formatError(error) });
+    const message = formatError(error);
+    res.status(message.startsWith('Unsupported team export version') ? 400 : 500).json({ success: false, message });
   }
 }

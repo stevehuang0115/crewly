@@ -10092,3 +10092,29 @@ export const ACTIVITY_LOG_CONSTANTS = {
 		LIMIT: 'limit',
 	},
 } as const;
+
+/**
+ * Team export packages (`GET /api/teams/:id/export`, `crewly team export`;
+ * issue #880). A package is portable and secret-free: runtime state is
+ * stripped, every string is run through the secret redactor, and the
+ * connectors the team's prompts and skills refer to are listed so the
+ * importer knows what to reconnect.
+ */
+export const TEAM_EXPORT_CONSTANTS = {
+	/** Format version written by this release */
+	VERSION: '1.1',
+	/** Versions `importTeam` accepts */
+	SUPPORTED_VERSIONS: ['1.0', '1.1'],
+	/** Member fields that describe this install's running agent, never the team */
+	RUNTIME_MEMBER_FIELDS: ['agentId', 'currentTickets', 'readyAt', 'loginRequired', 'usageLimited', 'runtimeOverride', 'capabilities', 'lastActivityCheck'],
+	/** Connector id → words in prompts / skill ids / schedules that mean the team uses it */
+	CONNECTOR_HINTS: {
+		'google-workspace': /\b(?:gmail|google|gdrive|google[- ]?drive|google[- ]?docs|google[- ]?sheets|google[- ]?slides|google[- ]?calendar)\b/i,
+		canva: /\bcanva\b/i,
+		'microsoft-todo': /\b(?:microsoft|ms)[- ]?to-?do\b/i,
+		whatsapp: /\bwhatsapp\b/i,
+		slack: /\bslack\b/i,
+	},
+	/** Default file name of a downloaded package (`<slug>` = team name) */
+	DOWNLOAD_FILE_NAME: 'crewly-team-<slug>.json',
+} as const;
