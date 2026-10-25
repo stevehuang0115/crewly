@@ -537,6 +537,21 @@ export class ChatV2RelayAdapter {
       case 'getUnread': {
         return this.service.getUnreadSummary(principal);
       }
+      case 'searchMessages': {
+        // Cross-conversation search (#1400 item 6). The portal is the owner,
+        // so no `session` = every conversation on this machine; `from` / `to`
+        // take a date (`2026-10-09`) or an ISO timestamp like the REST route.
+        const hits = this.service.searchMessagesForAgent({
+          agentSession: this.optionalString(p, 'session'),
+          principal,
+          query: this.requireString(p, 'query'),
+          channel: this.optionalString(p, 'channel'),
+          from: this.optionalDate(p, 'from', false),
+          to: this.optionalDate(p, 'to', true),
+          limit: this.optionalNumber(p, 'limit'),
+        });
+        return { count: hits.length, hits };
+      }
       default: {
         // Unreachable given CHAT_RPC_METHODS check above, but TypeScript
         // exhaustiveness check needs the explicit throw.
@@ -634,6 +649,30 @@ export class ChatV2RelayAdapter {
   ): number | undefined {
     const v = params[key];
     return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  }
+
+  /**
+   * A date (`2026-10-09`) or timestamp parameter as epoch ms; a bare date
+   * with `endOfDay` covers the whole day (exclusive end), like the REST route.
+   *
+   * @param params - RPC params
+   * @param key - Parameter name
+   * @param endOfDay - Whether a bare date means its end rather than its start
+   * @returns Epoch ms, or undefined when absent
+   * @throws {ChatError} `validation_error` (400) when present but unparseable
+   */
+  private optionalDate(
+    params: Record<string, unknown>,
+    key: string,
+    endOfDay: boolean,
+  ): number | undefined {
+    const raw = this.optionalString(params, key);
+    if (!raw) return undefined;
+    const ms = Date.parse(raw);
+    if (!Number.isFinite(ms)) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, `bad date: ${raw}`);
+    }
+    return endOfDay && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? ms + 24 * 60 * 60 * 1000 : ms;
   }
 
   private serializeChannel(channel: ChatChannelDTO): ChatChannelDTO {
