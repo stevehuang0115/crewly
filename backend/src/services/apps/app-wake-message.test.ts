@@ -102,6 +102,23 @@ describe('summarizeDataChanges', () => {
 });
 
 describe('buildAppWakeMessage', () => {
+  it('tells the orchestrator when the publisher is gone from this machine (2026-10-25: AZ星球)', () => {
+    const msg = buildAppWakeMessage({
+      appId: '28au74d9cj',
+      appName: 'Groceries',
+      isPublisher: false,
+      gonePublisher: 'edu-game-milo-13e8d3ca',
+      dataChanges: [data(1, 'items', 'milk', 'update', 4)],
+      events: [],
+      skillsPath: '/skills/agent',
+    });
+    expect(msg.split('\n')[0]).toBe(
+      '[APP CHANGES] The owner changed the app "Groceries" (28au74d9cj), whose agent is no longer on this machine — https://apps.crewlyai.com/28au74d9cj',
+    );
+    expect(msg.split('\n')[1]).toContain('Its publisher edu-game-milo-13e8d3ca is not an agent on this machine any more, so this came to you.');
+    expect(msg).toContain('Data changes by the owner (1)');
+  });
+
   it('labels app text as untrusted, quoted, with the publisher header', () => {
     const msg = buildAppWakeMessage({
       appId: '28au74d9cj',

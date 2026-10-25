@@ -58,7 +58,9 @@
  *   watchdog and owner-priority tag. The publisher still gets the comment
  *   from the app feed, noting who was mentioned, unless it was mentioned
  *   itself (then the mention is the one message). A mention of an agent that
- *   is gone from this machine goes to the orchestrator. The roster Cloud
+ *   is gone from this machine goes to the orchestrator, and so does an owner
+ *   change to an app whose publisher is gone (`gonePublisher`, said in the
+ *   message) instead of being retried against it. The roster Cloud
  *   offers the owner is pushed first (`AppRosterService`, only when changed).
  * - App owners (crewly-services apps/SPEC.md §15): a comment change Cloud
  *   routed to the app's explicit owner (`ownerRouted`) is skipped in the app
@@ -203,6 +205,8 @@ interface Batch {
   appName?: string;
   /** Mentioned agents that are not on this machine any more (sent to the orchestrator) */
   goneMentions: string[];
+  /** The app's publisher is not on this machine any more; the batch went to the orchestrator instead */
+  gonePublisher?: string;
   /** A team / channel owner's batch: posted into that room, not sent to an agent */
   room?: CommentRoomRef;
   /** The recipient owns the app's comments (SPEC §15) */
@@ -766,13 +770,26 @@ export class AppWakeService {
     if (batch.comments.length > C.COMMENTS.MAX_PER_WAKE) batch.comments.shift();
   }
 
-  private async recipientFor(app: AppRegistryEntry, change: AppChange): Promise<{ session: string | null; activate: boolean }> {
+  /**
+   * Who an owner change wakes: a running teammate an `ask` names, else the
+   * publisher. A publisher that is no longer on this machine's roster (its
+   * team was deleted or the agent removed) cannot be woken, so the change goes
+   * to the orchestrator with `gonePublisher` set, instead of being retried
+   * against a session that will never exist again (2026-10-25: AZ星球's
+   * publisher was gone and 38 owner changes were retried for hours, the
+   * counter reset by every restart).
+   */
+  private async recipientFor(app: AppRegistryEntry, change: AppChange): Promise<{ session: string | null; activate: boolean; gonePublisher?: string }> {
     const publisher = app.agentSession ?? null;
     const named = change.kind === 'event' && change.event?.type === 'ask' ? change.event.agent : undefined;
     if (publisher && typeof named === 'string' && this.deps.resolveAgent) {
       const target = await this.deps.resolveAgent(named, publisher).catch(() => null);
       // Only a running teammate; an ask never starts a stopped agent.
       if (target && target !== publisher && this.deps.isRunning?.(target)) return { session: target, activate: false };
+    }
+    if (publisher && publisher !== ORCHESTRATOR_SESSION_NAME && this.deps.isLocalAgent) {
+      const here = await this.deps.isLocalAgent(publisher).catch(() => true);
+      if (!here) return { session: null, activate: false, gonePublisher: publisher };
     }
     return { session: publisher, activate: true };
   }
@@ -829,6 +846,7 @@ export class AppWakeService {
       // A batch opened by a skipped-visitor notice or a mention has no app seq yet.
       batch.firstSeq = Math.min(batch.firstSeq, change.seq);
     }
+    if (recipientInfo.gonePublisher) batch.gonePublisher = recipientInfo.gonePublisher;
     batch.seqs.push(change.seq);
     if (batch.seqs.length > C.MAX_DELIVERED_SEQS) batch.seqs.shift();
     if (visitor) {
@@ -890,6 +908,7 @@ export class AppWakeService {
     into.mentionFirstSeq = Math.min(into.mentionFirstSeq, from.mentionFirstSeq);
     into.appName = into.appName ?? from.appName;
     into.goneMentions = [...new Set([...into.goneMentions, ...from.goneMentions])];
+    into.gonePublisher = into.gonePublisher ?? from.gonePublisher;
     into.owns = into.owns || from.owns;
   }
 
@@ -987,6 +1006,7 @@ export class AppWakeService {
       mentioned: batch.mentioned,
       owns: batch.owns === true,
       goneMentions: batch.goneMentions,
+      ...(batch.gonePublisher ? { gonePublisher: batch.gonePublisher } : {}),
       dataChanges: batch.dataChanges,
       events: batch.events,
       dataTotal: batch.dataTotal,
