@@ -161,6 +161,7 @@ import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { ResourceModeService } from '../agent/resource-mode.service.js';
 import { setLocalApiPort, resetLocalApiPortForTesting } from '../../utils/local-api-url.utils.js';
+import { NetworkStatusService } from '../core/network-status.service.js';
 
 /** The provider's answer, as a full outcome (CREW-304). */
 async function wakeResult(
@@ -1176,6 +1177,40 @@ describe('LiveReconcilerDataProvider', () => {
   // -----------------------------------------------------------------------
 
   describe('executeWakeAction', () => {
+    afterEach(() => {
+      NetworkStatusService.resetInstance();
+    });
+
+    it('skips start and rehydrate wakes while the machine is offline, without touching the API', async () => {
+      const net = NetworkStatusService.getInstance();
+      const dns = Object.assign(new Error('getaddrinfo ENOTFOUND api.crewlyai.com'), { code: 'ENOTFOUND' });
+      for (let i = 0; i < 3; i++) net.recordFailure('relay', dns);
+      expect(net.isOffline()).toBe(true);
+      mockSuspend.isSuspended.mockReturnValue(true);
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = jest.fn();
+      try {
+        const base = {
+          workItemId: 'wi-1',
+          score: 60,
+          scoreBreakdown: { skillMatch: 30, urgency: 20, contextFamiliarity: 10, loadPenalty: 0 },
+          triggeredAt: new Date().toISOString(),
+        };
+        const start = await wakeResult(provider, { ...base, agentSessionName: 'agent-idle', strategy: 'start' });
+        const rehydrate = await wakeResult(provider, { ...base, agentSessionName: 'agent-max', strategy: 'rehydrate' });
+        expect(start).toEqual({ outcome: 'skipped', reason: 'network offline' });
+        expect(rehydrate).toEqual({ outcome: 'skipped', reason: 'network offline' });
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+        expect(mockSuspend.rehydrateAgent).not.toHaveBeenCalled();
+        // Back online: the same start goes through.
+        net.recordSuccess('relay');
+        globalThis.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+        expect(await wakeOk(provider, { ...base, agentSessionName: 'agent-idle', strategy: 'start' })).toBe(true);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
     it('rehydrates suspended agent', async () => {
       mockSuspend.isSuspended.mockReturnValue(true);
       mockSuspend.rehydrateAgent.mockResolvedValue(true);

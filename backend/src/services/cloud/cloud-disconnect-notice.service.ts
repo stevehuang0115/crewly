@@ -38,6 +38,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CLOUD_DISCONNECT_NOTICE_CONSTANTS } from '../../../../config/constants.js';
 import { LoggerService } from '../core/logger.service.js';
+import { NetworkStatusService } from '../core/network-status.service.js';
 import { resolveRunningPackageRoot } from '../system/auto-update.utils.js';
 import type { OwnerDirectDm } from '../slack/slack-owner-direct-dm.js';
 import { readCloudConfigFile } from './cloud-config-file.js';
@@ -92,6 +93,12 @@ export interface CloudDisconnectNoticeDeps {
 	getDeviceName: () => Promise<string>;
 	/** Owner DM over the bot token, or null when Slack is not configured here */
 	getDm: () => OwnerDirectDm | null;
+	/**
+	 * The machine has no network at all (see NetworkStatusService). Slack is
+	 * then as unreachable as Cloud, so the DM waits; the next check retries.
+	 * Omitted = never offline.
+	 */
+	isOffline?: () => boolean;
 	/** Start `crewly cloud login` in a PTY (throws when it cannot) */
 	startLogin: () => CloudLoginHandle;
 	/** After a successful CLI login: make sure CloudSync runs on the new credentials */
@@ -270,6 +277,12 @@ export class CloudDisconnectNoticeService {
 				state.quiet = true;
 				return;
 			}
+		}
+		if (this.deps.isOffline?.()) {
+			// Not recorded as notified: once the network is back the next check
+			// sends it (and by then the episode may well be over).
+			this.deps.logger.info('Owner not told about the Cloud disconnect yet: this machine is offline', { reason });
+			return;
 		}
 		const dm = this.deps.getDm();
 		if (!dm) {
@@ -555,6 +568,7 @@ export function createCloudDisconnectNoticeService(wiring: CloudDisconnectNotice
 		getHealth: () => CloudSyncService.getInstance().getHealth(),
 		getDeviceName: wiring.getDeviceName,
 		getDm: wiring.getDm,
+		isOffline: () => NetworkStatusService.getInstance().isOffline(),
 		startLogin: () => {
 			const root = resolveRunningPackageRoot(process.argv[1]);
 			const cliEntry = root ? path.join(root, C.CLI_ENTRY) : null;

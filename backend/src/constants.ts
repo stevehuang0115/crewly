@@ -10118,3 +10118,22 @@ export const TEAM_EXPORT_CONSTANTS = {
 	/** Default file name of a downloaded package (`<slug>` = team name) */
 	DOWNLOAD_FILE_NAME: 'crewly-team-<slug>.json',
 } as const;
+
+/**
+ * Network status (offline detection) — one place that notices the machine
+ * has lost the internet, so wakes, owner DMs and repeat logs can stand down
+ * until it is back (2026-10-25: a 3 h outage woke two CE agents every 26 min
+ * into a Claude that could not reach its API, and logged ~900 identical lines).
+ */
+export const NETWORK_STATUS_CONSTANTS = {
+	/** Consecutive route/DNS-level failures before the machine counts as offline */
+	OFFLINE_AFTER_FAILURES: 3,
+	/** While offline, one "still offline" line per source at most this often */
+	REPEAT_LOG_INTERVAL_MS: 10 * 60_000,
+	/**
+	 * Error codes that mean "no network", not "that server is down". A Cloud
+	 * 5xx or ECONNREFUSED never trips the breaker: local agents must keep
+	 * running through a Cloud outage.
+	 */
+	OFFLINE_ERROR_CODES: ['ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'ENETDOWN', 'EHOSTUNREACH'],
+} as const;
