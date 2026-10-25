@@ -1277,6 +1277,13 @@ void (async () => {
 					pool: TaskPoolService.getInstance(),
 					// Team leaders own their vault's knowledge; the global vault stays with the orchestrator.
 					resolveTarget: (vaultPath) => resolveWikiOwner(this.storageService, vaultPath),
+					// WorkItem titles name the team, not its folder id.
+					labelFor: async (vaultPath) => {
+						const teamMatch = vaultPath.replace(/\\/g, '/').match(/\/teams\/([^/]+)\/wiki$/);
+						if (!teamMatch) return null;
+						const team = (await this.storageService.getTeams()).find((t) => t.id === teamMatch[1]);
+						return team?.name ?? null;
+					},
 					// Never queue a review for a stopped lead: a weekly chore is
 					// not worth a wake the owner never asked for.
 					isTargetAwake: async (sessionName) => {

@@ -1229,6 +1229,66 @@ describe('MemoryService', () => {
       expect(result.taskHistory).toBeUndefined();
     });
   });
+  describe('recall usage ledger (#914)', () => {
+    const SCHEMA = (scope: string, id: string) => `
+vault_scope: ${scope}
+vault_id: ${id}
+hardcoded: []
+llm_curated:
+  - path: llm-curated/
+    frozen: false
+    seed_subdirs: [decisions]
+    llm_can_create_subdirs: true
+    lint_may_restructure: true
+write_policy:
+  canonical: [team-leader, orchestrator]
+  proposed_only: [worker]
+  schema_writer: [steve]
+`;
+
+    async function vaultAt(rel: string, scope: string): Promise<string> {
+      const v = path.join(testDir, rel);
+      await fs.mkdir(path.join(v, 'llm-curated'), { recursive: true });
+      await fs.writeFile(path.join(v, 'SCHEMA.md'), SCHEMA(scope, rel.replace(/\W+/g, '-')), 'utf8');
+      return v;
+    }
+
+    async function ledger(vault: string): Promise<Array<{ via: string; hits: string[]; miss: boolean }>> {
+      try {
+        const raw = await fs.readFile(path.join(vault, 'llm-curated', 'usage.jsonl'), 'utf8');
+        return raw.split('\n').filter(Boolean).map((l) => JSON.parse(l) as { via: string; hits: string[]; miss: boolean });
+      } catch {
+        return [];
+      }
+    }
+
+    it('records an unanswered global recall once, in the global vault, and never in a team vault', async () => {
+      const global = await vaultAt('global-wiki', 'global');
+      const team = await vaultAt('teams/team-1/wiki', 'team');
+      await service.recall({ agentId: testAgentId, scope: 'agent', context: 'zebra quarterly forecast nobody wrote' });
+      await new Promise((r) => setTimeout(r, 50)); // ledger appends are fire-and-forget
+      expect(await ledger(global)).toEqual([expect.objectContaining({ via: 'recall', hits: [], miss: true })]);
+      expect(await ledger(team)).toEqual([]);
+    });
+
+    it('records a recall hit only in the vault that answered', async () => {
+      const global = await vaultAt('global-wiki', 'global');
+      const team = await vaultAt('teams/team-1/wiki', 'team');
+      await fs.mkdir(path.join(team, 'llm-curated/decisions'), { recursive: true });
+      await fs.writeFile(
+        path.join(team, 'llm-curated/decisions/refund-policy.md'),
+        '---\ntitle: Zebra refund window\nsummary: Zebra refunds within fourteen days, no questions asked.\nkeep_because: hard_fact\n---\n# Zebra refund window\n\nZebra refunds within fourteen days, no questions asked. Zebra refund fourteen.\n',
+        'utf8',
+      );
+      await service.recall({ agentId: testAgentId, scope: 'agent', context: 'zebra refund fourteen' });
+      await new Promise((r) => setTimeout(r, 50));
+      const teamRows = await ledger(team);
+      expect(teamRows).toHaveLength(1);
+      expect(teamRows[0]).toMatchObject({ via: 'recall', miss: false });
+      expect(teamRows[0].hits[0]).toContain('refund-policy.md');
+      expect(await ledger(global)).toEqual([]);
+    });
+  });
 });
 
 describe('normalizeIdList (#884 remember supersedes)', () => {

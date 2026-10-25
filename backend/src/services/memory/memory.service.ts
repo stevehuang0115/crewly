@@ -652,12 +652,22 @@ export class MemoryService implements IMemoryService {
 
       const top = outcome.hits.slice(0, limit);
       // Usage ledger: recall is the most common way a vault gets read, so
-      // it must count — per vault, with the pages it surfaced (or a miss).
+      // it must count — per vault that surfaced a page. A recall searches
+      // every vault at once, so "nothing from this vault" is not a miss of
+      // this vault; the miss is recorded once, in the vault that owns the
+      // question (the project vault, or the global vault for a global
+      // recall), only when no vault answered (#914: before this, one
+      // unanswered global recall became a "gap" in every team vault).
       if (ledger) {
         const usage = WikiUsageService.getInstance();
-        for (const vaultPath of vaultPaths) {
-          const hits = top.filter((h) => h.vaultPath === vaultPath).map((h) => h.relativePath);
-          void usage.record(vaultPath, { via: 'recall', agent: ledger.agent, query: context, hits, miss: hits.length === 0 });
+        if (top.length === 0) {
+          const owner = this.recallMissOwner(vaultPaths);
+          if (owner) void usage.record(owner, { via: 'recall', agent: ledger.agent, query: context, hits: [], miss: true });
+        } else {
+          for (const vaultPath of vaultPaths) {
+            const hits = top.filter((h) => h.vaultPath === vaultPath).map((h) => h.relativePath);
+            if (hits.length > 0) void usage.record(vaultPath, { via: 'recall', agent: ledger.agent, query: context, hits, miss: false });
+          }
         }
       }
 
@@ -701,6 +711,22 @@ export class MemoryService implements IMemoryService {
    * @param vaultPath - Absolute vault path.
    * @returns A short label used to prefix recall hits.
    */
+  /**
+   * The vault that records an unanswered recall: the global vault when it
+   * was searched (a global recall), else the single project vault. Team
+   * vaults never own a recall miss — they are only asked directly through
+   * wiki-query.
+   *
+   * @param vaultPaths - Vaults the recall searched
+   * @returns Vault root, or null when none qualifies
+   */
+  private recallMissOwner(vaultPaths: readonly string[]): string | null {
+    const global = vaultPaths.find((v) => this.wikiVaultLabel(v) === 'global');
+    if (global) return global;
+    const project = vaultPaths.find((v) => !this.wikiVaultLabel(v).startsWith('team:'));
+    return project ?? null;
+  }
+
   private wikiVaultLabel(vaultPath: string): string {
     if (vaultPath.endsWith('global-wiki')) return 'global';
     const teamMatch = vaultPath.match(/teams[/\\]([^/\\]+)[/\\]wiki$/);

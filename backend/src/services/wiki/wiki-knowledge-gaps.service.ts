@@ -22,6 +22,14 @@
  * No LLM. A short query (`QUERY_MIN_CHARS`) is a stray token and ignored; a
  * long one (`QUERY_MAX_CHARS`) is pasted text, counted but not listed.
  *
+ * Recall searches every vault at once, so a team vault's ledger holds
+ * recall rows only as echoes of a cross-vault search (and, before the
+ * 1.20.397 ledger fix, a miss in every team vault for one unanswered
+ * global recall — 33 phantom gaps per dormant team on 2026-10-24). A team
+ * vault is only ever asked directly through `wiki-query`, so its page is
+ * built from `wiki-query` rows alone; recall misses belong to the global or
+ * project vault that owns the question.
+ *
  * @module services/wiki/wiki-knowledge-gaps.service
  */
 
@@ -80,8 +88,10 @@ export interface WikiKnowledgeGapsOptions {
   resolveTarget?: (vaultPath: string) => Promise<string | null>;
   /** Whether a target may be given work now; default: always. */
   isTargetAwake?: (sessionName: string) => Promise<boolean>;
-  /** Target when no lead resolves (default: the orchestrator). */
+  /** Target for the global vault when no lead resolves (default: the orchestrator). */
   fallbackTarget?: string;
+  /** Human label of a vault for the WorkItem title (team name); `null` falls back to the folder name. */
+  labelFor?: (vaultPath: string) => Promise<string | null>;
 }
 
 /** Options for {@link WikiKnowledgeGapsService.compile}. */
@@ -112,7 +122,7 @@ export interface WikiKnowledgeGapsResult {
   /** Who the WorkItem went to (or would go to). */
   target?: string;
   /** Why no WorkItem was created although the page was. */
-  workItemSkipped?: 'no_pool' | 'target_dormant' | 'already_raised' | 'dry_run';
+  workItemSkipped?: 'no_pool' | 'no_lead' | 'target_dormant' | 'already_raised' | 'dry_run';
   dryRun: boolean;
 }
 
@@ -163,8 +173,9 @@ export function rollupGaps(events: readonly WikiUsageEvent[]): KnowledgeGapRollu
   let misses = 0;
   let pastedText = 0;
   for (const e of sorted) {
-    const isMiss = e.miss === true || !Array.isArray(e.hits) || e.hits.length === 0;
-    if (!isMiss) continue;
+    // Only an explicit miss counts: a row with no hits and `miss: false` says
+    // the vault was searched and another vault answered.
+    if (e.miss !== true) continue;
     misses++;
     const text = (e.query ?? '').replace(/\s+/g, ' ').trim();
     const key = gapKey(text);
@@ -226,6 +237,7 @@ export class WikiKnowledgeGapsService {
   private readonly resolveTarget: ((vaultPath: string) => Promise<string | null>) | null;
   private readonly isTargetAwake: ((sessionName: string) => Promise<boolean>) | null;
   private readonly fallbackTarget: string;
+  private readonly labelFor: ((vaultPath: string) => Promise<string | null>) | null;
 
   constructor(opts: WikiKnowledgeGapsOptions = {}) {
     this.logger = LoggerService.getInstance().createComponentLogger('WikiKnowledgeGaps');
@@ -235,6 +247,7 @@ export class WikiKnowledgeGapsService {
     this.resolveTarget = opts.resolveTarget ?? null;
     this.isTargetAwake = opts.isTargetAwake ?? null;
     this.fallbackTarget = opts.fallbackTarget ?? ORCHESTRATOR_SESSION_NAME;
+    this.labelFor = opts.labelFor ?? null;
   }
 
   static getInstance(): WikiKnowledgeGapsService {
@@ -277,7 +290,10 @@ export class WikiKnowledgeGapsService {
     if (!opts.force && state.lastWeek === week) return { ...base, reason: 'not_due' };
 
     const usage = new WikiUsageService(() => new Date(now));
-    const events = await usage.events(vaultPath, windowDays);
+    const kind = vaultKind(vaultPath);
+    // A team vault is only asked directly through wiki-query; its recall
+    // rows are echoes of cross-vault searches and never its own gaps.
+    const events = (await usage.events(vaultPath, windowDays)).filter((e) => kind !== 'team' || e.via !== 'recall');
     if (events.length === 0) return { ...base, reason: 'no_queries' };
     const rollup = rollupGaps(events);
     if (rollup.gaps.length === 0) return { ...base, rollup, reason: 'no_gaps' };
@@ -285,8 +301,8 @@ export class WikiKnowledgeGapsService {
     const pagePath = `${WIKI_GAPS_CONSTANTS.DIR}/${week}.md`;
     const body = this.renderBody(rollup, now, windowDays);
     const result: WikiKnowledgeGapsResult = { ...base, compiled: true, rollup, pagePath };
-    const target = await this.targetFor(vaultPath);
-    result.target = target;
+    const target = await this.targetFor(vaultPath, kind);
+    if (target) result.target = target;
 
     if (dryRun) {
       result.workItemSkipped = 'dry_run';
@@ -318,10 +334,12 @@ export class WikiKnowledgeGapsService {
       result.workItemSkipped = 'already_raised';
     } else if (!this.pool) {
       result.workItemSkipped = 'no_pool';
+    } else if (!target) {
+      result.workItemSkipped = 'no_lead';
     } else if (!(await this.targetAwake(target))) {
       result.workItemSkipped = 'target_dormant';
     } else {
-      const wi = this.buildWorkItem(vaultPath, week, target, pagePath, rollup, body);
+      const wi = this.buildWorkItem(vaultPath, week, target, pagePath, rollup, body, await this.label(vaultPath));
       await this.pool.addToPool(wi);
       workItemId = wi.id;
       result.workItemId = wi.id;
@@ -393,9 +411,8 @@ export class WikiKnowledgeGapsService {
    * The lead's review WorkItem: title with the vault and the count, the
    * rendered page as the brief.
    */
-  private buildWorkItem(vaultPath: string, week: string, target: string, pagePath: string, rollup: KnowledgeGapRollup, body: string): WorkItem {
+  private buildWorkItem(vaultPath: string, week: string, target: string, pagePath: string, rollup: KnowledgeGapRollup, body: string, label: string): WorkItem {
     const n = rollup.gaps.length;
-    const label = vaultLabel(vaultPath);
     return createWorkItem({
       type: 'delegate',
       owner: target === ORCHESTRATOR_SESSION_NAME ? 'orchestrator' : 'team_lead',
@@ -415,14 +432,33 @@ export class WikiKnowledgeGapsService {
     });
   }
 
-  /** Who reviews a vault's gaps: its team lead, else the fallback. */
-  private async targetFor(vaultPath: string): Promise<string> {
-    if (!this.resolveTarget) return this.fallbackTarget;
+  /**
+   * Who reviews a vault's gaps: its team lead. Only the global vault falls
+   * back to the orchestrator; a team or project vault without a lead gets
+   * the page and no WorkItem (one unanswered question is not worth an
+   * orchestrator turn per vault).
+   */
+  private async targetFor(vaultPath: string, kind: VaultKind): Promise<string | null> {
+    const fallback = kind === 'global' ? this.fallbackTarget : null;
+    if (!this.resolveTarget) return fallback;
     try {
-      return (await this.resolveTarget(vaultPath)) ?? this.fallbackTarget;
+      return (await this.resolveTarget(vaultPath)) ?? fallback;
     } catch {
-      return this.fallbackTarget;
+      return fallback;
     }
+  }
+
+  /** Human label for the WorkItem title: the wired resolver (team name), else the folder. */
+  private async label(vaultPath: string): Promise<string> {
+    if (this.labelFor) {
+      try {
+        const named = await this.labelFor(vaultPath);
+        if (named && named.trim()) return named.trim();
+      } catch {
+        /* fall through to the folder name */
+      }
+    }
+    return vaultLabel(vaultPath);
   }
 
   /** Errors count as dormant: a chore is never worth risking a wake. */
@@ -451,6 +487,22 @@ export class WikiKnowledgeGapsService {
   private async writeState(vaultPath: string, state: GapsState): Promise<void> {
     await atomicWriteJson(this.statePath(vaultPath), state);
   }
+}
+
+/** Where a vault sits: the cross-project global vault, a team vault, or a project vault. */
+export type VaultKind = 'global' | 'team' | 'project';
+
+/**
+ * Classify a vault by its path.
+ *
+ * @param vaultPath - `~/.crewly/global-wiki`, `~/.crewly/teams/<id>/wiki` or `<project>/.crewly/wiki`
+ * @returns The vault kind (anything unrecognised counts as a project vault)
+ */
+export function vaultKind(vaultPath: string): VaultKind {
+  const normalized = vaultPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (normalized.endsWith('/global-wiki')) return 'global';
+  if (/\/teams\/[^/]+\/wiki$/.test(normalized)) return 'team';
+  return 'project';
 }
 
 /**

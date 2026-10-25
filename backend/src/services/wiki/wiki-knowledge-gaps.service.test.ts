@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
-import { WikiKnowledgeGapsService, gapKey, rollupGaps, vaultLabel, type KnowledgeGapsPool } from './wiki-knowledge-gaps.service.js';
+import { WikiKnowledgeGapsService, gapKey, rollupGaps, vaultKind, vaultLabel, type KnowledgeGapsPool } from './wiki-knowledge-gaps.service.js';
 import { WikiIngestService } from './wiki-ingest.service.js';
 import { WikiIndexService } from './wiki-index.service.js';
 import { WikiUsageService, type WikiUsageEvent } from './wiki-usage.service.js';
@@ -53,6 +53,15 @@ describe('gapKey', () => {
   });
 });
 
+describe('vaultKind', () => {
+  it('tells global, team and project vaults apart', () => {
+    expect(vaultKind('/Users/x/.crewly/global-wiki')).toBe('global');
+    expect(vaultKind('/Users/x/.crewly/teams/team-123/wiki')).toBe('team');
+    expect(vaultKind('/Users/x/projects/crewly/.crewly/wiki')).toBe('project');
+    expect(vaultKind('/tmp/somewhere')).toBe('project');
+  });
+});
+
 describe('vaultLabel', () => {
   it('names the project, team or global vault', () => {
     expect(vaultLabel('/Users/x/projects/crewly/.crewly/wiki')).toBe('crewly');
@@ -75,6 +84,15 @@ describe('rollupGaps', () => {
     expect(r.gaps[0].firstAt).toBe(new Date(NOW - 30 * HOUR).toISOString());
     expect(r.gaps[0].lastAt).toBe(new Date(NOW - 10 * HOUR).toISOString());
     expect(r.gaps[1]).toMatchObject({ query: 'who owns the release', count: 1, agents: ['orc'] });
+  });
+
+  it('counts only explicit misses: no hits with miss=false means another vault answered', () => {
+    const r = rollupGaps([
+      { ...ev(5, 'answered elsewhere', []), miss: false },
+      ev(4, 'real gap', []),
+    ]);
+    expect(r).toMatchObject({ queries: 2, misses: 1, distinct: 1 });
+    expect(r.gaps[0].query).toBe('real gap');
   });
 
   it('drops a question the vault answered later, keeps one answered before the miss', () => {
@@ -125,20 +143,29 @@ describe('WikiKnowledgeGapsService', () => {
     WikiKnowledgeGapsService._resetForTesting();
   });
 
-  function service(opts: { pool?: KnowledgeGapsPool | null; resolveTarget?: boolean } = {}): WikiKnowledgeGapsService {
+  function service(opts: { pool?: KnowledgeGapsPool | null; resolveTarget?: boolean; labelFor?: (v: string) => Promise<string | null> } = {}): WikiKnowledgeGapsService {
     return new WikiKnowledgeGapsService({
       ingest: new WikiIngestService(),
       pool: opts.pool === null ? undefined : opts.pool ?? pool,
       resolveTarget: opts.resolveTarget === false ? undefined : async () => 'crewly-acme-lead-1234',
       isTargetAwake: async () => awake,
+      labelFor: opts.labelFor,
     });
   }
 
-  async function writeUsage(events: WikiUsageEvent[]): Promise<void> {
+  async function writeUsage(events: WikiUsageEvent[], at: string = vault): Promise<void> {
     const usage = new WikiUsageService();
-    const file = usage.ledgerPath(vault);
+    const file = usage.ledgerPath(at);
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, events.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+  }
+
+  /** A sibling vault whose path makes it a global or team vault. */
+  async function siblingVault(rel: string): Promise<string> {
+    const v = path.join(vault, rel);
+    await fs.mkdir(path.join(v, 'llm-curated'), { recursive: true });
+    await fs.writeFile(path.join(v, 'SCHEMA.md'), SCHEMA, 'utf8');
+    return v;
   }
 
   it('reports no_queries without a ledger and no_gaps when every query hit, writing nothing', async () => {
@@ -218,16 +245,49 @@ describe('WikiKnowledgeGapsService', () => {
     expect(added).toHaveLength(1);
   });
 
-  it('falls back to the orchestrator when no lead resolves, and skips the WorkItem without a pool', async () => {
-    await writeUsage([ev(2, 'refund policy', [])]);
-    const orc = await service({ resolveTarget: false }).compile(vault, { now: NOW });
-    expect(orc.target).toBe('crewly-orc');
+  it('only the global vault falls back to the orchestrator; a project vault without a lead gets the page and no WorkItem', async () => {
+    const global = await siblingVault('.crewly/global-wiki');
+    await writeUsage([ev(2, 'refund policy', [])], global);
+    const orc = await service({ resolveTarget: false }).compile(global, { now: NOW });
+    expect(orc).toMatchObject({ compiled: true, target: 'crewly-orc' });
     expect(added[0]).toMatchObject({ owner: 'orchestrator', target: 'crewly-orc' });
+    expect(added[0].title).toContain('— global (');
+
+    await writeUsage([ev(2, 'refund policy', [])]);
+    const noLead = await service({ resolveTarget: false }).compile(vault, { now: NOW });
+    expect(noLead).toMatchObject({ compiled: true, workItemSkipped: 'no_lead' });
+    expect(noLead.target).toBeUndefined();
+    expect(existsSync(path.join(vault, 'llm-curated/gaps/2026-W43.md'))).toBe(true);
+    expect(added).toHaveLength(1);
 
     await fs.rm(path.join(vault, WIKI_GAPS_CONSTANTS.STATE_FILE));
     const noPool = await service({ pool: null }).compile(vault, { now: NOW, force: true });
     expect(noPool).toMatchObject({ compiled: true, workItemSkipped: 'no_pool' });
     expect(added).toHaveLength(1);
+  });
+
+  it('a team vault is built from wiki-query rows only: recall echoes of a cross-vault search are not its gaps', async () => {
+    const team = await siblingVault('.crewly/teams/team-abc/wiki');
+    await writeUsage([
+      ev(5, 'who owns the release', [], 'orc', 'recall'),
+      ev(4, 'pricing tiers', [], 'orc', 'recall'),
+    ], team);
+    expect(await service().compile(team, { now: NOW })).toMatchObject({ compiled: false, reason: 'no_queries' });
+    expect(existsSync(path.join(team, WIKI_GAPS_CONSTANTS.DIR))).toBe(false);
+
+    await writeUsage([
+      ev(5, 'who owns the release', [], 'orc', 'recall'),
+      ev(3, 'team onboarding checklist', [], 'kai', 'wiki-query'),
+    ], team);
+    const r = await service({ labelFor: async () => 'Acme Studio' }).compile(team, { now: NOW });
+    expect(r).toMatchObject({ compiled: true });
+    expect(r.rollup).toMatchObject({ queries: 1, misses: 1, distinct: 1 });
+    expect(r.rollup.gaps[0].query).toBe('team onboarding checklist');
+    expect(added[0].title).toBe('Review knowledge gaps 2026-W43 — Acme Studio (1 unanswered question)');
+
+    // A project vault keeps its recall misses.
+    await writeUsage([ev(5, 'who owns the release', [], 'orc', 'recall')]);
+    expect((await service().compile(vault, { now: NOW })).rollup.distinct).toBe(1);
   });
 
   it('dry run plans the page and the target but writes nothing', async () => {
