@@ -71,6 +71,8 @@ export function createChatV2Router(
   router.post('/channels/team/ensure', requireAuth, requireChatWriter, handlers.ensureTeamChannel);
   router.post('/channels/huddle', requireAuth, requireChatWriter, handlers.createHuddle);
   router.get('/channels/:id', requireAuth, handlers.getChannel);
+  router.patch('/channels/:id', requireAuth, requireChatWriter, handlers.renameChannel);
+  router.put('/channels/:id/members', requireAuth, requireChatWriter, handlers.setHuddleMembers);
   router.delete('/channels/:id', requireAuth, requireChatWriter, handlers.archiveChannel);
 
   router.post('/channels/:id/read', requireAuth, requireChatWriter, handlers.markChannelRead);

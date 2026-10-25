@@ -447,6 +447,25 @@ export class ChatV2RelayAdapter {
         );
         return { members };
       }
+      case 'renameChannel': {
+        const channel = this.service.renameChannel(
+          this.requireString(p, 'channelId'),
+          this.requireString(p, 'name'),
+          principal,
+        );
+        return this.serializeChannel(channel);
+      }
+      case 'setHuddleMembers': {
+        const rawMembers = Array.isArray(p['memberSessions'])
+          ? (p['memberSessions'] as unknown[]).filter((m): m is string => typeof m === 'string')
+          : [];
+        const channel = this.service.setHuddleRoster(
+          this.requireString(p, 'channelId'),
+          rawMembers,
+          principal,
+        );
+        return this.serializeChannel(channel);
+      }
       case 'listMessages': {
         const result = this.service.listMessages({
           channelId: this.requireString(p, 'channelId'),

@@ -394,6 +394,22 @@ describe('agentPresenceFromDTO', () => {
 });
 
 describe('read state (#1400)', () => {
+  it('channelFromDTO maps a group chat roster (members) and leaves it absent otherwise (#1400)', () => {
+    const base: ChannelDTO = {
+      id: 'h1',
+      agentSession: '',
+      name: 'Launch crew',
+      createdAt: 1_700_000_000_000,
+      agentPresence: { status: 'online', lastSeenAt: null },
+      type: 'huddle',
+    };
+    expect(channelFromDTO(base).members).toBeUndefined();
+    expect(channelFromDTO({ ...base, members: [{ sessionName: 'sess-a', joinedAt: 1_700_000_000_000 }, { sessionName: 'sess-b' }] }).members).toEqual([
+      { sessionName: 'sess-a', joinedAt: '2023-11-14T22:13:20.000Z' },
+      { sessionName: 'sess-b', joinedAt: undefined },
+    ]);
+  });
+
   it('channelFromDTO carries lastReadSeq + unreadCount (and tolerates older servers)', () => {
     const base: ChannelDTO = {
       id: 'c',

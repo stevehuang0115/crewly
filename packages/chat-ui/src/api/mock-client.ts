@@ -95,10 +95,27 @@ export class MockChatApiClient implements ChatApiClient {
       createdAt: new Date().toISOString(),
       presence: 'online',
       type: 'huddle',
+      members: input.memberSessions.map((sessionName) => ({ sessionName })),
     };
     this.channels = [...this.channels, ch];
     this.messages[ch.id] = [];
     return ch;
+  }
+
+  async renameChannel(channelId: string, name: string): Promise<Channel> {
+    const ch = this.channels.find((c) => c.id === channelId);
+    if (!ch) throw new Error('channel not found');
+    const next = { ...ch, name };
+    this.channels = this.channels.map((c) => (c.id === channelId ? next : c));
+    return next;
+  }
+
+  async setHuddleMembers(channelId: string, memberSessions: string[]): Promise<Channel> {
+    const ch = this.channels.find((c) => c.id === channelId);
+    if (!ch) throw new Error('channel not found');
+    const next = { ...ch, members: memberSessions.map((sessionName) => ({ sessionName })) };
+    this.channels = this.channels.map((c) => (c.id === channelId ? next : c));
+    return next;
   }
 
   async listMessages(

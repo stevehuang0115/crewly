@@ -55,7 +55,9 @@ export interface ChannelDTO {
    * (team-scoped surfaces). Required field on the wire from Phase B
    * onward; legacy callers that omit it are treated as `'dm'`.
    */
-  type?: 'dm' | 'channel';
+  type?: 'dm' | 'channel' | 'huddle';
+  /** Group chats (`type='huddle'`) carry their roster inline. */
+  members?: Array<{ sessionName: string; joinedAt?: number }>;
   /** Phase B — team workspace ID; required when `type='channel'`. */
   teamId?: string;
   /** Phase B — project link; optional even when `type='channel'`. */
@@ -211,6 +213,9 @@ export function channelFromDTO(dto: ChannelDTO): Channel {
     teamId: dto.teamId,
     projectId: dto.projectId,
     targetMemberId: dto.targetMemberId,
+    ...(dto.members
+      ? { members: dto.members.map((m) => ({ sessionName: m.sessionName, joinedAt: msToIso(m.joinedAt) })) }
+      : {}),
     lastReadSeq: dto.lastReadSeq,
     unreadCount: dto.unreadCount,
   };

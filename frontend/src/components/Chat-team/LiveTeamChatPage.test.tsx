@@ -833,6 +833,44 @@ describe('LiveTeamChatPage — Crewly channels (agents from any team)', () => {
     }
   });
 
+  it('a group chat has Channel settings too: rename and roster go through the chat client (#1400)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ data: { agents: [{ agentSession: 'ops-ana', name: 'Ana', role: 'Ops' }] } }) }));
+    try {
+      const HUDDLE: Channel = {
+        id: 'hud-1',
+        agentSession: '',
+        name: 'Launch crew',
+        createdAt: ISO,
+        type: 'huddle',
+        members: [{ sessionName: 'research-ella' }, { sessionName: 'eng-sam' }],
+      };
+      const { client: base } = makeStubClient([HUDDLE]);
+      const renameChannel = vi.fn().mockResolvedValue({ ...HUDDLE, name: 'Launch crew 2' });
+      const setHuddleMembers = vi.fn().mockResolvedValue({ ...HUDDLE, members: [...HUDDLE.members!, { sessionName: 'ops-ana' }] });
+      const client: ChatApiClient = { ...base, renameChannel, setHuddleMembers };
+      const channelsApi = { list: vi.fn().mockResolvedValue([]), create: vi.fn(), rename: vi.fn(), addMember: vi.fn(), removeMember: vi.fn() };
+      render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[PRODUCT_TEAM]} channelsApi={channelsApi} initialConversationId="hud-1" />);
+      await screen.findByTestId('conv-row-hud-1');
+      fireEvent.click(screen.getByLabelText('Conversation options'));
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Channel settings' }));
+      const modal = await screen.findByTestId('channel-settings-modal');
+      expect(modal).toHaveTextContent('research-ella');
+      expect(modal).toHaveTextContent('eng-sam');
+
+      const input = modal.querySelector('input') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'Launch crew 2' } });
+      fireEvent.click(screen.getByTestId('channel-rename-submit'));
+      await waitFor(() => expect(renameChannel).toHaveBeenCalledWith('hud-1', 'Launch crew 2'));
+      expect(channelsApi.rename).not.toHaveBeenCalled();
+
+      fireEvent.change(await screen.findByTestId('channel-add-select'), { target: { value: 'ops-ana' } });
+      fireEvent.click(screen.getByTestId('channel-add-submit'));
+      await waitFor(() => expect(setHuddleMembers).toHaveBeenCalledWith('hud-1', ['research-ella', 'eng-sam', 'ops-ana']));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('a channel has Channel settings (rename, members); other conversations do not', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ data: { agents: [] } }) }));
     try {

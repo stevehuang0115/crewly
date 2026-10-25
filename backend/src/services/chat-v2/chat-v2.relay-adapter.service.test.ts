@@ -274,6 +274,39 @@ describe('ChatV2RelayAdapter', () => {
     expect(out.members.map((m) => m.sessionName).sort()).toEqual(['sess-x', 'sess-y']);
   });
 
+  it('renameChannel and setHuddleMembers RPCs edit a huddle the owner holds (#1400)', async () => {
+    const huddle = service.createHuddle({
+      name: 'h',
+      memberSessions: ['sess-x'],
+      principal: { userId: 'dev-user-001', source: 'oss' },
+    });
+
+    cloudSync.emitInbound(
+      buildRequestMsg('portal-h4', {
+        id: 'r-h4',
+        method: 'renameChannel',
+        params: { channelId: huddle.id, name: 'Launch crew' },
+      }),
+    );
+    await flushMicrotasks();
+    const renamed = cloudSync.outbound[0].payload as ChatResponsePayload;
+    expect(renamed.error).toBeUndefined();
+    expect((renamed.result as { name: string }).name).toBe('Launch crew');
+
+    cloudSync.emitInbound(
+      buildRequestMsg('portal-h5', {
+        id: 'r-h5',
+        method: 'setHuddleMembers',
+        params: { channelId: huddle.id, memberSessions: ['sess-x', 'sess-y', null] },
+      }),
+    );
+    await flushMicrotasks();
+    const roster = cloudSync.outbound[1].payload as ChatResponsePayload;
+    expect(roster.error).toBeUndefined();
+    const ch = roster.result as { members: Array<{ sessionName: string }> };
+    expect(ch.members.map((m) => m.sessionName).sort()).toEqual(['sess-x', 'sess-y']);
+  });
+
   it('ensureDmChannel creates a channel and replies with the DTO', async () => {
     cloudSync.emitInbound(
       buildRequestMsg('portal-2', {
