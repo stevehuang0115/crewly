@@ -85,6 +85,34 @@ export function clearPlannedRelaunch(sessionName: string): void {
 	planned.delete(sessionName);
 }
 
+/**
+ * Mark a session as being stopped on purpose. Between the kill and the
+ * `inactive` write (session memory capture sits in between, ~200 ms on a
+ * loaded machine) the heartbeat monitor would otherwise see a live member
+ * with no session and log a false ghost. A planned relaunch already in
+ * progress is left as it is; its longer window covers the stop too.
+ *
+ * @param sessionName - Session
+ * @param now - Current time (ms)
+ */
+export function markPlannedStop(sessionName: string, now: number = Date.now()): void {
+	if (getPlannedRelaunch(sessionName, now)) return;
+	planned.set(sessionName, {
+		reason: PLANNED_RELAUNCH_CONSTANTS.STOP_REASON,
+		until: now + PLANNED_RELAUNCH_CONSTANTS.STOP_WINDOW_MS,
+	});
+}
+
+/**
+ * End a deliberate-stop window once storage says `inactive`. A planned
+ * relaunch window under the same name is not touched.
+ *
+ * @param sessionName - Session
+ */
+export function clearPlannedStop(sessionName: string): void {
+	if (planned.get(sessionName)?.reason === PLANNED_RELAUNCH_CONSTANTS.STOP_REASON) planned.delete(sessionName);
+}
+
 /** Forget every planned relaunch (tests). */
 export function resetPlannedRelaunches(): void {
 	planned.clear();

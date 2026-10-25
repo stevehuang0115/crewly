@@ -96,7 +96,7 @@ import { AgentSuspendService } from './agent-suspend.service.js';
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
 import { AGENT_HEARTBEAT_MONITOR_CONSTANTS } from '../../constants.js';
 import { registerInProcessRuntime, unregisterInProcessRuntime } from './crewly-agent/in-process-runtime-registry.js';
-import { markPlannedRelaunch, resetPlannedRelaunches } from './planned-relaunch.registry.js';
+import { markPlannedRelaunch, markPlannedStop, resetPlannedRelaunches } from './planned-relaunch.registry.js';
 
 const restoring = new Set<string>();
 jest.mock('./restore-queue.js', () => ({
@@ -539,6 +539,20 @@ describe('AgentHeartbeatMonitorService', () => {
 			// A real crash after the window still restarts it.
 			for (let i = 0; i < 3; i++) await service.performCheck();
 			expect(mockSessionBackend.killSession).toHaveBeenCalledWith('dev-agent-1');
+		});
+
+		it('leaves an agent being stopped on purpose alone: no ghost downgrade while storage catches up (#1464)', async () => {
+			setStartedAtInPast(service);
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+			markPlannedStop('dev-agent-1');
+			try {
+				// Session already killed, `inactive` not yet written.
+				mockSessionBackend.sessionExists.mockReturnValue(false);
+				await service.performCheck();
+				expect(mockStorageService.updateAgentStatus).not.toHaveBeenCalledWith('dev-agent-1', 'inactive');
+			} finally {
+				resetPlannedRelaunches();
+			}
 		});
 
 		it('should not restart until 3 consecutive dead checks', async () => {

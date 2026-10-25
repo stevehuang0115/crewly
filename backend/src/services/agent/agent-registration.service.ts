@@ -71,6 +71,7 @@ import { SessionMemoryService } from '../memory/session-memory.service.js';
 import { StartupBriefingService } from '../memory/startup-briefing.service.js';
 import { ActiveWorkBriefingService } from './active-work-briefing.service.js';
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
+import { clearPlannedStop, markPlannedStop } from './planned-relaunch.registry.js';
 import { ContextWindowMonitorService } from './context-window-monitor.service.js';
 import { OAuthReloginMonitorService } from './oauth-relogin-monitor.service.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
@@ -4511,6 +4512,10 @@ Loop until done, blocked, or explicitly reassigned:
 		try {
 			this.logger.info('Terminating agent session (unified approach)', { sessionName, role });
 
+			// The heartbeat monitor must not call this a ghost while the session
+			// is gone but storage still says active (#1464).
+			markPlannedStop(sessionName);
+
 			// Stop runtime exit monitoring before killing the session
 			RuntimeExitMonitorService.getInstance().stopMonitoring(sessionName);
 			// ...and with it the session's pending registration flow, which no
@@ -4564,6 +4569,7 @@ Loop until done, blocked, or explicitly reassigned:
 				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
 			);
 			this.logger.info('Agent status updated to inactive', { sessionName, role });
+			clearPlannedStop(sessionName);
 
 			// Unregister from persistence so explicitly stopped agents don't reappear in resume popup
 			try {
