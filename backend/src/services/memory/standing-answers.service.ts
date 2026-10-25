@@ -33,6 +33,10 @@
  *   is no longer in force (superseded, expired, resolved). The watermark
  *   does not move for these, so they are checked on every read
  *   ({@link findInvalidatedSections}) and also make the page need a refresh.
+ * - Edits are per section (keep / modify / remove / add), so a refresh never
+ *   rewrites what it did not touch. Before a content change the page as it
+ *   was is snapshotted and the write is logged (`changes.log`), so every
+ *   change is auditable (#914 P1).
  * - No LLM runs here. The only writer is an agent working a refresh
  *   WorkItem (see standing-refresh.service.ts), raised only when the
  *   watermark moves.
@@ -153,8 +157,20 @@ export interface WriteSectionInput extends StandingLocation {
 	cites: string[];
 }
 
+/** What a section write did to the page. */
+export type SectionWriteOp = 'added' | 'modified' | 'removed' | 'unchanged';
+
 /** Result of a section write. */
 export interface WriteSectionResult {
+	/**
+	 * What changed: `added` (new heading), `modified` (body or citations
+	 * differ), `removed` (empty body on an existing section) or `unchanged`
+	 * (the same body and citations again — only `last_refreshed` and the
+	 * watermark move; use it to confirm a section after a refresh).
+	 */
+	op: SectionWriteOp;
+	/** Snapshot of the page as it was before this write, null when nothing changed or the page is new. */
+	snapshot: string | null;
 	filePath: string;
 	watermark: string | null;
 	removed: boolean;
@@ -453,8 +469,49 @@ export class StandingAnswersService {
 	/**
 	 * @param options - `crewlyHome` overrides {@link getCrewlyHomePath} (tests)
 	 */
-	constructor(options: { crewlyHome?: string } = {}) {
+	private readonly historyKeep: number;
+
+	/**
+	 * @param options - `crewlyHome` overrides {@link getCrewlyHomePath} (tests);
+	 *   `historyKeep` overrides {@link STANDING_ANSWERS_CONSTANTS.HISTORY_KEEP}
+	 */
+	constructor(options: { crewlyHome?: string; historyKeep?: number } = {}) {
 		this.crewlyHome = options.crewlyHome ?? getCrewlyHomePath();
+		this.historyKeep = options.historyKeep ?? STANDING_ANSWERS_CONSTANTS.HISTORY_KEEP;
+	}
+
+	/**
+	 * Directory holding a page's snapshots and `changes.log`.
+	 *
+	 * @param def - Page definition
+	 * @param loc - Location
+	 * @returns Absolute path, or null when the location lacks what the scope needs
+	 */
+	historyDir(def: StandingPageDef, loc: StandingLocation): string | null {
+		if (def.scope === 'project') {
+			if (!loc.projectPath) return null;
+			return path.join(resolveProjectDataDir(loc.projectPath), STANDING_ANSWERS_CONSTANTS.HISTORY_DIR, def.id);
+		}
+		if (!loc.sessionName || !isSafeSegment(loc.sessionName)) return null;
+		return path.join(this.crewlyHome, MEMORY_CONSTANTS.PATHS.AGENTS_DIR, loc.sessionName, STANDING_ANSWERS_CONSTANTS.HISTORY_DIR);
+	}
+
+	/**
+	 * Snapshots of a page, oldest first (absolute paths).
+	 *
+	 * @param def - Page definition
+	 * @param loc - Location
+	 * @returns Snapshot files; empty when there is no history
+	 */
+	async listSnapshots(def: StandingPageDef, loc: StandingLocation): Promise<string[]> {
+		const dir = this.historyDir(def, loc);
+		if (!dir) return [];
+		try {
+			const names = await fs.readdir(dir);
+			return names.filter((n) => n.endsWith('.md')).sort().map((n) => path.join(dir, n));
+		} catch {
+			return [];
+		}
 	}
 
 	/**
@@ -569,7 +626,10 @@ export class StandingAnswersService {
 	}
 
 	/**
-	 * Write one section of a page (section-level edit).
+	 * Write one section of a page (section-level edit): keep the rest, replace
+	 * or add this heading, or remove it (empty body). Before a content change
+	 * the previous page is snapshotted under {@link historyDir} and every write
+	 * appends a `changes.log` line, so each change is auditable (#914 P1).
 	 *
 	 * Validates the heading and body, requires every citation to name an
 	 * entry in the page's sources, masks secrets, then stamps
@@ -624,18 +684,37 @@ export class StandingAnswersService {
 		const maskedHeading = redactSensitive(heading);
 		const raw = await readText(filePath);
 		const existing: StandingPage = raw === null ? { sections: [] } : parseStandingPage(raw);
-		const { page, removed } = upsertSection(existing, { heading: maskedHeading, body: maskedBody, cites: body ? cites : [] });
+		const section: StandingSection = { heading: maskedHeading, body: maskedBody, cites: body ? cites : [] };
+		const op = sectionWriteOp(existing, section);
+		const { page, removed } = upsertSection(existing, section);
 		const watermark = computeWatermark(entries);
+		const now = new Date().toISOString();
 		const next: StandingPage = {
 			...page,
 			question: existing.question ?? def.question,
-			lastRefreshed: new Date().toISOString(),
+			lastRefreshed: now,
 			watermark: watermark ?? undefined,
 		};
 
+		const historyDir = this.historyDir(def, loc);
+		let snapshot: string | null = null;
+		if (historyDir) {
+			try {
+				await ensureDir(historyDir);
+				if (op !== 'unchanged' && raw !== null) {
+					snapshot = await writeSnapshot(historyDir, now, raw);
+					await pruneSnapshots(historyDir, this.historyKeep);
+				}
+				await appendChangeLog(historyDir, `${now}\t${op}\t${maskedHeading}\t${section.cites.length} cite${section.cites.length === 1 ? '' : 's'}\t${snapshot ? path.basename(snapshot) : '-'}`);
+			} catch {
+				// History is an audit aid; a failure there must not block the page write.
+				snapshot = null;
+			}
+		}
+
 		await ensureDir(path.dirname(filePath));
 		await atomicWriteFile(filePath, serializeStandingPage(next));
-		return { filePath, watermark, removed, masked: maskedBody !== body || maskedHeading !== heading };
+		return { filePath, watermark, op, snapshot, removed, masked: maskedBody !== body || maskedHeading !== heading };
 	}
 
 	/**
@@ -674,6 +753,7 @@ export class StandingAnswersService {
 			...possibleSupersedeLines(shown),
 			'',
 			'## Write each changed section (do not edit the file by hand — the skill checks citations and masks secrets)',
+			'Sections you do not write are kept as they are. A section that is still right: write it again unchanged so the watermark moves (the skill reports `unchanged`; nothing is rewritten). Each change is snapshotted and logged.',
 			'```bash',
 			`bash ${agentSkillsPath}/core/standing-update/execute.sh --page ${status.def.id} ${where} --heading "<section heading>" --body-file <file> --cites "<cite>,<cite>"`,
 			'```',
@@ -683,9 +763,59 @@ export class StandingAnswersService {
 	}
 }
 
+/**
+ * What writing `section` would do to `page`.
+ *
+ * @param page - Page as it stands
+ * @param section - Incoming section (empty body = remove)
+ * @returns The op
+ */
+export function sectionWriteOp(page: StandingPage, section: StandingSection): SectionWriteOp {
+	const key = section.heading.trim().toLowerCase();
+	const prior = page.sections.find((s) => s.heading.trim().toLowerCase() === key);
+	if (!section.body.trim()) return prior ? 'removed' : 'unchanged';
+	if (!prior) return 'added';
+	const sameCites = prior.cites.length === section.cites.length && prior.cites.every((c, i) => c === section.cites[i]);
+	return prior.body === section.body && sameCites ? 'unchanged' : 'modified';
+}
+
 // ---------------------------------------------------------------------------
 // File helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Save the previous page under `<dir>/<timestamp>.md` (a numeric suffix
+ * keeps two snapshots in the same millisecond apart).
+ *
+ * @returns The snapshot path
+ */
+async function writeSnapshot(dir: string, now: string, raw: string): Promise<string> {
+	const stem = now.replace(/[:.]/g, '-');
+	for (let n = 0; ; n++) {
+		const file = path.join(dir, `${stem}${n ? `-${n}` : ''}.md`);
+		try {
+			await fs.writeFile(file, raw, { encoding: 'utf8', flag: 'wx' });
+			return file;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+		}
+	}
+}
+
+/** Delete the oldest snapshots beyond `keep`. */
+async function pruneSnapshots(dir: string, keep: number): Promise<void> {
+	const names = (await fs.readdir(dir)).filter((n) => n.endsWith('.md')).sort();
+	const excess = names.slice(0, Math.max(0, names.length - keep));
+	await Promise.all(excess.map((n) => fs.rm(path.join(dir, n), { force: true })));
+}
+
+/** Append one line to `changes.log`, keeping the last HISTORY_LOG_KEEP lines. */
+async function appendChangeLog(dir: string, line: string): Promise<void> {
+	const file = path.join(dir, 'changes.log');
+	const prior = (await readText(file))?.split('\n').filter(Boolean) ?? [];
+	const lines = [...prior, line].slice(-STANDING_ANSWERS_CONSTANTS.HISTORY_LOG_KEEP);
+	await atomicWriteFile(file, `${lines.join('\n')}\n`);
+}
 
 /** Words too common to signal a shared topic. */
 const TOPIC_STOPWORDS = new Set(['that', 'this', 'with', 'from', 'have', 'will', 'were', 'been', 'into', 'than', 'then', 'they', 'them', 'their', 'there', 'what', 'when', 'which', 'would', 'should', 'could', 'about', 'after', 'before', 'still', 'only', 'also', 'more', 'some', 'does', 'done', 'just', 'over', 'each', 'very']);

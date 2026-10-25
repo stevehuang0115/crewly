@@ -66,6 +66,30 @@ state file), so a retraction raises one refresh even though the watermark did no
 and the same retraction is not re-raised on every tick. The other gates (in-flight,
 cooldown, tick cap, target awake) are unchanged.
 
+## Delta edits and change history (#914 P1)
+
+A refresh is a set of section ops applied mechanically, never a page rewrite:
+
+| Agent does | `writeSection` op | Page |
+|---|---|---|
+| does not write a heading | — (keep) | section untouched |
+| writes a heading that is not on the page | `added` | section appended |
+| writes an existing heading with a different body or citations | `modified` | that section replaced |
+| writes an existing heading with an empty body | `removed` | that section dropped |
+| writes an existing heading with the same body and citations | `unchanged` | only `last_refreshed` and the watermark move |
+
+`unchanged` is how a refresh that found nothing to change still moves the watermark (the
+brief tells the agent to do this); it takes no snapshot.
+
+Before every `added` / `modified` / `removed` write on an existing page, the page as it
+was is saved to `<history>/<timestamp>.md`, and every write (including `unchanged`)
+appends `<timestamp>\t<op>\t<heading>\t<n cites>\t<snapshot|->` to `<history>/changes.log`.
+`<history>` is `<project data dir>/standing-history/<pageId>/` for project pages (outside
+the wiki vault, so the index never sees it) and `agents/<session>/standing-history/` for
+the agent page. `HISTORY_KEEP` (30) snapshots are kept per page and the log keeps its
+last `HISTORY_LOG_KEEP` (500) lines. A history failure never blocks the page write. The
+PUT result carries `op` and `snapshot`; `StandingAnswersService.listSnapshots` lists them.
+
 ## Components
 
 - **`StandingAnswersService`** (`services/memory/standing-answers.service.ts`)
