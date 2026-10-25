@@ -5,7 +5,7 @@ jest.mock('./logger.service.js', () => ({
 }));
 
 import { NETWORK_STATUS_CONSTANTS } from '../../constants.js';
-import { NetworkStatusService, extractOfflineErrorCode } from './network-status.service.js';
+import { NetworkStatusService, extractOfflineErrorCode, warnUnlessOfflineRepeat } from './network-status.service.js';
 
 /** undici's shape: `TypeError: fetch failed` with the real code on `cause`. */
 function fetchFailed(code: string): Error {
@@ -122,6 +122,26 @@ describe('NetworkStatusService', () => {
 			svc.shouldLog('relay');
 			svc.recordSuccess('relay');
 			expect(svc.shouldLog('relay')).toBe(true);
+		});
+	});
+
+	describe('warnUnlessOfflineRepeat', () => {
+		it('warns every time while online, warns once then debugs while offline, with the outage length', () => {
+			const logger = { warn: jest.fn(), debug: jest.fn() };
+			warnUnlessOfflineRepeat(logger, 'slack-registry', 'heartbeat failed', { error: 'x' });
+			warnUnlessOfflineRepeat(logger, 'slack-registry', 'heartbeat failed', { error: 'x' });
+			expect(logger.warn).toHaveBeenCalledTimes(2);
+			expect(logger.warn).toHaveBeenLastCalledWith('heartbeat failed', { error: 'x' });
+			expect(logger.debug).not.toHaveBeenCalled();
+
+			for (let i = 0; i < NETWORK_STATUS_CONSTANTS.OFFLINE_AFTER_FAILURES; i++) svc.recordFailure('relay', fetchFailed('ENOTFOUND'));
+			clock += 120_000;
+			warnUnlessOfflineRepeat(logger, 'slack-registry', 'heartbeat failed', { error: 'x' });
+			expect(logger.warn).toHaveBeenCalledTimes(3);
+			expect(logger.warn).toHaveBeenLastCalledWith('heartbeat failed', { error: 'x', offlineMinutes: 2 });
+			warnUnlessOfflineRepeat(logger, 'slack-registry', 'heartbeat failed', { error: 'x' });
+			expect(logger.warn).toHaveBeenCalledTimes(3);
+			expect(logger.debug).toHaveBeenCalledWith('heartbeat failed (repeat while offline)', { error: 'x' });
 		});
 	});
 });

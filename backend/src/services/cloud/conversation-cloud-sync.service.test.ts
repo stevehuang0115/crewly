@@ -9,7 +9,8 @@ import { gunzipSync } from 'zlib';
 import { ChatV2Service } from '../chat-v2/chat-v2.service.js';
 import { openChatDatabase } from '../chat-v2/sqlite/chat-db.js';
 import { loadChatV2Config } from '../chat-v2/config.js';
-import { CONVERSATION_SYNC_CONSTANTS } from '../../constants.js';
+import { CONVERSATION_SYNC_CONSTANTS, NETWORK_STATUS_CONSTANTS } from '../../constants.js';
+import { NetworkStatusService } from '../core/network-status.service.js';
 import type { ComponentLogger } from '../core/logger.service.js';
 import {
   ConversationCloudSyncService,
@@ -257,6 +258,24 @@ describe('ConversationCloudSyncService', () => {
       await h.svc.syncNow();
       expect(h.calls).toHaveLength(3);
       expect(h.outbox.count()).toBe(1);
+    });
+
+    it('feeds the offline breaker from DNS failures and warns once, not per retry (#1463)', async () => {
+      const h = setup();
+      h.liveOnly();
+      h.say('x');
+      const cause = Object.assign(new Error('getaddrinfo ENOTFOUND api.test'), { code: 'ENOTFOUND' });
+      h.fetchImpl.mockRejectedValue(Object.assign(new TypeError('fetch failed'), { cause }));
+      let wait = 1_000;
+      for (let i = 0; i < NETWORK_STATUS_CONSTANTS.OFFLINE_AFTER_FAILURES; i++) {
+        await h.svc.syncNow();
+        h.tick(wait);
+        wait *= 2;
+      }
+      expect(NetworkStatusService.getInstance().isOffline()).toBe(true);
+      expect(h.logs.filter((l) => l.startsWith('warn:Conversation upload failed'))).toHaveLength(1);
+      expect(h.outbox.count()).toBe(1);
+      NetworkStatusService.resetInstance();
     });
 
     it('caps the backoff at 5 minutes', async () => {
