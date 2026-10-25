@@ -10109,10 +10109,20 @@ export const ACTIVITY_LOG_CONSTANTS = {
  * importer knows what to reconnect.
  */
 export const TEAM_EXPORT_CONSTANTS = {
-	/** Format version written by this release */
-	VERSION: '1.1',
+	/** Format version written by this release (1.2 added the optional wiki) */
+	VERSION: '1.2',
 	/** Versions `importTeam` accepts */
-	SUPPORTED_VERSIONS: ['1.0', '1.1'],
+	SUPPORTED_VERSIONS: ['1.0', '1.1', '1.2'],
+	/** Folder of a team's wiki vault inside its team directory */
+	WIKI_DIR: 'wiki',
+	/** Only these vault files travel: knowledge pages, never ledgers or compile state */
+	WIKI_PAGE_EXTENSION: '.md',
+	/** A wiki page larger than this is listed as skipped, not packaged */
+	WIKI_MAX_PAGE_BYTES: 512 * 1024,
+	/** Once packaged pages reach this many bytes, the rest are listed as skipped */
+	WIKI_MAX_TOTAL_BYTES: 16 * 1024 * 1024,
+	/** A packaged page path: vault-relative, `.md`, no dot segments, no traversal */
+	WIKI_PAGE_PATH_PATTERN: /^(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.md$/,
 	/** Member fields that describe this install's running agent, never the team */
 	RUNTIME_MEMBER_FIELDS: ['agentId', 'currentTickets', 'readyAt', 'loginRequired', 'usageLimited', 'runtimeOverride', 'capabilities', 'lastActivityCheck'],
 	/** Connector id → words in prompts / skill ids / schedules that mean the team uses it */

@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { defaultPackageFileName, teamExportCommand, teamImportCommand } from './team-export.js';
+import { defaultPackageFileName, describeKnowledge, teamExportCommand, teamImportCommand } from './team-export.js';
 
 jest.mock('chalk', () => ({
   __esModule: true,
@@ -52,6 +52,26 @@ describe('crewly team export', () => {
     expect(text).toContain('members: 2, prompts: 1, norms: 1, schedules: 1');
     expect(text).toContain('secrets masked: 2; final scan clean');
     expect(text).toContain('reconnect after import: google-workspace');
+  });
+
+  it('asks for the wiki with --wiki and reports what travelled', async () => {
+    const withWiki = {
+      ...pkg,
+      version: '1.2',
+      wiki: { 'llm-curated/index.md': '# Index', 'llm-curated/decisions/a.md': 'A' },
+      portability: { ...pkg.portability, knowledge: { included: true, pages: 3, bytes: 900, skipped: ['llm-curated/digests/huge.md'] } },
+    };
+    const fetchImpl = jest.fn().mockResolvedValue(reply(200, { success: true, data: withWiki }));
+    expect(await teamExportCommand(pkg.team.id, { out: path.join(dir, 'w.json'), wiki: true }, print, fetchImpl as never)).toBe(0);
+    expect(fetchImpl.mock.calls[0]![0]).toMatch(/\/export\?wiki=1$/);
+    expect(lines.join('\n')).toContain('wiki: 2 of 3 page(s) included; 1 skipped as too large: llm-curated/digests/huge.md');
+  });
+
+  it('describes the knowledge in one line', () => {
+    expect(describeKnowledge(undefined, 0)).toBe('wiki: not recorded by this package version');
+    expect(describeKnowledge({ included: false, pages: 0, bytes: 0, skipped: [] }, 0)).toBe('wiki: the team has no pages');
+    expect(describeKnowledge({ included: false, pages: 14, bytes: 9000, skipped: [] }, 0)).toBe("wiki: 14 page(s) stayed on this machine — add --wiki to include the team's knowledge");
+    expect(describeKnowledge({ included: true, pages: 14, bytes: 9000, skipped: [] }, 14)).toBe('wiki: 14 of 14 page(s) included');
   });
 
   it('skips the lookup when given an id', async () => {
@@ -110,6 +130,7 @@ describe('crewly team import', () => {
     expect(JSON.parse(init.body).version).toBe('1.1');
     const text = lines.join('\n');
     expect(text).toContain('Imported CE Site');
+    expect(text).toContain('wiki pages: 0');
     expect(text).toMatch(/reconnect on this machine: google-workspace/);
   });
 

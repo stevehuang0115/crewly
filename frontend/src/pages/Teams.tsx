@@ -298,10 +298,11 @@ export const Teams: React.FC<TeamsProps> = ({ createOpen, onCreateOpenChange, on
    * is in it.
    *
    * @param teamId - Team ID
+   * @param includeWiki - Put the team's wiki pages (its knowledge) in the package
    */
-  const handleExportTeam = async (teamId: string) => {
+  const handleExportTeam = async (teamId: string, includeWiki = false) => {
     try {
-      const { pkg, fileName } = await downloadTeamPackage(teamId);
+      const { pkg, fileName } = await downloadTeamPackage(teamId, undefined, includeWiki);
       showSuccess(describePackage(pkg), `Saved ${fileName}`);
     } catch (error) {
       showError('Failed to export team: ' + (error instanceof Error ? error.message : 'Unknown error'));

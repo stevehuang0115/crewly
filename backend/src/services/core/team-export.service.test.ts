@@ -8,7 +8,8 @@
  */
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import { TeamExportService, generateCronId, stripRuntimeState, redactDeep, referencedConnectors, isSupportedExportVersion } from './team-export.service.js';
+import { TeamExportService, generateCronId, stripRuntimeState, redactDeep, referencedConnectors, isSupportedExportVersion, isPackagedWikiPath, collectTeamWiki } from './team-export.service.js';
+import { TEAM_EXPORT_CONSTANTS } from '../../constants.js';
 import type { TeamExport } from './team-export.service.js';
 import type { Team } from '../../types/index.js';
 import type { CronTask } from '../../types/cron-task.types.js';
@@ -137,7 +138,7 @@ describe('TeamExportService', () => {
     it('should export team config without this install\'s runtime state', async () => {
       const result = await service.exportTeam('team-abc');
 
-      expect(result.version).toBe('1.1');
+      expect(result.version).toBe('1.2');
       expect(result.exportedAt).toBeDefined();
       expect(result.team.id).toBe('team-abc');
       const member = result.team.members[0] as unknown as Record<string, unknown>;
@@ -205,6 +206,36 @@ describe('TeamExportService', () => {
       expect(result.cronTasks[1].id).toBe('cron-old2');
     });
 
+    it('counts the wiki without packaging it by default, and packages it on request', async () => {
+      const bigPage = 'x'.repeat(TEAM_EXPORT_CONSTANTS.WIKI_MAX_PAGE_BYTES + 1);
+      mockedFs.readdir.mockImplementation((dirPath: any) => {
+        const dir = String(dirPath);
+        if (dir.endsWith('/wiki')) {
+          return Promise.resolve(['SCHEMA.md', 'llm-curated', 'llm-curated/index.md', 'llm-curated/usage.jsonl', 'llm-curated/decisions/2026-10-01-pricing.md', 'llm-curated/digests/huge.md', '.wiki-compile-state.json'] as any);
+        }
+        return Promise.resolve([] as any);
+      });
+      (mockedFs.readFile as jest.Mock).mockImplementation((filePath: any) => {
+        const fp = String(filePath);
+        if (fp.endsWith('SCHEMA.md')) return Promise.resolve('# Schema');
+        if (fp.endsWith('index.md')) return Promise.resolve('# Index');
+        if (fp.endsWith('pricing.md')) return Promise.resolve('Decided: SLACK_BOT_TOKEN=xoxb-1234567890-abcdefghij');
+        if (fp.endsWith('huge.md')) return Promise.resolve(bigPage);
+        return Promise.reject(new Error('File not found'));
+      });
+
+      const counted = await service.exportTeam('team-abc');
+      expect(counted.wiki).toBeUndefined();
+      expect(counted.portability?.knowledge).toEqual({ included: false, pages: 4, bytes: expect.any(Number), skipped: [] });
+
+      const packaged = await service.exportTeam('team-abc', { includeWiki: true });
+      expect(packaged.version).toBe('1.2');
+      expect(Object.keys(packaged.wiki ?? {})).toEqual(['SCHEMA.md', 'llm-curated/decisions/2026-10-01-pricing.md', 'llm-curated/index.md']);
+      expect(packaged.wiki?.['llm-curated/decisions/2026-10-01-pricing.md']).not.toContain('xoxb-');
+      expect(packaged.portability?.knowledge).toEqual({ included: true, pages: 4, bytes: expect.any(Number), skipped: ['llm-curated/digests/huge.md'] });
+      expect(packaged.portability?.redactions).toBeGreaterThanOrEqual(2);
+    });
+
     it('should throw if team not found', async () => {
       await expect(service.exportTeam('nonexistent'))
         .rejects.toThrow('Team not found: nonexistent');
@@ -269,6 +300,29 @@ describe('TeamExportService', () => {
       expect(saved.members[0].sessionName).toBe('');
       expect(saved.members[0].agentStatus).toBe('inactive');
       expect(saved.members[0]).not.toHaveProperty('currentTickets');
+    });
+
+    it('writes packaged wiki pages into the new vault and refuses unsafe paths', async () => {
+      const result = await service.importTeam({
+        ...mockExport,
+        version: '1.2',
+        wiki: {
+          'llm-curated/index.md': '# Index',
+          'llm-curated/decisions/a.md': 'A',
+          '../escape.md': 'nope',
+          'llm-curated/.hidden.md': 'nope',
+          'notes.txt': 'nope',
+          '/abs.md': 'nope',
+          'llm-curated/number.md': 42 as unknown as string,
+        },
+      });
+
+      expect(result.wikiPagesImported).toBe(2);
+      expect(result.wikiPagesRejected).toEqual(['../escape.md', 'llm-curated/.hidden.md', 'notes.txt', '/abs.md', 'llm-curated/number.md']);
+      const written = mockedFs.writeFile.mock.calls.map((c) => String(c[0]));
+      expect(written).toContain('/mock/.crewly/teams/team-abc/wiki/llm-curated/index.md');
+      expect(written).toContain('/mock/.crewly/teams/team-abc/wiki/llm-curated/decisions/a.md');
+      expect(written.some((w) => w.includes('escape') || w.includes('.hidden') || w.includes('notes.txt'))).toBe(false);
     });
 
     it('accepts 1.0 and 1.1 packages and refuses others', async () => {
@@ -413,7 +467,7 @@ describe('TeamExportService', () => {
       const importedCronStore = JSON.parse(cronWriteCall![1] as string);
 
       // Verify structural equivalence (ignoring cron task IDs)
-      expect(exported.version).toBe('1.1');
+      expect(exported.version).toBe('1.2');
       expect(importResult.team.id).toBe(exported.team.id);
       expect(importResult.team.name).toBe(exported.team.name);
       expect(importResult.promptsImported).toBe(Object.keys(exported.prompts).length);
@@ -460,6 +514,18 @@ describe('team export helpers', () => {
     expect(value.a[0]).toContain('[REDACTED');
     expect(value.b).toEqual({ c: 'clean', d: 7, e: null });
     expect(count).toBe(1);
+  });
+
+  it('isPackagedWikiPath allows plain .md page paths only', () => {
+    for (const ok of ['SCHEMA.md', 'llm-curated/index.md', 'llm-curated/decisions/2026-10-01-a_b.md', 'sop/team-norm.v2.md']) expect(isPackagedWikiPath(ok)).toBe(true);
+    for (const bad of ['', '../x.md', 'a/../b.md', '/abs.md', '.hidden.md', 'a/.b/c.md', 'usage.jsonl', '.wiki-compile-state.json', 'a//b.md', 'a/', 'page.MD', 'with space.md']) expect(isPackagedWikiPath(bad)).toBe(false);
+  });
+
+  it('collectTeamWiki returns nothing for a missing or unreadable vault', async () => {
+    existsSync.mockReturnValueOnce(false);
+    expect(await collectTeamWiki('/mock/teams/t/wiki', true)).toEqual({ pages: {}, knowledge: { included: true, pages: 0, bytes: 0, skipped: [] } });
+    mockedFs.readdir.mockRejectedValueOnce(new Error('EACCES'));
+    expect(await collectTeamWiki('/mock/teams/t/wiki', false)).toEqual({ pages: {}, knowledge: { included: false, pages: 0, bytes: 0, skipped: [] } });
   });
 
   it('referencedConnectors matches words, not substrings', () => {

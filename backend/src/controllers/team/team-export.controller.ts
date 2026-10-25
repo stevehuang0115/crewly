@@ -31,12 +31,13 @@ export function exportFileName(teamName: string): string {
 }
 
 /**
- * GET /api/teams/:teamId/export[?download=1]
+ * GET /api/teams/:teamId/export[?download=1][&wiki=1]
  *
  * Exports a team and all associated data (config, prompts, norms, cron tasks)
  * as a single portable, secret-free JSON bundle for backup or migration
  * (#880). Owner only. With `download=1` the package itself is the body, as
- * an attachment; otherwise it sits under `data`.
+ * an attachment; otherwise it sits under `data`. With `wiki=1` the team's
+ * wiki pages are in the package; without it they are only counted.
  *
  * @param req - Express request with teamId parameter
  * @param res - Express response with TeamExport JSON
@@ -47,7 +48,8 @@ export async function exportTeam(this: ApiContext, req: Request, res: Response):
 
   try {
     const service = new TeamExportService(this.storageService);
-    const exportData = await service.exportTeam(teamId, { knownSecrets: collectSecretEnvValues(process.env) });
+    const includeWiki = req.query['wiki'] === '1' || req.query['wiki'] === 'true';
+    const exportData = await service.exportTeam(teamId, { knownSecrets: collectSecretEnvValues(process.env), includeWiki });
     if (req.query['download'] === '1' || req.query['download'] === 'true') {
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Content-Disposition', `attachment; filename="${exportFileName(exportData.team.name)}"`);

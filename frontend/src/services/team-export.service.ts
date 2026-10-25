@@ -13,13 +13,21 @@
 
 /** Paths of the team package API. */
 export const TEAM_EXPORT_API = {
-  /** Export of one team */
-  exportPath: (teamId: string): string => `/api/teams/${encodeURIComponent(teamId)}/export`,
+  /** Export of one team; `includeWiki` puts the team's wiki pages in the package */
+  exportPath: (teamId: string, includeWiki = false): string => `/api/teams/${encodeURIComponent(teamId)}/export${includeWiki ? '?wiki=1' : ''}`,
   /** Import */
   importPath: '/api/teams/import',
   /** Accepted import file types */
   accept: 'application/json,.json',
 } as const;
+
+/** The team's wiki as the export saw it: how much, and whether it is in the package. */
+export interface TeamPackageKnowledge {
+  included: boolean;
+  pages: number;
+  bytes: number;
+  skipped: string[];
+}
 
 /** What made the package portable. */
 export interface TeamPackagePortability {
@@ -27,6 +35,7 @@ export interface TeamPackagePortability {
   scanClean: boolean;
   connectors: string[];
   strippedFields: string[];
+  knowledge?: TeamPackageKnowledge;
 }
 
 /** A team package as the backend builds it (the fields the dashboard reads). */
@@ -37,6 +46,7 @@ export interface TeamPackage {
   prompts?: Record<string, string>;
   norms?: Record<string, string>;
   cronTasks?: unknown[];
+  wiki?: Record<string, string>;
   portability?: TeamPackagePortability;
 }
 
@@ -47,6 +57,8 @@ export interface TeamImportResult {
   normsImported: number;
   cronTasksImported: number;
   connectorsToReconnect?: string[];
+  wikiPagesImported?: number;
+  wikiPagesRejected?: string[];
 }
 
 /** Error from the team package API. */
@@ -91,11 +103,12 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
  * Fetch a team's package.
  *
  * @param teamId - Team id
+ * @param includeWiki - Put the team's wiki pages in the package (default: counted only)
  * @returns The package
  * @throws TeamPackageApiError when the backend refuses (not the owner, unknown team)
  */
-export async function fetchTeamPackage(teamId: string): Promise<TeamPackage> {
-  return request<TeamPackage>(TEAM_EXPORT_API.exportPath(teamId));
+export async function fetchTeamPackage(teamId: string, includeWiki = false): Promise<TeamPackage> {
+  return request<TeamPackage>(TEAM_EXPORT_API.exportPath(teamId, includeWiki));
 }
 
 /**
@@ -135,11 +148,12 @@ export const browserDownload: DownloadFn = (fileName, content) => {
  *
  * @param teamId - Team id
  * @param download - Download implementation (tests)
+ * @param includeWiki - Put the team's wiki pages in the package
  * @returns The package and the file name it was saved under
  * @throws TeamPackageApiError when the backend refuses
  */
-export async function downloadTeamPackage(teamId: string, download: DownloadFn = browserDownload): Promise<{ pkg: TeamPackage; fileName: string }> {
-  const pkg = await fetchTeamPackage(teamId);
+export async function downloadTeamPackage(teamId: string, download: DownloadFn = browserDownload, includeWiki = false): Promise<{ pkg: TeamPackage; fileName: string }> {
+  const pkg = await fetchTeamPackage(teamId, includeWiki);
   const fileName = packageFileName(pkg.team.name, pkg.exportedAt);
   download(fileName, JSON.stringify(pkg, null, 2) + '\n');
   return { pkg, fileName };
@@ -160,9 +174,25 @@ export function describePackage(pkg: TeamPackage): string {
   if (p) {
     parts.push(`Secrets masked: ${p.redactions}; final scan ${p.scanClean ? 'clean' : 'found something left — open the file before sharing it'}.`);
     parts.push(`Reconnect after import: ${p.connectors.length ? p.connectors.join(', ') : 'nothing'}.`);
+    parts.push(describeKnowledge(p.knowledge, Object.keys(pkg.wiki ?? {}).length));
   }
   parts.push('Running state and credentials are not in the file.');
   return parts.join(' ');
+}
+
+/**
+ * One sentence on the team's knowledge: in the package, left behind, or none.
+ *
+ * @param knowledge - `portability.knowledge` (absent in 1.0/1.1 packages)
+ * @param packaged - Pages actually in the package
+ * @returns Sentence
+ */
+export function describeKnowledge(knowledge: TeamPackageKnowledge | undefined, packaged: number): string {
+  if (!knowledge) return 'Wiki: not recorded by this package version.';
+  if (knowledge.pages === 0) return 'Wiki: the team has no pages.';
+  if (!knowledge.included) return `Wiki: ${knowledge.pages} page${knowledge.pages === 1 ? '' : 's'} stayed on this machine (export with the wiki to include the team's knowledge).`;
+  const skipped = knowledge.skipped.length ? ` ${knowledge.skipped.length} skipped as too large.` : '';
+  return `Wiki: ${packaged} of ${knowledge.pages} page${knowledge.pages === 1 ? '' : 's'} included.${skipped}`;
 }
 
 /**
@@ -210,7 +240,8 @@ export async function importTeamPackage(pkg: TeamPackage): Promise<TeamImportRes
  */
 export function describeImport(result: TeamImportResult): string {
   const n = (c: number, word: string): string => `${c} ${word}${c === 1 ? '' : 's'}`;
-  const parts = [`${n(result.promptsImported, 'prompt')}, ${n(result.normsImported, 'norm')}, ${n(result.cronTasksImported, 'schedule')}. Members are inactive until you start them.`];
+  const parts = [`${n(result.promptsImported, 'prompt')}, ${n(result.normsImported, 'norm')}, ${n(result.cronTasksImported, 'schedule')}, ${n(result.wikiPagesImported ?? 0, 'wiki page')}. Members are inactive until you start them.`];
+  if (result.wikiPagesRejected?.length) parts.push(`${n(result.wikiPagesRejected.length, 'wiki page')} refused (unsafe path).`);
   const reconnect = result.connectorsToReconnect ?? [];
   if (reconnect.length) parts.push(`Reconnect on this machine: ${reconnect.join(', ')} (Settings › Connectors).`);
   return parts.join(' ');

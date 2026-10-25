@@ -33,7 +33,7 @@ export interface TeamRowProps {
   onOpenChat?: (teamId: string) => void;
   onOpenWiki?: (teamId: string) => void;
   /** Download the team as a portable, secret-free package (#880) */
-  onExport?: (teamId: string) => void;
+  onExport?: (teamId: string, includeWiki?: boolean) => void;
   /** Deletes after the row's own confirm */
   onDelete?: (teamId: string) => void;
   isPinned?: boolean;
@@ -135,7 +135,7 @@ export const TeamRow: React.FC<TeamRowProps> = ({
     ...(onEdit ? [{ label: 'Edit team', onClick: () => onEdit(team.id) }] : []),
     ...(onOpenChat ? [{ label: 'Open chat', onClick: () => onOpenChat(team.id) }] : []),
     ...(onOpenWiki ? [{ label: 'Open wiki', onClick: () => onOpenWiki(team.id) }] : []),
-    ...(onExport ? [{ label: 'Export team…', onClick: () => onExport(team.id) }] : []),
+    ...(onExport ? [{ label: 'Export team…', onClick: () => onExport(team.id) }, { label: 'Export team with wiki…', onClick: () => onExport(team.id, true) }] : []),
     ...(onTogglePin ? [{ label: isPinned ? 'Unpin from favorites' : 'Pin to favorites', onClick: onTogglePin }] : []),
     ...(!paused && onPause ? [{ label: 'Pause team…', onClick: () => onPause(team.id) }] : []),
     ...(paused && onResume ? [{ label: 'Resume team', onClick: () => onResume(team.id) }] : []),
