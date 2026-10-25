@@ -28,6 +28,7 @@ import * as path from 'path';
 import { randomBytes } from 'crypto';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { warnUnlessOfflineRepeat } from '../core/network-status.service.js';
 import { CloudClientService } from '../cloud/cloud-client.service.js';
 import { REMOTE_MCP_CONSTANTS } from '../../constants.js';
 import { decrypt, encrypt, ensureMasterKey } from '../../utils/encryption.utils.js';
@@ -571,7 +572,10 @@ export class RemoteMcpAuthService {
     try {
       await this.startAuthorization(server, { agentSession, notify: true });
     } catch (err) {
-      this.logger.warn('Remote MCP: could not start a sign-in after a refusal', { id: server.id, error: err instanceof Error ? err.message : String(err) });
+      warnUnlessOfflineRepeat(this.logger, `remote-mcp-signin:${server.id}`, 'Remote MCP: could not start a sign-in after a refusal', {
+        id: server.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -771,7 +775,13 @@ export class RemoteMcpAuthService {
       return merged.accessToken;
     } catch (err) {
       const dead = err instanceof RemoteMcpOAuthError && err.code === 'invalid_grant';
-      this.logger.warn('Remote MCP token refresh failed', { id, dead, error: err instanceof Error ? err.message : String(err) });
+      // Third-party token hosts never feed the offline breaker (a dead MCP
+      // host is not an outage); they only share its log throttle.
+      warnUnlessOfflineRepeat(this.logger, `remote-mcp-refresh:${id}`, 'Remote MCP token refresh failed', {
+        id,
+        dead,
+        error: err instanceof Error ? err.message : String(err),
+      });
       if (dead) {
         await this.mutate((d) => {
           if (!d.servers[id]) return;

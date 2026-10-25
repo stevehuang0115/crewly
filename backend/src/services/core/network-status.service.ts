@@ -77,6 +77,36 @@ export function extractOfflineErrorCode(error: unknown): string | null {
  * Process-wide offline breaker. Emits `offline` (with the status) when it
  * trips and `online` (with the outage length in ms) when the network is back.
  */
+/** The two log levels the throttle helper needs; structurally matches ComponentLogger. */
+export interface ThrottledLogger {
+	warn(message: string, meta?: Record<string, unknown>): void;
+	debug(message: string, meta?: Record<string, unknown>): void;
+}
+
+/**
+ * Log a Cloud-facing failure at warn, or at debug once this source has already
+ * warned inside the current offline window. Online, every call warns. Adds the
+ * outage length to the warn while offline so the line says why it repeats.
+ *
+ * @param logger - Component logger of the caller
+ * @param source - Short caller name, one throttle slot per source
+ * @param message - Log line
+ * @param meta - Structured detail
+ */
+export function warnUnlessOfflineRepeat(
+	logger: ThrottledLogger,
+	source: string,
+	message: string,
+	meta: Record<string, unknown> = {},
+): void {
+	const net = NetworkStatusService.getInstance();
+	if (net.shouldLog(source)) {
+		logger.warn(message, net.isOffline() ? { ...meta, offlineMinutes: net.offlineMinutes() } : meta);
+	} else {
+		logger.debug(`${message} (repeat while offline)`, meta);
+	}
+}
+
 export class NetworkStatusService extends EventEmitter {
 	private static instance: NetworkStatusService | null = null;
 	private readonly logger: ComponentLogger;
@@ -128,6 +158,9 @@ export class NetworkStatusService extends EventEmitter {
 		this.lastErrorCode = code;
 		if (this.offlineSinceMs === null && this.consecutiveFailures >= NETWORK_STATUS_CONSTANTS.OFFLINE_AFTER_FAILURES) {
 			this.offlineSinceMs = this.now();
+			// Each source gets one full warn at the start of the outage, however
+			// recently it warned while still online.
+			this.lastLoggedAt.clear();
 			this.logger.warn('Network appears to be offline — wakes and owner DMs paused until it is back', {
 				source,
 				code,

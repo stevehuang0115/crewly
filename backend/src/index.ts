@@ -173,6 +173,7 @@ import { resolveSupervisorStopBudgetMs, capDrainToSupervisor } from './services/
 import { findClaudeTranscript, defaultClaudeHome } from './services/agent/runtime-session-recovery.js';
 import { DeviceIdentityService } from './services/cloud/device-identity.service.js';
 import { CloudSyncService } from './services/cloud/cloud-sync.service.js';
+import { NetworkStatusService } from './services/core/network-status.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
 import { SlackImageService, setSlackImageService } from './services/slack/slack-image.service.js';
@@ -2213,6 +2214,8 @@ void (async () => {
 				// Agents whose deliveries the input guard keeps refusing (crewly#1028).
 				input_circuit: inputCircuitStats(),
 				cloud: cloudHealthBlock(),
+				// Offline breaker: is this machine on the internet at all (#1463).
+				network: NetworkStatusService.getInstance().getStatus(),
 				// Boot restore progress (staggered restore queue).
 				restoreQueue: getRestoreQueue().stats(),
 				// Adaptive agent limits: normal | pressure, running count, cap.

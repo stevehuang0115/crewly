@@ -79,6 +79,7 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { getOwnerMessageWatchdog, type OwnerMessageTrackInput } from '../messaging/owner-message-watchdog.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { warnUnlessOfflineRepeat } from '../core/network-status.service.js';
 import { getSlackDirectoryService } from './slack-directory.service.js';
 import { SLACK_TEAM_CHANNEL_CONSTANTS, OWNER_EVIDENCE_METADATA, SLACK_THREAD_KEY_CONSTANTS, SLACK_THREAD_CONTEXT_CONSTANTS } from '../../constants.js';
 import { parseSlackThreadKey } from './slack-thread-key.js';
@@ -5529,7 +5530,7 @@ export class SlackTeamChannelService {
             result.skipped = message;
             break;
           }
-          this.logger.warn('Could not provision Slack identity', { agent: member.sessionName, error: message });
+          warnUnlessOfflineRepeat(this.logger, 'slack-identity-provision', 'Could not provision Slack identity', { agent: member.sessionName, error: message });
           continue;
         }
       }

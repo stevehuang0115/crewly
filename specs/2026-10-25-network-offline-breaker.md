@@ -1,6 +1,7 @@
 # Network offline breaker
 
-**Status:** shipped (this PR). Follow-ups listed at the end.
+**Status:** shipped in 1.20.415; follow-ups (log throttle for the remaining
+Cloud callers, `/health` field) shipped in 1.20.416.
 
 ## Incident
 
@@ -40,9 +41,27 @@ One process-wide judgement, `NetworkStatusService`
   one per `REPEAT_LOG_INTERVAL_MS` (10 min) while offline. Callers log at debug
   otherwise.
 
-Reporters: the relay WebSocket (`error` → failure, `open` → success) and the
-Cloud Sync recovery loop (catch → failure, 2xx → success). The relay reconnects
-every minute, so the breaker trips about three minutes into an outage.
+Reporters: the relay WebSocket (`error` → failure, `open` → success), the
+Cloud Sync recovery loop (catch → failure, 2xx → success), and since 1.20.416
+the three other callers that `fetch` api.crewlyai.com directly: the Slack
+instance registry (`cloudRequest`), the Slack Cloud config refresh
+(`fetchFromCloud`) and the conversation upload (`send`). Each reports the *raw*
+fetch error, because the `SlackIdentityCloudError` they wrap it in keeps only
+the message ("Cloud unreachable: fetch failed") and loses the DNS code in
+`cause`. Any answer from Cloud, even a 5xx, counts as a success. The relay
+reconnects every minute, so the breaker trips about three minutes into an
+outage.
+
+Third-party hosts never report. `RemoteMcpAuth` talks to the MCP server's own
+token endpoint; a dead MCP host returning ENOTFOUND is not an outage and must
+not pause agent starts. It only shares the log throttle.
+
+`warnUnlessOfflineRepeat(logger, source, message, meta)` is the one helper the
+callers use: warn (plus `offlineMinutes`) when `shouldLog(source)` says so,
+otherwise the same line at debug with "(repeat while offline)". When the
+breaker trips it clears every source's throttle slot, so each caller gets one
+full warn at the start of the outage even if it warned seconds earlier while
+still online.
 
 Consumers:
 
@@ -51,27 +70,33 @@ Consumers:
 | `LiveReconcilerDataProvider.executeWakeAction` | `start` and `rehydrate` return `{ outcome: 'skipped', reason: 'network offline' }`; one info line per agent per 10 min. `redeliver` is untouched (the agent is already alive). |
 | `CloudDisconnectNoticeService` | new dep `isOffline()`; no DM attempt, not recorded as notified, the next minute's check retries. |
 | Relay + Cloud Sync logs | first line as before (with `offlineMinutes` once tripped), repeats at debug. |
+| Slack instance registry heartbeat + agent sync, Slack Cloud config refresh, Slack identity provisioning, conversation upload, Remote MCP refresh/sign-in | same throttle via `warnUnlessOfflineRepeat`; one slot per source (Remote MCP: per server id). |
+| `GET /health` | `network: { offline, offlineSince?, consecutiveFailures, lastFailureSource?, lastErrorCode? }` from `getStatus()`. |
 
 The queued work is still queued when the network returns; the reconciler's
 normal loop picks it up with no special resume path.
 
 ## Not covered (follow-ups)
 
-- `SlackInstanceRegistry`, `SlackTeamChannels`, `ConversationCloudSync`,
-  `RemoteMcpAuth` still log every cycle. They go through other fetch wrappers;
-  wiring them to `shouldLog` is mechanical and can follow once this shape has
-  run for a while.
 - Agents already running when the network drops are left alone. Their runtime
   turn dies with "Can't reach the API server"; the existing idle/exit monitors
   handle that, and the breaker only stops new starts.
-- No `/health` field yet. `getStatus()` is ready for one.
+- `GoogleWorkspaceToken`, `MicrosoftToken`, `CanvaToken`, `TeamMoveCloud`
+  also throw "Cloud unreachable" but run only on demand (a connector call), not
+  on a timer, so they did not add to the outage noise and stay as they are.
 
 ## Tests
 
 - `network-status.service.test.ts`: code extraction (self, cause chain,
   message, string, non-network ignored), trip threshold, Cloud-outage immunity,
+  `warnUnlessOfflineRepeat` (online: every call warns; offline: one warn with
+  `offlineMinutes`, then debug),
   reset with duration, per-source log throttle and its reset.
 - `reconciler-data-provider.test.ts`: start and rehydrate skipped while
   offline with no API call, start proceeds after `recordSuccess`.
 - `cloud-disconnect-notice.service.test.ts`: no DM while offline, sent on the
   first check after the network is back.
+- `slack-instance-registry.service.test.ts`, `slack-cloud-config.service.test.ts`,
+  `conversation-cloud-sync.service.test.ts`: three ENOTFOUND fetches trip the
+  breaker through the raw error, the next answer clears it; the upload warns
+  once, not per retry.
