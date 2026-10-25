@@ -1,6 +1,6 @@
 # Activity log: who did what, and when (crewly#881)
 
-**Status**: slice 1 shipped 2026-10-25 (1.20.408). Later slices below.
+**Status**: slice 1 shipped 2026-10-25 (1.20.408); slice 2 (outbound Gmail, budget stops, browser holds, remaining team config writers) 2026-10-25 (1.20.409). Later slices below.
 
 ## Problem
 
@@ -66,6 +66,14 @@ Implementation: `backend/src/services/activity/activity-log.service.ts`
 | `decision.skipped` | owner skipped the card | owner | — |
 | `decision.defaulted` | deadline applied the default | system (`via: deadline`) | chosenKey |
 | `decision.expired` | deadline, no default | system (`via: deadline`) | — |
+| `team.paused` / `team.resumed` | `team-pause.controller` | request | reason, until, stopped |
+| `team.model_tiers.updated` | `team-model-tiers.controller` | request | the submitted settings |
+| `team.charter.updated` / `.cleared` | `team-charter.controller` | owner or the writing agent | charter text (cut at 400) |
+| `team.move.started` | `team-move.controller` | request | target machine, moveId |
+| `send.gmail` | `GmailSendApprovalService.onSettled` (card) and `POST /api/google/gmail/held/:id` (page) | owner (Slack user + how, or request) | to, messageId, threadId, draftedBy, decisionId |
+| `send.gmail.declined` / `send.gmail.discarded` | same | owner, or system on a deadline | to, status |
+| `budget.exceeded` | `TeamBudgetGateService.notify` (#853) | system `budget-gate` | level, tokensToday, usdThisMonth, caps; `note` = detail |
+| `browser.action.approved` / `.rejected` / `.timed_out` / `.expired` / `.dropped` | `BrowserApprovalService.apply` | owner for approve / reject, else system | agentSession, live |
 
 Decision lines carry the decision's `requestId` (from `requestRef`) and
 `workItemId` when it has them. `DecisionService` takes the writer as an
@@ -87,21 +95,20 @@ spy.
 
 Response: `{ success, data: { count, limit, entries } }`. Bad filter → 400.
 
-## Acceptance (slice 1)
+## Acceptance
 
-For any member config change made through the API, or any owner decision,
+For any member config change made through the API, any owner decision, or any
+email an agent drafted and the owner released,
 `GET /api/activity?targetId=<id>` alone says who did it, when, and what
 changed. Verified by `activity-log.service.test.ts`,
 `activity.controller.test.ts`, the `team.controller.test.ts` case
 "writes who changed which fields" and the `decision.service.test.ts` case
 "writes asked and resolved lines".
 
-## Not in slice 1 (follow-ups under #881)
+## Not yet (follow-ups under #881)
 
-- Other config writers: team pause, model tiers, charter, team move, settings,
-  connector grants. Each is one `recordActivity` call at its save site.
-- Budget stops (#853) and outbound sends (#876: Gmail release, Slack / app
-  posts, WhatsApp drafts) as `budget.*` / `send.*` actions.
+- Remaining writers: settings, connector grants, Slack / app posts and
+  WhatsApp drafts (#876) as `send.*` actions.
 - A filterable page in the dashboard (Settings › Activity) and on the portal.
 - Retention: the log is unbounded by design; a month file is ~1 KB per 5
   entries, so a year of a busy home is a few MB. Revisit if that changes.

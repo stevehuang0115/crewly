@@ -56,6 +56,7 @@ import {
   type ReauthTrigger,
 } from '../../services/google/google-reauth-notifier.service.js';
 import { buildPortalConnectUrl, PRODUCT_LABELS } from './google-connect-card.js';
+import { actorFromRequest, recordActivity } from '../../services/activity/activity-log.service.js';
 
 /** Who a held send is attributed to when the caller named no agent session. */
 const UNIDENTIFIED_SENDER = 'unidentified caller';
@@ -1268,6 +1269,7 @@ export async function gmailResolveHeld(req: Request, res: Response): Promise<voi
       if (entry.decisionId && sendApproval) await sendApproval.discarded(entry.id);
       clearHeldSend(entry.id);
       logger.info('Owner discarded a held send', { id: entry.id, to: entry.to });
+      recordActivity({ actor: actorFromRequest(req), action: 'send.gmail.discarded', target: { type: 'gmail_draft', id: entry.draftId, name: entry.subject }, after: { to: entry.to, draftedBy: entry.agentSession } });
       res.json({ success: true, data: { discarded: true, draftId: entry.draftId } });
       return;
     }
@@ -1289,6 +1291,7 @@ export async function gmailResolveHeld(req: Request, res: Response): Promise<voi
     // One owner approval covers exactly the one message they reviewed — it must
     // not also pre-approve the agent's next, unreviewed send (#882).
     logger.info('Owner approved a held send', { id: entry.id, to: entry.to, messageId: sent.id });
+    recordActivity({ actor: actorFromRequest(req), action: 'send.gmail', target: { type: 'gmail_draft', id: entry.draftId, name: entry.subject }, after: { to: entry.to, messageId: sent.id, threadId: sent.threadId, draftedBy: entry.agentSession } });
     res.json({ success: true, data: sent });
   } catch (err) {
     await sendGoogleError(req, res, err);

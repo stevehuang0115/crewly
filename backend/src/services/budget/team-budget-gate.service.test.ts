@@ -16,6 +16,9 @@ import {
 } from './team-budget-gate.service.js';
 import type { Team, TeamBudget } from '../../types/index.js';
 
+const mockRecordActivity = jest.fn();
+jest.mock('../activity/activity-log.service.js', () => ({ recordActivity: (...a: unknown[]) => mockRecordActivity(...a) }));
+
 const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() } as never;
 
 function makeTeam(id: string, sessions: string[], budget?: TeamBudget): Team {
@@ -203,6 +206,9 @@ describe('TeamBudgetGateService', () => {
         id: 'team:budget_exceeded:t1:blocked:2026-09-15',
       });
       expect(enqueued).toHaveLength(1);
+      // …and one activity-log line (crewly#881).
+      expect(mockRecordActivity.mock.calls.filter((c) => (c[0] as { action: string }).action === 'budget.exceeded')).toHaveLength(1);
+      expect(mockRecordActivity).toHaveBeenCalledWith(expect.objectContaining({ action: 'budget.exceeded', actor: { type: 'system', id: 'budget-gate' }, target: { type: 'team', id: 't1', name: 'Team t1' }, after: expect.objectContaining({ level: 'blocked', tokensToday: 1000, maxTokensPerDay: 1000 }) }));
       expect(enqueued[0]).toMatchObject({
         source: 'system_event',
         conversationId: BUDGET_CONVERSATION_ID,

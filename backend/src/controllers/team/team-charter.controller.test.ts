@@ -5,6 +5,9 @@ import { TeamRosterService } from '../../services/team-roster/team-roster.servic
 import * as callerUtils from '../../utils/agent-caller.utils.js';
 import type { Team } from '../../types/index.js';
 
+const mockRecordActivity = jest.fn();
+jest.mock('../../services/activity/activity-log.service.js', () => ({ recordActivity: (...a: unknown[]) => mockRecordActivity(...a) }));
+
 function makeTeam(): Team {
 	return {
 		id: 't1',
@@ -53,12 +56,14 @@ describe('setTeamCharter', () => {
 		expect(saveTeam).toHaveBeenCalledWith(expect.objectContaining({ charter: 'Owns CE. Takes bugs.', charterUpdatedBy: 'owner' }));
 		expect(team.charterUpdatedAt).toBeTruthy();
 		expect(invalidate).toHaveBeenCalled();
+		expect(mockRecordActivity).toHaveBeenCalledWith({ actor: { type: 'owner' }, action: 'team.charter.updated', target: { type: 'team', id: 't1', name: 'CE' }, after: { charter: 'Owns CE. Takes bugs.' } });
 	});
 
 	it('lets the lead of the team write it, and records the session', async () => {
 		caller.mockResolvedValue({ session: 'owen-agent', role: 'tech-lead' });
 		expect((await call({ charter: 'Mine.' })).status).toBe(200);
 		expect(team.charterUpdatedBy).toBe('owen-agent');
+		expect(mockRecordActivity).toHaveBeenLastCalledWith(expect.objectContaining({ actor: { type: 'agent', id: 'owen-agent' } }));
 	});
 
 	it('lets the orchestrator write it', async () => {
