@@ -290,6 +290,7 @@ describe('cloud-sync.types', () => {
         'markChannelRead',
         'markChannelUnread',
         'getUnread',
+        'searchMessages',
       ]);
     });
   });

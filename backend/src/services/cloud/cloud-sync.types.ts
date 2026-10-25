@@ -358,7 +358,8 @@ export type ChatRpcMethod =
   | 'sendMessage'
   | 'markChannelRead'
   | 'markChannelUnread'
-  | 'getUnread';
+  | 'getUnread'
+  | 'searchMessages';
 
 /** Set form for runtime validation. */
 export const CHAT_RPC_METHODS: readonly ChatRpcMethod[] = [
@@ -376,6 +377,7 @@ export const CHAT_RPC_METHODS: readonly ChatRpcMethod[] = [
   'markChannelRead',
   'markChannelUnread',
   'getUnread',
+  'searchMessages',
 ] as const;
 
 /**

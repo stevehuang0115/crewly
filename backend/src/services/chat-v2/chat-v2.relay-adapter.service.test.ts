@@ -307,6 +307,36 @@ describe('ChatV2RelayAdapter', () => {
     expect(ch.members.map((m) => m.sessionName).sort()).toEqual(['sess-x', 'sess-y']);
   });
 
+  it('searchMessages RPC searches every conversation the owner holds, with the REST filters (#1400)', async () => {
+    const principal = { userId: 'dev-user-001', source: 'oss' as const };
+    const room = service.createHuddle({ name: 'awesome-videos', memberSessions: ['pia'], principal });
+    const other = service.createHuddle({ name: 'secret', memberSessions: ['bob'], principal });
+    service.recordTurn({ channelId: room.id, senderType: 'user', senderId: 'Steve', content: 'three-video plan', metadata: { source: 'slack' } });
+    service.recordTurn({ channelId: other.id, senderType: 'user', senderId: 'Steve', content: 'three-video budget', metadata: { source: 'slack' } });
+
+    cloudSync.emitInbound(buildRequestMsg('portal-s1', { id: 'r-s1', method: 'searchMessages', params: { query: 'three-video' } }));
+    await flushMicrotasks();
+    const all = cloudSync.outbound[0].payload as ChatResponsePayload;
+    expect(all.error).toBeUndefined();
+    const res = all.result as { count: number; hits: Array<{ channel: string; channelType: string; text: string }> };
+    expect(res.count).toBe(2);
+    expect(res.hits.map((h) => h.channel).sort()).toEqual(['awesome-videos', 'secret']);
+    expect(res.hits[0].channelType).toBe('huddle');
+
+    cloudSync.emitInbound(buildRequestMsg('portal-s2', { id: 'r-s2', method: 'searchMessages', params: { query: 'three-video', channel: 'secret', limit: 5 } }));
+    await flushMicrotasks();
+    const narrowed = cloudSync.outbound[1].payload as ChatResponsePayload;
+    expect((narrowed.result as { hits: Array<{ text: string }> }).hits.map((h) => h.text)).toEqual(['three-video budget']);
+
+    cloudSync.emitInbound(buildRequestMsg('portal-s3', { id: 'r-s3', method: 'searchMessages', params: { query: 'x', from: 'nonsense' } }));
+    await flushMicrotasks();
+    expect((cloudSync.outbound[2].payload as ChatResponsePayload).error?.code).toBe('validation_error');
+
+    cloudSync.emitInbound(buildRequestMsg('portal-s4', { id: 'r-s4', method: 'searchMessages', params: {} }));
+    await flushMicrotasks();
+    expect((cloudSync.outbound[3].payload as ChatResponsePayload).error?.code).toBe('validation_error');
+  });
+
   it('ensureDmChannel creates a channel and replies with the DTO', async () => {
     cloudSync.emitInbound(
       buildRequestMsg('portal-2', {
