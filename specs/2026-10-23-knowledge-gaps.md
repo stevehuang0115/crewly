@@ -47,6 +47,25 @@ week per vault. Deterministic, no LLM.
 
 Nothing is written when the vault had no queries or no gaps.
 
+### Cross-vault recall (1.20.397 fix)
+
+A global recall searches the global vault and every team vault at once.
+Until 1.20.397 `wikiRecallSearch` recorded a row in every searched vault,
+`miss: true` wherever that vault contributed no hit, so one unanswered
+recall became a miss in fifteen team vaults, and the first weekly run
+(2026-10-24) produced 33 identical phantom gaps per dormant team and six
+WorkItems for the orchestrator. Two rules now hold:
+
+- The ledger records a recall hit only in the vaults that surfaced a page,
+  and a recall miss once, in the vault that owns the question: the global
+  vault for a global recall, the project vault for a project recall. Team
+  vaults get recall rows only when they answered.
+- The roll-up reads a team vault's `wiki-query` rows only (recall rows are
+  cross-vault echoes), counts only `miss: true` rows, and raises a WorkItem
+  for a team or project vault only when a lead resolves — the orchestrator
+  fallback is for the global vault alone. WorkItem titles carry the team
+  name, not its folder id.
+
 ## What the lead sees
 
 The WorkItem title: `Review knowledge gaps 2026-W43 — crewly (3 unanswered
