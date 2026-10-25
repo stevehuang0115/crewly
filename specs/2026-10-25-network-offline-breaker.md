@@ -71,6 +71,7 @@ Consumers:
 | `CloudDisconnectNoticeService` | new dep `isOffline()`; no DM attempt, not recorded as notified, the next minute's check retries. |
 | Relay + Cloud Sync logs | first line as before (with `offlineMinutes` once tripped), repeats at debug. |
 | Slack instance registry heartbeat + agent sync, Slack Cloud config refresh, Slack identity provisioning, conversation upload, Remote MCP refresh/sign-in | same throttle via `warnUnlessOfflineRepeat`; one slot per source (Remote MCP: per server id). |
+| AppWake app polls + mention inbox, Cloud Sync queue re-registration | same throttle (`app-wake`, `app-wake-mentions`, `cloud-sync-register`); the no-queue-id `error` stays unthrottled (#1466). |
 | `GET /health` | `network: { offline, offlineSince?, consecutiveFailures, lastFailureSource?, lastErrorCode? }` from `getStatus()`. |
 
 The queued work is still queued when the network returns; the reconciler's
