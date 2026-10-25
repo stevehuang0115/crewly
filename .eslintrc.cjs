@@ -33,6 +33,7 @@ module.exports = {
     'dist/',
     'coverage/',
     'frontend/dist/',
+    'eval/',
     '*.js',
   ],
 };

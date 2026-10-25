@@ -1,0 +1,35 @@
+{
+  "taskId": "A1",
+  "runtime": "crewly-agent",
+  "startedAt": "2026-04-01T17:05:03.979Z",
+  "completedAt": "2026-04-01T17:10:04.098Z",
+  "durationSeconds": 300.114,
+  "completionType": "agent_done",
+  "verificationResults": [
+    {
+      "name": "typescript",
+      "passed": true,
+      "output": "",
+      "exitCode": 0
+    },
+    {
+      "name": "tests",
+      "passed": true,
+      "output": "> a1-ts-fix-fixture@1.0.0 test\n> node --test src/**/*.test.ts 2>/dev/null || npx tsc --noEmit\n\nℹ tests 0\nℹ suites 0\nℹ pass 0\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 69.705042",
+      "exitCode": 0
+    }
+  ],
+  "scores": {
+    "d1Correctness": 100,
+    "d2CodeQuality": 85,
+    "d3Reasoning": 30,
+    "d4Autonomy": 100,
+    "d5ContextMgmt": 83,
+    "d6Collaboration": 0,
+    "d7CostEfficiency": 100
+  },
+  "overallScore": 77,
+  "toolCallCount": 10,
+  "estimatedCostUsd": 0.024597,
+  "logPath": "eval/results/crewly-agent-v3/logs/A1-crewly-agent-1775063399787.log"
+}

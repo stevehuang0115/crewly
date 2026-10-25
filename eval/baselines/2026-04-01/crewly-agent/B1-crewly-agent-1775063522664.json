@@ -1,0 +1,41 @@
+{
+  "taskId": "B1",
+  "runtime": "crewly-agent",
+  "startedAt": "2026-04-01T17:10:21.038Z",
+  "completedAt": "2026-04-01T17:12:02.664Z",
+  "durationSeconds": 101.626,
+  "completionType": "agent_done",
+  "verificationResults": [
+    {
+      "name": "typescript",
+      "passed": false,
+      "output": "error TS18003: No inputs were found in config file 'eval/runs/B1-crewly-agent-1775063404099/tsconfig.json'. Specified 'include' paths were '[\"src/**/*\"]' and 'exclude' paths were '[\"node_modules\",\"dist\",\"**/*.test.ts\"]'.",
+      "exitCode": 2
+    },
+    {
+      "name": "tests",
+      "passed": false,
+      "output": "> b1-health-endpoint-fixture@1.0.0 test\n> vitest run\n\n\n RUN  v3.2.4 eval/runs/B1-crewly-agent-1775063404099\n\n ❯ backend/src/app.test.ts (1 test | 1 failed) 170ms\n   × App > should export app 169ms\n     → Cannot find module './routes/health.route' imported from 'eval/runs/B1-crewly-agent-1775063404099/backend/src/app.ts'\n\n Test Files  1 failed (1)\n      Tests  1 failed (1)\n   Start at  13:11:59\n   Duration  2.23s (transform 845ms, setup 0ms, collect 779ms, tests 170ms, environment 0ms, prepare 179ms)\n\n\n\n⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯\n\n FAIL  backend/src/app.test.ts > App > should export app\nError: Cannot find module './routes/health.route' imported from 'eval/runs/B1-crewly-agent-1775063404099/backend/src/app.ts'\n ❯ backend/src/app.ts:18:1\n     16| \n     17| // TODO: Add /health endpoint\n     18| import healthRouter from './routes/health.route';\n       | ^\n     19| app.use(healthRouter);\n     20| \n\nCaused by: Error: Failed to load url ./routes/health.route (resolved id: ./routes/health.route) in eval/runs/B1-crewly-agent-1775063404099/backend/src/app.ts. Does the file exist?\n ❯ loadAndTransform node_modules/vite/dist/node/chunks/config.js:22663:33\n\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯",
+      "exitCode": 1
+    },
+    {
+      "name": "health_exists",
+      "passed": false,
+      "output": "",
+      "exitCode": 1
+    }
+  ],
+  "scores": {
+    "d1Correctness": 0,
+    "d2CodeQuality": 50,
+    "d3Reasoning": 32,
+    "d4Autonomy": 100,
+    "d5ContextMgmt": 86,
+    "d6Collaboration": 0,
+    "d7CostEfficiency": 100
+  },
+  "overallScore": 48,
+  "toolCallCount": 25,
+  "estimatedCostUsd": 0.061197,
+  "logPath": "eval/results/crewly-agent-v3/logs/B1-crewly-agent-1775063515071.log"
+}
