@@ -16,6 +16,7 @@ import {
 	invalidationKey,
 	formatInvalidCites,
 	possibleSupersedeLines,
+	sectionWriteOp,
 	type StandingPageDef,
 	type StandingSourceEntry,
 } from './standing-answers.service.js';
@@ -100,6 +101,16 @@ describe('standing-answers pure helpers', () => {
 		expect(invalidationKey([])).toBe('');
 		expect(formatInvalidCites(out[0].invalidCites)).toBe('dec:old (no longer in force), dec:gone (deleted)');
 		expect(findInvalidatedSections(undefined, [])).toEqual([]);
+	});
+
+	it('sectionWriteOp: added / modified / removed / unchanged (#914 delta edits)', () => {
+		const page = parseStandingPage('## Shell\nv1\nSources: got:g1\n');
+		expect(sectionWriteOp(page, { heading: 'Other', body: 'o', cites: ['got:g1'] })).toBe('added');
+		expect(sectionWriteOp(page, { heading: 'shell', body: 'v2', cites: ['got:g1'] })).toBe('modified');
+		expect(sectionWriteOp(page, { heading: 'Shell', body: 'v1', cites: ['got:g1', 'got:g2'] })).toBe('modified');
+		expect(sectionWriteOp(page, { heading: 'Shell', body: '', cites: [] })).toBe('removed');
+		expect(sectionWriteOp(page, { heading: 'Missing', body: '', cites: [] })).toBe('unchanged');
+		expect(sectionWriteOp(page, { heading: 'SHELL', body: 'v1', cites: ['got:g1'] })).toBe('unchanged');
 	});
 
 	it('knows the three project pages and the agent page', () => {
@@ -313,6 +324,68 @@ describe('StandingAnswersService (on disk)', () => {
 		it('writes the agent page under CREWLY_HOME/agents/<session>/standing.md', async () => {
 			const res = await service.writeSection({ pageId: 'unfinished-work', sessionName: session, heading: 'PR #818', body: 'Waiting on review.', cites: ['mem:k1'] });
 			expect(res.filePath).toBe(path.join(crewlyHome, 'agents', session, 'standing.md'));
+		});
+
+		describe('change history (#914 P1 delta edits)', () => {
+			const historyDir = (): string => path.join(projectPath, '.crewly', 'standing-history', 'open-gotchas');
+			const log = async (): Promise<string[]> => (await fs.readFile(path.join(historyDir(), 'changes.log'), 'utf8')).trim().split('\n');
+
+			it('reports the op and snapshots the previous page only on a content change', async () => {
+				const first = await service.writeSection({ pageId: 'open-gotchas', projectPath, heading: 'Shell', body: 'v1', cites: ['got:g1'] });
+				expect(first).toMatchObject({ op: 'added', snapshot: null, removed: false });
+
+				const same = await service.writeSection({ pageId: 'open-gotchas', projectPath, heading: 'shell', body: 'v1', cites: ['got:g1'] });
+				expect(same).toMatchObject({ op: 'unchanged', snapshot: null });
+				expect(await service.listSnapshots(GOTCHAS, { projectPath })).toEqual([]);
+
+				const edit = await service.writeSection({ pageId: 'open-gotchas', projectPath, heading: 'Shell', body: 'v2', cites: ['got:g1'] });
+				expect(edit.op).toBe('modified');
+				expect(edit.snapshot).toMatch(/standing-history\/open-gotchas\/\d{4}-\d{2}-\d{2}T[\d-]+Z\.md$/);
+				const before = parseStandingPage(await fs.readFile(edit.snapshot as string, 'utf8'));
+				expect(before.sections).toEqual([{ heading: 'shell', body: 'v1', cites: ['got:g1'] }]);
+				expect(parseStandingPage(await fs.readFile(edit.filePath, 'utf8')).sections[0].body).toBe('v2');
+
+				const gone = await service.writeSection({ pageId: 'open-gotchas', projectPath, heading: 'Shell', body: '', cites: [] });
+				expect(gone).toMatchObject({ op: 'removed', removed: true });
+				expect(gone.snapshot).not.toBe(edit.snapshot);
+				expect(await service.listSnapshots(GOTCHAS, { projectPath })).toEqual([edit.snapshot, gone.snapshot]);
+
+				const lines = await log();
+				expect(lines.map((l) => l.split('\t')[1])).toEqual(['added', 'unchanged', 'modified', 'removed']);
+				expect(lines[2].split('\t').slice(2)).toEqual(['Shell', '1 cite', path.basename(edit.snapshot as string)]);
+				expect(lines[1].split('\t')[4]).toBe('-');
+			});
+
+			it('an unchanged write still moves the watermark and last_refreshed', async () => {
+				await service.writeSection({ pageId: 'open-gotchas', projectPath, heading: 'Shell', body: 'v1', cites: ['got:g1'] });
+				await writeJson(knowledge('gotchas.json'), [
+					{ id: 'g1', title: 'zsh split', problem: 'zsh does not split', solution: 'use arrays', createdAt: '2026-09-01T00:00:00.000Z' },
+					{ id: 'g3', title: 'new', problem: 'y', createdAt: '2026-09-30T00:00:00.000Z' },
+				]);
+				expect((await service.getPageStatus(GOTCHAS, { projectPath }))?.stale).toBe(true);
+				const res = await service.writeSection({ pageId: 'open-gotchas', projectPath, heading: 'Shell', body: 'v1', cites: ['got:g1'] });
+				expect(res).toMatchObject({ op: 'unchanged', watermark: '2026-09-30T00:00:00.000Z' });
+				expect((await service.getPageStatus(GOTCHAS, { projectPath }))?.stale).toBe(false);
+			});
+
+			it('keeps the newest historyKeep snapshots', async () => {
+				const small = new StandingAnswersService({ crewlyHome, historyKeep: 2 });
+				for (let i = 0; i < 5; i++) {
+					await small.writeSection({ pageId: 'open-gotchas', projectPath, heading: 'Shell', body: `v${i}`, cites: ['got:g1'] });
+				}
+				const kept = await small.listSnapshots(GOTCHAS, { projectPath });
+				expect(kept).toHaveLength(2);
+				const bodies = await Promise.all(kept.map(async (f) => parseStandingPage(await fs.readFile(f, 'utf8')).sections[0].body));
+				expect(bodies).toEqual(['v2', 'v3']);
+				expect(await log()).toHaveLength(5);
+			});
+
+			it('the agent page keeps its history under agents/<session>/standing-history', async () => {
+				await service.writeSection({ pageId: 'unfinished-work', sessionName: session, heading: 'PR #818', body: 'Waiting.', cites: ['mem:k1'] });
+				const res = await service.writeSection({ pageId: 'unfinished-work', sessionName: session, heading: 'PR #818', body: 'Merged.', cites: ['mem:k1'] });
+				expect(res.snapshot).toContain(path.join(crewlyHome, 'agents', session, 'standing-history'));
+				expect(await fs.readFile(path.join(crewlyHome, 'agents', session, 'standing-history', 'changes.log'), 'utf8')).toMatch(/\tmodified\tPR #818\t1 cite\t/);
+			});
 		});
 
 		it.each([

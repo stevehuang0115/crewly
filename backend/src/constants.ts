@@ -2113,6 +2113,18 @@ export const STANDING_ANSWERS_CONSTANTS = {
 	REFRESH_MAX_RETRIES: 2,
 	/** Refresh bookkeeping (last raised watermark per page), under CREWLY_HOME. */
 	REFRESH_STATE_FILE: 'standing-refresh-state.json',
+	/**
+	 * Change history of a page (#914 P1 delta edits): the page as it was before
+	 * each content change, plus one `changes.log` line per section write. Project
+	 * pages keep it under `<project data dir>/<HISTORY_DIR>/<pageId>/`, outside
+	 * the wiki vault so the index never sees it; the agent page under
+	 * `agents/<session>/<HISTORY_DIR>/`.
+	 */
+	HISTORY_DIR: 'standing-history',
+	/** Snapshots kept per page; the oldest are pruned on each write. */
+	HISTORY_KEEP: 30,
+	/** Lines kept in a page's `changes.log`. */
+	HISTORY_LOG_KEEP: 500,
 	/** `metadata.kind` of refresh WorkItems. */
 	WORKITEM_KIND: 'standing-refresh',
 	/**

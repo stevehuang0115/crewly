@@ -54,8 +54,10 @@ the memory entries to use, each with a citation token such as `dec:<id>`.
 
 Rules the backend enforces:
 
-- One section per call. Same heading (case-insensitive) replaces; a new one appends.
+- One section per call. Same heading (case-insensitive) replaces; a new one appends. Sections you do not write stay as they are.
 - **An empty body removes the section.** Use it when a decision was superseded or a gotcha resolved.
+- **A section that is still right: write it again unchanged.** The page is not rewritten (`op: unchanged`), but the watermark moves so the page stops being stale.
+- Before each content change the previous page is saved under `standing-history/` next to the page, and every write is logged there (`changes.log`).
 - Every non-empty section needs at least one citation, and every citation must name an entry in that page's sources.
 - Body ≤ 1500 characters, with no `#`/`##` headings, no `---` lines and no `Sources:` line. `###` is fine.
 - Anything that looks like a secret is masked before the page is written.
@@ -88,7 +90,9 @@ bash config/skills/agent/core/standing-update/execute.sh --page open-gotchas --p
 
 ## Output
 
-`{ success: true, data: { filePath, watermark, removed, masked } }`. A rejected
+`{ success: true, data: { filePath, watermark, op, snapshot, removed, masked } }` where `op`
+is `added`, `modified`, `removed` or `unchanged` and `snapshot` is the saved previous page
+(null when nothing changed or the page is new). A rejected
 write returns HTTP 400 with `code`: `unknown_page`, `invalid_input`,
 `missing_cite` or `unknown_cite`, plus a message saying what to fix.
 
