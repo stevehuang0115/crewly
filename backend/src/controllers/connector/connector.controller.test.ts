@@ -16,6 +16,11 @@ jest.mock('../../services/core/logger.service.js', () => ({
   LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }) }) },
 }));
 jest.mock('../../utils/agent-caller.utils.js', () => ({ resolveAgentCaller: jest.fn() }));
+const mockRecordActivity = jest.fn();
+jest.mock('../../services/activity/activity-log.service.js', () => ({
+  ...jest.requireActual('../../services/activity/activity-log.service.js'),
+  recordActivity: (...args: unknown[]) => mockRecordActivity(...args),
+}));
 
 import { resolveAgentCaller } from '../../utils/agent-caller.utils.js';
 import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
@@ -82,6 +87,20 @@ describe('PUT /api/connectors/access/:connectorId', () => {
     expect(access.setAllowedRoles).toHaveBeenCalledWith('canva', ['ops', 'team-leader']);
     await request(app).put('/api/connectors/access/canva').send({ allowedRoles: [] });
     expect(access.setAllowedRoles).toHaveBeenLastCalledWith('canva', []);
+  });
+
+  it('writes who changed the allowlist, before and after, to the activity log (#881)', async () => {
+    mockRecordActivity.mockClear();
+    access.list.mockResolvedValue({ canva: { allowedRoles: ['ops'] } });
+    await request(app).put('/api/connectors/access/canva').send({ allowedRoles: ['ops', 'team-leader'] });
+    expect(mockRecordActivity).toHaveBeenCalledTimes(1);
+    expect(mockRecordActivity.mock.calls[0][0]).toMatchObject({
+      actor: { type: 'owner' },
+      action: 'connector.access.updated',
+      target: { type: 'connector', id: 'canva' },
+      before: { allowedRoles: ['ops'] },
+      after: { allowedRoles: ['ops', 'team-leader'] },
+    });
   });
 
   it('400s without an array', async () => {

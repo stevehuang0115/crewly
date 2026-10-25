@@ -16,6 +16,7 @@ import { RemoteMcpService, remoteMcpConnectorId } from '../../services/connector
 import { readAgentSessionHeader, resolveAgentCaller } from '../../utils/agent-caller.utils.js';
 import { isOwnerCaller, rejectNonOwner, sendOwnerAuthRequired } from '../../middleware/caller-identity.middleware.js';
 import { getActingFor, runAsActor, type Actor } from '../../services/people/acting-for.service.js';
+import { actorFromRequest, recordActivity, summarizeChange } from '../../services/activity/activity-log.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('ConnectorController');
 
@@ -138,7 +139,16 @@ export async function updateConnectorAccess(req: Request, res: Response): Promis
       res.status(400).json({ success: false, error: 'validation', message: 'allowedRoles must be an array of role names (empty = every agent)' });
       return;
     }
-    const rule = await ConnectorAccessService.getInstance().setAllowedRoles(connectorId, body.allowedRoles.map((r) => String(r)));
+    const service = ConnectorAccessService.getInstance();
+    const previous = ((await service.list().catch(() => ({}))) as Record<string, { allowedRoles?: string[] } | undefined>)[connectorId]?.allowedRoles ?? [];
+    const rule = await service.setAllowedRoles(connectorId, body.allowedRoles.map((r) => String(r)));
+    // Who widened or narrowed which agents may use this connection (#881).
+    recordActivity({
+      actor: actorFromRequest(req),
+      action: 'connector.access.updated',
+      target: { type: 'connector', id: connectorId },
+      ...summarizeChange({ allowedRoles: previous }, { allowedRoles: rule.allowedRoles }),
+    });
     res.json({ success: true, data: { connectorId, ...rule } });
   } catch (err) {
     logger.error('Failed to update connector access', { error: err instanceof Error ? err.message : String(err) });

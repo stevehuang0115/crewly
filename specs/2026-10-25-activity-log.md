@@ -1,6 +1,6 @@
 # Activity log: who did what, and when (crewly#881)
 
-**Status**: slice 1 shipped 2026-10-25 (1.20.408); slice 2 (outbound Gmail, budget stops, browser holds, remaining team config writers) 2026-10-25 (1.20.409). Later slices below.
+**Status**: slice 1 shipped 2026-10-25 (1.20.408); slice 2 (outbound Gmail, budget stops, browser holds, remaining team config writers) 2026-10-25 (1.20.409); slice 3 (settings, connector access / sharing / disconnect, remote MCP servers, WhatsApp drafts) 2026-10-25 (1.20.410). Later slices below.
 
 ## Problem
 
@@ -74,6 +74,12 @@ Implementation: `backend/src/services/activity/activity-log.service.ts`
 | `send.gmail.declined` / `send.gmail.discarded` | same | owner, or system on a deadline | to, status |
 | `budget.exceeded` | `TeamBudgetGateService.notify` (#853) | system `budget-gate` | level, tokensToday, usdThisMonth, caps; `note` = detail |
 | `browser.action.approved` / `.rejected` / `.timed_out` / `.expired` / `.dropped` | `BrowserApprovalService.apply` | owner for approve / reject, else system | agentSession, live |
+| `settings.updated` / `settings.reset` / `settings.imported` | `settings.controller` (`PUT /`, `/reset`, `/reset/:section`, `/import`) | request | per section, the changed fields; `target.id` = `all` or the section; API keys never appear — `note` names the changed providers (`API keys changed: global.openai`) |
+| `connector.access.updated` | `PUT /api/connectors/access/:id`, `POST /api/connectors/remote-mcp/:id/access` | request | allowedRoles |
+| `connector.sharing.updated` | `createSharingHandler` (Google / Canva / Microsoft `POST /sharing`) | request | authorizedBy, sharing; `target.name` = the account email when the body names one |
+| `connector.disconnected` | Google / Canva / Microsoft `DELETE /disconnect` | request | — (`target.name` = the Google account when one is named) |
+| `connector.remote_mcp.added` / `.renamed` / `.removed` | `remote-mcp.controller` | request | url, provider, oauth, manualClient / label (never headers or the client secret) |
+| `send.whatsapp` / `send.whatsapp.discarded` | `whatsapp-inbox.controller` (`POST /drafts/:id/send`, `/discard`) | the agent whose session header sent it, else the owner credential | code, draftedBy, text (cut at 400), status, via |
 
 Decision lines carry the decision's `requestId` (from `requestRef`) and
 `workItemId` when it has them. `DecisionService` takes the writer as an
@@ -107,8 +113,9 @@ changed. Verified by `activity-log.service.test.ts`,
 
 ## Not yet (follow-ups under #881)
 
-- Remaining writers: settings, connector grants, Slack / app posts and
-  WhatsApp drafts (#876) as `send.*` actions.
+- Slack and Crewly Apps posts are not logged: they are the team's own
+  messaging, not outbound to a third party, and a line per reply would bury
+  the log. Connector *connects* (the OAuth callback) are not logged yet either.
 - A filterable page in the dashboard (Settings › Activity) and on the portal.
 - Retention: the log is unbounded by design; a month file is ~1 KB per 5
   entries, so a year of a busy home is a few MB. Revisit if that changes.

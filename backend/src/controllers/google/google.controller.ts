@@ -491,6 +491,7 @@ export async function disconnect(req: Request, res: Response): Promise<void> {
   try {
     const account = accountOf(req);
     const data = await getDeps().tokens.disconnect({ ...(account ? { account } : {}) });
+    recordActivity({ actor: actorFromRequest(req), action: 'connector.disconnected', target: { type: 'connector', id: 'google-workspace', ...(account ? { name: account } : {}) } });
     res.json({ success: true, data });
   } catch (err) {
     await sendGoogleError(req, res, err);
@@ -528,7 +529,7 @@ export const setSharing = createSharingHandler(async (req, change) => {
   const email = typeof (req.body as { email?: unknown } | undefined)?.email === 'string' ? (req.body as { email: string }).email.trim() : '';
   if (!email) throw new GoogleWorkspaceError(400, GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.VALIDATION, 'email is required');
   return getDeps().tokens.setSharing(email, change);
-}, sendGoogleError);
+}, sendGoogleError, 'google-workspace');
 
 /**
  * GET /api/google/gmail/search?q=&max= — search hits with headers + snippet.

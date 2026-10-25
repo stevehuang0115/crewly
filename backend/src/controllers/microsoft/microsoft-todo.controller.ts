@@ -10,6 +10,7 @@
 
 import { PEOPLE_CONSTANTS } from '../../constants.js';
 import { connectingPerson, createSharingHandler } from '../connector/grant-sharing.handler.js';
+import { actorFromRequest, recordActivity } from '../../services/activity/activity-log.service.js';
 import type { Request, Response } from 'express';
 import { MICROSOFT_TODO_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
@@ -168,7 +169,9 @@ export async function getConnectUrl(req: Request, res: Response): Promise<void> 
 /** DELETE /api/microsoft-todo/disconnect */
 export async function disconnect(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ success: true, data: await getDeps().tokens.disconnect() });
+    const data = await getDeps().tokens.disconnect();
+    recordActivity({ actor: actorFromRequest(req), action: 'connector.disconnected', target: { type: 'connector', id: 'microsoft-todo' } });
+    res.json({ success: true, data });
   } catch (err) {
     sendMicrosoftTodoError(req, res, err);
   }
@@ -268,4 +271,4 @@ export async function deleteTask(req: Request, res: Response): Promise<void> {
  * with (issue #968). Owner only: an agent is refused.
  * Body `{ authorizedBy?, sharing? }` → `{ authorizedBy, sharing }`.
  */
-export const setSharing = createSharingHandler((_req, change) => getDeps().tokens.setSharing(change), sendMicrosoftTodoError);
+export const setSharing = createSharingHandler((_req, change) => getDeps().tokens.setSharing(change), sendMicrosoftTodoError, 'microsoft-todo');

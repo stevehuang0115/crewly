@@ -10,6 +10,7 @@
 
 import { PEOPLE_CONSTANTS } from '../../constants.js';
 import { connectingPerson, createSharingHandler } from '../connector/grant-sharing.handler.js';
+import { actorFromRequest, recordActivity } from '../../services/activity/activity-log.service.js';
 import type { Request, Response } from 'express';
 import { CANVA_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
@@ -126,7 +127,9 @@ export async function getConnectUrl(req: Request, res: Response): Promise<void> 
 /** DELETE /api/canva/disconnect */
 export async function disconnect(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ success: true, data: await getDeps().tokens.disconnect() });
+    const data = await getDeps().tokens.disconnect();
+    recordActivity({ actor: actorFromRequest(req), action: 'connector.disconnected', target: { type: 'connector', id: 'canva' } });
+    res.json({ success: true, data });
   } catch (err) {
     sendCanvaError(req, res, err);
   }
@@ -206,4 +209,4 @@ export async function uploadAsset(req: Request, res: Response): Promise<void> {
  * with (issue #968). Owner only: an agent is refused.
  * Body `{ authorizedBy?, sharing? }` → `{ authorizedBy, sharing }`.
  */
-export const setSharing = createSharingHandler((_req, change) => getDeps().tokens.setSharing(change), sendCanvaError);
+export const setSharing = createSharingHandler((_req, change) => getDeps().tokens.setSharing(change), sendCanvaError, 'canva');
