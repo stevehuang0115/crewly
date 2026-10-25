@@ -178,6 +178,23 @@ export function createAutopilotRetroDeps(): AutopilotRetroDeps {
       });
       return outcome.ok;
     },
+    writeGlobalWiki: async (relativePath, markdown, by) => {
+      const vaultPath = path.join(getCrewlyHomePath(), 'global-wiki');
+      if (!existsSync(path.join(vaultPath, 'SCHEMA.md'))) return false;
+      const outcome = await WikiIngestService.getInstance().ingest({
+        vaultPath,
+        sourceType: 'autopilot_retro',
+        sourceRef: relativePath,
+        sourceBody: markdown,
+        callerSession: by,
+        targetRelativePath: relativePath,
+        title: path.basename(relativePath, '.md'),
+        summary: 'Weekly cross-team autopilot retro: what repeated across projects and what belongs to Crewly.',
+        replace: true,
+      });
+      return outcome.ok;
+    },
+    retroPagePath: (projectPath, relativePath) => path.join(resolveProjectDataDir(projectPath), 'wiki', relativePath),
     harnessProject: async () => {
       const wanted = TICKET_AUTOPILOT_CONSTANTS.RETRO_HARNESS_PROJECT.toLowerCase();
       return (await StorageService.getInstance().getProjects()).find((p) => p.name.toLowerCase() === wanted) ?? null;
@@ -613,6 +630,17 @@ export async function getTicketAutopilotRuns(req: Request, res: Response): Promi
  */
 export async function submitTicketAutopilotRetro(req: Request, res: Response): Promise<void> {
   await respond(res, () => ticketAutopilot().submitRetro(req.params.project, req.body ?? {}, callerOf(req)));
+}
+
+/**
+ * POST /api/project-ticket-autopilot/weekly-retro — the orchestrator's weekly
+ * cross-team retro `{ week, summary, problems }` (#985). Owner / orchestrator only.
+ *
+ * @param req - Request
+ * @param res - `{ success, data: WeeklyRetroResult }`
+ */
+export async function submitTicketAutopilotWeeklyRetro(req: Request, res: Response): Promise<void> {
+  await respond(res, () => ticketAutopilot().submitWeeklyRetro(req.body ?? {}, callerOf(req)));
 }
 
 /**

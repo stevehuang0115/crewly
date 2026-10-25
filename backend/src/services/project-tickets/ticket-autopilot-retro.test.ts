@@ -5,6 +5,12 @@
 
 import {
   buildRetroBrief,
+  buildWeeklyRetroBrief,
+  isoWeekOf,
+  isoWeekRange,
+  previousIsoWeek,
+  renderWeeklyRetroMarkdown,
+  validateWeeklyRetroInput,
   duplicateOf,
   durationWords,
   renderRetroMarkdown,
@@ -84,5 +90,74 @@ describe('ticket-autopilot-retro', () => {
     expect(statsLines(day)).toHaveLength(6);
     const s = { ...day, stalls: { count: 2, totalMs: 3 * 3_600_000, byCause: { ...day.stalls.byCause, waiting_on_owner: { count: 1, ms: 2 * 3_600_000 }, nobody_pushing: { count: 1, ms: 3_600_000 } } } };
     expect(topStallCauses(s)).toEqual(['waiting on the owner: 1 (2h)', 'nobody pushing: 1 (1h)']);
+  });
+
+  describe('weekly cross-team retro (#985)', () => {
+    it('ISO weeks: label, range and the previous week', () => {
+      expect(isoWeekOf('2026-09-28')).toBe('2026-W40');
+      expect(isoWeekOf('2026-10-04')).toBe('2026-W40');
+      expect(isoWeekOf('2026-10-05')).toBe('2026-W41');
+      expect(isoWeekOf('2027-01-01')).toBe('2026-W53'); // Friday; the week belongs to 2026
+      expect(isoWeekOf('2026-01-01')).toBe('2026-W01');
+      expect(isoWeekRange('2026-W40')).toEqual({ start: '2026-09-28', end: '2026-10-04' });
+      expect(isoWeekRange('2026-W01')).toEqual({ start: '2025-12-29', end: '2026-01-04' });
+      expect(isoWeekRange('2026-W53')).toEqual({ start: '2026-12-28', end: '2027-01-03' });
+      expect(() => isoWeekRange('2026-40')).toThrow('Not an ISO week');
+      expect(previousIsoWeek('2026-10-05')).toEqual({ week: '2026-W40', start: '2026-09-28', end: '2026-10-04' });
+      expect(previousIsoWeek('2026-10-11')).toEqual({ week: '2026-W40', start: '2026-09-28', end: '2026-10-04' });
+      expect(previousIsoWeek('2026-01-01')).toEqual({ week: '2025-W52', start: '2025-12-22', end: '2025-12-28' });
+    });
+
+    it('validates the weekly retro input', () => {
+      const ok = validateWeeklyRetroInput({ week: '2026-W40', summary: 'Two teams stalled on approvals.', problems: [{ class: 'harness_gap', title: 'Brief misreads paused teams' }] });
+      expect(ok).toEqual({ week: '2026-W40', summary: 'Two teams stalled on approvals.', problems: [{ class: 'harness_gap', title: 'Brief misreads paused teams' }] });
+      expect(() => validateWeeklyRetroInput({ week: '2026-10-05', summary: 'x', problems: [] })).toThrow(RetroInputError);
+      expect(() => validateWeeklyRetroInput({ week: '2026-10-05', summary: 'x', problems: [] })).toThrow('YYYY-Www');
+      expect(() => validateWeeklyRetroInput({ week: '2026-W40', summary: '', problems: [] })).toThrow(RetroInputError);
+      expect(() => validateWeeklyRetroInput({ week: '2026-W40', summary: 'x', problems: [{ class: 'nope', title: 't' }] })).toThrow(RetroInputError);
+    });
+
+    it('builds the orchestrator brief across projects and renders the global wiki page', () => {
+      const projects = [
+        { id: 'p-ce', name: 'CE', stats: stats.total, retros: [{ day: '2026-09-30', page: '/data/ce/wiki/llm-curated/autopilot-retros/2026-09-30.md', problems: 2, gaps: 1 }] },
+        { id: 'p-fp', name: 'Flopost', stats: null, retros: [{ day: '2026-10-01', page: 'llm-curated/autopilot-retros/2026-10-01.md', problems: 1, gaps: 0 }] },
+      ];
+      const brief = buildWeeklyRetroBrief({
+        week: '2026-W40',
+        start: '2026-09-28',
+        end: '2026-10-04',
+        projects,
+        gaps: [{ id: 'CREWLY-7', title: 'Reconciler never woke the stopped lead', project: 'CE', day: '2026-09-30' }],
+      });
+      expect(brief).toContain('# Weekly autopilot retro: 2026-W40 (2026-09-28 → 2026-10-04)');
+      expect(brief).toContain('daily retros for 2 projects');
+      expect(brief).toContain('### CE');
+      expect(brief).toContain('- 2026-09-30: 2 problems, 1 harness gap filed — `/data/ce/wiki/llm-curated/autopilot-retros/2026-09-30.md`');
+      expect(brief).toContain('### Flopost');
+      expect(brief).toContain('- Numbers unavailable (traces could not be read)');
+      expect(brief).toContain('- CREWLY-7 — Reconciler never woke the stopped lead (CE, 2026-09-30)');
+      expect(brief).toContain('retro --week 2026-W40');
+      expect(brief).toContain('llm-curated/autopilot-retros/weekly/2026-W40.md');
+
+      const many = Array.from({ length: 14 }, (_, i) => ({ id: `p${i}`, name: `P${i}`, stats: null, retros: [] }));
+      expect(buildWeeklyRetroBrief({ week: '2026-W40', start: '2026-09-28', end: '2026-10-04', projects: many, gaps: [] })).toContain('…and 2 more projects');
+
+      const md = renderWeeklyRetroMarkdown({
+        week: '2026-W40',
+        start: '2026-09-28',
+        end: '2026-10-04',
+        retro: { week: '2026-W40', summary: 'Approvals stalled two teams.', problems: [{ class: 'owner_dependency', title: 'Copy approvals waited a day' }, { class: 'harness_gap', title: 'Brief misreads paused teams' }] },
+        by: 'crewly-orc',
+        projects,
+        filed: [{ id: 'CREWLY-9', title: 'Brief misreads paused teams' }],
+      });
+      expect(md).toContain('# Weekly autopilot retro — 2026-W40 (2026-09-28 → 2026-10-04)');
+      expect(md).toContain('Filed by crewly-orc.');
+      expect(md).toContain('- **CE**: daily retros 2026-09-30 — ');
+      expect(md).toContain('- **Flopost**: daily retros 2026-10-01');
+      expect(md).toContain('### Owner dependency');
+      expect(md).toContain('### Harness gap');
+      expect(md).toContain("- CREWLY-9: Brief misreads paused teams (waiting for the owner's OK)");
+    });
   });
 });

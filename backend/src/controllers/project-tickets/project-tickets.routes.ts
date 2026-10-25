@@ -22,6 +22,7 @@ import {
   migrateProjectTickets,
   setTicketAutopilot,
   submitTicketAutopilotRetro,
+  submitTicketAutopilotWeeklyRetro,
   submitTicketAutopilotSelfReview,
   transitionProjectTicket,
   updateProjectTicket,
@@ -83,6 +84,7 @@ export function createProjectTicketsMigrationRouter(): Router {
  * - GET  /:project — settings + status
  * - POST /:project — `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro?, replansPerDay?, replanTtlHours?, speedMode?, skipLabels? }`
  * - GET  /:project/stats?days=&label= — autopilot stats; GET /:project/runs — run + ticket traces per day
+ * - POST /weekly-retro — the orchestrator's weekly cross-team retro (#985; before /:project)
  * - POST /:project/retro — the driver's daily retro (specs/2026-10-03-autopilot-experiments.md)
  * - POST /:project/self-review — the driver's self-review (specs/2026-10-04-autopilot-speed-modes.md)
  *
@@ -90,6 +92,8 @@ export function createProjectTicketsMigrationRouter(): Router {
  */
 export function createTicketAutopilotRouter(): Router {
   const router = Router();
+  // Fixed path first: `/weekly-retro` must not be read as a project id.
+  router.post('/weekly-retro', submitTicketAutopilotWeeklyRetro);
   router.get('/:project', getTicketAutopilot);
   router.post('/:project', setTicketAutopilot);
   // specs/2026-10-03-autopilot-experiments.md: stats, runs, daily retro

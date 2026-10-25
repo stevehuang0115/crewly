@@ -31,6 +31,7 @@
 #   bash execute.sh stats     --project P [--days 14] [--label feed]       (owner / orc / lead)
 #   bash execute.sh runs      --project P [--days 7] [--label feed]        (owner / orc / lead)
 #   bash execute.sh retro     --project P --day YYYY-MM-DD --summary "…" [--problem "class|title|detail|evidence" …]
+#   bash execute.sh retro     --week YYYY-Www --summary "…" [--problem … …]   (orchestrator: weekly cross-team retro)
 #   bash execute.sh self-review --project P --gap "…" [--moved "…"] --next-bet "…"
 #   bash execute.sh '{"action":"create","project":"P","title":"…"}'
 #
@@ -100,6 +101,8 @@ Usage:
                                                               Team lead: file the daily autopilot retro.
                                                               class = agent_judgment | missing_skill |
                                                               harness_gap | owner_dependency
+  bash execute.sh retro     --week YYYY-Www --summary "…" [--problem … …]
+                                                              Orchestrator: file the weekly cross-team retro.
   bash execute.sh self-review --project P --gap "…" [--moved "…"] --next-bet "…"
                                                               Team lead: file the autopilot self-review (gap to
                                                               the target, what moved it, the next bet)
@@ -114,7 +117,7 @@ STATUS=""; SOURCE=""; REQUEST_ID=""; NOTE=""; OWNER_REVIEW=""; ASSIGNEE=""; STAR
 ACCEPTANCE_JSON="null"
 HAS_DESCRIPTION=0
 QUESTION=""; CLEAR=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; AP_ENABLED=""; AP_DRIVER=""; AP_BUDGET=""; AP_MAX=""
-AP_RETRO=""; AP_REPLANS=""; AP_REPLAN_TTL=""; DAYS=""; LABEL=""; DAY=""; SUMMARY=""; PROBLEMS_JSON="[]"
+AP_RETRO=""; AP_REPLANS=""; AP_REPLAN_TTL=""; DAYS=""; LABEL=""; DAY=""; WEEK=""; SUMMARY=""; PROBLEMS_JSON="[]"
 DEFER_UNTIL=""; AP_SKIP=""; HOLD=""; HAS_HOLD=0
 METRIC=""; AP_SPEED=""; GAP=""; MOVED=""; NEXT_BET=""
 
@@ -211,6 +214,7 @@ while [[ $# -gt 0 ]]; do
     --days)          [ $# -ge 2 ] || error_exit "--days requires a value";        DAYS="$2"; shift 2 ;;
     --label)         [ $# -ge 2 ] || error_exit "--label requires a value";       LABEL="$2"; shift 2 ;;
     --day)           [ $# -ge 2 ] || error_exit "--day requires a value";         DAY="$2"; shift 2 ;;
+    --week)          [ $# -ge 2 ] || error_exit "--week requires YYYY-Www";       WEEK="$2"; shift 2 ;;
     --summary)       [ $# -ge 2 ] || error_exit "--summary requires a value";     SUMMARY="$2"; shift 2 ;;
     --problem)       [ $# -ge 2 ] || error_exit "--problem requires \"class|title|detail|evidence\""
                      PROBLEMS_JSON=$(jq -c --arg p "$2" '. + [($p | split("|")) as $f | {class: ($f[0] // "" | gsub("^\\s+|\\s+$"; "")), title: ($f[1] // "")} + (if ($f[2] // "") != "" then {detail: $f[2]} else {} end) + (if ($f[3:] | join("|")) != "" then {evidence: ($f[3:] | join("|"))} else {} end)]' <<<"$PROBLEMS_JSON"); shift 2 ;;
@@ -369,11 +373,17 @@ case "$ACTION" in
     fi
     ;;
   retro)
-    require_param "project" "$PROJECT"
-    require_param "day (--day YYYY-MM-DD)" "$DAY"
     require_param "summary (--summary)" "$SUMMARY"
-    BODY=$(jq -n --arg d "$DAY" --arg s "$SUMMARY" --argjson p "$PROBLEMS_JSON" '{day: $d, summary: $s, problems: $p}')
-    api_call POST "/project-ticket-autopilot/$(enc "$PROJECT")/retro" "$BODY" | jq '{success, retro: .data, error}'
+    if [ -n "$WEEK" ]; then
+      # Weekly cross-team retro (owner / orchestrator): no project, the week is the scope.
+      BODY=$(jq -n --arg w "$WEEK" --arg s "$SUMMARY" --argjson p "$PROBLEMS_JSON" '{week: $w, summary: $s, problems: $p}')
+      api_call POST "/project-ticket-autopilot/weekly-retro" "$BODY" | jq '{success, retro: .data, error}'
+    else
+      require_param "project" "$PROJECT"
+      require_param "day (--day YYYY-MM-DD)" "$DAY"
+      BODY=$(jq -n --arg d "$DAY" --arg s "$SUMMARY" --argjson p "$PROBLEMS_JSON" '{day: $d, summary: $s, problems: $p}')
+      api_call POST "/project-ticket-autopilot/$(enc "$PROJECT")/retro" "$BODY" | jq '{success, retro: .data, error}'
+    fi
     ;;
   self-review)
     require_param "project" "$PROJECT"
