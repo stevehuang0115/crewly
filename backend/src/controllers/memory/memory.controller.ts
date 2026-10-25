@@ -14,6 +14,7 @@ import type { RememberCategory, MemoryScope } from '../../services/memory/memory
 import { GoalTrackingService } from '../../services/memory/goal-tracking.service.js';
 import { DailyLogService } from '../../services/memory/daily-log.service.js';
 import { LearningAccumulationService } from '../../services/memory/learning-accumulation.service.js';
+import { CorrectionLadderService, type CorrectionSource } from '../../services/memory/correction-ladder.service.js';
 import { UserProfileService } from '../../services/memory/user-profile.service.js';
 import { MemorySupersessionService } from '../../services/memory/memory-supersession.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
@@ -269,8 +270,13 @@ export async function supersedeMemory(req: Request, res: Response, next: NextFun
  * project memory and optionally promoted to agent memory if it contains
  * role-relevant patterns.
  *
- * @param req - Express request with body: { agentId, agentRole, projectPath, learning, relatedTask?, relatedFiles? }
- * @param res - Express response returning { success }
+ * With `correctionClass` (a short slug such as `git-add-all`) the learning is
+ * also counted on the project's correction ladder (#810); the second time a
+ * class is recorded the team lead gets a WorkItem asking for a check in
+ * code. The answer then carries `correction: { count, raised }`.
+ *
+ * @param req - Express request with body: { agentId, agentRole, projectPath, learning, relatedTask?, relatedFiles?, correctionClass? }
+ * @param res - Express response returning { success, correction? }
  * @param next - Express next function for error propagation
  *
  * @example
@@ -288,7 +294,7 @@ export async function supersedeMemory(req: Request, res: Response, next: NextFun
  */
 export async function recordLearning(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { agentId, agentRole, projectPath, learning, relatedTask, relatedFiles } = req.body;
+    const { agentId, agentRole, projectPath, learning, relatedTask, relatedFiles, correctionClass } = req.body;
 
     if (!agentId || !agentRole || !projectPath || !learning) {
       res.status(400).json({
@@ -310,11 +316,110 @@ export async function recordLearning(req: Request, res: Response, next: NextFunc
 
     logger.info('Learning recorded via REST', { agentId, agentRole, projectPath });
 
-    res.json({ success: true });
+    let correction: Record<string, unknown> | undefined;
+    if (typeof correctionClass === 'string' && correctionClass.trim()) {
+      // The ladder never fails the learning: it is bookkeeping on top of it.
+      try {
+        const r = await CorrectionLadderService.getInstance().record({ projectPath, correctionClass, agentId, text: learning, source: 'learning', relatedTask });
+        correction = { class: r.record.class, count: r.record.count, raised: r.raised, ...(r.workItemId ? { workItemId: r.workItemId } : {}), ...(r.skipped ? { skipped: r.skipped } : {}) };
+      } catch (ladderError) {
+        logger.warn('Correction ladder skipped for learning', { correctionClass, error: ladderError instanceof Error ? ladderError.message : String(ladderError) });
+        correction = { error: ladderError instanceof Error ? ladderError.message : String(ladderError) };
+      }
+    }
+
+    res.json({ success: true, ...(correction ? { correction } : {}) });
   } catch (error) {
     logger.error('Failed to record learning', {
       error: error instanceof Error ? error.message : String(error),
     });
+    next(error);
+  }
+}
+
+/**
+ * POST /api/memory/corrections
+ *
+ * Count one correction of a class on the project's correction ladder
+ * (#810) without writing a learning — the team-leader failure path and
+ * direct calls use this. The second occurrence raises the lead's WorkItem.
+ *
+ * @param req - Express request with body: { projectPath, correctionClass, agentId, text, source?, relatedTask? }
+ * @param res - Express response returning { success, data: { class, count, raised, workItemId?, skipped? } }
+ * @param next - Express next function for error propagation
+ */
+export async function recordCorrection(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { projectPath, correctionClass, agentId, text, source, relatedTask } = req.body ?? {};
+    if (!projectPath || !correctionClass || !agentId || !text) {
+      res.status(400).json({ success: false, error: 'Missing required parameters: projectPath, correctionClass, agentId, text' });
+      return;
+    }
+    const sources: CorrectionSource[] = ['learning', 'failure', 'manual'];
+    const src: CorrectionSource = sources.includes(source) ? source : 'manual';
+    let r;
+    try {
+      r = await CorrectionLadderService.getInstance().record({ projectPath, correctionClass, agentId, text, source: src, relatedTask });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    res.json({ success: true, data: { class: r.record.class, count: r.record.count, raised: r.raised, workItemId: r.workItemId, skipped: r.skipped } });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/memory/corrections/:class/decide
+ *
+ * Record the team lead's rung for a correction class (#810): structural,
+ * check, hook or prose — always with a reason. Closes the open ladder
+ * WorkItem's bookkeeping for that class.
+ *
+ * @param req - Express request with `:class` and body: { projectPath, rung, reason, link?, decidedBy }
+ * @param res - Express response returning { success, data: CorrectionClassRecord }
+ * @param next - Express next function for error propagation
+ */
+export async function decideCorrection(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const correctionClass = String(req.params['class'] ?? '');
+    const { projectPath, rung, reason, link, decidedBy } = req.body ?? {};
+    if (!projectPath || !rung || !reason || !decidedBy) {
+      res.status(400).json({ success: false, error: 'Missing required parameters: projectPath, rung, reason, decidedBy' });
+      return;
+    }
+    try {
+      const record = await CorrectionLadderService.getInstance().decide({ projectPath, correctionClass, rung, reason, link, decidedBy });
+      res.json({ success: true, data: record });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(message.startsWith('No correction class') ? 404 : 400).json({ success: false, error: message });
+    }
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * GET /api/memory/corrections?projectPath=…
+ *
+ * Every correction class of a project with its tally, open WorkItem and
+ * decision, most recorded first.
+ *
+ * @param req - Express request with `projectPath` query
+ * @param res - Express response returning { success, data: CorrectionClassRecord[] }
+ * @param next - Express next function for error propagation
+ */
+export async function listCorrections(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const projectPath = typeof req.query['projectPath'] === 'string' ? req.query['projectPath'] : '';
+    if (!projectPath) {
+      res.status(400).json({ success: false, error: 'Missing required query parameter: projectPath' });
+      return;
+    }
+    res.json({ success: true, data: await CorrectionLadderService.getInstance().list(projectPath) });
+  } catch (error) {
     next(error);
   }
 }

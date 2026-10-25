@@ -7,7 +7,7 @@
  * @module controllers/memory/memory.controller.test
  */
 
-import { remember, recall, recordLearning, getMyContext, supersedeMemory } from './memory.controller.js';
+import { remember, recall, recordLearning, getMyContext, supersedeMemory, recordCorrection, decideCorrection, listCorrections } from './memory.controller.js';
 
 // Mock LoggerService before any imports that use it
 jest.mock('../../services/core/logger.service.js', () => ({
@@ -19,6 +19,20 @@ jest.mock('../../services/core/logger.service.js', () => ({
         warn: jest.fn(),
         error: jest.fn(),
       }),
+    }),
+  },
+}));
+
+// Mock CorrectionLadderService (#810)
+const mockLadderRecord = jest.fn();
+const mockLadderDecide = jest.fn();
+const mockLadderList = jest.fn();
+jest.mock('../../services/memory/correction-ladder.service.js', () => ({
+  CorrectionLadderService: {
+    getInstance: () => ({
+      record: mockLadderRecord,
+      decide: mockLadderDecide,
+      list: mockLadderList,
     }),
   },
 }));
@@ -97,6 +111,9 @@ describe('MemoryController', () => {
     mockRecall.mockReset();
     mockRecordLearning.mockReset();
     mockSupersede.mockReset();
+    mockLadderRecord.mockReset();
+    mockLadderDecide.mockReset();
+    mockLadderList.mockReset();
   });
 
   // ========================= remember =========================
@@ -769,6 +786,125 @@ describe('MemoryController', () => {
   });
 
   // ========================= getMyContext =========================
+
+  describe('recordLearning with correctionClass (#810)', () => {
+    const body = {
+      agentId: 'dev-001',
+      agentRole: 'developer',
+      projectPath: '/path/to/project',
+      learning: 'Never git add -A',
+      relatedTask: 'TICKET-9',
+      correctionClass: 'git-add-all',
+    };
+
+    it('counts the class on the ladder and reports the tally', async () => {
+      mockRecordLearning.mockResolvedValue(undefined);
+      mockLadderRecord.mockResolvedValue({ record: { class: 'git-add-all', count: 2 }, raised: true, workItemId: 'wi-1' });
+
+      await recordLearning({ body } as any, mockRes as any, mockNext);
+
+      expect(mockRecordLearning).toHaveBeenCalledWith(expect.objectContaining({ learning: 'Never git add -A' }));
+      expect(mockLadderRecord).toHaveBeenCalledWith({
+        projectPath: '/path/to/project',
+        correctionClass: 'git-add-all',
+        agentId: 'dev-001',
+        text: 'Never git add -A',
+        source: 'learning',
+        relatedTask: 'TICKET-9',
+      });
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: true,
+        correction: { class: 'git-add-all', count: 2, raised: true, workItemId: 'wi-1' },
+      });
+    });
+
+    it('keeps the learning when the ladder fails', async () => {
+      mockRecordLearning.mockResolvedValue(undefined);
+      mockLadderRecord.mockRejectedValue(new Error('disk full'));
+
+      await recordLearning({ body } as any, mockRes as any, mockNext);
+
+      expect(mockRes.status).not.toHaveBeenCalled();
+      expect(mockRes.json).toHaveBeenCalledWith({ success: true, correction: { error: 'disk full' } });
+    });
+
+    it('does not touch the ladder without a class', async () => {
+      mockRecordLearning.mockResolvedValue(undefined);
+      await recordLearning({ body: { ...body, correctionClass: undefined } } as any, mockRes as any, mockNext);
+      expect(mockLadderRecord).not.toHaveBeenCalled();
+      expect(mockRes.json).toHaveBeenCalledWith({ success: true });
+    });
+  });
+
+  describe('recordCorrection', () => {
+    it('rejects missing fields', async () => {
+      await recordCorrection({ body: { projectPath: '/p', correctionClass: 'c' } } as any, mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockLadderRecord).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when the ladder refuses the class', async () => {
+      mockLadderRecord.mockRejectedValue(new Error('Correction class "??" has no letters or digits'));
+      await recordCorrection({ body: { projectPath: '/p', correctionClass: '??', agentId: 'a', text: 't' } } as any, mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({ success: false, error: 'Correction class "??" has no letters or digits' });
+    });
+
+    it('records with a known source and defaults unknown sources to manual', async () => {
+      mockLadderRecord.mockResolvedValue({ record: { class: 'c', count: 1 }, raised: false, skipped: 'below_threshold' });
+      await recordCorrection({ body: { projectPath: '/p', correctionClass: 'c', agentId: 'a', text: 't', source: 'failure' } } as any, mockRes as any, mockNext);
+      expect(mockLadderRecord).toHaveBeenCalledWith(expect.objectContaining({ source: 'failure' }));
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: true,
+        data: { class: 'c', count: 1, raised: false, workItemId: undefined, skipped: 'below_threshold' },
+      });
+
+      await recordCorrection({ body: { projectPath: '/p', correctionClass: 'c', agentId: 'a', text: 't', source: 'bogus' } } as any, mockRes as any, mockNext);
+      expect(mockLadderRecord).toHaveBeenLastCalledWith(expect.objectContaining({ source: 'manual' }));
+    });
+  });
+
+  describe('decideCorrection', () => {
+    const req = (body: Record<string, unknown>, cls = 'git-add-all') => ({ params: { class: cls }, body }) as any;
+
+    it('rejects missing fields', async () => {
+      await decideCorrection(req({ projectPath: '/p', rung: 'check' }), mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockLadderDecide).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for an unknown class and 400 for a bad rung', async () => {
+      mockLadderDecide.mockRejectedValueOnce(new Error('No correction class "nope" in /p'));
+      await decideCorrection(req({ projectPath: '/p', rung: 'check', reason: 'r', decidedBy: 'tl' }, 'nope'), mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(404);
+
+      mockLadderDecide.mockRejectedValueOnce(new Error('Unknown rung "vibes"'));
+      await decideCorrection(req({ projectPath: '/p', rung: 'vibes', reason: 'r', decidedBy: 'tl' }), mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenLastCalledWith(400);
+    });
+
+    it('records the decision', async () => {
+      const record = { class: 'git-add-all', count: 2, decision: { rung: 'check', reason: 'r', decidedBy: 'tl' } };
+      mockLadderDecide.mockResolvedValue(record);
+      await decideCorrection(req({ projectPath: '/p', rung: 'check', reason: 'r', link: 'PR #1', decidedBy: 'tl' }), mockRes as any, mockNext);
+      expect(mockLadderDecide).toHaveBeenCalledWith({ projectPath: '/p', correctionClass: 'git-add-all', rung: 'check', reason: 'r', link: 'PR #1', decidedBy: 'tl' });
+      expect(mockRes.json).toHaveBeenCalledWith({ success: true, data: record });
+    });
+  });
+
+  describe('listCorrections', () => {
+    it('needs projectPath', async () => {
+      await listCorrections({ query: {} } as any, mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+    });
+
+    it('lists the project classes', async () => {
+      mockLadderList.mockResolvedValue([{ class: 'c', count: 3 }]);
+      await listCorrections({ query: { projectPath: '/p' } } as any, mockRes as any, mockNext);
+      expect(mockLadderList).toHaveBeenCalledWith('/p');
+      expect(mockRes.json).toHaveBeenCalledWith({ success: true, data: [{ class: 'c', count: 3 }] });
+    });
+  });
 
   describe('getMyContext', () => {
     beforeEach(() => {

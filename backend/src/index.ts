@@ -1305,6 +1305,32 @@ void (async () => {
 				});
 			}
 
+			// Correction ladder (#810): the second time a correction class is
+			// recorded in a project, its team lead gets one WorkItem asking
+			// for a check in code instead of more prose. No LLM. Non-fatal.
+			try {
+				const { CorrectionLadderService } = await import('./services/memory/correction-ladder.service.js');
+				const { resolveWikiOwner } = await import('./services/wiki/wiki-owner.resolver.js');
+				CorrectionLadderService.setInstance(
+					new CorrectionLadderService({
+						pool: TaskPoolService.getInstance(),
+						// The lead of a team assigned to the project; the orchestrator when none.
+						resolveTarget: (projectPath) => resolveWikiOwner(this.storageService, projectPath),
+						isTargetAwake: async (sessionName) => {
+							if (sessionName === ORCHESTRATOR_SESSION_NAME) return true;
+							const member = (await this.storageService.getTeams())
+								.flatMap((t) => t.members ?? [])
+								.find((m) => m.sessionName === sessionName);
+							return member?.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE;
+						},
+					}),
+				);
+			} catch (ladderErr) {
+				this.logger.warn('Correction ladder failed to start (non-fatal)', {
+					error: (ladderErr as Error).message,
+				});
+			}
+
 			// Agent memory refresh (#1345): once a day, each active agent's own
 			// recent vault-log entries are reflected into its memory.json and
 			// gotchas/decisions into the project's memory. No LLM. Non-fatal.
