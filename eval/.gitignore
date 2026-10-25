@@ -1,8 +1,8 @@
 node_modules/
 dist/
 # Per-run working copies of the fixtures (one directory per task × runtime × timestamp)
-runs/
+/runs/
 # Fresh results land here; a run that becomes a baseline is copied into baselines/<date>/
-results/
+/results/
 *.log
 .env
