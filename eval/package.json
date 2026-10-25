@@ -8,8 +8,8 @@
     "start": "node dist/cli.js",
     "eval": "node dist/cli.js run --all",
     "eval:task": "node dist/cli.js run --task",
-    "test": "vitest run src",
-    "test:watch": "vitest src"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "chalk": "^5.3.0",
