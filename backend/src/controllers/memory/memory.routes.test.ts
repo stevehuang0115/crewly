@@ -142,11 +142,19 @@ describe('Memory Routes', () => {
   // Route count and method restrictions
   // ---------------------------------------------------------------
 
-  it('should register exactly 15 routes', () => {
-    // Count includes /supersede added in Memory Phase 1 (M4).
+  it('should register exactly 18 routes', () => {
+    // Count includes /supersede (Memory Phase 1, M4) and the three
+    // correction-ladder routes (#810).
     // Bump this expectation whenever createMemoryRouter() registers a new path.
     const routes = (router.stack as any[]).filter((layer: any) => layer.route);
-    expect(routes).toHaveLength(15);
+    expect(routes).toHaveLength(18);
+  });
+
+  it('registers the correction ladder routes (#810)', () => {
+    const has = (p: string, m: 'post' | 'get'): boolean => (router.stack as any[]).some((layer: any) => layer.route?.path === p && layer.route?.methods?.[m]);
+    expect(has('/corrections', 'post')).toBe(true);
+    expect(has('/corrections', 'get')).toBe(true);
+    expect(has('/corrections/:class/decide', 'post')).toBe(true);
   });
 
   it('should only use POST or GET methods', () => {
@@ -158,12 +166,12 @@ describe('Memory Routes', () => {
     }
   });
 
-  it('should have 11 POST routes and 4 GET routes', () => {
+  it('should have 13 POST routes and 5 GET routes', () => {
     // Updated for M4 supersede (POST). Total = 15.
     const routes = (router.stack as any[]).filter((layer: any) => layer.route);
     const postRoutes = routes.filter((r: any) => r.route.methods.post);
     const getRoutes = routes.filter((r: any) => r.route.methods.get);
-    expect(postRoutes).toHaveLength(11);
-    expect(getRoutes).toHaveLength(4);
+    expect(postRoutes).toHaveLength(13);
+    expect(getRoutes).toHaveLength(5);
   });
 });

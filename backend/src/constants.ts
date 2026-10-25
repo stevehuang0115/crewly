@@ -1923,6 +1923,32 @@ export const WIKI_GAPS_CONSTANTS = {
 } as const;
 
 /**
+ * Correction ladder (#810): repeated corrections of one class become a
+ * team-lead WorkItem asking for a check in code instead of more prose.
+ */
+export const CORRECTION_LADDER_CONSTANTS = {
+	/** Per-project store, under the project data dir */
+	STORE_FILE: 'correction-ladder.json',
+	/** Occurrences of a class (or after a prose decision) that raise the lead's WorkItem */
+	THRESHOLD: 2,
+	/** An undecided WorkItem older than this is treated as abandoned and raised again */
+	REOPEN_AFTER_MS: 14 * 24 * 60 * 60_000,
+	/** The rungs, highest first: make it impossible → catch before merge → catch when it happens → tell them again */
+	RUNGS: ['structural', 'check', 'hook', 'prose'],
+	/** Class slug bounds */
+	CLASS_MIN_CHARS: 2,
+	CLASS_MAX_CHARS: 48,
+	/** Occurrences kept per class (newest) */
+	MAX_OCCURRENCES_KEPT: 20,
+	/** Occurrences quoted in the lead's brief */
+	OCCURRENCES_IN_BRIEF: 5,
+	/** Correction text kept per occurrence */
+	OCCURRENCE_TEXT_MAX_CHARS: 400,
+	/** WorkItem `metadata.kind` */
+	WORKITEM_KIND: 'correction-ladder',
+} as const;
+
+/**
  * Daily agent-memory refresh (#1345): what an agent recorded in the wiki
  * log is reflected into its `memory.json` and the project's memory.
  */
