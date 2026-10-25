@@ -896,6 +896,28 @@ export const MEMORY_CONSTANTS = {
   },
 
   /**
+   * Near-duplicate detection on write (#914 P1): a new role-knowledge entry
+   * close enough to an existing one in the same scope merges its evidence
+   * into it instead of being added.
+   */
+  DEDUP: {
+    /**
+     * Token-set Jaccard at or above which two entries are one fact restated
+     * (numbers must agree, see knowledge-similarity). Set by replaying 3.7k
+     * real entries (2026-10-25): at 0.8 the matches are the same claim with
+     * another id, a re-check of the same item, or a correction of the same
+     * assertion (166 entries, 4.5%); from 0.7 down, different items that
+     * share a sentence frame ("Schedule X stops after 3 more runs" / "Schedule
+     * Y stops …") start to collide.
+     */
+    NEAR_DUPLICATE_JACCARD: 0.8,
+    /** Fewer tokens than this and only an exact match counts (short texts overlap by chance) */
+    MIN_TOKENS_FOR_NEAR: 4,
+    /** The legacy containment rule applies only to incoming texts longer than this */
+    SUBSTRING_MIN_CHARS: 20,
+  },
+
+  /**
    * Schema versioning for migrations
    */
   SCHEMA: {
