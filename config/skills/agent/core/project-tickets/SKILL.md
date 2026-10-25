@@ -294,3 +294,24 @@ the project wiki (`llm-curated/autopilot-retros/<day>.md`); harness gaps
 become backlog tickets on the Crewly project, deduplicated and at most 3 a
 day, and the owner approves them with one card. Never file harness gaps as
 tickets yourself.
+
+### What to look for
+
+Read yesterday's run with `trace-read` first; each problem names the stage
+that failed and cites a stall or event by its time. Beyond "what shipped and
+where it stalled", check these six, each with the sign that says it applies
+(#985):
+
+| Category | Sign | Usual class |
+|---|---|---|
+| Navigation | an agent spent turns finding the right file, page or owner of a step | `missing_skill` (a pointer or SOP line) |
+| Automated checks | a check that already exists sat unwired or silently broken; a human caught what a command could have | `harness_gap` |
+| Coding standards | the same correction given twice; a mechanical rule enforced by prose instead of a check | `harness_gap` (make it a check), not more norms text |
+| Steering file size | an always-loaded brief or norm that nobody acted on this run | `missing_skill` (move it out or drop it) |
+| Tool economy | an expensive call (full file dumps, broad searches, long polls) where a narrower one existed | `agent_judgment` |
+| Information access | a fact the agent needed was not available to it, and a person had to supply it | `harness_gap` or `owner_dependency` |
+
+A `waiting_on_owner` stall is `owner_dependency` only when the owner had
+something to decide; one with nothing to decide is `harness_gap` (the ask
+should not have gone out). `nobody_pushing` is the run's real gap: name the
+step that had no owner, not the agent that eventually picked it up.
