@@ -7,6 +7,7 @@ import { registerRuntimeFallbackRoutes } from '../../controllers/system/runtime-
 import { registerRuntimeTermsRoutes } from '../../controllers/system/runtime-terms.controller.js';
 import { registerUsageRoutes } from '../../controllers/system/usage.controller.js';
 import { registerSecurityRoutes } from '../../controllers/security/approvals.controller.js';
+import { registerActivityRoutes } from '../../controllers/activity/activity.controller.js';
 
 export function registerSystemRoutes(router: Router, apiController: ApiController): void {
   // System Administration Routes
@@ -38,6 +39,8 @@ export function registerSystemRoutes(router: Router, apiController: ApiControlle
   registerUsageRoutes(router);
   // Approval activity for Settings › Security (read-only)
   registerSecurityRoutes(router);
+  // Activity log: who changed what and when, owner only (crewly#881, specs/2026-10-25-activity-log.md)
+  registerActivityRoutes(router);
 
   // API Health within /api scope
   router.get('/health', (req, res) => systemHandlers.healthCheck.call(apiController, req, res));

@@ -433,6 +433,21 @@ describe('button clicks', () => {
     expect(hasActions(h.slack.updates[1].blocks)).toBe(false);
   });
 
+  it('writes asked and resolved lines to the activity log with the actor (crewly#881)', async () => {
+    const recorded: Array<Record<string, unknown>> = [];
+    const h = await harness({ recordActivity: (e) => void recorded.push(e as unknown as Record<string, unknown>) });
+    const d = await h.service.ask('dev-ann', ticketAsk);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ action: 'decision.asked', actor: { type: 'agent', id: 'dev-ann' }, target: { type: 'decision', id: d.id }, after: { status: 'open', asker: 'dev-ann', teamId: 'team-a' } });
+    await h.service.handleInteraction(click(d, 'a'));
+    expect(recorded).toHaveLength(2);
+    expect(recorded[1]).toMatchObject({ action: 'decision.resolved', actor: { type: 'owner', id: OWNER, via: 'button' }, target: { type: 'decision', id: d.id }, note: 'Send Monday', after: { status: 'resolved', chosenKey: 'a', answeredVia: 'button' } });
+    // A log that throws never breaks the decision.
+    const h2 = await harness({ recordActivity: () => { throw new Error('disk full'); } });
+    const d2 = await h2.service.ask('dev-ann', ticketAsk);
+    expect(await h2.service.handleInteraction(click(d2, 'a'))).toMatchObject({ handled: true, reason: 'resolved' });
+  });
+
   it('keeps needs-owner while another decision on the ticket is open', async () => {
     const h = await harness();
     const d1 = await h.service.ask('dev-ann', ticketAsk);

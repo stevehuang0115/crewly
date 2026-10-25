@@ -31,6 +31,7 @@ import { TriggerEngine } from '../v3/trigger-engine.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { createWorkItem } from '../../types/v2/work-item.types.js';
 import { createSkipAllCommandInterceptor } from './decision-skip-command.js';
+import { recordActivity } from '../activity/activity-log.service.js';
 
 /** What the composition root provides. */
 export interface DecisionWiringInput {
@@ -157,6 +158,7 @@ export function createDecisionService(input: DecisionWiringInput): DecisionServi
   return new DecisionService({
     store: DecisionStore.inHome(input.crewlyHome),
     threads,
+    recordActivity,
     slack: () => getSlackService(),
     instanceId: () => getSlackInstanceRegistryService()?.getInstanceId() ?? '',
     isOwner: isDecisionOwner,
