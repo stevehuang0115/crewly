@@ -7,6 +7,9 @@
  * - `PUT  /api/standing/:pageId/section` — section-level edit; backs the
  *   `core/standing-update` agent skill. Body:
  *   `{ projectPath?, sessionName?, heading, body, cites: string[] }`.
+ *   The `owner-rules` page (#914 P2) accepts writes from an owner credential
+ *   only ({@link isOwnerCaller}); an agent gets 403 `owner_only`. Custom
+ *   per-project pages (`standing-questions.json`) are written like built-in ones.
  *
  * Validation lives in {@link StandingAnswersService.writeSection}; a
  * {@link StandingAnswersError} maps to 400 with its `code`, anything else to 500.
@@ -24,6 +27,7 @@ import { promises as fs } from 'fs';
 import { Router, type Request as ExpressRequest, type Response } from 'express';
 import { StorageService } from '../../services/core/storage.service.js';
 import { getCrewlyHomePath } from '../../services/core/crewly-home.utils.js';
+import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
 import {
 	StandingAnswersService,
 	StandingAnswersError,
@@ -194,11 +198,13 @@ export function createStandingRouter(
 				heading: b.heading,
 				body: b.body,
 				cites,
+				// The owner rules page (#914 P2) takes writes from an owner credential only.
+				actor: isOwnerCaller(req) ? 'owner' : 'agent',
 			});
 			res.json({ success: true, data: result });
 		} catch (error) {
 			if (error instanceof StandingAnswersError) {
-				res.status(400).json({ success: false, code: error.code, error: error.message });
+				res.status(error.code === 'owner_only' ? 403 : 400).json({ success: false, code: error.code, error: error.message });
 				return;
 			}
 			res.status(500).json({ success: false, error: error instanceof Error ? error.message : String(error) });

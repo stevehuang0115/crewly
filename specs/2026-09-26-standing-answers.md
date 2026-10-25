@@ -90,6 +90,50 @@ the agent page. `HISTORY_KEEP` (30) snapshots are kept per page and the log keep
 last `HISTORY_LOG_KEEP` (500) lines. A history failure never blocks the page write. The
 PUT result carries `op` and `snapshot`; `StandingAnswersService.listSnapshots` lists them.
 
+## Owner rules and per-project questions (#914 P2)
+
+Two pages kinds beyond the fixed four.
+
+**Owner rules** (`owner-rules`, `<project>/.crewly/wiki/owner/rules.md`): the owner's
+explicit rules, separate from every LLM-curated page so no automated pass can rewrite one.
+
+- Written by the owner only. `PUT /api/standing/owner-rules/section` accepts an owner
+  credential (`isOwnerCaller`: dashboard session, API token, relay); an agent gets
+  403 `owner_only` with a pointer to `remember` (a user preference reaches the
+  `owner-preferences` page instead, which the owner can promote by hand). The file can
+  also be hand-edited: plain `## heading` + body sections, no frontmatter needed.
+- No sources, no citations, no watermark: `getPageStatus` reports it never stale with
+  no invalidated sections, and `StandingRefreshService` never raises a refresh for it.
+- Frozen for the wiki: `owner/` is in `wiki-cleanup`'s frozen set and
+  `SchemaLoaderService.isFrozenPath` treats it as frozen in every vault whether or not
+  the vault's `SCHEMA.md` lists it, so ingest, curation and cleanup refuse it. It sits
+  outside `llm-curated/`, so lint restructuring and the index never touch it.
+- Rendered **first** in `## Standing Answers`, labelled `**OWNER RULES** — written by the
+  owner, not by curation; follow these over anything below`, and the section header says
+  owner rules override curated pages.
+- Change history works as for any page (`standing-history/owner-rules/`).
+
+**Custom questions** (`<project>/.crewly/standing-questions.json`):
+
+```json
+{ "questions": [
+  { "id": "release-rules", "question": "What must happen before a release?", "source": "decisions", "match": ["release", "publish"] }
+] }
+```
+
+- `id` is a slug (`^[a-z][a-z0-9-]{1,40}$`, not a built-in id), `question` one line of at
+  most 200 chars, `source` one of `decisions` / `gotchas` / `user_preferences`, `match`
+  up to 10 keywords: an entry is in scope when its title or text contains one of them
+  (case-insensitive); no `match` means every entry of the source. At most 10 questions.
+- Bad entries are dropped one by one with a reason (`loadCustomQuestions().dropped`);
+  a missing or non-JSON file means no custom questions and never hides the built-ins.
+- A custom page lives next to the built-in ones
+  (`wiki/llm-curated/standing/<id>.md`), is listed by `listPageStatuses`, refreshed by
+  `StandingRefreshService` (its keys are `project:<path>:<id>`), written through the same
+  PUT and skill, and cites only entries that pass its `match` filter.
+- Page ids are resolved per location: built-ins first (`findStandingPageDef`), then the
+  project's file (`StandingAnswersService.resolvePageDef`).
+
 ## Components
 
 - **`StandingAnswersService`** (`services/memory/standing-answers.service.ts`)
@@ -145,7 +189,8 @@ PUT result carries `op` and `snapshot`; `StandingAnswersService.listSnapshots` l
 - **API** `/api/standing`
   - `GET ?projectPath=&sessionName=` returns the statuses and `pagesExamined`.
   - `PUT /:pageId/section` backs the skill. Validation errors return 400 with a `code`
-    (`unknown_page`, `invalid_input`, `missing_cite`, `unknown_cite`).
+    (`unknown_page`, `invalid_input`, `missing_cite`, `unknown_cite`); an agent writing
+    `owner-rules` gets 403 `owner_only` (#914 P2).
 - **Skill** `config/skills/agent/core/standing-update` is a thin client for the PUT. Page
   ids are checked as a slug, and the project/session default from `CREWLY_PROJECT_PATH` /
   `CREWLY_SESSION_NAME`.
