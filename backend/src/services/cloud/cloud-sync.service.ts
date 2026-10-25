@@ -22,6 +22,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { randomUUID } from 'crypto';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { NetworkStatusService } from '../core/network-status.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
 import type {
@@ -1476,6 +1477,7 @@ export class CloudSyncService extends EventEmitter {
         });
 
         if (response.ok) {
+          NetworkStatusService.getInstance().recordSuccess('cloud-sync');
           this.logger.info('Cloud Sync recovery succeeded — resuming normal polling');
           this.heartbeatFailures = 0;
           this.devicePollFailures = 0;
@@ -1508,9 +1510,19 @@ export class CloudSyncService extends EventEmitter {
           this.logger.warn('Recovery heartbeat failed, will retry', { status: response.status });
         }
       } catch (error) {
-        this.logger.warn('Recovery attempt failed, will retry', {
+        // `fetch failed` carries the real code (ENOTFOUND, …) on `cause`; the
+        // breaker reads it and, once offline, this line drops to debug.
+        const net = NetworkStatusService.getInstance();
+        net.recordFailure('cloud-sync', error);
+        const detail = {
           error: error instanceof Error ? error.message : String(error),
-        });
+          ...(net.isOffline() ? { offlineMinutes: net.offlineMinutes() } : {}),
+        };
+        if (net.shouldLog('cloud-sync')) {
+          this.logger.warn('Recovery attempt failed, will retry', detail);
+        } else {
+          this.logger.debug('Recovery attempt failed, will retry (repeat while offline)', detail);
+        }
       }
     }, recoveryInterval);
 

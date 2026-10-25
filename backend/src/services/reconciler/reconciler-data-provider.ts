@@ -37,6 +37,7 @@ import { getWaiting } from '../monitoring/agent-attention-registry.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { limitToOneProjectTicket } from '../task-pool/ticket-claim-policy.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
+import { NetworkStatusService } from '../core/network-status.service.js';
 import { ResourceModeService, RESOURCE_MODE_CONSTANTS } from '../agent/resource-mode.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
@@ -1601,6 +1602,23 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
     } else {
       // Pressure cleared — reset state so the next episode re-fires.
       this.resetMemoryPressureBroadcast();
+    }
+
+    // No network: a freshly started agent cannot reach its model API, never
+    // registers, is marked stuck after 15 min and gets woken again (seven
+    // such cycles for two agents during the 2026-10-25 outage). Wait it out;
+    // the queued work is still there when the network returns.
+    const net = NetworkStatusService.getInstance();
+    if (net.isOffline()) {
+      if (net.shouldLog(`wake:${agentSessionName}`)) {
+        this.logger.info('Wake skipped — this machine is offline', {
+          agent: agentSessionName,
+          strategy,
+          workItemId: action.workItemId,
+          offlineMinutes: net.offlineMinutes(),
+        });
+      }
+      return { outcome: 'skipped', reason: 'network offline' };
     }
 
     this.logger.info('Executing wake action', {
