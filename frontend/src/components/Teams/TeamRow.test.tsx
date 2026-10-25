@@ -45,6 +45,7 @@ describe('TeamRow', () => {
     onStop: vi.fn(),
     onOpenChat: vi.fn(),
     onOpenWiki: vi.fn(),
+    onExport: vi.fn(),
     onDelete: vi.fn(),
     onTogglePin: vi.fn(),
   };
@@ -92,13 +93,14 @@ describe('TeamRow', () => {
     expect(handlers.onOpen).toHaveBeenCalledWith('t1');
   });
 
-  it('keeps view, edit, chat, wiki, pin and delete in ⋯', () => {
+  it('keeps view, edit, chat, wiki, export, pin and delete in ⋯', () => {
     render(<TeamRow team={team()} {...handlers} />);
     for (const [label, fn] of [
       ['View team', handlers.onOpen],
       ['Edit team', handlers.onEdit],
       ['Open chat', handlers.onOpenChat],
       ['Open wiki', handlers.onOpenWiki],
+      ['Export team…', handlers.onExport],
     ] as const) {
       openMenu();
       fireEvent.click(screen.getByText(label));

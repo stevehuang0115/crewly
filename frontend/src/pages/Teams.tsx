@@ -4,8 +4,10 @@
  *
  * One job: which crews exist and whether they are running. Compact rows
  * (name, project · members · last activity, status) with Start/Stop visible
- * and view / edit / chat / wiki / pin / delete in "⋯". Status and project
- * filters are one Filter button; a tree view shows parent / sub-teams. Pro
+ * and view / edit / chat / wiki / export / pin / delete in "⋯". Status and
+ * project filters are one Filter button; a tree view shows parent / sub-teams.
+ * The toolbar's Import button loads a team package written by "Export team…"
+ * or `crewly team export` (specs/2026-10-25-team-export-portable.md). Pro
  * cloud users also see other online devices, collapsed.
  *
  * The "New team" action lives in the page header (TeamsHub), which drives
@@ -13,9 +15,9 @@
  *
  * @module pages/Teams
  */
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { List, Monitor, RefreshCw, GitBranch, Users, Plus } from 'lucide-react';
+import { List, Monitor, RefreshCw, GitBranch, Users, Plus, Upload } from 'lucide-react';
 import { Button, Card, EmptyState, IconButton, StatusDot, FilterButton, ShowAll, CollapsibleSection, type FilterValue } from '@crewly/ui';
 import { useAlert } from '@crewly/ui/Dialog';
 import { TeamModal } from '../components/Modals/TeamModal';
@@ -26,6 +28,7 @@ import { TeamRow } from '@/components/Teams/TeamRow';
 import { PauseTeamDialog } from '@/components/Teams/PauseTeamDialog';
 import { ListSearch } from '@/components/common/ListSearch';
 import { apiService } from '@/services/api.service';
+import { TEAM_EXPORT_API, describeImport, describePackage, downloadTeamPackage, importTeamPackage, readTeamPackageFile } from '@/services/team-export.service';
 import { logSilentError } from '@/utils/error-handling';
 import { webSocketService } from '../services/websocket.service';
 import { useDeviceHeartbeat } from '../hooks/useDeviceHeartbeat';
@@ -73,7 +76,9 @@ export const Teams: React.FC<TeamsProps> = ({ createOpen, onCreateOpenChange, on
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'list' | 'tree'>('list');
   const [projectsForFilter, setProjectsForFilter] = useState<{ id: string; name: string }[]>([]);
-  const { showError, AlertComponent } = useAlert();
+  const { showError, showSuccess, AlertComponent } = useAlert();
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
   const projectMap = Object.fromEntries(projectsForFilter.map(p => [p.id, p.name]));
 
   // Cloud connection and device heartbeat for dual-machine feature
@@ -192,10 +197,10 @@ export const Teams: React.FC<TeamsProps> = ({ createOpen, onCreateOpenChange, on
     }
   };
 
-  const fetchTeams = async () => {
+  const fetchTeams = async (forceRefresh = false) => {
     try {
       // Use cached apiService.getTeams() to reduce redundant API calls
-      const teamsData = await apiService.getTeams();
+      const teamsData = await apiService.getTeams(forceRefresh);
 
       // Migrate teams without avatars for backward compatibility
       const migratedTeams = teamsData.map(team => ({
@@ -288,6 +293,43 @@ export const Teams: React.FC<TeamsProps> = ({ createOpen, onCreateOpenChange, on
     }
   };
 
+  /**
+   * Download a team as a portable, secret-free package (#880) and say what
+   * is in it.
+   *
+   * @param teamId - Team ID
+   */
+  const handleExportTeam = async (teamId: string) => {
+    try {
+      const { pkg, fileName } = await downloadTeamPackage(teamId);
+      showSuccess(describePackage(pkg), `Saved ${fileName}`);
+    } catch (error) {
+      showError('Failed to export team: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  };
+
+  /**
+   * Import the package file the owner picked; the list reloads with the new
+   * team (members inactive).
+   *
+   * @param event - File input change
+   */
+  const handleImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setImporting(true);
+    try {
+      const result = await importTeamPackage(await readTeamPackageFile(file));
+      await fetchTeams(true);
+      showSuccess(describeImport(result), `Imported ${result.team.name}`);
+    } catch (error) {
+      showError('Failed to import team: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const handleDeleteTeam = async (teamId: string) => {
     try {
       await apiService.deleteTeam(teamId);
@@ -345,6 +387,22 @@ export const Teams: React.FC<TeamsProps> = ({ createOpen, onCreateOpenChange, on
           ]}
         />
         <ListSearch label="Search teams" value={searchQuery} onChange={setSearchQuery} />
+        <IconButton
+          icon={Upload}
+          size="xs"
+          aria-label="Import team package"
+          title="Import a team package (crewly-team-*.json)"
+          disabled={importing}
+          onClick={() => importInputRef.current?.click()}
+        />
+        <input
+          ref={importInputRef}
+          type="file"
+          accept={TEAM_EXPORT_API.accept}
+          className="hidden"
+          data-testid="team-import-input"
+          onChange={handleImportFile}
+        />
         <div className="ml-auto flex items-center gap-1" role="group" aria-label="View">
           <IconButton
             icon={List}
@@ -386,6 +444,7 @@ export const Teams: React.FC<TeamsProps> = ({ createOpen, onCreateOpenChange, on
                 onStop={handleStopTeam}
                 onOpenChat={(teamId) => navigate(`${ROUTES.chat}?${TEAM_QUERY_PARAM}=${teamId}`)}
                 onOpenWiki={(teamId) => navigate(`${ROUTES.wiki}?${TEAM_QUERY_PARAM}=${teamId}`)}
+                onExport={handleExportTeam}
                 onDelete={handleDeleteTeam}
                 isPinned={isPinned(team.id)}
                 onTogglePin={() => togglePin({ id: team.id, name: team.name, type: 'team' })}

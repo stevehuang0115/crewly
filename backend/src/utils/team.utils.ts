@@ -179,6 +179,16 @@ export function getLeadSubordinates(team: Team, member: TeamMember): TeamMember[
  * if (tl) await sendNotification({ to: tl.sessionName });
  * ```
  */
+/** Teams already warned about (no lead) in this process — one WARN per team, not one per caller. */
+const warnedNoLeadTeams = new Set<string>();
+
+/**
+ * Forget which teams were warned about (tests).
+ */
+export function resetNoLeadWarnings(): void {
+  warnedNoLeadTeams.clear();
+}
+
 export function pickTeamLead(team: Team): TeamMember | null {
   const members = team.members ?? [];
   if (members.length === 0) return null;
@@ -194,14 +204,19 @@ export function pickTeamLead(team: Team): TeamMember | null {
   if (anyDelegator) return anyDelegator;
 
   // Issue #332: rule-3 fallback — emit a warn so the missing lead surfaces
-  // in observability instead of being invisible.
-  teamLogger()?.warn('pickTeamLead falling back to first member — team has no lead (set one with set-team-lead)', {
-    teamId: team.id,
-    teamName: team.name,
-    chosenMemberId: members[0].id,
-    memberCount: members.length,
-    reason: 'no leaderIds and no team-leader / tech-lead member',
-  });
+  // in observability instead of being invisible. Once per team per process:
+  // a dozen services ask for the lead, and the answer does not change until
+  // the team does.
+  if (!warnedNoLeadTeams.has(team.id)) {
+    warnedNoLeadTeams.add(team.id);
+    teamLogger()?.warn('pickTeamLead falling back to first member — team has no lead (set one with set-team-lead)', {
+      teamId: team.id,
+      teamName: team.name,
+      chosenMemberId: members[0].id,
+      memberCount: members.length,
+      reason: 'no leaderIds and no team-leader / tech-lead member',
+    });
+  }
   return members[0];
 }
 

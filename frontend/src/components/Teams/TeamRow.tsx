@@ -5,7 +5,7 @@
  * One line (team name + status), one quiet meta line (project · members ·
  * last activity), Start or Stop as the visible action (Resume while the
  * owner has paused the team, with a "Paused" badge), everything else in
- * "⋯": view, edit, chat, wiki, pin, pause, delete. Members waiting on a runtime
+ * "⋯": view, edit, chat, wiki, export, pin, pause, delete. Members waiting on a runtime
  * sign-in show their "Sign-in needed" chip, because that needs the owner.
  *
  * @module components/Teams/TeamRow
@@ -32,6 +32,8 @@ export interface TeamRowProps {
   onStop?: (teamId: string) => void;
   onOpenChat?: (teamId: string) => void;
   onOpenWiki?: (teamId: string) => void;
+  /** Download the team as a portable, secret-free package (#880) */
+  onExport?: (teamId: string) => void;
   /** Deletes after the row's own confirm */
   onDelete?: (teamId: string) => void;
   isPinned?: boolean;
@@ -90,6 +92,7 @@ export const TeamRow: React.FC<TeamRowProps> = ({
   onStop,
   onOpenChat,
   onOpenWiki,
+  onExport,
   onDelete,
   isPinned = false,
   onTogglePin,
@@ -132,6 +135,7 @@ export const TeamRow: React.FC<TeamRowProps> = ({
     ...(onEdit ? [{ label: 'Edit team', onClick: () => onEdit(team.id) }] : []),
     ...(onOpenChat ? [{ label: 'Open chat', onClick: () => onOpenChat(team.id) }] : []),
     ...(onOpenWiki ? [{ label: 'Open wiki', onClick: () => onOpenWiki(team.id) }] : []),
+    ...(onExport ? [{ label: 'Export team…', onClick: () => onExport(team.id) }] : []),
     ...(onTogglePin ? [{ label: isPinned ? 'Unpin from favorites' : 'Pin to favorites', onClick: onTogglePin }] : []),
     ...(!paused && onPause ? [{ label: 'Pause team…', onClick: () => onPause(team.id) }] : []),
     ...(paused && onResume ? [{ label: 'Resume team', onClick: () => onResume(team.id) }] : []),
