@@ -153,6 +153,17 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	/** Option labels of that card */
 	RETRO_APPROVE_LABEL: 'Approve',
 	RETRO_SKIP_LABEL: 'Skip',
+	// --- Weekly cross-team retro (#985): the orchestrator reviews the week's daily retros ---
+	/** `metadata.kind` of the weekly retro WorkItem (same WorkItem type as the daily retro) */
+	WEEKLY_RETRO_METADATA_KIND: 'autopilot_weekly_retro',
+	/** Local weekday (0 = Sunday) on or after which, at RETRO_HOUR_LOCAL, the previous ISO week's retro is scheduled */
+	WEEKLY_RETRO_WEEKDAY_LOCAL: 1,
+	/** Global-vault folder the weekly retros are written to */
+	WEEKLY_RETRO_WIKI_DIR: 'llm-curated/autopilot-retros/weekly',
+	/** Most projects listed in detail in the weekly brief (the rest are counted) */
+	WEEKLY_RETRO_MAX_PROJECTS_IN_BRIEF: 12,
+	/** How long filed daily retros are remembered (days) — the weekly retro reads them */
+	RETRO_FILED_MEMORY_DAYS: 60,
 	// --- Goal replan (specs/2026-10-04-autopilot-goal-replan.md) ---
 	/** WorkItem type / `metadata.kind` of the goal replan the driver receives when nothing is left to triage */
 	REPLAN_WORK_ITEM_TYPE: 'goal_replan',

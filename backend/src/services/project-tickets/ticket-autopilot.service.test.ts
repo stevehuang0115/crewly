@@ -475,6 +475,7 @@ describe('TicketAutopilotService', () => {
     let store: TraceStore;
     let crewly: Project;
     let wiki: Array<{ projectPath: string; rel: string; md: string }>;
+    let globalWiki: Array<{ rel: string; md: string; by: string }>;
     let asks: Array<Parameters<AutopilotRetroDeps['askOwner']>[0]>;
     let moved: Array<[string, string, string]>;
     let experimentRunning: boolean;
@@ -491,6 +492,11 @@ describe('TicketAutopilotService', () => {
           wiki.push({ projectPath, rel, md });
           return true;
         },
+        writeGlobalWiki: async (rel, md, by) => {
+          globalWiki.push({ rel, md, by });
+          return true;
+        },
+        retroPagePath: (projectPath, rel) => path.join(projectPath, 'wiki', rel),
         harnessProject: async () => crewly,
         createTicket: async (target, input) => {
           const t = await ticketsSvc.create(target.path, target.name, { ...input, status: 'backlog' }, 'autopilot');
@@ -524,6 +530,7 @@ describe('TicketAutopilotService', () => {
       await fs.mkdir(crewly.path, { recursive: true });
       teams.push({ id: 't-crewly', name: 'Crewly', members: [member('m-cl', 'crewly-lead', { role: 'team-leader' }), member('m-cd', 'crewly-dev')], projectIds: ['p-crewly'], createdAt: '', updatedAt: '' } as Team);
       wiki = [];
+      globalWiki = [];
       asks = [];
       moved = [];
       experimentRunning = false;
@@ -796,6 +803,86 @@ describe('TicketAutopilotService', () => {
       expect(res.decisionId).toBeNull();
       expect(res.unasked).toEqual([res.filed[0].id]);
       expect(moved.map(([, to]) => to)).toEqual(['cancelled']);
+    });
+
+    it('weekly cross-team retro (#985): one orchestrator item per ISO week, only after a lead filed a daily retro', async () => {
+      await enable();
+      const weeklies = () => [...pool.items.values()].filter((w) => w.metadata?.kind === 'autopilot_weekly_retro');
+      // Monday 2026-10-05 09:05: ISO week 2026-W40 (Sep 28 – Oct 4) just closed, nobody filed a retro → nothing.
+      clock = new Date(2026, 9, 5, 9, 5);
+      await svc.tick();
+      expect(weeklies()).toHaveLength(0);
+
+      // A lead files a daily retro for 2026-09-30 (in W40) with a harness gap.
+      clock = at(18);
+      const daily = await svc.submitRetro(
+        'p-ce',
+        { day: '2026-09-30', summary: 'CE-1 stalled on the owner.', problems: [{ class: 'harness_gap', title: 'Reconciler never woke the stopped lead' }] },
+        lead,
+      );
+      expect(daily.filed).toHaveLength(1);
+
+      clock = new Date(2026, 9, 5, 8, 30); // Monday before 09:00: the leads get their morning
+      await svc.tick();
+      expect(weeklies()).toHaveLength(0);
+      clock = new Date(2026, 9, 5, 9, 5);
+      await svc.tick();
+      expect(weeklies()).toHaveLength(1);
+      const [w] = weeklies();
+      expect(w).toMatchObject({
+        type: 'autopilot_retro',
+        owner: 'orchestrator',
+        target: 'crewly-orc',
+        title: 'Weekly autopilot retro: 2026-W40',
+        metadata: { kind: 'autopilot_weekly_retro', week: '2026-W40', start: '2026-09-28', end: '2026-10-04', projectIds: ['p-ce'], requiresVerification: false },
+      });
+      expect(w.briefMarkdown).toContain('### CE');
+      expect(w.briefMarkdown).toContain(path.join(project.path, 'wiki', 'llm-curated/autopilot-retros/2026-09-30.md'));
+      expect(w.briefMarkdown).toContain(`${daily.filed[0].id} — Reconciler never woke the stopped lead (CE, 2026-09-30)`);
+      expect(w.briefMarkdown).toContain('retro --week 2026-W40');
+
+      // Later in the week: still one.
+      clock = new Date(2026, 9, 7, 10, 0);
+      await svc.tick();
+      expect(weeklies()).toHaveLength(1);
+    });
+
+    it('the weekly retro is filed by the owner or the orchestrator: global wiki page, gaps on Crewly, ONE card', async () => {
+      await enable();
+      await svc.submitRetro('p-ce', { day: '2026-09-30', summary: 'Shipped nothing; CE-1 stalled waiting on the owner.', problems: [{ class: 'owner_dependency', title: 'CE-1 waited for copy approval' }] }, lead);
+      clock = new Date(2026, 9, 5, 10, 0);
+      const body = {
+        week: '2026-W40',
+        summary: 'Two teams lost a day each to approvals; the triage brief misread a paused team twice.',
+        problems: [
+          { class: 'owner_dependency', title: 'Copy approvals waited a day in two projects' },
+          { class: 'harness_gap', title: 'Triage brief counts a paused team as available', evidence: 'CE 2026-09-30' },
+        ],
+      };
+      await expect(svc.submitWeeklyRetro(body, lead)).rejects.toMatchObject({ status: 403 });
+      await expect(svc.submitWeeklyRetro({ ...body, week: '2026-10-05' }, orc)).rejects.toMatchObject({ status: 400 });
+      await expect(svc.submitWeeklyRetro({ ...body, week: '2026-W42' }, orc)).rejects.toMatchObject({ status: 400 });
+      const res = await svc.submitWeeklyRetro(body, orc);
+      expect(res).toMatchObject({ week: '2026-W40', wikiPath: 'llm-curated/autopilot-retros/weekly/2026-W40.md', written: true, duplicates: [], overCap: [] });
+      expect(res.filed.map((t) => t.title)).toEqual(['Triage brief counts a paused team as available']);
+      expect(globalWiki).toHaveLength(1);
+      expect(globalWiki[0]).toMatchObject({ rel: 'llm-curated/autopilot-retros/weekly/2026-W40.md', by: 'crewly-orc' });
+      expect(globalWiki[0].md).toContain('# Weekly autopilot retro — 2026-W40 (2026-09-28 → 2026-10-04)');
+      expect(globalWiki[0].md).toContain('- **CE**: daily retros 2026-09-30');
+      expect(globalWiki[0].md).toContain('### Harness gap');
+      expect(asks).toHaveLength(1);
+      expect(asks[0]).toMatchObject({ key: 'retro:week:2026-W40', question: 'File this harness gap for the Crewly team?' });
+      const { tickets } = await (wf['tickets'] as ProjectTicketService).list(crewly.path);
+      const filed = tickets.find((t) => t.id === res.filed[0].id)!;
+      expect(filed).toMatchObject({ status: 'backlog', source: 'retro:week:2026-W40' });
+      expect(filed.labels).toEqual(expect.arrayContaining(['harness-gap', 'retro-pending']));
+      expect(filed.description).toContain('Found by the 2026-W40 weekly cross-team retro.');
+
+      // The owner may file it too; the same gap is now a duplicate.
+      const again = await svc.submitWeeklyRetro(body, owner);
+      expect(again.filed).toEqual([]);
+      expect(again.duplicates.map((d) => d.title)).toEqual(['Triage brief counts a paused team as available']);
+      expect(asks).toHaveLength(1);
     });
 
     it('a skipped or defaulted retro card cancels its tickets', async () => {

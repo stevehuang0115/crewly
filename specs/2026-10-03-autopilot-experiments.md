@@ -284,6 +284,38 @@ while an autopilot experiment on the project is running, else off).
      cancelled at once. The card's handler is registered even with the
      autopilot switched off.
 
+### Weekly cross-team retro (#985)
+
+The orchestrator reads the week's daily retros across projects and files ONE
+weekly retro. Needs the global wiki (`~/.crewly/global-wiki`, `SCHEMA.md`
+present); without it nothing is scheduled.
+
+- **Memory.** Every filed daily retro is remembered in the autopilot state
+  (`retro.filed`: project, day, problem count, the harness-gap tickets it
+  filed), pruned after `RETRO_FILED_MEMORY_DAYS` (60).
+- **Schedule.** The autopilot tick, once per ISO week, from Monday
+  `RETRO_HOUR_LOCAL` (09:00) on, for the previous ISO week, when at least one
+  daily retro of that week has been filed (a week nobody filed for is checked
+  again next tick, not skipped, so a Sunday retro filed Monday afternoon still
+  gets its review). ONE `autopilot_retro` WorkItem for the orchestrator
+  (`metadata.kind = autopilot_weekly_retro`, `week`, `start`, `end`,
+  `projectIds`, no verification), skipped while the previous weekly item is
+  still live. Stats reads that all fail back off like the daily retro.
+- **Brief.** Per project (most retros first, at most
+  `WEEKLY_RETRO_MAX_PROJECTS_IN_BRIEF` = 12): the week's numbers, each daily
+  retro with its page path on disk, then the harness gaps the week filed,
+  the four classes and the submit command.
+- **Submit.** `project-tickets retro --week 2026-W40 --summary "…"
+  --problem …` → `POST /api/project-ticket-autopilot/weekly-retro`
+  `{ week, summary, problems }` (owner or orchestrator only, else 403; a
+  future week is refused). Harness gaps are filed on the Crewly project with
+  the daily retro's dedupe, cap and ONE owner card (`source
+  retro:week:<week>`, card key `retro:week:<week>`); the page goes to the
+  global wiki at `llm-curated/autopilot-retros/weekly/<week>.md` with the
+  summary, each project's retro days and numbers, the problems by class and
+  the filed tickets.
+- **Not yet:** retros on a milestone or when a trace completes.
+
 ## Measuring CE
 
 Checked on 2026-10-02 (owner's Mac, read only):
@@ -315,7 +347,12 @@ Checked on 2026-10-02 (owner's Mac, read only):
   cycle times, touches, stalls by cause, paused time, label filter).
 - `ticket-autopilot.service.test.ts`: triage traced, budget pause/resume
   events, retro scheduling once per day, retro default with a running
-  experiment, retro submit (wiki, dedupe, cap, one card).
+  experiment, retro submit (wiki, dedupe, cap, one card), weekly retro
+  scheduled once per ISO week for the orchestrator after a daily retro was
+  filed, weekly submit (403 for a lead, future week refused, global wiki
+  page, gaps with `retro:week:` source, one card).
+- `ticket-autopilot-retro.test.ts`: ISO week helpers, weekly input
+  validation, the weekly brief and page.
 - `experiment.service.test.ts`: autopilot create (ships at start), baseline
   with extra metrics and process, result with process summary, weekly
   check-in, mocked seo-ops.

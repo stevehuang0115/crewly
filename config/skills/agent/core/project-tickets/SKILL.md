@@ -295,6 +295,27 @@ become backlog tickets on the Crewly project, deduplicated and at most 3 a
 day, and the owner approves them with one card. Never file harness gaps as
 tickets yourself.
 
+### Weekly cross-team retro (orchestrator)
+
+Once a week (Monday 09:00, or the first tick after) the orchestrator gets one
+`autopilot_retro` WorkItem titled `Weekly autopilot retro: <week>` when at
+least one lead filed a daily retro that ISO week. The brief lists every
+project's week numbers, its daily retro pages and the harness gaps filed. Read
+the pages, name what repeated across teams and what only Crewly can fix, then
+file it:
+
+```bash
+bash execute.sh retro --week 2026-W44 \
+  --summary "Three teams stalled on owner copy approvals; CE and Flopost both lost a day to a stopped member shown as busy." \
+  --problem "harness_gap|Triage brief shows stopped members as busy|Seen in CE 10-27 and Flopost 10-29 retros" \
+  --problem "owner_dependency|Copy approvals waited >3h in 4 of 7 days"
+```
+
+Same problem classes and limits as the daily retro. Crewly writes the page to
+the global wiki (`llm-curated/autopilot-retros/weekly/<week>.md`) and files the
+harness gaps on the Crewly project with one owner card. Only the owner or the
+orchestrator may file it.
+
 ### What to look for
 
 Read yesterday's run with `trace-read` first; each problem names the stage
