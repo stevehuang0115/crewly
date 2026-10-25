@@ -9,6 +9,12 @@ import { ActingForService, setActingForForTesting } from '../../services/people/
 import { GrantSharingError } from '../../services/people/grant-sharing.js';
 import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
+const mockRecordActivity = jest.fn();
+jest.mock('../../services/activity/activity-log.service.js', () => ({
+  ...jest.requireActual('../../services/activity/activity-log.service.js'),
+  recordActivity: (...args: unknown[]) => mockRecordActivity(...args),
+}));
+
 describe('grant sharing handler', () => {
 	afterEach(() => setActingForForTesting(null));
 
@@ -25,11 +31,20 @@ describe('grant sharing handler', () => {
 		const app = express();
 		app.use(ownerUnlessAgentForTests);
 		app.use(express.json());
-		app.post('/sharing', createSharingHandler(apply, sendError));
+		app.post('/sharing', createSharingHandler(apply, sendError, 'google-workspace'));
 
-		const ok = await request(app).post('/sharing').send({ sharing: { mode: 'members' } });
+		mockRecordActivity.mockClear();
+		const ok = await request(app).post('/sharing').send({ email: 'steve@example.com', sharing: { mode: 'members' } });
 		expect(ok.body).toEqual({ success: true, data: { authorizedBy: 'UINFO001', sharing: { mode: 'members' } } });
 		expect(apply).toHaveBeenCalledWith(expect.anything(), { sharing: { mode: 'members' } });
+		// The change is on the activity log, attributed to the owner (#881).
+		expect(mockRecordActivity).toHaveBeenCalledTimes(1);
+		expect(mockRecordActivity.mock.calls[0][0]).toMatchObject({
+			actor: { type: 'owner' },
+			action: 'connector.sharing.updated',
+			target: { type: 'connector', id: 'google-workspace', name: 'steve@example.com' },
+			after: { authorizedBy: 'UINFO001', sharing: { mode: 'members' } },
+		});
 
 		expect((await request(app).post('/sharing').set('X-Agent-Session', 'dev-1').send({ sharing: { mode: 'members' } })).status).toBe(403);
 		expect((await request(app).post('/sharing').send({ sharing: { mode: 'everyone' } })).status).toBe(400);

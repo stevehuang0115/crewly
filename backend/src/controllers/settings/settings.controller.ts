@@ -25,6 +25,7 @@ import {
   rejectUnverifiedCaller,
 } from '../../middleware/caller-identity.middleware.js';
 import { decideAgentApiKeyAccess, logApiKeyRead } from '../../services/settings/api-key-access.service.js';
+import { actorFromRequest, recordActivity, summarizeChange } from '../../services/activity/activity-log.service.js';
 import { OWNER_AUTH_CONSTANTS } from '../../constants.js';
 
 const router = Router();
@@ -49,6 +50,89 @@ const ownerGate = ownerOnly({
  */
 function maskedSettings(settings: CrewlySettings): CrewlySettings {
   return settings.apiKeys ? { ...settings, apiKeys: maskApiKeysSettings(settings.apiKeys) } : { ...settings };
+}
+
+/**
+ * A plain object, or undefined for anything else.
+ *
+ * @param value - Any value
+ * @returns The object, or undefined
+ */
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+/**
+ * Dotted paths of the leaves that differ between two nested plain objects.
+ *
+ * @param before - Object before
+ * @param after - Object after
+ * @param prefix - Path prefix for recursion
+ * @returns Paths such as `global.openai`
+ */
+function changedLeafPaths(before: unknown, after: unknown, prefix = ''): string[] {
+  const b = asRecord(before);
+  const a = asRecord(after);
+  if (!b && !a) return JSON.stringify(before) === JSON.stringify(after) ? [] : [prefix || '*'];
+  const out: string[] = [];
+  for (const k of new Set([...Object.keys(b ?? {}), ...Object.keys(a ?? {})])) {
+    const path = prefix ? `${prefix}.${k}` : k;
+    const bv = b?.[k];
+    const av = a?.[k];
+    if (JSON.stringify(bv) === JSON.stringify(av)) continue;
+    if (asRecord(bv) && asRecord(av)) out.push(...changedLeafPaths(bv, av, path));
+    else out.push(path);
+  }
+  return out;
+}
+
+/**
+ * What a settings write changed, for the activity log (#881): per section,
+ * the fields that differ. Provider API keys never appear in it: for the
+ * `apiKeys` section only the changed providers are named, in `note`.
+ *
+ * @param before - Settings before the write
+ * @param after - Settings after it
+ * @returns before / after summaries and a note, each absent when empty
+ */
+function settingsChange(
+  before: CrewlySettings,
+  after: CrewlySettings,
+): { before?: Record<string, unknown>; after?: Record<string, unknown>; note?: string } {
+  const b: Record<string, unknown> = {};
+  const a: Record<string, unknown> = {};
+  const beforeRec = before as unknown as Record<string, unknown>;
+  const afterRec = after as unknown as Record<string, unknown>;
+  const sections = new Set<string>([...Object.keys(beforeRec), ...Object.keys(afterRec)]);
+  sections.delete('apiKeys');
+  for (const s of sections) {
+    const d = summarizeChange(asRecord(beforeRec[s]), asRecord(afterRec[s]));
+    if (d.before) b[s] = d.before;
+    if (d.after) a[s] = d.after;
+  }
+  const keyPaths = changedLeafPaths(before.apiKeys ?? {}, after.apiKeys ?? {});
+  return {
+    ...(Object.keys(b).length ? { before: b } : {}),
+    ...(Object.keys(a).length ? { after: a } : {}),
+    ...(keyPaths.length ? { note: `API keys changed: ${keyPaths.join(', ')}` } : {}),
+  };
+}
+
+/**
+ * Write one settings change to the activity log. Never throws.
+ *
+ * @param req - The writing request
+ * @param action - `settings.updated` / `settings.reset` / `settings.imported`
+ * @param scope - `all`, or the section reset
+ * @param before - Settings before
+ * @param after - Settings after
+ */
+function logSettingsChange(req: Request, action: string, scope: string, before: CrewlySettings, after: CrewlySettings): void {
+  try {
+    recordActivity({ actor: actorFromRequest(req), action, target: { type: 'settings', id: scope }, ...settingsChange(before, after) });
+  } catch {
+    // the log never breaks a settings write
+  }
 }
 
 /** Timeout in milliseconds for API key validation requests */
@@ -91,7 +175,9 @@ router.put('/', ownerGate, async (req: Request, res: Response, next: NextFunctio
     const input: UpdateSettingsInput = req.body;
 
     const settingsService = getSettingsService();
+    const before = await settingsService.getSettings();
     const settings = await settingsService.updateSettings(input);
+    logSettingsChange(req, 'settings.updated', 'all', before, settings);
 
     res.json({
       success: true,
@@ -136,7 +222,9 @@ router.post('/validate', async (req: Request, res: Response, next: NextFunction)
 router.post('/reset', ownerGate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const settingsService = getSettingsService();
+    const before = await settingsService.getSettings();
     const settings = await settingsService.resetSettings();
+    logSettingsChange(req, 'settings.reset', 'all', before, settings);
 
     res.json({
       success: true,
@@ -164,7 +252,9 @@ router.post('/reset/:section', ownerGate, async (req: Request, res: Response, ne
     }
 
     const settingsService = getSettingsService();
+    const before = await settingsService.getSettings();
     const settings = await settingsService.resetSection(section);
+    logSettingsChange(req, 'settings.reset', section, before, settings);
 
     res.json({
       success: true,
@@ -221,7 +311,9 @@ router.post('/import', ownerGate, async (req: Request, res: Response, next: Next
       });
     }
 
+    const before = await settingsService.getSettings();
     const settings = await settingsService.updateSettings(importedSettings);
+    logSettingsChange(req, 'settings.imported', 'all', before, settings);
 
     res.json({
       success: true,

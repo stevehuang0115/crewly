@@ -16,6 +16,12 @@ import settingsRouter from './settings.controller.js';
 import { agentAuthHeaders, callerIdentityForTests, ownerAuthHeaders } from '../../middleware/caller-identity.testing.js';
 import { setApiKeyAccessDepsForTesting } from '../../services/settings/api-key-access.service.js';
 
+const mockRecordActivity = jest.fn();
+jest.mock('../../services/activity/activity-log.service.js', () => ({
+  ...jest.requireActual('../../services/activity/activity-log.service.js'),
+  recordActivity: (...args: unknown[]) => mockRecordActivity(...args),
+}));
+
 const VALID_SECTIONS: (keyof CrewlySettings)[] = ['general', 'chat', 'skills', 'apiKeys'];
 
 /**
@@ -783,6 +789,31 @@ describe('Settings Controller — who may write and read keys (#1012)', () => {
     expect(body).not.toContain(REAL.gemini);
     expect(body).not.toContain(REAL.openai);
     expect(res.body.data.apiKeys.global.gemini).toMatch(/^•+1111$/);
+  });
+
+  it('writes who changed which settings to the activity log, naming changed key providers but never a key (#881)', async () => {
+    mockRecordActivity.mockClear();
+    const res = await request(app)
+      .put('/api/settings')
+      .set(ownerAuthHeaders())
+      .send({ general: { verboseLogging: true }, apiKeys: { global: { openai: 'sk-new-openai-key-9999' } } });
+    expect(res.status).toBe(200);
+    expect(mockRecordActivity).toHaveBeenCalledTimes(1);
+    const entry = mockRecordActivity.mock.calls[0][0];
+    expect(entry.actor.type).toBe('owner');
+    expect(entry.action).toBe('settings.updated');
+    expect(entry.target).toEqual({ type: 'settings', id: 'all' });
+    expect(entry.after.general.verboseLogging).toBe(true);
+    expect(entry.note).toContain('global.openai');
+    const line = JSON.stringify(entry);
+    expect(line).not.toContain('sk-new-openai-key-9999');
+    expect(line).not.toContain(REAL.openai);
+    expect(line).not.toContain(REAL.gemini);
+
+    mockRecordActivity.mockClear();
+    await request(app).post('/api/settings/reset/general').set(ownerAuthHeaders());
+    expect(mockRecordActivity).toHaveBeenCalledWith(expect.objectContaining({ action: 'settings.reset', target: { type: 'settings', id: 'general' } }));
+    expect(mockRecordActivity.mock.calls[0][0].before.general.verboseLogging).toBe(true);
   });
 
   it('import by the owner answers with masked keys', async () => {

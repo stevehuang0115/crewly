@@ -34,6 +34,7 @@ import { probeRemoteMcp, type RemoteMcpProbeResult } from '../../services/connec
 import { RemoteMcpAuthError, RemoteMcpAuthService, type RemoteMcpAuthView } from '../../services/connector/remote-mcp-auth.service.js';
 import { parseWwwAuthenticate } from '../../services/connector/remote-mcp-oauth.js';
 import type { RemoteMcpServer, RemoteMcpServerView } from '../../services/connector/remote-mcp.service.js';
+import { actorFromRequest, recordActivity, summarizeChange } from '../../services/activity/activity-log.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('RemoteMcpController');
 
@@ -162,6 +163,12 @@ export async function addRemoteMcp(req: Request, res: Response): Promise<void> {
         authorize = { error: err instanceof RemoteMcpAuthError ? err.message : 'Could not work out how to sign in to this server.' };
       }
     }
+    recordActivity({
+      actor: actorFromRequest(req),
+      action: 'connector.remote_mcp.added',
+      target: { type: 'connector', id: remoteMcpConnectorId(server.id), name: server.label },
+      after: { url: server.url, ...(server.provider ? { provider: server.provider } : {}), oauth: Boolean(challenge), manualClient: Boolean(clientId) },
+    });
     res.status(201).json({ success: true, data: await viewWithAuth(server), ...(authorize ? { authorize } : {}), note: NEXT_LAUNCH_NOTE });
   } catch (err) {
     fail(res, err, 'add');
@@ -183,6 +190,12 @@ export async function renameRemoteMcp(req: Request, res: Response): Promise<void
       res.status(404).json({ success: false, error: 'not_found', message: 'No such remote MCP server' });
       return;
     }
+    recordActivity({
+      actor: actorFromRequest(req),
+      action: 'connector.remote_mcp.renamed',
+      target: { type: 'connector', id: remoteMcpConnectorId(server.id), name: server.label },
+      after: { label: server.label },
+    });
     res.json({ success: true, data: toView(server), note: NEXT_LAUNCH_NOTE });
   } catch (err) {
     fail(res, err, 'rename');
@@ -198,12 +211,14 @@ export async function renameRemoteMcp(req: Request, res: Response): Promise<void
 export async function removeRemoteMcp(req: Request, res: Response): Promise<void> {
   if (rejectNonOwner(req, res, AGENT_REFUSAL)) return;
   try {
-    const removed = await RemoteMcpService.getInstance().remove(String(req.params.id ?? ''));
-    if (removed) await RemoteMcpAuthService.getInstance().forget(String(req.params.id ?? '')).catch(() => undefined);
+    const id = String(req.params.id ?? '');
+    const removed = await RemoteMcpService.getInstance().remove(id);
+    if (removed) await RemoteMcpAuthService.getInstance().forget(id).catch(() => undefined);
     if (!removed) {
       res.status(404).json({ success: false, error: 'not_found', message: 'No such remote MCP server' });
       return;
     }
+    recordActivity({ actor: actorFromRequest(req), action: 'connector.remote_mcp.removed', target: { type: 'connector', id: remoteMcpConnectorId(id) } });
     res.json({ success: true, note: NEXT_LAUNCH_NOTE });
   } catch (err) {
     fail(res, err, 'remove');
@@ -291,7 +306,15 @@ export async function setRemoteMcpAccess(req: Request, res: Response): Promise<v
       return;
     }
     const connectorId = remoteMcpConnectorId(server.id);
-    const rule = await ConnectorAccessService.getInstance().setAllowedRoles(connectorId, body.allowedRoles.map((r) => String(r)));
+    const access = ConnectorAccessService.getInstance();
+    const previous = ((await access.list().catch(() => ({}))) as Record<string, { allowedRoles?: string[] } | undefined>)[connectorId]?.allowedRoles ?? [];
+    const rule = await access.setAllowedRoles(connectorId, body.allowedRoles.map((r) => String(r)));
+    recordActivity({
+      actor: actorFromRequest(req),
+      action: 'connector.access.updated',
+      target: { type: 'connector', id: connectorId, name: server.label },
+      ...summarizeChange({ allowedRoles: previous }, { allowedRoles: rule.allowedRoles }),
+    });
     res.json({ success: true, data: { connectorId, ...rule }, note: NEXT_LAUNCH_NOTE });
   } catch (err) {
     fail(res, err, 'update access for');
