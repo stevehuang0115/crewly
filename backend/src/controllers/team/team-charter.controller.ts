@@ -17,6 +17,7 @@ import { TeamRosterService } from '../../services/team-roster/team-roster.servic
 import { resolveAgentCaller } from '../../utils/agent-caller.utils.js';
 import { getTeamLeads } from '../../utils/team.utils.js';
 import { memberSessionKeys } from '../../services/team/team-pause.registry.js';
+import { recordActivity } from '../../services/activity/activity-log.service.js';
 
 /**
  * PUT /api/teams/:id/charter
@@ -71,6 +72,12 @@ export async function setTeamCharter(req: Request, res: Response): Promise<void>
 		}
 		await storage.saveTeam(team);
 		TeamRosterService.getInstance().invalidate();
+		recordActivity({
+			actor: by === 'owner' ? { type: 'owner' } : { type: 'agent', id: by },
+			action: charter ? 'team.charter.updated' : 'team.charter.cleared',
+			target: { type: 'team', id: team.id, name: team.name },
+			...(charter ? { after: { charter } } : {}),
+		});
 		res.json({ success: true, data: { teamId: team.id, charter: charter || null } });
 	} catch (err) {
 		res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });

@@ -13,6 +13,9 @@ import { GmailSendApprovalService, fingerprintDraft, GMAIL_SEND_KEYS, type Gmail
 import { holdGmailSend, getHeldSend, clearHeldSend, loadHeldSends, resetGmailSendGate } from './gmail-send-gate.js';
 import type { GmailDraftContent } from './gmail.service.js';
 
+const mockRecordActivity = jest.fn();
+jest.mock('../activity/activity-log.service.js', () => ({ recordActivity: (...a: unknown[]) => mockRecordActivity(...a) }));
+
 const draft = (over: Partial<GmailDraftContent> = {}): GmailDraftContent => ({
 	draftId: 'd1',
 	threadId: 't1',
@@ -83,6 +86,8 @@ describe('GmailSendApprovalService', () => {
 		expect(onSent).toHaveBeenCalledWith({ threadId: 't1', agentSession: 'lyra' });
 		expect(note).toContain('was sent');
 		expect(getHeldSend('lyra:d1')).toBeUndefined();
+		// The activity log answers who released it (crewly#881).
+		expect(mockRecordActivity).toHaveBeenCalledWith(expect.objectContaining({ action: 'send.gmail', actor: { type: 'owner' }, target: { type: 'gmail_draft', id: 'd1', name: 'Hello' }, after: expect.objectContaining({ to: 'x@y.z', messageId: 'sent1', draftedBy: 'lyra', decisionId: 'D-1' }) }));
 	});
 
 	it('cannot be reused: a second settle for the same card sends nothing', async () => {

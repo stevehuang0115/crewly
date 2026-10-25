@@ -24,6 +24,7 @@ import type { DecisionKindHandler } from '../decisions/decision.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { GmailDraftContent, GmailSendResult } from './gmail.service.js';
 import { clearHeldSend, getHeldSend, holdGmailSend, markSettled, updateHeldSend, wasSettled, type HeldSend } from './gmail-send-gate.js';
+import { recordActivity, type ActivityActor } from '../activity/activity-log.service.js';
 
 /** Option keys on the card. */
 export const GMAIL_SEND_KEYS = { SEND: 'send', NOT_NOW: 'not_now' } as const;
@@ -72,6 +73,18 @@ export interface GmailSendApprovalDeps {
 	agentNameOf?: (session: string) => Promise<string | undefined>;
 	/** Called after a send so replies on the thread wake the agent */
 	onSent?: (info: { threadId: string; agentSession: string; account?: string }) => Promise<void> | void;
+}
+
+/**
+ * The owner behind a settled card, for the activity log: the Slack user who
+ * answered and how; a deadline outcome is the system.
+ *
+ * @param decision - Settled decision
+ * @returns Actor
+ */
+function decisionActor(decision: OwnerDecision): ActivityActor {
+	if (decision.answeredVia === 'deadline' || decision.status === 'expired' || decision.status === 'defaulted') return { type: 'system', via: 'deadline' };
+	return { type: 'owner', ...(decision.answeredBy ? { id: decision.answeredBy } : {}), ...(decision.answeredVia ? { via: decision.answeredVia } : {}) };
 }
 
 /**
@@ -209,6 +222,12 @@ export class GmailSendApprovalService implements DecisionKindHandler {
 		if (decision.status !== 'resolved' || decision.chosenKey !== GMAIL_SEND_KEYS.SEND) {
 			clearHeldSend(hold.id);
 			this.logger.info('Drafted email not sent', { holdId: hold.id, status: decision.status });
+			recordActivity({
+				actor: decisionActor(decision),
+				action: 'send.gmail.declined',
+				target: { type: 'gmail_draft', id: hold.draftId, name: hold.subject },
+				after: { to: hold.to, status: decision.status, draftedBy: hold.agentSession, decisionId: decision.id, discarded: this.discarding.has(hold.id) },
+			});
 			// Never deletes the draft: only an owner tap on Discard does (via discarded()).
 			if (this.discarding.has(hold.id)) return `[GMAIL] The owner discarded "${hold.subject}" to ${hold.to}; the draft was deleted. Do not send it another way.`;
 			if (decision.status === 'defaulted' || decision.status === 'expired') {
@@ -239,6 +258,13 @@ export class GmailSendApprovalService implements DecisionKindHandler {
 
 		const sent = await gmail.sendDraft(hold.draftId);
 		clearHeldSend(hold.id);
+		// Activity log (crewly#881): the one line that says who released this email and when.
+		recordActivity({
+			actor: decisionActor(decision),
+			action: 'send.gmail',
+			target: { type: 'gmail_draft', id: hold.draftId, name: hold.subject },
+			after: { to: hold.to, messageId: sent.id, threadId: sent.threadId, draftedBy: hold.agentSession, decisionId: decision.id, ...(hold.account ? { account: hold.account } : {}) },
+		});
 		// Audit line: who, what, to whom, on which owner decision.
 		this.logger.info('Owner approved a drafted email — sent', {
 			holdId: hold.id,

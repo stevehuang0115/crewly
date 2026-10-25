@@ -16,6 +16,7 @@ import { getModelTierService, ModelTierError, type ModelTierService } from '../.
 import { isOwnerCaller, readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { isTeamLead } from '../../utils/team.utils.js';
 import { StorageService } from '../../services/core/storage.service.js';
+import { actorFromRequest, recordActivity } from '../../services/activity/activity-log.service.js';
 
 /** The running service, or a 503. */
 function serviceOr503(res: Response): ModelTierService | null {
@@ -60,7 +61,10 @@ export async function updateTeamModelTiers(req: Request, res: Response): Promise
   if (!s) return;
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    res.json({ success: true, data: await s.updateSettings(req.params.id, { optimizeUsage: body.optimizeUsage, tierChangeMode: body.tierChangeMode, tierModels: body.tierModels, memberTiers: body.memberTiers }) });
+    const changes = { optimizeUsage: body.optimizeUsage, tierChangeMode: body.tierChangeMode, tierModels: body.tierModels, memberTiers: body.memberTiers };
+    const data = await s.updateSettings(req.params.id, changes);
+    recordActivity({ actor: actorFromRequest(req), action: 'team.model_tiers.updated', target: { type: 'team', id: req.params.id }, after: JSON.parse(JSON.stringify(changes)) as Record<string, unknown> });
+    res.json({ success: true, data });
   } catch (err) {
     fail(res, err);
   }

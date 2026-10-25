@@ -197,13 +197,18 @@ export function actorFromCaller(identity: CallerIdentity): ActivityActor {
 }
 
 /**
- * The actor of an HTTP request.
+ * The actor of an HTTP request. Never throws.
  *
  * @param req - Request
  * @returns The actor
  */
 export function actorFromRequest(req: IdentifiableRequest): ActivityActor {
-	return actorFromCaller(getCallerIdentity(req));
+	try {
+		return actorFromCaller(getCallerIdentity(req));
+	} catch {
+		// A request the middleware cannot read (a bare test double) is still logged, as unknown.
+		return { type: 'system', id: 'unknown' };
+	}
 }
 
 /**
