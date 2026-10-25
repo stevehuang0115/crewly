@@ -333,6 +333,23 @@ const DEFAULT_PRESENCE = () => ({
  */
 const MAX_HUDDLE_MEMBERS = 50;
 
+/** One hit of a chat search (`GET /api/chat/search`): a compact, owner-visible snippet. */
+export interface ChatSearchHit {
+  id: string;
+  /** ISO timestamp */
+  time: string;
+  channelId: string;
+  /** Channel name as stored (channels may carry a leading `#`) */
+  channel: string;
+  channelType: ChatChannelType;
+  sender: string;
+  /** `user` | `agent` (system rows are never returned) */
+  senderType: string;
+  /** Flattened, redacted snippet, at most `CHAT_SEARCH_CONSTANTS.SNIPPET_CHARS` characters */
+  text: string;
+  threadId: string | null;
+}
+
 export class ChatV2Service extends EventEmitter {
   /** Phase A spec §3.2: max mention count per message. */
   static readonly MAX_MENTIONS_PER_MESSAGE = 50;
@@ -529,9 +546,12 @@ export class ChatV2Service extends EventEmitter {
   /**
    * Search the chat messages one agent can see (its DMs, the channels and
    * rooms it is in, and messages that @-mention it) and return compact hits.
-   * An agent principal may only search as itself.
+   * An agent principal may only search as itself. The owner (a principal
+   * without an agent badge) may leave `agentSession` empty to search every
+   * conversation on this machine — the `/team-chat` cross-conversation
+   * search (#1400).
    *
-   * @param args.agentSession - Whose view is searched
+   * @param args.agentSession - Whose view is searched; empty = the owner's view of everything
    * @param args.principal - Caller
    * @param args.query - Keywords (whitespace separated, all must appear)
    * @param args.channel - Channel id or name
@@ -539,20 +559,21 @@ export class ChatV2Service extends EventEmitter {
    * @param args.to - End (exclusive), epoch ms
    * @param args.limit - Most hits
    * @returns Hits, newest first
-   * @throws {ChatError} `validation_error` (400) without a session or a keyword; `forbidden` (403) for another agent's view
+   * @throws {ChatError} `validation_error` (400) without a keyword, or without a session for an agent caller; `forbidden` (403) for another agent's view
    */
   searchMessagesForAgent(args: {
-    agentSession: string;
+    agentSession?: string;
     principal: ChatPrincipal;
     query: string;
     channel?: string;
     from?: number;
     to?: number;
     limit?: number;
-  }): Array<{ id: string; time: string; channelId: string; channel: string; sender: string; text: string; threadId: string | null }> {
+  }): ChatSearchHit[] {
     const agentSession = (args.agentSession ?? '').trim();
-    if (!agentSession) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'agent session is required');
-    if (args.principal.agentSession && args.principal.agentSession !== agentSession) {
+    const callerSession = (args.principal.agentSession ?? '').trim();
+    if (!agentSession && callerSession) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'agent session is required');
+    if (callerSession && callerSession !== agentSession) {
       throw new ChatError(CHAT_ERROR_CODES.FORBIDDEN, 403, 'An agent can only search its own chat history');
     }
     const terms = (args.query ?? '')
@@ -563,13 +584,14 @@ export class ChatV2Service extends EventEmitter {
     if (terms.length === 0) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'query is required');
     const requested = typeof args.limit === 'number' && Number.isFinite(args.limit) && args.limit > 0 ? Math.floor(args.limit) : CHAT_SEARCH_CONSTANTS.DEFAULT_LIMIT;
     const limit = Math.min(requested, CHAT_SEARCH_CONSTANTS.MAX_LIMIT);
-    const rows = this.messages.searchForAgent(agentSession, {
+    const searchOpts = {
       terms,
       ...(args.channel ? { channel: args.channel.trim() } : {}),
       ...(args.from !== undefined && Number.isFinite(args.from) ? { fromMs: args.from } : {}),
       ...(args.to !== undefined && Number.isFinite(args.to) ? { toMs: args.to } : {}),
       limit,
-    });
+    };
+    const rows = agentSession ? this.messages.searchForAgent(agentSession, searchOpts) : this.messages.searchAll(searchOpts);
     return rows.map((r) => {
       const flat = redactOpenLinkTokens(ownerVisibleContent(r.sender_type, r.content)).replace(/\s+/g, ' ').trim();
       return {
@@ -577,7 +599,9 @@ export class ChatV2Service extends EventEmitter {
         time: new Date(r.created_at).toISOString(),
         channelId: r.channel_id,
         channel: r.channel_name,
+        channelType: r.channel_type,
         sender: r.sender_id,
+        senderType: r.sender_type,
         text: flat.length > CHAT_SEARCH_CONSTANTS.SNIPPET_CHARS ? `${flat.slice(0, CHAT_SEARCH_CONSTANTS.SNIPPET_CHARS)}…` : flat,
         threadId: r.thread_id,
       };

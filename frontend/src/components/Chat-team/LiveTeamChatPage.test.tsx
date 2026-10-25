@@ -32,6 +32,7 @@ import {
   type SendMessageInput,
   type ChatWebsocketEvent,
   type CreateChannelInput,
+  type ChatSearchHit,
   type MentionTarget,
 } from '@crewly/chat-ui';
 import { LiveTeamChatPage, __test__, crewlyChannelRow, filterMessages, type ChatTeam } from './LiveTeamChatPage';
@@ -148,6 +149,19 @@ function makeStubClient(channels: Channel[], messages: Record<string, Message[]>
     async markChannelUnread(channelId: string, seq: number) {
       unreadCalls.push({ channelId, seq });
       return { channelId, lastReadSeq: seq - 1, unreadCount: 2 };
+    },
+    // Cross-conversation search over the seeded messages (#1400): every word
+    // must appear; newest first like the server.
+    async searchMessages(query: string): Promise<ChatSearchHit[]> {
+      const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+      const hits: ChatSearchHit[] = [];
+      for (const ch of channels) {
+        for (const m of messages[ch.id] ?? []) {
+          if (!terms.every((t) => m.content.toLowerCase().includes(t))) continue;
+          hits.push({ id: m.id, time: m.createdAt, channelId: ch.id, channel: ch.name, channelType: ch.type, sender: m.author.name ?? m.author.id, senderType: m.author.role, text: m.content, threadId: m.threadId ?? null });
+        }
+      }
+      return hits.sort((a, b) => b.time.localeCompare(a.time));
     },
     subscribeToChannel(channelId, onEvent): ChannelSubscription {
       (subscribers[channelId] ||= []).push(onEvent);
@@ -669,6 +683,43 @@ describe('LiveTeamChatPage — simplified chat (specs/2026-10-02-ui-redesign.md)
     expect(screen.getByTestId('conversation-search-count')).toHaveTextContent('2 loaded messages match.');
     fireEvent.click(screen.getByLabelText('Close search'));
     expect(await screen.findByText('approved')).toBeInTheDocument();
+  });
+
+  it('Find → "Search messages" lists hits from every conversation; opening one lands in it filtered by the words (#1400)', async () => {
+    const ops: Channel = { id: 'ch-ops', agentSession: '', name: 'ops', createdAt: ISO, type: 'channel', teamId: 'team-product' };
+    const messagesById: Record<string, Message[]> = {
+      'orc-dm': [
+        { id: 'a', channelId: 'orc-dm', seq: 1, author: { role: 'agent', id: 'orc', name: 'Orchestrator' }, content: 'Docker will not start', createdAt: '2026-04-25T20:00:00.000Z', mentions: [] },
+        { id: 'b', channelId: 'orc-dm', seq: 2, author: { role: 'user', id: 'me', name: 'You' }, content: 'approved', createdAt: '2026-04-25T20:01:00.000Z', mentions: [] },
+      ],
+      'ch-ops': [
+        { id: 'c', channelId: 'ch-ops', seq: 1, author: { role: 'agent', id: 'pia', name: 'Pia' }, content: 'docker reset done', createdAt: '2026-04-25T21:00:00.000Z', mentions: [] },
+      ],
+    };
+    const { client } = makeStubClient([orcDm, ops], messagesById);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[PRODUCT_TEAM]} />);
+    expect(await screen.findByText('approved')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('conv-search-toggle'));
+    fireEvent.change(screen.getByTestId('conv-search'), { target: { value: 'docker' } });
+    fireEvent.click(screen.getByTestId('conv-search-messages'));
+    // The search column replaces the conversation.
+    expect(screen.queryByTestId('team-chat-right-panel')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('chat-search-status')).toHaveTextContent('2 messages match.'));
+    const hits = within(screen.getByTestId('chat-search-hits')).getAllByRole('button');
+    // A team channel is listed under its team's name; the hit says the same.
+    expect(hits[0]).toHaveTextContent('#Crewly Product');
+    expect(hits[0]).toHaveTextContent('Pia');
+    expect(hits[1]).toHaveTextContent('Orchestrator');
+    // Opening the team-channel hit lands in it with the in-conversation search preset.
+    fireEvent.click(screen.getByTestId('chat-search-hit-c'));
+    await waitFor(() => expect(screen.getByTestId('team-chat-right-panel')).toHaveAttribute('aria-label', 'Conversation with Crewly Product'));
+    expect(screen.getByTestId('conversation-search')).toHaveValue('docker');
+    expect(await screen.findByText('docker reset done')).toBeInTheDocument();
+    // Picking a conversation from the list (Find closed first) drops the filter.
+    fireEvent.keyDown(screen.getByTestId('conv-search'), { key: 'Escape' });
+    fireEvent.click(screen.getByTestId('conv-row-orc-dm'));
+    expect(await screen.findByText('approved')).toBeInTheDocument();
+    expect(screen.queryByTestId('conversation-search')).not.toBeInTheDocument();
   });
 
   it('pins and unpins the open conversation from the header ⋯ (works on phones)', async () => {

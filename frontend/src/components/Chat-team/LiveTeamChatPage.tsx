@@ -54,6 +54,7 @@ import {
   type ChatApiError,
   type Channel,
   type ChannelReadState,
+  type ChatSearchHit,
   type ChatPresenceStatus,
   type ConversationGroup,
   type ConversationRow,
@@ -71,6 +72,7 @@ import { ChatErrorToast } from './ChatErrorToast';
 import { CreateGroupModal } from './CreateGroupModal';
 import { ChannelSettingsModal } from './ChannelSettingsModal';
 import { ChatConversationList } from './ChatConversationList';
+import { ChatSearchResults } from './ChatSearchResults';
 import { usePinnedChats } from '../../hooks/usePinnedChats';
 import { useChatReadState } from '../../hooks/useChatReadState';
 import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
@@ -294,6 +296,11 @@ function LiveTeamChatPageBody({
   const client = useChatApiClient();
   const pinnedChats = usePinnedChats();
   const [showCreateGroup, setShowCreateGroup] = useState(false);
+  // Cross-conversation message search (#1400): the words being searched (null
+  // = not searching) and, after opening a hit, the words the opened
+  // conversation is filtered by.
+  const [messageSearch, setMessageSearch] = useState<string | null>(null);
+  const [openWithSearch, setOpenWithSearch] = useState<string | null>(null);
 
   // Merge the agent directory into the channel list so EVERY agent appears in
   // the DM list — even offline ones with no channel yet. Agents that already
@@ -496,6 +503,9 @@ function LiveTeamChatPageBody({
 
   const handleSelectConversation = useCallback(
     async (row: ConversationRow) => {
+      // Picking from the list leaves the message search and its filter behind.
+      setMessageSearch(null);
+      setOpenWithSearch(null);
       // Virtual directory row (no channel yet): create the DM on first open,
       // refresh, then select the resolved real channel.
       if (row.id.startsWith(VIRTUAL_DM_PREFIX) && row.agentSession && onEnsureDm) {
@@ -509,6 +519,26 @@ function LiveTeamChatPageBody({
       setMobileView('conversation');
     },
     [onEnsureDm, refresh],
+  );
+
+  // A search hit lives in a chat-v2 channel; Slack-bridged `slack-*` channels
+  // are shown inside the Orchestrator conversation, so open that instead.
+  const conversationIdOfChannel = useCallback(
+    (channelId: string): string => (orcChannelId && slackChannelIds.includes(channelId) ? orcChannelId : channelId),
+    [orcChannelId, slackChannelIds],
+  );
+  const conversationNameOf = useCallback(
+    (channelId: string): string | undefined => flattenRows(groups).find((r) => r.id === conversationIdOfChannel(channelId))?.title,
+    [groups, conversationIdOfChannel],
+  );
+  const handleOpenSearchHit = useCallback(
+    (hit: ChatSearchHit, query: string) => {
+      setOpenWithSearch(query);
+      setActiveConversationId(conversationIdOfChannel(hit.channelId));
+      setMessageSearch(null);
+      setMobileView('conversation');
+    },
+    [conversationIdOfChannel],
   );
 
   // "New group" — create a multi-agent group chat, then refresh the channel list
@@ -606,8 +636,9 @@ function LiveTeamChatPageBody({
   }, [activeConversationRowId, orcChannelId, slackChannelIds]);
   const mergeChannelKey = mergeChannelIds ? mergeChannelIds.join('|') : '';
 
-  // With nothing open (empty workspace, still loading), phones show the list.
-  const view = activeConversation ? mobileView : 'list';
+  // With nothing open (empty workspace, still loading), phones show the list —
+  // unless a message search is on, which takes the conversation column.
+  const view = activeConversation || messageSearch !== null ? mobileView : 'list';
 
   // Server-side read state. The orchestrator conversation covers its merged
   // Slack thread channels too; a virtual directory row has no channel yet.
@@ -651,6 +682,14 @@ function LiveTeamChatPageBody({
         onTogglePin={(row) => pinnedChats.toggle(pinKeyOf(row))}
         onNewGroup={() => setShowCreateGroup(true)}
         onNewChannel={() => setShowCreateChannel(true)}
+        onSearchMessages={
+          client.searchMessages
+            ? (q) => {
+                setMessageSearch(q);
+                setMobileView('conversation');
+              }
+            : undefined
+        }
         alwaysShowSession={ORCHESTRATOR_SESSION}
         emptyState={
           totalRows === 0 && !channelsLoading ? (
@@ -659,20 +698,33 @@ function LiveTeamChatPageBody({
         }
       />
 
-      <LiveTeamChatRightPanel
-        className={view === 'list' ? 'hidden md:flex' : 'flex'}
-        conversation={activeConversation}
-        mentionables={mentionables}
-        mergeChannelIds={mergeChannelIds}
-        mentionsAsSessions={!!activeConversation && crewlyChannelIds.has(activeConversation.id)}
-        pinned={activeConversation ? pinnedChats.isPinned(pinKeyOf(activeConversation)) : false}
-        onTogglePin={() => activeConversation && pinnedChats.toggle(pinKeyOf(activeConversation))}
-        onBack={() => setMobileView('list')}
-        onManageChannel={managedChannel || managedHuddle ? () => setShowChannelSettings(true) : undefined}
-        unreadAfterSeq={unreadAfterSeq}
-        onMarkUnread={handleMarkUnread}
-        onReadState={applyReadState}
-      />
+      {messageSearch !== null ? (
+        <ChatSearchResults
+          className={view === 'list' ? 'hidden md:flex' : 'flex'}
+          client={client}
+          initialQuery={messageSearch}
+          conversationNameOf={conversationNameOf}
+          onOpen={handleOpenSearchHit}
+          onClose={() => setMessageSearch(null)}
+          onBack={() => setMobileView('list')}
+        />
+      ) : (
+        <LiveTeamChatRightPanel
+          className={view === 'list' ? 'hidden md:flex' : 'flex'}
+          conversation={activeConversation}
+          mentionables={mentionables}
+          mergeChannelIds={mergeChannelIds}
+          mentionsAsSessions={!!activeConversation && crewlyChannelIds.has(activeConversation.id)}
+          pinned={activeConversation ? pinnedChats.isPinned(pinKeyOf(activeConversation)) : false}
+          onTogglePin={() => activeConversation && pinnedChats.toggle(pinKeyOf(activeConversation))}
+          onBack={() => setMobileView('list')}
+          onManageChannel={managedChannel || managedHuddle ? () => setShowChannelSettings(true) : undefined}
+          initialSearch={openWithSearch}
+          unreadAfterSeq={unreadAfterSeq}
+          onMarkUnread={handleMarkUnread}
+          onReadState={applyReadState}
+        />
+      )}
 
       {showChannelSettings && managedChannel && (
         <ChannelSettingsModal
@@ -733,6 +785,8 @@ interface RightPanelProps {
   onBack: () => void;
   /** Crewly channels: open the channel settings (rename, members) */
   onManageChannel?: () => void;
+  /** Words the conversation opens filtered by (from a message-search hit; null: none) */
+  initialSearch?: string | null;
   /** Where the "Unread" divider goes in the open conversation (null: none) */
   unreadAfterSeq: number | null;
   /** "Mark unread" on a message */
@@ -742,7 +796,7 @@ interface RightPanelProps {
 }
 
 /** Header / chrome props every conversation view shares. */
-type ChromeProps = Pick<RightPanelProps, 'className' | 'pinned' | 'onTogglePin' | 'onBack' | 'onManageChannel'>;
+type ChromeProps = Pick<RightPanelProps, 'className' | 'pinned' | 'onTogglePin' | 'onBack' | 'onManageChannel' | 'initialSearch'>;
 
 function LiveTeamChatRightPanel({
   conversation,
@@ -940,11 +994,13 @@ function ConversationView({
   const [search, setSearch] = useState<string | null>(null);
 
   // Reset the open thread and the search whenever the conversation changes —
-  // a thread root from one channel is meaningless in another.
+  // a thread root from one channel is meaningless in another. A conversation
+  // opened from a message-search hit starts filtered by the searched words.
+  const initialSearch = chrome.initialSearch ?? null;
   useEffect(() => {
     setActiveThreadRootId(null);
-    setSearch(null);
-  }, [conversation.id]);
+    setSearch(initialSearch);
+  }, [conversation.id, initialSearch]);
 
   // Surface validation_error and payload_too_large 400/413s as a toast.
   // Network errors (code 'network_error') get the same treatment so the

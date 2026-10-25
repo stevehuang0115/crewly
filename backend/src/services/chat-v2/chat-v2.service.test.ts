@@ -2523,7 +2523,17 @@ describe('ChatV2Service', () => {
         seedRoom();
         expect(() => service.searchMessagesForAgent({ agentSession: 'bob', principal: { ...owner, agentSession: 'pia' }, query: 'budget' })).toThrow(/own chat history/);
         expect(() => service.searchMessagesForAgent({ agentSession: 'pia', principal: owner, query: '   ' })).toThrow(/query is required/);
-        expect(() => service.searchMessagesForAgent({ agentSession: '', principal: owner, query: 'x' })).toThrow(/agent session is required/);
+        // An agent caller must name itself; an empty session is not "everything".
+        expect(() => service.searchMessagesForAgent({ agentSession: '', principal: { ...owner, agentSession: 'pia' }, query: 'x' })).toThrow(/agent session is required/);
+      });
+
+      it('the owner without a session searches every conversation (#1400 cross-conversation search)', () => {
+        const room = seedRoom();
+        const hits = service.searchMessagesForAgent({ principal: owner, query: 'three-video' });
+        expect(hits.map((h) => h.channel).sort()).toEqual(['awesome-videos', 'secret']);
+        const inRoom = hits.find((h) => h.channelId === room.id);
+        expect(inRoom).toMatchObject({ channelType: 'huddle', sender: 'Steve', senderType: 'user' });
+        expect(service.searchMessagesForAgent({ principal: owner, query: 'three-video budget' })).toHaveLength(1);
       });
     });
 

@@ -146,6 +146,20 @@ export interface ChatSearchRow {
   thread_id: string | null;
 }
 
+/** Keywords and filters of a chat search. */
+export interface ChatSearchOptions {
+  /** Keywords, all required (case-insensitive substring) */
+  terms: string[];
+  /** Channel id, or name (with or without `#`) */
+  channel?: string;
+  /** Only messages created at or after this (epoch ms) */
+  fromMs?: number;
+  /** Only messages created before this (epoch ms) */
+  toMs?: number;
+  /** Most hits */
+  limit: number;
+}
+
 /** Escape LIKE wildcards. */
 function likeEscape(term: string): string {
   return term.replace(/[\\%_]/g, (c) => `\\${c}`);
@@ -1021,27 +1035,46 @@ export class MessageStore {
    * must appear), optional channel and date range, newest first.
    *
    * @param agentSession - The agent whose view is searched
-   * @param opts.terms - Keywords, all required (case-insensitive substring)
-   * @param opts.channel - Channel id, or name (with or without `#`)
-   * @param opts.fromMs - Only messages created at or after this
-   * @param opts.toMs - Only messages created before this
-   * @param opts.limit - Most hits
+   * @param opts - Keywords and filters, see {@link ChatSearchOptions}
    * @returns Hits, newest first
    */
-  searchForAgent(
-    agentSession: string,
-    opts: { terms: string[]; channel?: string; fromMs?: number; toMs?: number; limit: number },
-  ): ChatSearchRow[] {
+  searchForAgent(agentSession: string, opts: ChatSearchOptions): ChatSearchRow[] {
     const params: Array<string | number> = [
       agentSession,
       agentSession,
       agentSession,
       `%${likeEscape(JSON.stringify(agentSession))}%`,
     ];
-    let where = `m.sender_type != 'system'
-      AND (m.agent_session = ? OR c.agent_session = ?
+    const scope = `(m.agent_session = ? OR c.agent_session = ?
            OR m.channel_id IN (SELECT channel_id FROM chat_channel_members WHERE member_session = ?)
            OR m.mentions LIKE ? ESCAPE '\\')`;
+    return this.runSearch(scope, params, opts);
+  }
+
+  /**
+   * Search every conversation on this machine — the owner's view (#1400
+   * cross-conversation search). Same keywords and filters as
+   * {@link searchForAgent}, no membership scope.
+   *
+   * @param opts - Keywords and filters, see {@link ChatSearchOptions}
+   * @returns Hits, newest first
+   */
+  searchAll(opts: ChatSearchOptions): ChatSearchRow[] {
+    return this.runSearch(null, [], opts);
+  }
+
+  /**
+   * Shared body of the two searches: keyword, channel and date clauses on
+   * top of an optional scope clause.
+   *
+   * @param scope - SQL predicate restricting whose messages are seen, or null for all
+   * @param params - Bind values the scope predicate consumes, in order
+   * @param opts - Keywords and filters
+   * @returns Hits, newest first
+   */
+  private runSearch(scope: string | null, params: Array<string | number>, opts: ChatSearchOptions): ChatSearchRow[] {
+    let where = `m.sender_type != 'system'`;
+    if (scope) where += ` AND ${scope}`;
     for (const term of opts.terms) {
       where += ` AND m.content LIKE ? ESCAPE '\\'`;
       params.push(`%${likeEscape(term)}%`);

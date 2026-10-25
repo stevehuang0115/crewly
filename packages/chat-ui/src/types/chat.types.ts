@@ -121,6 +121,37 @@ export interface UnreadSummary {
   channels: ChannelReadState[];
 }
 
+/** Filters of `searchMessages` (`GET /api/chat/search`, #1400). */
+export interface ChatSearchOptions {
+  /** Channel id, or name (with or without `#`) */
+  channel?: string;
+  /** Start, inclusive: a date (`2026-10-09`) or an ISO timestamp */
+  from?: string;
+  /** End, exclusive (a bare date means the whole day) */
+  to?: string;
+  /** Most hits (the server caps it) */
+  limit?: number;
+  /** Search as this agent (its view) instead of everything the owner sees */
+  session?: string;
+}
+
+/** One hit of `searchMessages`: a compact snippet, newest first. */
+export interface ChatSearchHit {
+  id: string;
+  /** ISO timestamp */
+  time: string;
+  channelId: string;
+  /** Channel name as stored (may carry a leading `#`) */
+  channel: string;
+  channelType?: ChannelType;
+  sender: string;
+  /** `user` | `agent` */
+  senderType?: string;
+  /** Flattened snippet (about 300 characters at most) */
+  text: string;
+  threadId: string | null;
+}
+
 /** Body for `POST /api/chat/channels`. */
 export interface CreateChannelInput {
   /** Required when `type='dm'`; ignored when `type='channel'`. */

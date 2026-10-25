@@ -23,6 +23,21 @@ describe('MockChatApiClient', () => {
     expect(all).toContainEqual(ch);
   });
 
+  it('searchMessages finds messages across channels, all words required, newest first (#1400)', async () => {
+    const client = new MockChatApiClient({ initialChannels: [] });
+    const a = await client.createChannel({ agentSession: 'a1', name: 'A1' });
+    const b = await client.createChannel({ agentSession: 'b1', name: 'B1' });
+    await client.sendMessage(a.id, { content: 'Docker will not start', clientMessageId: 'x1' });
+    await vi.advanceTimersByTimeAsync(10);
+    await client.sendMessage(b.id, { content: 'docker reset done', clientMessageId: 'x2' });
+    await client.sendMessage(b.id, { content: 'unrelated', clientMessageId: 'x3' });
+    const hits = await client.searchMessages('docker');
+    expect(hits.map((h) => h.channelId)).toEqual([b.id, a.id]);
+    expect(await client.searchMessages('docker reset')).toHaveLength(1);
+    expect(await client.searchMessages('docker', { channel: 'A1' })).toHaveLength(1);
+    expect(await client.searchMessages('   ')).toEqual([]);
+  });
+
   it('createHuddle appends a type=huddle channel to the list', async () => {
     const client = new MockChatApiClient({ initialChannels: [] });
     const ch = await client.createHuddle({
