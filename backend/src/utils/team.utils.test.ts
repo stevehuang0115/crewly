@@ -16,6 +16,7 @@ import {
   normalizeTeamLeaderIds,
   pickTeamLead,
   setTeamLead,
+  resetNoLeadWarnings,
 } from './team.utils.js';
 import type { Team, TeamMember } from '../types/index.js';
 
@@ -96,6 +97,7 @@ describe('pickTeamLead', () => {
     let warnSpy: jest.SpyInstance;
 
     beforeEach(() => {
+      resetNoLeadWarnings();
       warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     });
 
@@ -137,6 +139,14 @@ describe('pickTeamLead', () => {
       const team = mkTeam([m1, m2]);
       pickTeamLead(team);
       expect(countTeamUtilsWarns()).toBe(1);
+    });
+
+    it('rule-4 warns once per team per process, not once per caller', () => {
+      const team = mkTeam([baseMember({ id: 'm1' }), baseMember({ id: 'm2' })]);
+      pickTeamLead(team);
+      pickTeamLead(team);
+      pickTeamLead({ ...team, id: 't-2' });
+      expect(countTeamUtilsWarns()).toBe(2);
     });
   });
 
