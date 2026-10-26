@@ -2184,6 +2184,72 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * File an agent's post that already went to Slack by another route
+   * (`reply --work-item` / `--new-thread` / `--ticket`) so the chat history
+   * and `search-chat` can find it (CREW-877).
+   *
+   * Unlike {@link recordTurn} this is a QUIET write: it inserts the row and
+   * emits nothing. Every consumer of `chat_message` (the dispatcher that wakes
+   * agents, the Slack mirrors that post a room row to Slack, the live gateway,
+   * owner-message and delivery trackers) hangs off that event, and the post is
+   * already in Slack, so an emit would re-deliver it or echo it as a second
+   * Slack post. The row is the agent's own (`sender_id` = the poster), an
+   * `agent` / `out` row, never an owner message. Syncs to Cloud like any other
+   * agent row. Skipped when a row for the same Slack message exists already.
+   *
+   * @param input.channelId - The chat channel the Slack channel maps to
+   * @param input.agentSession - The posting agent (becomes `sender_id`)
+   * @param input.content - What was posted
+   * @param input.slackChannelId - Slack channel the post is in
+   * @param input.slackTs - The post's own Slack ts
+   * @param input.slackThreadTs - Slack thread the post is in, when threaded
+   * @returns The stored message id, or null when a row for that Slack message already existed
+   * @throws {ChatError} `channel_not_found` (404) / `channel_archived` (404) / `validation_error` (400)
+   */
+  recordSlackOnlyAgentPost(input: {
+    channelId: string;
+    agentSession: string;
+    content: string;
+    slackChannelId: string;
+    slackTs: string;
+    slackThreadTs?: string;
+  }): string | null {
+    if (!input.content || input.content.length === 0) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'content is required');
+    if (!input.agentSession) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'agentSession is required');
+    if (!input.slackChannelId || !input.slackTs) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'slackChannelId and slackTs are required');
+    const content = Buffer.byteLength(input.content, 'utf-8') > this.config.maxMessageBytes
+      ? input.content.slice(0, this.config.maxMessageBytes)
+      : input.content;
+    // Another path (a mirror) already filed this Slack message: no second row.
+    if (this.messages.hasSlackMessage(input.slackChannelId, input.slackTs)) return null;
+    // A thread whose root has a chat row is filed under it; otherwise the row
+    // carries the thread key only (like a reply-tool row), never `slackThreadTs`
+    // with no root, which would make it look like the thread's root.
+    const root = input.slackThreadTs ? this.messages.findThreadRootBySlackTs(input.channelId, input.slackThreadTs) : null;
+    const threadKey = input.slackThreadTs && !root ? formatSlackThreadKey(input.slackChannelId, input.slackThreadTs) : undefined;
+    const { row, deduped } = this.messages.insert({
+      channelId: input.channelId,
+      senderType: 'agent',
+      senderId: input.agentSession,
+      content,
+      clientMessageId: `slack-only:${input.slackChannelId}:${input.slackTs}`,
+      ...(root ? { threadId: root.id } : {}),
+      metadata: {
+        source: 'slack',
+        slackOnly: true,
+        slackChannelId: input.slackChannelId,
+        slackTs: input.slackTs,
+        // A top-level post is its own thread root for the replies that follow.
+        ...(!input.slackThreadTs ? { slackThreadTs: input.slackTs } : {}),
+        ...(root ? { slackThreadTs: input.slackThreadTs } : {}),
+        ...(threadKey ? { [SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]: threadKey } : {}),
+      },
+      nowMs: this.now(),
+    });
+    return deduped ? null : row.id;
+  }
+
+  /**
    * Phase A — validate the mentions array passed to sendMessage.
    * Returns the cleaned array (or undefined when input is empty/missing).
    *
