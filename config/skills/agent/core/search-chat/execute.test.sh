@@ -37,7 +37,8 @@ trap 'kill "$STUB_PID" >/dev/null 2>&1' EXIT
 for i in $(seq 1 30); do curl -s -o /dev/null -m 0.2 "http://127.0.0.1:${PORT}/" 2>/dev/null && break; sleep 0.1; done
 OUT=$(CREWLY_API_URL="http://127.0.0.1:${PORT}" bash "$SCRIPT_DIR/execute.sh" --query anything 2>/dev/null)
 assert_eq "result keeps its data" "0" "$(printf '%s' "$OUT" | jq -r '.data.count')"
-assert_contains "result says work-item posts are not searched" "reply --work-item" "$(printf '%s' "$OUT" | jq -r '.note')"
+assert_contains "note names the one gap: channels that are not team rooms or agent DMs" "not a team room or an agent DM" "$(printf '%s' "$OUT" | jq -r '.note')"
+assert_eq "note no longer claims work-item posts are unsearchable" "0" "$(printf '%s' "$OUT" | jq -r '.note' | grep -c "reply --work-item")"
 assert_eq "output is one line" "1" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
 
 echo "=== Results: $PASS passed, $FAIL failed ==="
