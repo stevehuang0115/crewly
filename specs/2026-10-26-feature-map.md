@@ -1,7 +1,8 @@
 # Feature map for the dashboard (#811)
 
-**Status**: slice 1 shipped (map + sync check). Slice 2 (reproduce CLI) and
-slice 3 (bug report → reproduce with evidence → fix) are open.
+**Status**: slice 1 shipped (map + sync check), slice 2 shipped (reproduce
+CLI as the `reproduce-ui` core skill). Slice 3 (bug report → reproduce with
+evidence → fix) is open.
 
 ## Problem
 
@@ -77,14 +78,46 @@ a reviewer reads.
   messages, decision cards, bookmarks).
 - New `data-testid` an agent needs → add it to the feature's **Elements**.
 
-## Slice 2 — reproduce CLI (open)
+## Slice 2 — reproduce CLI: the `reproduce-ui` core skill
 
-A script in the skills directory that starts the app (or attaches to the
-running one), opens a feature by its map entry (route + `?tab=`), waits for
-its key element, and saves evidence (screenshot, console errors, failed
-requests, timings) under a per-run folder. Used by one existing skill or SOP
-so agents stop writing ad-hoc drivers per session. The map's **Elements**
-lines are what the CLI waits for; the **Reach** lines are what it follows.
+`config/skills/agent/core/reproduce-ui/` (`execute.sh` → `reproduce.mjs`),
+assignable to developer, QA, team-leader and orchestrator roles. It attaches
+to the running dashboard (`CREWLY_API_URL`, loopback needs no token), opens a
+feature by its map entry, waits for its key element and saves evidence.
+
+- **Input**: `--route "/tickets?tab=runs"`, or `--feature <word from a
+  Routes row>` with `--param k=v` for `:params`; `--wait <css>` overrides the
+  selector; `--map`, `--base-url`, `--out`, `--timeout`, `--full-page`,
+  `--browser`, `--dry-run`; the same fields as a JSON first argument.
+- **Map lookup**: explicit `--map`, else `$CREWLY_PROJECT_PATH/frontend/
+  FEATURE_MAP.md`, else the package's own copy (a repo install). Without a
+  map, `--route` and `--wait` still work.
+- **Wait selector** from the feature's **Elements** line: `x-panel-${tab}`
+  is filled with the `?tab=` value; otherwise the first static id (ids with
+  `${…}` or `a|b` alternatives are skipped); no Elements line → `body`.
+- **Evidence**: `$CREWLY_HOME/evidence/<utc stamp>-<route slug>/` with
+  `screenshot.png`, `console.json` (console errors, warnings, page errors),
+  `requests.json` (failed requests and responses ≥ 400), `report.md`,
+  `summary.json`; one JSON summary line on stdout.
+- **Exit codes**: 0 element appeared, 2 it did not (evidence still saved),
+  1 usage or browser error (JSON on stderr).
+- **Browser**: `playwright-core` (a Crewly dependency) driving the installed
+  Google Chrome (`channel: 'chrome'`) or `--browser <path>`; no browser
+  download. Viewport 1280×800, `domcontentloaded` then the element, then up
+  to 5 s of network idle.
+- **Defaults**: 60 s per step and a 180 s skill timeout, because a loaded
+  machine renders a tab panel in 25–45 s headless.
+- **Tests**: `execute.test.sh` (fixture map, `--dry-run` only, offline).
+- **Used by**: the developer `debugging` SOP, step 2.
+
+Limits: pages behind a Cloud sign-in show their signed-out state (still
+evidence); the owner's live Chrome and external sites are the
+`remote-browser` skill's job; no automatic matching of a screenshot to a
+feature (slice 3).
+
+First real finding: the dashboard's CSP (`script-src 'self' 'unsafe-eval'`)
+blocked the inline theme-init script on every load; fixed by hashing the
+inline scripts of the built `index.html` into `script-src` at startup.
 
 ## Slice 3 — bug report → reproduce with evidence → fix (open)
 

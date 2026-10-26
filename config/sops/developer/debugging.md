@@ -1,8 +1,8 @@
 ---
 id: dev-debugging
-version: 1
+version: 2
 createdAt: 2026-10-13T00:00:00Z
-updatedAt: 2026-10-13T00:00:00Z
+updatedAt: 2026-10-26T00:00:00Z
 createdBy: system
 type: sop
 role: developer
@@ -38,6 +38,8 @@ Long form: mattpocock/skills `diagnosing-bugs`. Redact secrets in every command 
 Name **one command** you have already run at least once that shows the user's exact symptom (red-capable), is deterministic, fast and runnable by you. If you are reading code to build a theory before this command exists, stop and build the command.
 
 ## 2. Reproduce and minimise
+
+For a dashboard (UI) report, run the `reproduce-ui` skill on the feature first: `bash config/skills/agent/core/reproduce-ui/execute.sh --route "/tickets?tab=runs"` (route and `?tab=` from `frontend/FEATURE_MAP.md`; `--feature <word>` resolves it from the map). Read its `console.json` and `requests.json` before the screenshot — a failed `/api/...` call explains most blank or stale pages — and put the evidence folder in the ticket.
 
 Cut inputs one at a time. Done when every remaining element is load-bearing.
 

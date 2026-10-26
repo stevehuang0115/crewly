@@ -246,3 +246,4 @@ keep their query string (OAuth returns).
 - A new route: add its row to **Routes** (and a section under **Features**) in the same PR, or the frontend tests fail.
 - A removed or renamed route: remove or rename the row; add the old URL to `LEGACY_REDIRECTS` and to **Old URLs** when links to it may exist.
 - A new `data-testid` an agent would need to drive the feature: add it to the feature's **Elements** line. Prose changes are not checked; read the page's header comment when the two disagree and fix the map.
+- To open a feature from this map and keep evidence (screenshot, console errors, failed requests), run the `reproduce-ui` skill: `bash config/skills/agent/core/reproduce-ui/execute.sh --route "/tickets?tab=runs"` or `--feature "Run detail" --param id=<id>`. It waits for the first static id of the feature's **Elements** line (`x-panel-${tab}` filled from `?tab=`), so keep that line's first id on the page.
