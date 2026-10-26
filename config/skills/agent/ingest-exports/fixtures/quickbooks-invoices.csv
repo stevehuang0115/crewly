@@ -1,0 +1,4 @@
+Date,Transaction Type,Num,Customer,Memo/Description,Due Date,Amount,Open Balance
+09/01/2026,Invoice,1042,Harbor Dental,September cleaning contract,09/30/2026,"1,250.00","1,250.00"
+09/03/2026,Invoice,1043,Oak Street Cafe,Menu design,10/03/2026,380.00,0.00
+09/15/2026,Invoice,1044,Greenline Movers,Website copy,10/15/2026,"2,140.50","2,140.50"

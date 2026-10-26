@@ -1,0 +1,5 @@
+Date,Time,Time Zone,Gross Sales,Discounts,Net Sales,Tax,Tip,Total Collected,Payment ID,Card Brand,PAN Suffix,Customer Name,Customer Email,Description,Transaction ID,Payment Status
+2026-09-02,10:14:03,America/Los_Angeles,$45.00,$0.00,$45.00,$3.94,$5.00,$53.94,PAY-1001,Visa,4242,Maria Lopez,maria@example.test,"Kids Pottery, Saturday",TX-9001,Completed
+2026-09-05,16:40:11,America/Los_Angeles,$120.00,$12.00,$108.00,$9.45,$0.00,$117.45,PAY-1002,Mastercard,1881,Daniel Chen,daniel@example.test,"Birthday Party Deposit",TX-9002,Completed
+2026-09-11,09:02:45,America/Los_Angeles,$45.00,$0.00,$45.00,$3.94,$0.00,$48.94,PAY-1003,Visa,4242,Maria Lopez,maria@example.test,"Kids Pottery, Saturday",TX-9003,Refunded
+2026-09-20,13:25:00,America/Los_Angeles,$30.00,$0.00,$30.00,$2.63,$2.00,$34.63,PAY-1004,Amex,0005,,,"Walk-in clay bar",TX-9004,Completed
