@@ -1,8 +1,8 @@
-# Agent eval runner under version control (#888, slice 1)
+# Agent eval runner under version control (#888, slices 1–2)
 
-**Status:** runner versioned at `eval/` with the 2026-04-01 baseline (this PR).
-Re-run on current models, diff command, business tasks and "not yet" tasks are
-later slices.
+**Status:** runner versioned at `eval/` with the 2026-04-01 baseline (slice 1);
+`run --diff` / `diff` / `record` commands (slice 2, 2026-10-26). Re-run on
+current models, business tasks and "not yet" tasks are later slices.
 
 ## Problem
 
@@ -47,10 +47,42 @@ copied into `baselines/<date>/` on purpose.
 ## Baseline semantics
 
 A baseline is a dated directory. The comparison report in it names the models
-and CLI versions, because the runner does not record them. A future diff
-command (slice 2) compares the newest `results/` JSON against the newest
-`baselines/<date>/<runtime>/` JSON per task and prints pass/fail deltas, with
-the task count in the header.
+and CLI versions, because the runner does not record them.
+
+## Slice 2: one command to re-run and diff (2026-10-26)
+
+`eval/src/diff/baseline-diff.ts`:
+
+- `findLatestBaselineDir(baselines/)` — newest `YYYY-MM-DD` folder.
+- `loadResults(dir, runtime?)` — every `<task>-<runtime>-<ts>.json` in the
+  directory or its runtime subfolders, newest per task × runtime; stray or
+  malformed JSON is skipped, never fatal.
+- `diffResults(baseline, current)` — one row per task × runtime. Verdict rules,
+  in order: fewer checks passed → `regressed`; `agent_done` lost → `regressed`;
+  more checks passed or completion regained → `improved`; `overallScore` moved
+  by more than `SCORE_TOLERANCE` (5) → `regressed`/`improved`; else
+  `unchanged`. A task on one side only is `missing` (not re-run) or `new` and
+  is not counted in `tasksCompared`. Verification checks outrank the score
+  because the score mixes in step and cost efficiency, which a model change
+  legitimately moves.
+- `renderDiffMarkdown` — first line `# Eval diff: N task(s) compared`, then a
+  table (checks, score, completion, time, cost, base → now, why).
+- `hasRegression` — gate: `diff` and `run --diff` set exit code 1 on it.
+- `recordBaseline(results/, baselines/, date, evalRoot, runtime?)` — the manual
+  "copy and relativise" steps of the README, as a command; refuses a date that
+  is not `YYYY-MM-DD` and an empty results directory.
+
+CLI: `run --all --diff [--baseline <dir>]`, `diff [--runtime r] [--results d]
+[--baseline <dir>] [--out file]`, `record --date YYYY-MM-DD [--runtime r]`.
+npm scripts `eval:diff` and `diff`.
+
+Tests (`baseline-diff.test.ts`): verdict rules, missing/new accounting, two
+runtimes kept apart, markdown header, temp-dir load/record round trip, and the
+checked-in baseline self-diffed (12 results, all unchanged) so the test fails
+if the baseline files stop parsing.
+
+Not in this slice: running the models (costs the owner's tokens, so it is done
+attended), the business tasks, the "not yet" set.
 
 ## Acceptance for this slice
 
