@@ -11,6 +11,8 @@ import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
 import type { AutopilotDayStats, AutopilotPeriodStats } from './ticket-autopilot-stats.js';
 import type { StallCause, TraceMetricsSummary } from '../trace/trace-metrics.js';
 import type { ProjectTicketService } from './project-ticket.service.js';
+import type { RetroMilestone } from './ticket-autopilot-goal.js';
+import type { ExperimentProcessSummary } from '../../types/experiment.types.js';
 
 /** A problem class. */
 export type RetroClass = 'agent_judgment' | 'missing_skill' | 'harness_gap' | 'owner_dependency';
@@ -216,8 +218,87 @@ export interface RetroBriefInput {
   project: { id: string; name: string };
   day: string;
   stats: AutopilotDayStats;
-  /** Traces of the day: run trace first, then ticket traces with a title */
+  /**
+   * Traces of the day: run trace first, then ticket traces with a title.
+   * When `runTrace` is given, these are the ticket traces only.
+   */
   traces: RetroTrace[];
+  /** The day's run trace; null when the autopilot did nothing that day (a milestone day) */
+  runTrace?: RetroTrace | null;
+  /** Experiment cards closed / OKRs completed on the day (#985) */
+  milestones?: RetroMilestone[];
+}
+
+/**
+ * A process number, baseline → result ("4 → 6"); the result alone when the
+ * baseline had no autopilot work.
+ *
+ * @param baseline - Baseline window (may be noData)
+ * @param result - Result window
+ * @param pick - The number, as words
+ * @returns Words
+ */
+function processDelta(baseline: ExperimentProcessSummary | undefined, result: ExperimentProcessSummary, pick: (s: ExperimentProcessSummary) => string): string {
+  return baseline && !baseline.noData ? `${pick(baseline)} → ${pick(result)}` : pick(result);
+}
+
+/**
+ * One milestone as brief / wiki lines: a closed card with its verdict,
+ * hypothesis, outcome and process numbers; a reached goal with its criteria.
+ *
+ * @param m - Milestone
+ * @returns Markdown list lines
+ */
+export function milestoneLines(m: RetroMilestone): string[] {
+  const day = m.closedAt.slice(0, 10);
+  if (m.kind === 'goal_completed') {
+    return [`- Goal reached (${day}): ${m.title}`, ...(m.criteria ?? []).map((c) => `  - ${c}`)];
+  }
+  const verdict = m.verdict
+    ? `verdict **${m.verdict}**${m.verdictReason ? ` — ${m.verdictReason}` : ''}`
+    : m.status === 'cancelled'
+      ? 'cancelled, no verdict'
+      : 'no verdict recorded';
+  const out = [`- ${m.id} "${m.title}" ${m.status === 'cancelled' ? 'cancelled' : 'measured'} (${day}): ${verdict}`];
+  if (m.hypothesis) out.push(`  Hypothesis: ${m.hypothesis}`);
+  if (m.outcome) {
+    const n = (v: number | null): string => (v === null ? 'n/a' : String(Math.round(v * 100) / 100));
+    out.push(`  Outcome (${m.outcome.metric}): ${n(m.outcome.baseline)} → ${n(m.outcome.result)}`);
+  }
+  const result = m.process?.result;
+  if (result && !result.noData) {
+    const perTicket = (s: ExperimentProcessSummary): string => (s.ownerTouchesPerTicket === null ? 'n/a' : String(Math.round(s.ownerTouchesPerTicket * 10) / 10));
+    const perShipped = (s: ExperimentProcessSummary): string => (s.costPerShippedTicket === null ? 'n/a' : usdWords(s.costPerShippedTicket));
+    const b = m.process?.baseline;
+    out.push(
+      `  Process: ${processDelta(b, result, (s) => String(s.ticketsShipped))} tickets shipped, ${processDelta(b, result, perTicket)} owner touches per ticket, ` +
+        `stalled ${processDelta(b, result, (s) => durationWords(s.stallMs))}, ${processDelta(b, result, perShipped)} per shipped ticket`,
+    );
+  }
+  return out;
+}
+
+/**
+ * The milestone section of the brief and the wiki page (empty with none).
+ *
+ * @param milestones - Milestones
+ * @param ask - Add the lines telling the lead what to write about them
+ * @returns Markdown lines, '' terminated
+ */
+function milestoneSection(milestones: readonly RetroMilestone[] | undefined, ask: boolean): string[] {
+  if (!milestones || milestones.length === 0) return [];
+  return [
+    '## Milestones',
+    '',
+    ...milestones.flatMap(milestoneLines),
+    '',
+    ...(ask
+      ? [
+          'For each milestone say in the retro whether the change earned its keep (keep it, revert it, or run the next experiment) and what the process numbers say about how the team worked. A quiet day with a milestone still gets this retro.',
+          '',
+        ]
+      : []),
+  ];
 }
 
 /** Stall time of a run that was the harness's fault (ms). */
@@ -302,9 +383,11 @@ export function buildRetroBrief(input: RetroBriefInput): string {
   const { project, day, stats } = input;
   const ref = project.id;
   // The run trace stays first; the ticket traces are ranked so the runs
-  // that need a retro line are read before the ones that went well.
-  const [run, ...tickets] = input.traces;
-  const ranked = run ? [run, ...rankRetroTraces(tickets)] : [];
+  // that need a retro line are read before the ones that went well. On a
+  // milestone day without autopilot work there is no run trace.
+  const run = input.runTrace !== undefined ? (input.runTrace ?? undefined) : input.traces[0];
+  const tickets = input.runTrace !== undefined ? input.traces : input.traces.slice(1);
+  const ranked = [...(run ? [run] : []), ...rankRetroTraces(tickets)];
   const flagged = ranked.filter((t) => t.review && retroReviewReasons(t.review).length > 0).length;
   const traceLines = ranked.length ? ranked.map(retroTraceLine) : ['- (no traces)'];
   if (flagged > 0) traceLines.push('', `${flagged} of ${tickets.length} runs are flagged **read first**: say in the retro what happened in each (a line is enough when it was the owner's wait).`);
@@ -313,6 +396,7 @@ export function buildRetroBrief(input: RetroBriefInput): string {
     '',
     `Review yesterday's autopilot run of ${project.name} and file a short retro. The numbers below come from the run traces.`,
     '',
+    ...milestoneSection(input.milestones, true),
     '## Numbers',
     '',
     ...statsLines(stats).map((l) => `- ${l}`),
@@ -361,9 +445,12 @@ export function renderRetroMarkdown(input: {
   by: string;
   filed: Array<{ id: string; title: string }>;
   runTraceId: string | null;
+  /** Experiment cards closed / OKRs completed on the day (#985) */
+  milestones?: RetroMilestone[];
 }): string {
   const { retro } = input;
   const out = [`# Autopilot retro — ${input.project.name} — ${retro.day}`, '', `Filed by ${input.by}.`, '', '## Summary', '', retro.summary, ''];
+  out.push(...milestoneSection(input.milestones, false));
   if (input.stats) out.push('## Numbers', '', ...statsLines(input.stats).map((l) => `- ${l}`), '');
   out.push(...problemLines(retro.problems));
   if (input.filed.length > 0) {

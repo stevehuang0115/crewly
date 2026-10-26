@@ -113,6 +113,8 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	RETRO_BRIEF_TRACES: 25,
 	/** A run's harness interventions from which the brief flags it for review */
 	RETRO_REVIEW_INTERVENTIONS: 2,
+	/** Most milestones (experiment cards closed, OKRs completed on the reviewed day) one retro reviews (#985) */
+	RETRO_MAX_MILESTONES: 5,
 	/** Wiki folder (inside the project vault) the retros are written to */
 	RETRO_WIKI_DIR: 'llm-curated/autopilot-retros',
 	/** Project (by name) harness-gap tickets are filed on */

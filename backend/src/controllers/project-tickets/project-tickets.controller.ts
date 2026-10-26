@@ -23,7 +23,7 @@ import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { isProjectTicketStatus } from '../../types/project-ticket.types.js';
 import { TicketAutopilotService, type AutopilotRetroDeps, type OwnerNotice } from '../../services/project-tickets/ticket-autopilot.service.js';
-import { goalChangedAt, openExperimentsOf, readProjectGoal } from '../../services/project-tickets/ticket-autopilot-goal.js';
+import { goalChangedAt, openExperimentsOf, readProjectGoal, readRetroMilestones } from '../../services/project-tickets/ticket-autopilot-goal.js';
 import { applyRetroGapDecision } from '../../services/project-tickets/ticket-autopilot-retro.js';
 import { ExperimentService, supervisionOf } from '../../services/experiments/experiment.service.js';
 import { WikiIngestService } from '../../services/wiki/wiki-ingest.service.js';
@@ -122,6 +122,9 @@ export function createDefaultTicketAutopilot(
     // and traces while the card is planned or running (#1026).
     supervisionOf: async (session, projectId) => supervisionOf((await ExperimentService.getInstance()?.list()) ?? [], session, projectId),
     retro: createAutopilotRetroDeps(),
+    // Milestones the daily retro reviews (#985): the project's experiment
+    // cards closed and OKRs completed on the reviewed day.
+    retroMilestones: async (project, day) => readRetroMilestones(project, day, (await ExperimentService.getInstance()?.list()) ?? []),
     // Goal replan (specs/2026-10-04-autopilot-goal-replan.md): the project's
     // goals log + active project OKRs, and its open experiment cards.
     goalOf: (project, now) => readProjectGoal(project, now),

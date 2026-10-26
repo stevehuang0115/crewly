@@ -294,6 +294,38 @@ while an autopilot experiment on the project is running, else off).
      cancelled at once. The card's handler is registered even with the
      autopilot switched off.
 
+### Milestone retros (#985)
+
+The #985 "retro at a milestone" rides on the daily retro too, so a milestone
+costs no extra wake:
+
+- A **milestone** of project P on local day D is an experiment card of P
+  (autopilot scope, or a ticket link naming P) that closed on D — its last
+  `measured` / `cancelled` timeline event, else `updatedAt` — or a project
+  OKR (mission) of P that is `completed` and was last written on D.
+- The tick reads D's milestones once per project (a day that is over does
+  not gain one later; `retroNoMilestonesFor` in the state). With at least
+  one, the retro for D is scheduled **even when** the daily retro is off
+  (the card's last day is also the day it stops turning the retro on) and
+  **even when** the autopilot did nothing on D (no run trace: the brief lists
+  the ticket traces only, and the WorkItem carries no trace id).
+- The brief opens with `## Milestones` before the numbers: each closed card
+  on one line (`EXP-n "title" measured|cancelled (D): verdict **…** — reason`),
+  then its hypothesis, the primary metric's baseline → result, and the
+  process numbers baseline → result (tickets shipped, owner touches per
+  ticket, stall, $ per shipped ticket; the result alone when the baseline
+  window had no autopilot work; left out when the result has none); each
+  reached goal as `Goal reached (D): objective` with its success criteria.
+  The lead is asked to say whether the change earned its keep (keep /
+  revert / next experiment) and what the process numbers say about the team.
+  At most `RETRO_MAX_MILESTONES` (5) per retro, cards first.
+- The WorkItem title carries `(milestone: EXP-n, …)`, `metadata.milestones`
+  lists the ids, and the `retro_scheduled` trace event records them (in the
+  reviewed day's run trace when there is one). The retro's wiki page repeats
+  the `## Milestones` section (without the ask), recomputed at submit.
+- A milestones read failure never blocks the retro: it is scheduled without
+  them.
+
 ### Weekly cross-team retro (#985)
 
 The orchestrator reads the week's daily retros across projects and files ONE

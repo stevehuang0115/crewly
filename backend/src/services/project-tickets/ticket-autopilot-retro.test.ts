@@ -17,6 +17,7 @@ import {
   validateWeeklyRetroInput,
   duplicateOf,
   durationWords,
+  milestoneLines,
   renderRetroMarkdown,
   RetroInputError,
   statsLines,
@@ -25,6 +26,8 @@ import {
   validateRetroInput,
 } from './ticket-autopilot-retro.js';
 import { computeAutopilotStats } from './ticket-autopilot-stats.js';
+import type { RetroMilestone } from './ticket-autopilot-goal.js';
+import type { ExperimentProcessSummary } from '../../types/experiment.types.js';
 import type { StallCause } from '../trace/trace-metrics.js';
 
 const stats = computeAutopilotStats({ projectId: 'p', days: ['2026-10-02'], traces: [], dailyBudgetTokens: 20_000_000, stallMinutes: 30, now: new Date(2026, 9, 3) });
@@ -58,6 +61,87 @@ describe('ticket-autopilot-retro', () => {
       'The reconciler misses the wake of a stopped lead',
     );
     expect(duplicateOf('Brand new gap here', ['Unrelated thing'])).toBeNull();
+  });
+
+  it('milestones (#985): a closed card with its verdict, outcome and process; a reached goal with its criteria; a quiet day keeps its retro', () => {
+    const procNumbers = (over: Partial<ExperimentProcessSummary>): ExperimentProcessSummary => ({
+      range: { start: '2026-10-11', end: '2026-10-24' },
+      ticketsStarted: 8,
+      ticketsDone: 7,
+      ticketsShipped: 6,
+      ownerTouches: 3,
+      ownerTouchesPerTicket: 0.5,
+      stalls: 2,
+      stallMs: 3_600_000,
+      interventions: 1,
+      tokens: 1_000_000,
+      costUsd: 48,
+      costPerShippedTicket: 8,
+      pausedMs: 0,
+      ...over,
+    });
+    const card: RetroMilestone = {
+      kind: 'experiment_closed',
+      id: 'EXP-7',
+      title: 'Feed chips',
+      status: 'done',
+      closedAt: '2026-10-02T15:00:00',
+      hypothesis: 'chips → sessions from 120 to 180',
+      verdict: 'worked',
+      verdictReason: 'sessions 120 → 184',
+      outcome: { metric: 'ga4:sessions /feed', baseline: 120, result: 184.456 },
+      process: { baseline: procNumbers({ ticketsShipped: 4, ownerTouchesPerTicket: 1.25, stallMs: 7_200_000, costPerShippedTicket: 12 }), result: procNumbers({}) },
+    };
+    expect(milestoneLines(card)).toEqual([
+      '- EXP-7 "Feed chips" measured (2026-10-02): verdict **worked** — sessions 120 → 184',
+      '  Hypothesis: chips → sessions from 120 to 180',
+      '  Outcome (ga4:sessions /feed): 120 → 184.46',
+      `  Process: 4 → 6 tickets shipped, 1.3 → 0.5 owner touches per ticket, stalled ${durationWords(7_200_000)} → ${durationWords(3_600_000)}, $12.00 → $8.00 per shipped ticket`,
+    ]);
+    // No baseline work: the result alone; a cancelled card has no verdict; a no-data result is left out.
+    expect(milestoneLines({ ...card, process: { baseline: procNumbers({ noData: true }), result: procNumbers({}) } })[3]).toBe(
+      `  Process: 6 tickets shipped, 0.5 owner touches per ticket, stalled ${durationWords(3_600_000)}, $8.00 per shipped ticket`,
+    );
+    expect(milestoneLines({ kind: 'experiment_closed', id: 'EXP-8', title: 'Dropped', status: 'cancelled', closedAt: '2026-10-02T08:00:00', process: { result: procNumbers({ noData: true }) } })).toEqual([
+      '- EXP-8 "Dropped" cancelled (2026-10-02): cancelled, no verdict',
+    ]);
+    const goal: RetroMilestone = { kind: 'goal_completed', id: 'm1', title: 'Feed growth', status: 'completed', closedAt: '2026-10-02T16:00:00', criteria: ['+50% sessions', '3 posts a week'] };
+    expect(milestoneLines(goal)).toEqual(['- Goal reached (2026-10-02): Feed growth', '  - +50% sessions', '  - 3 posts a week']);
+
+    // A milestone day without autopilot work: no run trace, the milestones first, the ask.
+    const quiet = buildRetroBrief({ project: { id: 'p-ce', name: 'CE' }, day: '2026-10-02', stats: day, runTrace: null, traces: [], milestones: [card, goal] });
+    expect(quiet.indexOf('## Milestones')).toBeLessThan(quiet.indexOf('## Numbers'));
+    expect(quiet).toContain('- EXP-7 "Feed chips" measured (2026-10-02)');
+    expect(quiet).toContain('- Goal reached (2026-10-02): Feed growth');
+    expect(quiet).toContain('earned its keep');
+    expect(quiet).toContain('- (no traces)');
+    // With a run trace and ticket traces, the run stays first.
+    const busy = buildRetroBrief({
+      project: { id: 'p-ce', name: 'CE' },
+      day: '2026-10-02',
+      stats: day,
+      runTrace: { traceId: 'tr-run', title: 'Run trace 2026-10-02' },
+      traces: [{ traceId: 'tr-t1', title: 'CE-1: Chips' }],
+      milestones: [card],
+    });
+    expect(busy.indexOf('--trace tr-run')).toBeLessThan(busy.indexOf('--trace tr-t1'));
+    expect(busy).not.toContain('(no traces)');
+    // No milestones: no section.
+    expect(buildRetroBrief({ project: { id: 'p-ce', name: 'CE' }, day: '2026-10-02', stats: day, traces: [] })).not.toContain('## Milestones');
+
+    // The wiki page keeps the milestones (without the ask).
+    const md = renderRetroMarkdown({
+      project: { name: 'CE' },
+      retro: { day: '2026-10-02', summary: 'EXP-7 worked; the chips stay.', problems: [] },
+      stats: null,
+      by: 'ce-owen',
+      filed: [],
+      runTraceId: null,
+      milestones: [card],
+    });
+    expect(md).toContain('## Milestones');
+    expect(md).toContain('- EXP-7 "Feed chips" measured (2026-10-02)');
+    expect(md).not.toContain('earned its keep');
   });
 
   it('builds the brief with the numbers, the traces and the submit command', () => {
