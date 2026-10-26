@@ -135,6 +135,7 @@ bash "$EXEC" --bogus >/dev/null 2>&1; check "unknown flag exits 1" "$?" "1"
 
 # 9. --log-step: per-step time log
 check "page has a timing block" "$(grep -c 'data-crewly-id="timing"' "$PAGE")" "1"
+check "page says 'under a minute' for sub-minute steps" "$(grep -c "under a minute" "$PAGE")" "1"
 bash "$EXEC" --log-step intake --start --at 2026-10-26T09:00:00Z --out "$T/tl" >/dev/null; check "log start exits 0" "$?" "0"
 check "timelog written" "$([ -f "$T/tl/timelog.json" ] && echo yes || echo no)" "yes"
 check "open entry" "$(jq -c '.steps[0] | {step, endedAt, minutes}' "$T/tl/timelog.json")" '{"step":"intake","endedAt":null,"minutes":null}'

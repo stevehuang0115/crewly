@@ -7,6 +7,7 @@ User-visible changes. Newest first.
 ### Fixed
 
 - **`spawn-subagent` says when the provider is out of credit (crewly#1317).** Where the fallback service has marked the in-process runtime exhausted (DeepSeek's "Insufficient Balance", for example), the skill now refuses with `provider_exhausted` and the date instead of starting a helper that fails at its first model call with "No output generated"; a helper that does fail carries the worker's last stderr lines in `error`, and its log file (`<parent>__sub-<n>.log`) is written — a slash in the session name had sent it to a directory that does not exist.
+- **The check-up App no longer shows "0 min" for a step that took seconds (crewly#1062).** A step or total under a minute reads "under a minute".
 
 ### Added
 
