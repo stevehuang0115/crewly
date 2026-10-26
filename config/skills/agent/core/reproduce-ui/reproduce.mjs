@@ -1,10 +1,12 @@
 /**
  * reproduce-ui — open a dashboard feature by its feature-map entry and save
- * evidence (#811 slice 2, specs/2026-10-26-feature-map.md).
+ * evidence (#811 slices 2–3, specs/2026-10-26-feature-map.md).
  *
  * Driven by execute.sh through environment variables:
  *   RU_ROUTE      route to open, e.g. `/tickets?tab=runs` (or RU_FEATURE)
  *   RU_FEATURE    a word of a Routes row of the map, resolved to its route
+ *   RU_REPORT     a bug report (the owner's sentence plus the words read off
+ *                 the screenshot); matched to one Features section of the map
  *   RU_WAIT       CSS selector to wait for; default = the first data-testid
  *                 of the feature's Elements line in the map, else `body`
  *   RU_MAP        path of FEATURE_MAP.md (optional; lookups need it)
@@ -18,7 +20,8 @@
  *
  * Output: one JSON line on stdout — the plan (dry run) or the summary with the
  * evidence folder. Exit 0 when the element appeared, 2 when it did not (the
- * evidence is still written), 1 on a usage or launch error.
+ * evidence is still written), 1 on a usage or launch error, 3 when a report
+ * matches no single feature (the candidates are on stderr).
  */
 
 import { createRequire } from 'node:module';
@@ -132,6 +135,128 @@ export function defaultWaitSelector(markdown, route, tab) {
 }
 
 /**
+ * Words that say nothing about which feature a report is about.
+ */
+const REPORT_STOPWORDS = new Set([
+	'the', 'and', 'for', 'with', 'this', 'that', 'there', 'then', 'than', 'when', 'what', 'where', 'which', 'who',
+	'why', 'how', 'but', 'not', 'nothing', 'none', 'all', 'any', 'some', 'are', 'was', 'were', 'has', 'have',
+	'had', 'does', 'did', 'can', 'cannot', 'could', 'should', 'would', 'will', 'just', 'still', 'again', 'also',
+	'only', 'very', 'too', 'from', 'into', 'onto', 'out', 'over', 'under', 'after', 'before', 'about', 'here',
+	'see', 'sees', 'seen', 'shows', 'show', 'shown', 'showing', 'looks', 'look', 'like', 'seems', 'says', 'said',
+	'page', 'pages', 'screen', 'screenshot', 'tab', 'tabs', 'click', 'clicked', 'clicking', 'open', 'opens',
+	'opened', 'opening', 'get', 'gets', 'got', 'its', 'you', 'your', 'our', 'they', 'them', 'their', 'one', 'two',
+	'bug', 'broken', 'wrong', 'blank', 'empty', 'missing', 'error', 'errors', 'fails', 'failed', 'failing',
+	'loading', 'loads', 'load', 'stuck', 'forever', 'instead', 'please', 'fix', 'crewly', 'dashboard',
+	'something', 'anything', 'everything', 'thing', 'things', 'off', 'yet', 'now',
+]);
+
+/**
+ * The comparable words of a text: lower-case, letters and digits only,
+ * three characters or more, no stopwords, a trailing plural `s` dropped so
+ * that "runs" meets "run".
+ *
+ * @param {string} text - Any text
+ * @returns {Set<string>}
+ */
+export function reportTokens(text) {
+	const out = new Set();
+	for (const raw of (text || '').toLowerCase().split(/[^a-z0-9]+/)) {
+		if (raw.length < 3 || REPORT_STOPWORDS.has(raw)) continue;
+		out.add(raw.length > 3 && raw.endsWith('s') && !raw.endsWith('ss') ? raw.slice(0, -1) : raw);
+	}
+	return out;
+}
+
+/**
+ * One Features section of the map, broken into the word sets a report is
+ * scored against.
+ *
+ * @typedef {object} FeatureBlock
+ * @property {string} title - The heading without the parenthesis
+ * @property {string} route - The first route in the heading
+ * @property {string[]} tabs - Tab names from `tabs \`a\` · \`b\``
+ * @property {Set<string>} strong - Title and Expected words (weight 2)
+ * @property {Set<string>} weak - Route segments, Reach, Elements words (weight 1)
+ */
+
+/**
+ * The Features sections of the map.
+ *
+ * @param {string} markdown - FEATURE_MAP.md
+ * @returns {FeatureBlock[]}
+ */
+export function featureBlocks(markdown) {
+	const blocks = [];
+	for (const block of markdownSection(markdown, '## Features').split(/\n(?=### )/)) {
+		const lines = block.split('\n');
+		const heading = lines[0] ?? '';
+		if (!heading.startsWith('### ')) continue;
+		const route = /`(\/[^`]*)`/.exec(heading)?.[1];
+		if (!route) continue;
+		const title = heading.slice(4).replace(/\s*\(.*$/, '').trim();
+		const tabsText = /tabs\s+((?:`[^`]+`\s*(?:·\s*)?)+)/.exec(heading)?.[1] ?? '';
+		const tabs = [...tabsText.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+		const lineOf = (label) => lines.find((l) => l.includes(`**${label}**`)) ?? '';
+		const strong = reportTokens(`${title} ${lineOf('Expected')}`);
+		const weak = reportTokens(`${route.replace(/:[A-Za-z_]+/g, ' ')} ${lineOf('Reach')} ${lineOf('Elements').replace(/[-_$]/g, ' ')}`);
+		blocks.push({ title, route, tabs, strong, weak });
+	}
+	return blocks;
+}
+
+/**
+ * Score every feature against a bug report: a report word found in the
+ * feature's title or Expected line counts 2, in its route, Reach or
+ * Elements 1, and a word that is one of the feature's tab names 4 (the tab
+ * also becomes the `?tab=` of the route). The best feature wins when at
+ * least two words matched, it scores 3 or more, and half again as much as
+ * the runner-up; otherwise the caller gets the candidates and asks for
+ * `--route`. One word is never enough: "Usage" alone is a `--feature`.
+ *
+ * @param {string} markdown - FEATURE_MAP.md
+ * @param {string} report - The owner's sentence plus words read off the screenshot
+ * @returns {{chosen: object|null, candidates: object[], tokens: string[]}}
+ *   candidates: `{route, title, score, matched}` sorted best first (score > 0 only)
+ */
+export function matchReport(markdown, report) {
+	const tokens = [...reportTokens(report)];
+	const scored = [];
+	for (const b of featureBlocks(markdown)) {
+		let score = 0;
+		const matched = [];
+		let tab = null;
+		for (const t of tokens) {
+			const tabHit = b.tabs.find((name) => reportTokens(name).has(t));
+			const w = tabHit ? 4 : b.strong.has(t) ? 2 : b.weak.has(t) ? 1 : 0;
+			if (!w) continue;
+			score += w;
+			matched.push(t);
+			if (tabHit && !tab) tab = tabHit;
+		}
+		if (score > 0) scored.push({ route: tab ? `${b.route}?tab=${tab}` : b.route, title: b.title, score, matched });
+	}
+	scored.sort((a, c) => c.score - a.score || a.route.localeCompare(c.route));
+	const [best, second] = scored;
+	const confident = best && best.matched.length >= 2 && best.score >= 3 && (!second || best.score >= second.score * 1.5);
+	return { chosen: confident ? best : null, candidates: scored.slice(0, 5), tokens };
+}
+
+/**
+ * Why a report could not be matched, for the error line.
+ *
+ * @param {{candidates: object[]}} m - From {@link matchReport}
+ * @returns {string}
+ */
+export function matchFailure(m) {
+	if (!m.candidates.length) return 'the report matches no feature in the map; add the words you see on the screenshot, or pass --route';
+	const best = m.candidates.map((c) => `${c.route} [${c.score}]`).join(', ');
+	if (m.candidates.length === 1 || m.candidates[0].score >= m.candidates[1].score * 1.5) {
+		return `the report matches a feature too weakly (one word only, or under 3 points); add the words you see on the screenshot, or pass --route (best: ${best})`;
+	}
+	return `the report matches several features about equally; pass --route (best: ${best})`;
+}
+
+/**
  * The Routes row whose pattern matches an opened path (`/tickets/runs/abc`
  * → `/tickets/runs/:id`); an exact match wins, the query string is ignored.
  *
@@ -191,6 +316,25 @@ export function buildPlan() {
 	const map = mapPath ? readFileSync(mapPath, 'utf8') : null;
 	let route = env.RU_ROUTE || '';
 	let row = null;
+	let match = null;
+	if (!route && !env.RU_FEATURE && env.RU_REPORT) {
+		if (!map) fail(`--report needs the feature map; pass --map or --route (looked for ${env.RU_MAP || 'FEATURE_MAP.md'})`);
+		const m = matchReport(map, env.RU_REPORT);
+		if (!m.chosen) {
+			process.stderr.write(
+				`${JSON.stringify({
+					ok: false,
+					error: matchFailure(m),
+					candidates: m.candidates,
+					tokens: m.tokens,
+				})}\n`,
+			);
+			process.exit(3);
+		}
+		route = m.chosen.route;
+		match = { ...m.chosen, candidates: m.candidates.slice(1) };
+		row = matchRouteRow(routeRows(map), route);
+	}
 	if (!route && env.RU_FEATURE) {
 		if (!map) fail(`--feature needs the feature map; pass --map or --route (looked for ${env.RU_MAP || 'FEATURE_MAP.md'})`);
 		const r = resolveFeature(map, env.RU_FEATURE);
@@ -200,7 +344,7 @@ export function buildPlan() {
 	} else if (route && map) {
 		row = matchRouteRow(routeRows(map), route);
 	}
-	if (!route) fail('one of --route or --feature is required');
+	if (!route) fail('one of --route, --feature or --report is required');
 	if (!route.startsWith('/')) fail('--route must start with /');
 	const params = {};
 	for (const [k, v] of Object.entries(env)) if (k.startsWith('RU_PARAM_') && v) params[k.slice('RU_PARAM_'.length)] = v;
@@ -221,8 +365,28 @@ export function buildPlan() {
 		fullPage: env.RU_FULL_PAGE === '1',
 		map: mapPath,
 		feature: row ? { page: row.page, reach: row.reach, job: row.job } : null,
+		report: env.RU_REPORT || null,
+		match,
 		outRoot,
 	};
+}
+
+/**
+ * One line for the ticket: what was opened, whether it rendered, and what
+ * the console and network said, with the evidence folder.
+ *
+ * @param {object} s - Summary
+ * @param {Array<object>} requests - Failed requests
+ * @returns {string}
+ */
+export function ticketLine(s, requests) {
+	const worst = requests.find((r) => r.status >= 500) ?? requests.find((r) => r.failure) ?? requests[0];
+	const parts = [
+		`Reproduced \`${s.route}\`: ${s.found ? 'rendered' : `key element \`${s.waitFor}\` NOT found${s.error ? ` (${s.error})` : ''}`}`,
+		`${s.consoleErrors} console error${s.consoleErrors === 1 ? '' : 's'}`,
+		`${s.failedRequests} failed request${s.failedRequests === 1 ? '' : 's'}${worst ? ` (first: ${worst.method} ${worst.url} → ${worst.status ?? worst.failure})` : ''}`,
+	];
+	return `${parts.join('; ')}; evidence: ${s.dir}`;
 }
 
 /**
@@ -320,7 +484,10 @@ async function run(plan) {
 		dir,
 		screenshot: existsSync(screenshot) ? screenshot : null,
 		feature: plan.feature,
+		report: plan.report,
+		match: plan.match,
 	};
+	summary.ticketLine = ticketLine(summary, requests);
 	writeFileSync(join(dir, 'console.json'), `${JSON.stringify(console_, null, 2)}\n`);
 	writeFileSync(join(dir, 'requests.json'), `${JSON.stringify(requests, null, 2)}\n`);
 	writeFileSync(join(dir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
@@ -348,6 +515,9 @@ export function renderReport(s, console_, requests) {
 		`- Screenshot: ${s.screenshot ? 'screenshot.png' : '(none)'}`,
 	];
 	if (s.feature) lines.push(`- Feature: ${s.feature.job} — reached from ${s.feature.reach}; page \`${s.feature.page}\``);
+	if (s.match) lines.push(`- Matched from the report: ${s.match.title} (score ${s.match.score}, words: ${s.match.matched.join(', ')})`);
+	if (s.ticketLine) lines.push('', '## For the ticket', '', s.ticketLine);
+	if (s.report) lines.push('', '## Report', '', ...s.report.split('\n').map((l) => `> ${l}`));
 	lines.push('', `## Console errors (${console_.length})`, '');
 	lines.push(...(console_.length ? console_.map((c) => `- [${c.type}] ${c.text}`) : ['- none']));
 	lines.push('', `## Failed requests (${requests.length})`, '');
