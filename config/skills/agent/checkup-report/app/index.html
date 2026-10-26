@@ -196,11 +196,14 @@
     Object.keys(r.assumptions || {}).forEach(function (k) { as.appendChild(el('li', null, k + ': ' + r.assumptions[k])); });
     var timing = $('timing'); timing.replaceChildren();
     var t = r.timing;
+    // Minutes come rounded to one decimal; a step that took seconds reads
+    // "0 min", which looks like it never ran.
+    function fmtMin(m) { return (typeof m === 'number' && m < 1) ? 'under a minute' : m + ' min'; }
     if (t && t.steps && t.steps.length) {
       t.steps.forEach(function (s) {
-        timing.appendChild(el('li', null, s.step + ': ' + (s.endedAt ? s.minutes + ' min' : 'still running')));
+        timing.appendChild(el('li', null, s.step + ': ' + (s.endedAt ? fmtMin(s.minutes) : 'still running')));
       });
-      timing.appendChild(el('li', 'note', 'Total ' + t.totalMinutes + ' min of agent time' + (t.open && t.open.length ? ' so far' : '')));
+      timing.appendChild(el('li', 'note', 'Total ' + fmtMin(t.totalMinutes) + ' of agent time' + (t.open && t.open.length ? ' so far' : '')));
     }
     $('timing-wrap').classList.toggle('hidden', !(t && t.steps && t.steps.length));
   }
