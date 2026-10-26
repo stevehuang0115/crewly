@@ -1,5 +1,5 @@
 {
-  "_comment": "Real screens captured 2026-09-26 in tmux (120 cols) from Claude Code 2.1.283 and Codex 0.157.1, with paths, host and user names scrubbed. title = the OSC title tmux reported at capture time. Used by agent-attention.test.ts (#815). claude-dangerous-rm.txt: Claude Code 2.1.x rm safety prompt from a fork agent, captured 2026-10-26 via the terminal API under --dangerously-skip-permissions (which does not skip it); the assistant prose above the dialog is paraphrased, the dialog is verbatim with paths scrubbed. selfAnswer = what the harness does itself.",
+  "_comment": "Real screens captured 2026-09-26 in tmux (120 cols) from Claude Code 2.1.283 and Codex 0.157.1, with paths, host and user names scrubbed. title = the OSC title tmux reported at capture time. Used by agent-attention.test.ts (#815). claude-dangerous-rm.txt: Claude Code 2.1.x rm safety prompt from a fork agent, captured 2026-10-26 via the terminal API under --dangerously-skip-permissions (which does not skip it); the assistant prose above the dialog is paraphrased, the dialog is verbatim with paths scrubbed. selfAnswer = what the harness does itself. claude-idle-background-agent.txt: the same session right after the rm prompt was declined — main agent at its prompt, fork still running (status line + agent panel); expected busy, not idle.",
   "fixtures": [
     {
       "file": "claude-bash-permission.txt",
@@ -74,6 +74,12 @@
       "runtime": "codex-cli",
       "title": "Create newfile.txt | project",
       "expected": "idle"
+    },
+    {
+      "file": "claude-idle-background-agent.txt",
+      "runtime": "claude-code",
+      "title": "✳ Claude Code",
+      "expected": "busy"
     }
   ]
 }

@@ -1318,6 +1318,26 @@ describe('ActivityMonitorService', () => {
       expect(ACTIVITY_MONITOR_CONSTANTS.POLLING_INTERVAL_MS + 15_000).toBeLessThanOrEqual(60_000);
     });
 
+    it('an agent whose background (fork) agent is still running stays in_progress and is never auto-reset (2026-10-26 Pia)', async () => {
+      // The screen has not changed since the last poll and no turn is reported:
+      // only the status line and the agent panel say work is in flight.
+      mockSessionBackend.captureOutput.mockReturnValue(screen('claude-idle-background-agent.txt'));
+      (service as any).lastTerminalOutputs.set('dev-1', screen('claude-idle-background-agent.txt'));
+      (service as any).busyTransitionTimestamps.set('dev-1', Date.now() - ACTIVITY_MONITOR_CONSTANTS.MAX_IN_PROGRESS_MS - 60_000);
+
+      await (service as any).performActivityCheck();
+
+      expect(service.getObservedWorkingStatus('dev-1')).toBe('in_progress');
+      expect(getWaiting('dev-1')).toBeUndefined();
+      expect(mockRecordAgentWaitingOnHuman).not.toHaveBeenCalled();
+
+      // The fork finishes and the panel goes away: idle on the next poll.
+      mockSessionBackend.captureOutput.mockReturnValue(screen('claude-idle.txt'));
+      (service as any).lastTerminalOutputs.set('dev-1', screen('claude-idle.txt'));
+      await (service as any).performActivityCheck();
+      expect(service.getObservedWorkingStatus('dev-1')).toBe('idle');
+    });
+
     describe('self-answered prompts (dangerous rm)', () => {
       let write: jest.Mock;
       let sendMessageToAgent: jest.Mock;
