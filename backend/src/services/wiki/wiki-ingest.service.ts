@@ -27,6 +27,7 @@ import { SchemaLoaderService } from './schema-loader.service.js';
 import { VaultSchema } from './wiki.types.js';
 import { WIKI_KB_CONSTANTS, type WikiKeepBecause } from '../../constants.js';
 import { checkRetention, parsePage, serializePage, oneLine, type WikiPageFrontmatter } from './wiki-page.js';
+import { getPrivateSourceTracker } from '../people/private-source.service.js';
 import { applyPrivacyGate } from './wiki-redaction.js';
 import { decideWrite } from './wiki-policy.js';
 import { WikiIndexService } from './wiki-index.service.js';
@@ -76,6 +77,12 @@ export interface WikiIngestInput {
   tags?: string[];
   /** Page writes only: roles that may read it (default: the vault's default_visibility). */
   visibility?: string[];
+  /**
+   * Page writes only: people whose grants the content came from; only they
+   * and the owner read the page (#969). Added to whatever the private-source
+   * tracker knows about `callerSession`, and to the page's existing list.
+   */
+  visibleToPeople?: string[];
   /** Page writes only: replace the page instead of appending to it (default: append). */
   replace?: boolean;
 }
@@ -310,6 +317,15 @@ export class WikiIngestService {
       ...(proposed ? { proposed_by: oneLine(author, 80) } : {}),
     };
     if (!fm.visibility && schema.privacy.default_visibility.length > 0) fm.visibility = schema.privacy.default_visibility;
+    // Issue #969: content read through someone's private grant stays
+    // theirs. The list only grows — an append from a public source never
+    // reopens a page to everyone.
+    const people = new Set<string>([
+      ...(Array.isArray(prior?.frontmatter.visible_to_people) ? prior.frontmatter.visible_to_people.map(String) : []),
+      ...(input.visibleToPeople ?? []),
+      ...getPrivateSourceTracker().recentPeople(input.callerSession),
+    ]);
+    if (people.size > 0) fm.visible_to_people = [...people];
 
     const entry = this.formatPageEntry(input);
     const body = prior && !input.replace

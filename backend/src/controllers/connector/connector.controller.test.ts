@@ -12,6 +12,7 @@ import { ConnectorAccessService } from '../../services/connector/connector-acces
 import { RemoteMcpService } from '../../services/connector/remote-mcp.service.js';
 import { ActingForService, currentActor, setActingForForTesting } from '../../services/people/acting-for.service.js';
 import { ConnectorUseAuditService, setConnectorUseAuditForTesting } from '../../services/connector/connector-use-audit.service.js';
+import { PrivateSourceTracker, getPrivateSourceTracker, setPrivateSourceTrackerForTesting } from '../../services/people/private-source.service.js';
 import type { ActivityEntryInput } from '../../services/activity/activity-log.service.js';
 
 jest.mock('../../services/core/logger.service.js', () => ({
@@ -157,6 +158,20 @@ describe('requireConnectorAccess — audit log of connector use (issue #969)', (
       target: { type: 'connector', id: 'canva' },
     });
     expect(written[0].note).toContain('agent a-dev used canva');
+  });
+
+  it('notes that the session read the connector for its person, so wiki pages it writes next are tagged (#969)', async () => {
+    setPrivateSourceTrackerForTesting(new PrivateSourceTracker());
+    try {
+      mockCaller.mockResolvedValue({ session: 'a-dev', role: 'developer' });
+      await request(app).get('/api/canva/designs');
+      expect(getPrivateSourceTracker().recent('a-dev')).toEqual([expect.objectContaining({ personId: 'owner', connectorId: 'canva' })]);
+      access.isAllowed.mockResolvedValue(false);
+      await request(app).get('/api/canva/designs');
+      expect(getPrivateSourceTracker().recent('a-dev')).toHaveLength(1); // a refusal reads nothing
+    } finally {
+      setPrivateSourceTrackerForTesting(null);
+    }
   });
 
   it('writes a connector.use.refused entry with the allowed roles every time a role is refused', async () => {

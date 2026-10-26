@@ -106,3 +106,14 @@ The owner can answer "who used which grant, acting for whom, when, and was it al
 
 Not covered yet (still open on #969): tagging memory and wiki writes with the person they came from, and the audience check on sharing them.
 
+## Private-sourced wiki pages (#969, 2026-10-26)
+
+What an agent reads through a person's grant is that person's data. A wiki page written from it is readable by that person and the owner only, whatever the vault's role `visibility` says.
+
+- **Tracker** (`services/people/private-source.service.ts`): the connector role gate notes every allowed use as `(session, person, connector, at)`. A use counts for `PEOPLE_CONSTANTS.PRIVATE_SOURCE_WINDOW_MS` (20 min) — the backend has no turn boundary, so the window stands in for one. In memory; empty after a restart; at most `PRIVATE_SOURCE_SESSIONS_MAX` sessions.
+- **Tagging** (`WikiIngestService.writePage`): a page write whose `callerSession` read for anyone inside the window gets frontmatter `visible_to_people: [<person ids>]`, unioned with the page's existing list and with an explicit `visibleToPeople` on the request. The list only grows: a later append from a public source never reopens the page. `log.md` entries have no frontmatter and are not tagged.
+- **Reading** (`isVisibleTo(fm, viewerRole, viewerPerson)`): a page with `visible_to_people` is hidden from any `viewerPerson` not on the list; `undefined` (the owner's dashboard, an unknown session) and `owner` read everything; the role list still applies to a listed person. `viewerPerson` comes from `viewerPersonOf(session)` = the session's acting-for person (`owner` → undefined) on `POST /api/wiki/query`, memory recall's BM25 wiki search, and the meeting wiki search. The dashboard's own search routes carry no viewer and show everything to the owner.
+- **Owner-only instance**: every turn acts for `owner`, so pages get `visible_to_people: [owner]` and every reader is the owner — no visible change until a member appears.
+
+Not covered: project memory files outside the wiki (`memory/` patterns, decisions), tagging the agent's reply to a channel (the audience check), and recall from another machine.
+

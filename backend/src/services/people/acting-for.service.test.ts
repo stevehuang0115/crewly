@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ActingForService, actingForHeaders, actorCacheSuffix, currentActor, runAsActor } from './acting-for.service.js';
+import { ActingForService, actingForHeaders, actorCacheSuffix, currentActor, runAsActor, setActingForForTesting, viewerPersonOf } from './acting-for.service.js';
 import { PeopleDirectoryService } from './people-directory.service.js';
 
 describe('ActingForService', () => {
@@ -26,6 +26,20 @@ describe('ActingForService', () => {
 	});
 
 	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+	it('viewerPersonOf (#969): a member\'s session reads as that person, the owner and unknown sessions as undefined', () => {
+		setActingForForTesting(service);
+		try {
+			service.recordHumanMessage('dev-1', 'UINFO001');
+			service.recordHumanMessage('dev-2', 'UOWNER01');
+			expect(viewerPersonOf('dev-1')).toBe('UINFO001');
+			expect(viewerPersonOf('dev-2')).toBeUndefined();
+			expect(viewerPersonOf('never-seen')).toBeUndefined();
+			expect(viewerPersonOf(undefined)).toBeUndefined();
+		} finally {
+			setActingForForTesting(null);
+		}
+	});
 
 	it('a Slack message makes the agent act for its sender; a dashboard message for the owner', () => {
 		service.recordHumanMessage('dev-1', 'UINFO001');
