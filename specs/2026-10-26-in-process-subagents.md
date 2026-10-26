@@ -91,11 +91,29 @@ a child's tokens never sat in the parent's window.
   `attachSubagentTools`, `getSubagentReport`, `recordChildUsage`,
   `absorbChildUsage`
 
-## Not in this slice (slice 2)
+## Slice 2a: visibility and guidance
+
+- **Child tool calls in the parent's log.** The spawn tool passes the child
+  `forwardChildToolCalls(() => parent.streamingCallbacks, childSession)` as
+  its streaming callbacks: every `onToolCallStart` / `onToolCallFinish` of the
+  child is relayed to the parent's current callbacks with the tool name
+  prefixed `sub-<n>:` (so the worker's IPC and the backend's session log show
+  `tool sub-1:grep({...})` between the parent's own `tool spawn_subagent(...)`
+  line and its result). Text chunks and step events are not forwarded: they
+  would interleave with the parent's stream. The parent's callbacks are read on
+  every call because they are set per run.
+- **Delegation guidance.** `RoleBoundaryModule.buildTeamLeadBoundary` adds a
+  "Hand to a short-lived sub-agent" rule under Decomposition Decision Rules:
+  bounded and self-contained work (parallel research, a large read, a scoped
+  fix) that nobody needs to own, review or hear about; treat the result as
+  evidence (no tool calls = did nothing). Runtime-neutral wording: Claude
+  Code's `Agent` tool or `spawn_subagent`.
+
+## Not yet (slice 2b)
 
 - Codex / Gemini CLI: check their native sub-agents at the pinned versions;
   otherwise a `spawn-subagent` skill wrapping a one-shot in-process run.
-- Traces / board visibility of `<parent>/sub-<n>`.
-- The one-line addition to the shared delegation guidance (the tool
-  description carries it for now).
+- Traces (`/api/traces`) do not record in-process tool calls at all today, so
+  there is nothing to attach a child to there; revisit if in-process runs get
+  trace spans.
 - Live check: a DeepSeek TL splits a 3-part research task across 3 children.

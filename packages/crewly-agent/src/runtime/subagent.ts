@@ -29,6 +29,7 @@ import {
   type AgentRunResult,
   type CrewlyAgentConfig,
   type ModelConfig,
+  type StreamingEventCallbacks,
   type SubagentPolicy,
   type ToolDefinition,
 } from './types.js';
@@ -113,7 +114,7 @@ export interface SubagentRunner {
     message: string,
     conversationId?: string,
     metadata?: Record<string, string>,
-    options?: { abortSignal?: AbortSignal },
+    options?: { abortSignal?: AbortSignal; streaming?: StreamingEventCallbacks },
   ): Promise<AgentRunResult>;
   shutdown(): Promise<void>;
   getSubagentReport(): SubagentReport | null;
@@ -401,8 +402,39 @@ export interface SpawnSubagentContext {
   onUsage?: (usage: { input: number; output: number; cachedInput: number }) => void;
   /** Wall-clock budget per child; defaults to the runtime default. */
   timeoutMs?: number;
+  /**
+   * Streaming callbacks for a child, by its session name. The runner passes
+   * `forwardChildToolCalls(...)` so the child's tool calls show up in the
+   * parent's session log as `sub-<n>:<tool>`.
+   */
+  childStreaming?: (sessionName: string) => StreamingEventCallbacks;
   /** Clock, for tests. */
   now?: () => number;
+}
+
+/**
+ * Streaming callbacks for a child that relay its tool calls to the parent's
+ * current callbacks, with the tool name prefixed by the child's short name
+ * (`sub-1:grep`). Text chunks and step events stay with the child: forwarded
+ * text would interleave with the parent's own stream.
+ *
+ * `getParent` is read on every call, because the parent's callbacks are set
+ * per run and a child always runs inside one of the parent's runs.
+ *
+ * @param getParent - Returns the parent's current streaming callbacks
+ * @param childSession - The child's session name (`<parent>/sub-<n>`)
+ * @returns Callbacks to pass to the child's `run`
+ */
+export function forwardChildToolCalls(getParent: () => StreamingEventCallbacks, childSession: string): StreamingEventCallbacks {
+  const short = childSession.slice(childSession.lastIndexOf('/') + 1);
+  return {
+    onToolCallStart: (toolName, args) => {
+      getParent().onToolCallStart?.(`${short}:${toolName}`, args);
+    },
+    onToolCallFinish: (toolName, args, result, durationMs) => {
+      getParent().onToolCallFinish?.(`${short}:${toolName}`, args, result, durationMs);
+    },
+  };
 }
 
 /**
@@ -494,7 +526,10 @@ export function createSpawnSubagentTool(ctx: SpawnSubagentContext): ToolDefiniti
       try {
         runner = ctx.createRunner(config);
         await runner.initialize();
-        const result = await runner.run(String(args['task']).trim(), undefined, undefined, { abortSignal: abort.signal });
+        const result = await runner.run(String(args['task']).trim(), undefined, undefined, {
+          abortSignal: abort.signal,
+          streaming: ctx.childStreaming?.(config.sessionName),
+        });
         ctx.onUsage?.(result.usage);
         return summarizeSubagentRun(result, runner.getSubagentReport(), config.sessionName, now() - started, abort.signal.aborted);
       } catch (error) {

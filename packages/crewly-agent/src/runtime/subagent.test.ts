@@ -11,6 +11,7 @@ import {
   buildSubagentPrompt,
   createSpawnSubagentTool,
   createSubagentRegistry,
+  forwardChildToolCalls,
   isInsideDir,
   resolveSubagentModel,
   resolveSubagentPath,
@@ -329,6 +330,29 @@ describe('subagent', () => {
     });
   });
 
+  describe('forwardChildToolCalls', () => {
+    it('relays tool start/finish to the parent with a sub-n prefix and forwards nothing else', () => {
+      const parent = { onToolCallStart: vi.fn(), onToolCallFinish: vi.fn(), onTextChunk: vi.fn(), onStepFinish: vi.fn() };
+      const cb = forwardChildToolCalls(() => parent, 'think-tank-kai/sub-2');
+      cb.onToolCallStart!('grep', { pattern: 'x' });
+      cb.onToolCallFinish!('grep', { pattern: 'x' }, { success: true }, 12);
+      expect(parent.onToolCallStart).toHaveBeenCalledWith('sub-2:grep', { pattern: 'x' });
+      expect(parent.onToolCallFinish).toHaveBeenCalledWith('sub-2:grep', { pattern: 'x' }, { success: true }, 12);
+      expect(cb.onTextChunk).toBeUndefined();
+      expect(cb.onStepFinish).toBeUndefined();
+    });
+
+    it('reads the parent callbacks on every call, so a parent with none set is fine', () => {
+      let parent: Record<string, unknown> = {};
+      const cb = forwardChildToolCalls(() => parent, 'p/sub-1');
+      expect(() => cb.onToolCallStart!('read_file', {})).not.toThrow();
+      const start = vi.fn();
+      parent = { onToolCallStart: start };
+      cb.onToolCallStart!('read_file', { file_path: 'a' });
+      expect(start).toHaveBeenCalledWith('sub-1:read_file', { file_path: 'a' });
+    });
+  });
+
   describe('createSpawnSubagentTool', () => {
     it('runs a child with the task as its only message, returns its outcome, counts usage and disposes it', async () => {
       const registry = createSubagentRegistry();
@@ -338,7 +362,13 @@ describe('subagent', () => {
       });
       const createRunner = vi.fn(() => child);
       const onUsage = vi.fn();
-      const tool = createSpawnSubagentTool({ parentConfig, registry, createRunner, onUsage });
+      const tool = createSpawnSubagentTool({
+        parentConfig,
+        registry,
+        createRunner,
+        onUsage,
+        childStreaming: (sessionName) => ({ relay: sessionName }) as unknown as import('./types.js').StreamingEventCallbacks,
+      });
 
       const out = await tool.execute({ task: '  Find callers of foo()  ', readOnly: true }) as Record<string, unknown>;
 
@@ -350,6 +380,7 @@ describe('subagent', () => {
       expect(child.run).toHaveBeenCalledTimes(1);
       expect(child.run.mock.calls[0]![0]).toBe('Find callers of foo()');
       expect(child.run.mock.calls[0]![3]?.abortSignal).toBeInstanceOf(AbortSignal);
+      expect((child.run.mock.calls[0]![3] as { streaming?: unknown })?.streaming).toEqual({ relay: 'think-tank-kai/sub-1' });
       expect(out.success).toBe(true);
       expect(out.stoppedReason).toBe('done');
       expect(out.summary).toBe('two call sites: a.ts:10, b.ts:42');

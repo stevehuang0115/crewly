@@ -20,6 +20,7 @@ import { unverifiedDesktopWork } from './desktop-task.tool.js';
 import {
   createSpawnSubagentTool,
   createSubagentRegistry,
+  forwardChildToolCalls,
   restrictToolsForSubagent,
   type SubagentRegistry,
   type SubagentReport,
@@ -1172,6 +1173,8 @@ export class AgentRunnerService {
         registry: this.subagentRegistry,
         createRunner: (config) => new AgentRunnerService(config, this.modelManager, this.apiClient),
         onUsage: (usage) => this.recordChildUsage(usage),
+        // The child's tool calls reach the parent's session log as `sub-<n>:<tool>`.
+        childStreaming: (sessionName) => forwardChildToolCalls(() => this.streamingCallbacks, sessionName),
       }),
     };
   }
