@@ -160,6 +160,7 @@ import type { WakeAction, WakeActionResult } from '../../types/v2/reconcile.type
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { ResourceModeService } from '../agent/resource-mode.service.js';
+import { noteMemoryStop, resetMemoryStops } from '../agent/memory-stop-hold.js';
 import { setLocalApiPort, resetLocalApiPortForTesting } from '../../utils/local-api-url.utils.js';
 import { NetworkStatusService } from '../core/network-status.service.js';
 
@@ -1208,6 +1209,33 @@ describe('LiveReconcilerDataProvider', () => {
         expect(await wakeOk(provider, { ...base, agentSessionName: 'agent-idle', strategy: 'start' })).toBe(true);
       } finally {
         globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('does not start an agent the machine just stopped for memory while pressure mode lasts (Vera, 2026-10-26)', async () => {
+      const mode = jest.spyOn(ResourceModeService.prototype, 'getMode').mockReturnValue('pressure');
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+      try {
+        noteMemoryStop('agent-idle');
+        const base = {
+          workItemId: 'wi-1',
+          score: 60,
+          scoreBreakdown: { skillMatch: 30, urgency: 20, contextFamiliarity: 10, loadPenalty: 0 },
+          triggeredAt: new Date().toISOString(),
+        };
+        expect(await wakeResult(provider, { ...base, agentSessionName: 'agent-idle', strategy: 'start' })).toEqual({
+          outcome: 'skipped',
+          reason: 'stopped for memory; held while pressure lasts',
+        });
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+        // Pressure clears: the same start goes through.
+        mode.mockReturnValue('normal');
+        expect(await wakeOk(provider, { ...base, agentSessionName: 'agent-idle', strategy: 'start' })).toBe(true);
+      } finally {
+        globalThis.fetch = originalFetch;
+        mode.mockRestore();
+        resetMemoryStops();
       }
     });
 

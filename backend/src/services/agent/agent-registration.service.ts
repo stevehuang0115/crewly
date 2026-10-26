@@ -55,6 +55,7 @@ import {
 	INPUT_BLOCKED_RETRY_CONSTANTS,
 	USAGE_LIMIT_STATE_CONSTANTS,
 } from '../../constants.js';
+import { clearMemoryStop } from './memory-stop-hold.js';
 import { TuiInputGuardError, TuiPasteHoldError, screenShowsTurnInProgress, type TuiInputReading } from '../session/tui-input-guard.js';
 import { InputBlockedRetryService } from '../messaging/input-blocked-retry.service.js';
 import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thread-key.js';
@@ -3961,6 +3962,8 @@ Loop until done, blocked, or explicitly reassigned:
 		}
 
 		try {
+			// Starting by any path (owner, reconciler, retry) ends the memory-stop hold.
+			clearMemoryStop(sessionName);
 			this.logger.info('Creating agent session (unified approach)', {
 				sessionName,
 				role,

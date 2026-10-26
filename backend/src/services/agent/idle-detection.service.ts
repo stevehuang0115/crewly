@@ -19,6 +19,7 @@ import { getSessionBackendSync } from '../session/index.js';
 import { CronTaskService } from '../workflow/cron-task.service.js';
 import { getMemoryStats } from '../core/system-health.util.js';
 import { ResourceModeService, RESOURCE_MODE_CONSTANTS, memoryIsTightFor } from './resource-mode.service.js';
+import { noteMemoryStop } from './memory-stop-hold.js';
 import type { AgentRegistrationService } from './agent-registration.service.js';
 import type { WorkItemStatus } from '../../types/v2/work-item.types.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
@@ -486,6 +487,9 @@ export class IdleDetectionService {
 							});
 							await this.releaseWork(member.sessionName, 'idle stop under memory pressure');
 						}
+						// Stopped for memory: the wake paths leave it down while pressure
+						// lasts, or the stop frees nothing (memory-stop-hold.ts).
+						noteMemoryStop(member.sessionName);
 						// Auto-stop: terminate idle agents to free resources
 						if (this.agentRegistrationService) {
 							this.logger.info('Agent idle timeout reached, stopping', {
@@ -683,6 +687,7 @@ export class IdleDetectionService {
 
 				try {
 					// The work it holds survives the stop: back in the queue, redelivered on the next start.
+					noteMemoryStop(member.sessionName);
 					await this.releaseWork(member.sessionName, 'emergency stop under memory pressure');
 					if (backend && member.sessionName && backend.sessionExists(member.sessionName)) {
 						await backend.killSession(member.sessionName);
