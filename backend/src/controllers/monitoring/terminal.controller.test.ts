@@ -13,7 +13,7 @@ import * as terminalController from './terminal.controller.js';
 import { setOfflineAgentWaker, resetOfflineAgentWakes } from '../../services/messaging/offline-agent-message.js';
 import { setSpendCapGate, type SpendStop } from '../../services/spend/spend-cap.gate.js';
 import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../../services/team/team-pause.registry.js';
-import { markOwner } from '../../middleware/caller-identity.testing.js';
+import { markOwner, schedulerAuthHeaders } from '../../middleware/caller-identity.testing.js';
 import { setCallerIdentity } from '../../middleware/caller-identity.middleware.js';
 import { harnessPastesSinceOutsideInput, lastOutsideInputAt, noteHarnessPaste, resetInputLedgerForTesting } from '../../services/session/input-ledger.js';
 
@@ -822,6 +822,39 @@ describe('TerminalController', () => {
 				expect(mockRes.status).toHaveBeenCalledWith(404);
 				expect(mockEnqueue).not.toHaveBeenCalled();
 				expect(wake).not.toHaveBeenCalled();
+			});
+
+			it('a scheduled command (the crewly-web release) to a member who is down: queued with its sender label, nobody started (CREW-362)', async () => {
+				mockReq = {
+					params: { sessionName: 'crewly-marketing-dana-45506487' } as any,
+					headers: schedulerAuthHeaders('crewly-web-release'),
+					body: { data: 'crewly-web release: FAILED 1.0.153: test gate failed', mode: 'message' },
+				};
+
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+				expect(mockRes.status).toHaveBeenCalledWith(202);
+				expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, queued: true, waking: false }));
+				expect(mockEnqueue).toHaveBeenCalledTimes(1);
+				expect(mockEnqueue).toHaveBeenCalledWith(
+					'crewly-marketing-dana-45506487',
+					expect.stringContaining('crewly-web release: FAILED 1.0.153: test gate failed'),
+				);
+				expect(String((mockEnqueue as jest.Mock).mock.calls[0][1])).toContain('crewly-web-release');
+				expect(wake).not.toHaveBeenCalled();
+			});
+
+			it('a scheduled command to a session no member is bound to still gets the 404', async () => {
+				mockReq = {
+					params: { sessionName: 'nobody' } as any,
+					headers: schedulerAuthHeaders(),
+					body: { data: 'hello', mode: 'message' },
+				};
+
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+				expect(mockRes.status).toHaveBeenCalledWith(404);
+				expect(mockEnqueue).not.toHaveBeenCalled();
 			});
 
 			it('keeps the 404 for a session no member is bound to', async () => {
