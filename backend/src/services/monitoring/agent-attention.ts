@@ -37,6 +37,9 @@ export type AttentionVerdict = 'waiting_on_human' | 'busy' | 'idle';
  */
 export type WaitingKind = 'permission' | 'trust' | 'plan' | 'menu' | 'unspecified';
 
+/** What the harness can do about a prompt on its own: `decline` picks "No". */
+export type SelfAnswer = 'decline';
+
 /** What the OSC terminal title says on its own. */
 export type TitleSignal = 'waiting' | 'busy' | 'none';
 
@@ -60,6 +63,8 @@ export interface AttentionResult {
 	linesExamined: number;
 	/** Human-readable task label taken from the title, without status glyphs. */
 	titleLabel?: string;
+	/** Set when the harness should answer this prompt itself instead of waiting for a human. */
+	selfAnswer?: SelfAnswer;
 }
 
 /** A selector cursor at the start of a line (Claude `❯`, Codex `›`). */
@@ -73,6 +78,18 @@ const CONFIRM_FOOTER = /(Esc to cancel|Enter to confirm|Press enter to confirm|e
 
 /** Work-in-progress markers (Claude and Codex both show "esc to interrupt"). */
 const BUSY_MARKER = /esc to interrupt/i;
+
+/**
+ * Claude Code's rm safety prompt, shown even in bypass-permissions mode when
+ * the rm target cannot be resolved statically. The harness declines it.
+ */
+const DANGEROUS_RM_TEXT = /Dangerous rm operation/i;
+
+/** A numbered option line, with or without the selector cursor. */
+const OPTION_LINE = /^\s*([❯›])?\s*(\d+)\.\s+(.*)$/;
+
+/** The option that declines a prompt. */
+const DECLINE_OPTION = /^No\b/i;
 
 /** Claude Code's plan-approval menu. */
 const PLAN_MENU_HEADER = /(Claude has written up a plan|Ready to code\?)/i;
@@ -149,10 +166,12 @@ export function detectPromptOnScreen(screen: string): {
 	evidence: string[];
 	busy: boolean;
 	linesExamined: number;
+	selfAnswer?: SelfAnswer;
 } {
 	const { text, lines } = bottomRegion(screen);
 	const evidence: string[] = [];
 	const busy = BUSY_MARKER.test(text);
+	let selfAnswer: SelfAnswer | undefined;
 
 	const selector = SELECTOR_LINE.test(text);
 	const numbered = NUMBERED_SELECTOR_LINE.test(text);
@@ -171,6 +190,10 @@ export function detectPromptOnScreen(screen: string): {
 	} else if (menuPresent && PERMISSION_TEXT.test(text)) {
 		kind = 'permission';
 		evidence.push('screen:permission-prompt');
+		if (DANGEROUS_RM_TEXT.test(text)) {
+			evidence.push('screen:dangerous-rm');
+			selfAnswer = 'decline';
+		}
 	} else if (selector && footer) {
 		kind = 'menu';
 		evidence.push('screen:selection-dialog');
@@ -178,7 +201,42 @@ export function detectPromptOnScreen(screen: string): {
 	if (busy) {
 		evidence.push('screen:busy-marker');
 	}
-	return { kind, evidence, busy, linesExamined: lines };
+	return { kind, evidence, busy, linesExamined: lines, ...(selfAnswer ? { selfAnswer } : {}) };
+}
+
+/**
+ * Keystrokes that move a dialog's selector to its "No" option and confirm.
+ *
+ * Reads the numbered options at the bottom of the screen: the line carrying
+ * the cursor is the current choice, the first option whose label starts with
+ * "No" is the target. Works for the two-option rm prompt (`1. Yes / 2. No`)
+ * and the four-option command prompt (`No` is option 4).
+ *
+ * @param screen - Rendered screen text, ANSI allowed
+ * @returns Arrow keys followed by Enter, or null when the screen has no
+ *   selected option or no "No" option
+ *
+ * @example
+ * ```typescript
+ * const keys = declineKeystrokes(screen); // '\x1b[B\r' when "No" is one line below the cursor
+ * if (keys) session.write(keys);
+ * ```
+ */
+export function declineKeystrokes(screen: string): string | null {
+	const { text } = bottomRegion(screen);
+	let selected: number | undefined;
+	let target: number | undefined;
+	for (const line of text.split('\n')) {
+		const m = OPTION_LINE.exec(line);
+		if (!m) continue;
+		const n = Number(m[2]);
+		if (m[1]) selected = n;
+		if (target === undefined && DECLINE_OPTION.test(m[3])) target = n;
+	}
+	if (selected === undefined || target === undefined) return null;
+	const { UP, DOWN, ENTER } = AGENT_ATTENTION_CONSTANTS.SELF_ANSWER.KEYS;
+	const steps = target - selected;
+	return (steps >= 0 ? DOWN.repeat(steps) : UP.repeat(-steps)) + ENTER;
 }
 
 /**
@@ -210,7 +268,12 @@ export function computeAgentAttention(input: AttentionInput): AttentionResult {
 	};
 
 	if (screen.kind) {
-		return { verdict: 'waiting_on_human', kind: screen.kind, ...base };
+		return {
+			verdict: 'waiting_on_human',
+			kind: screen.kind,
+			...base,
+			...(screen.selfAnswer ? { selfAnswer: screen.selfAnswer } : {}),
+		};
 	}
 	if (title.signal === 'waiting') {
 		return { verdict: 'waiting_on_human', kind: 'unspecified', ...base };

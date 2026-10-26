@@ -14,7 +14,8 @@ import type { AgentEvent } from '../../types/event-bus.types.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { parseRuntimeTokens } from '../monitoring/runtime-token-parser.service.js';
 import { getSettingsService } from '../settings/settings.service.js';
-import { computeAgentAttention } from './agent-attention.js';
+import { computeAgentAttention, declineKeystrokes, type AttentionResult } from './agent-attention.js';
+import type { AgentRegistrationService } from '../agent/agent-registration.service.js';
 import { markWaiting, clearWaiting, getWaiting } from './agent-attention-registry.js';
 import { EscalationRouterService } from '../v3/escalation-router.service.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
@@ -87,6 +88,9 @@ export class ActivityMonitorService {
   private crewlyHome: string;
   private teamWorkingStatusFile: string;
   private eventBusService: EventBusService | null = null;
+  private agentRegistrationService: AgentRegistrationService | null = null;
+  /** Sessions whose prompt the harness declined, by poll time (ms). */
+  private selfAnsweredAt = new Map<string, number>();
   /** Tracks when each session entered in_progress (epoch ms) */
   private stuckCommandDetector: AntigravityStuckCommandDetector;
   private busyTransitionTimestamps: Map<string, number> = new Map();
@@ -171,6 +175,17 @@ export class ActivityMonitorService {
    *
    * @param service - The EventBusService instance
    */
+  /**
+   * Inject the registration service used to tell an agent what the harness
+   * did about a prompt it answered on the agent's behalf (queued until the
+   * agent is idle, like any other message).
+   *
+   * @param service - Agent registration service
+   */
+  setAgentRegistrationService(service: AgentRegistrationService): void {
+    this.agentRegistrationService = service;
+  }
+
   setEventBusService(service: EventBusService): void {
     this.eventBusService = service;
   }
@@ -341,6 +356,9 @@ export class ActivityMonitorService {
         await this.clearAttention(identity.sessionName, identity, now);
         return;
       }
+      if (result.selfAnswer && this.selfAnswerPrompt(backend, identity.sessionName, screen, result, now)) {
+        return;
+      }
       const isNew = markWaiting({
         sessionName: identity.sessionName,
         kind: result.kind,
@@ -373,6 +391,67 @@ export class ActivityMonitorService {
   }
 
   /**
+   * Answer a prompt the harness knows how to answer, instead of waiting for
+   * a human who is not at this machine.
+   *
+   * Today that is Claude Code's "Dangerous rm operation" prompt, which bypass
+   * mode does not skip: the harness moves the selector to "No" and confirms
+   * (nothing is deleted), then queues a message telling the agent to re-run
+   * with absolute paths. The decline is remembered per session; while the
+   * screen is still being redrawn the caller skips the usual escalation, and
+   * if the prompt is still there after `RETRY_AFTER_MS` the escalation to the
+   * owner proceeds as before.
+   *
+   * @param backend - Session backend holding the agent's PTY
+   * @param sessionName - Agent session
+   * @param screen - The captured screen the verdict was computed from
+   * @param result - The waiting_on_human verdict with `selfAnswer` set
+   * @param now - ISO timestamp of this poll
+   * @returns true when the caller should not escalate on this poll
+   */
+  private selfAnswerPrompt(
+    backend: ISessionBackend,
+    sessionName: string,
+    screen: string,
+    result: AttentionResult,
+    now: string,
+  ): boolean {
+    const nowMs = Date.parse(now);
+    const declinedAt = this.selfAnsweredAt.get(sessionName);
+    if (declinedAt !== undefined) {
+      if (nowMs - declinedAt < AGENT_ATTENTION_CONSTANTS.SELF_ANSWER.RETRY_AFTER_MS) return true;
+      this.selfAnsweredAt.delete(sessionName);
+      this.logger.warn('Self-answered prompt is still on screen; escalating to the owner', {
+        sessionName,
+        kind: result.kind,
+        evidence: result.evidence,
+      });
+      return false;
+    }
+    const keys = declineKeystrokes(screen);
+    const session = backend.getSession(sessionName);
+    if (!keys || !session) return false;
+    session.write(keys);
+    this.selfAnsweredAt.set(sessionName, nowMs);
+    this.logger.info('Declined a prompt on the agent\'s behalf (no human at this machine)', {
+      sessionName,
+      kind: result.kind,
+      evidence: result.evidence,
+    });
+    if (this.agentRegistrationService) {
+      void this.agentRegistrationService
+        .sendMessageToAgent(sessionName, AGENT_ATTENTION_CONSTANTS.SELF_ANSWER.DANGEROUS_RM_MESSAGE)
+        .catch((error: unknown) => {
+          this.logger.warn('Could not tell the agent about the declined prompt', {
+            sessionName,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    }
+    return true;
+  }
+
+  /**
    * Leave the waiting_on_human state for a session, if it was in it.
    *
    * `!cleared` also covers "the registry never knew this session was
@@ -391,6 +470,7 @@ export class ActivityMonitorService {
     identity: { teamId: string; teamName: string; memberId: string; memberName: string; sessionName: string },
     now: string,
   ): Promise<void> {
+    this.selfAnsweredAt.delete(sessionName);
     const cleared = clearWaiting(sessionName);
     if (!cleared) return;
     this.logger.info('Agent is no longer waiting on a human', { sessionName, kind: cleared.kind, since: cleared.since });

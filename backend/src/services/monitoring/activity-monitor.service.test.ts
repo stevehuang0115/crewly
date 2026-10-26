@@ -7,7 +7,7 @@ import { readFile, writeFile, rename, unlink } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import { existsSync } from 'fs';
-import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, PTY_CONSTANTS, ACTIVITY_MONITOR_CONSTANTS } from '../../constants.js';
+import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, PTY_CONSTANTS, ACTIVITY_MONITOR_CONSTANTS, AGENT_ATTENTION_CONSTANTS } from '../../constants.js';
 import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { getWaiting, resetWaitingRegistry } from './agent-attention-registry.js';
@@ -1316,6 +1316,65 @@ describe('ActivityMonitorService', () => {
       // One poll is enough; crewly-mobile polls /escalations every 15s, so
       // poll interval + 15s must stay within the 1-minute acceptance bound.
       expect(ACTIVITY_MONITOR_CONSTANTS.POLLING_INTERVAL_MS + 15_000).toBeLessThanOrEqual(60_000);
+    });
+
+    describe('self-answered prompts (dangerous rm)', () => {
+      let write: jest.Mock;
+      let sendMessageToAgent: jest.Mock;
+
+      beforeEach(() => {
+        write = jest.fn();
+        sendMessageToAgent = jest.fn().mockResolvedValue({ success: true, queued: true });
+        mockSessionBackend.getSession.mockReturnValue({ write } as never);
+        service.setAgentRegistrationService({ sendMessageToAgent } as never);
+        mockSessionBackend.captureOutput.mockReturnValue(screen('claude-dangerous-rm.txt'));
+      });
+
+      it('answers "No" itself, tells the agent, and does not put the owner in the loop', async () => {
+        await (service as any).performActivityCheck();
+
+        const { DOWN, ENTER } = AGENT_ATTENTION_CONSTANTS.SELF_ANSWER.KEYS;
+        expect(write).toHaveBeenCalledWith(DOWN + ENTER);
+        expect(sendMessageToAgent).toHaveBeenCalledWith('dev-1', AGENT_ATTENTION_CONSTANTS.SELF_ANSWER.DANGEROUS_RM_MESSAGE);
+        expect(mockRecordAgentWaitingOnHuman).not.toHaveBeenCalled();
+        expect(getWaiting('dev-1')).toBeUndefined();
+        expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'agent:waiting_on_human' }));
+      });
+
+      it('presses the keys once while the screen is still redrawing', async () => {
+        await (service as any).performActivityCheck();
+        await (service as any).performActivityCheck();
+
+        expect(write).toHaveBeenCalledTimes(1);
+        expect(sendMessageToAgent).toHaveBeenCalledTimes(1);
+        expect(mockRecordAgentWaitingOnHuman).not.toHaveBeenCalled();
+      });
+
+      it('escalates to the owner when the prompt survives the decline', async () => {
+        (service as any).selfAnsweredAt.set('dev-1', Date.now() - AGENT_ATTENTION_CONSTANTS.SELF_ANSWER.RETRY_AFTER_MS - 1);
+
+        await (service as any).performActivityCheck();
+
+        expect(write).not.toHaveBeenCalled();
+        expect(mockRecordAgentWaitingOnHuman).toHaveBeenCalledWith(expect.objectContaining({ sessionName: 'dev-1', kind: 'permission' }));
+        expect(getWaiting('dev-1')).toMatchObject({ kind: 'permission' });
+      });
+
+      it('forgets the decline once the prompt is gone', async () => {
+        await (service as any).performActivityCheck();
+        mockSessionBackend.captureOutput.mockReturnValue(screen('claude-busy.txt'));
+        await (service as any).performActivityCheck();
+
+        expect((service as any).selfAnsweredAt.has('dev-1')).toBe(false);
+      });
+
+      it('leaves the prompt to the owner when the PTY is not reachable', async () => {
+        mockSessionBackend.getSession.mockReturnValue(undefined);
+
+        await (service as any).performActivityCheck();
+
+        expect(mockRecordAgentWaitingOnHuman).toHaveBeenCalledWith(expect.objectContaining({ sessionName: 'dev-1' }));
+      });
     });
 
     it('does not file again on the next poll while still waiting, and keeps since', async () => {
