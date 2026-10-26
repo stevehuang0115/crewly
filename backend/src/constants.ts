@@ -9156,6 +9156,15 @@ export const RECONCILER_WAKE_CONSTANTS = {
 	/** Ceiling of the doubling failure backoff (ms) */
 	FAILURE_BACKOFF_MAX_MS: 30 * 60_000,
 	/**
+	 * Consecutive failed redeliveries of one queued WorkItem after which its target's lead is told, once
+	 * (CREW-577: CE-282 sat queued 1h7m after 6 failed redeliveries and nobody was told)
+	 */
+	REDELIVERY_ESCALATE_AFTER: 3,
+	/** Longest reason text put in the escalation review (characters) */
+	REDELIVERY_REASON_MAX_CHARS: 200,
+	/** Escalated WorkItem ids remembered per reconciler before the oldest are forgotten */
+	REDELIVERY_ESCALATED_KEPT: 500,
+	/**
 	 * How long a pass waits on a start before treating it as pending (ms). A
 	 * start queued behind the running-agent cap can wait minutes for a slot;
 	 * the reconciler must not stall every other rule meanwhile, nor ask again.

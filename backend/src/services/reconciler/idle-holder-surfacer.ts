@@ -23,6 +23,8 @@ export interface IdleHolderSurfacerDeps {
 	/** Merge metadata into a WorkItem. */
 	stamp: (workItemId: string, patch: Record<string, unknown>) => Promise<unknown>;
 	now?: () => Date;
+	/** Read a WorkItem (to name it in a report); optional. */
+	findWorkItem?: (workItemId: string) => Promise<WorkItem | null | undefined>;
 }
 
 /** Id suffix of the review WorkItem (one per source item). */
