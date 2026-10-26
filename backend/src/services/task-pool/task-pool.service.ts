@@ -68,6 +68,7 @@ import {
   type WorkItemOrigin,
 } from '../orc/work-item-destination.js';
 import { reportOwnerThreadBlocking } from '../messaging/owner-thread-sentinel.service.js';
+import { getThreadAnswerLog, type ThreadPost } from '../messaging/thread-answer-log.js';
 import { getOwnerRequestContext, type OwnerRequestContext } from '../orc/owner-request-context.js';
 import { leadReportOf, orchestratorNote, type LeadReport } from '../orc/team-lead-report.js';
 import { resolveLeadReport } from '../orc/team-lead-report.wiring.js';
@@ -1056,6 +1057,30 @@ export class TaskPoolService {
   async isOwnerThreadUnreadable(rawKey: unknown, creator?: string): Promise<boolean> {
     if (rawKey === undefined || rawKey === null || (typeof rawKey === 'string' && !rawKey.trim())) return false;
     return !(await this.explicitOwnerOrigin(rawKey, creator).catch(() => null));
+  }
+
+  /**
+   * Agent posts in an explicitly named Slack thread that are newer than the
+   * owner's last message there, by anyone but the delegator and the target
+   * (the answerer's own follow-up is not a second answer). A delegation
+   * into such a thread would get the owner a second answer (CREW-878).
+   * Unknown history (no log yet, the owner's message time unknown, an unreadable
+   * key) gives none: only a certain answer blocks a delegation.
+   *
+   * @param rawKey - `metadata.ownerThread`
+   * @param creator - The delegating agent, when known
+   * @param target - The agent delegated to
+   * @returns Posts oldest first; empty when none or unknown
+   */
+  async agentAnswersInOwnerThread(rawKey: unknown, creator?: string, target?: string): Promise<ThreadPost[]> {
+    const log = getThreadAnswerLog();
+    const key = parseSlackThreadKey(rawKey);
+    if (!log || !key) return [];
+    const origin = await this.explicitOwnerOrigin(rawKey, creator).catch(() => null);
+    if (!origin || origin.kind !== 'owner') return [];
+    const ownerAt = await this.ownerAskedAt(origin, creator, Date.now()).catch(() => null);
+    if (ownerAt === null) return [];
+    return log.answersSince(formatSlackThreadKey(key.slackChannelId, key.threadTs), ownerAt, creator, target);
   }
 
   /**

@@ -23,6 +23,7 @@ PROJECT_TICKET=""
 # origin, and team work is reported to the owner by the team lead.
 OWNER_THREAD=""
 OWNER_CONVERSATION=""
+FORCE_AFTER_ANSWER=""
 # Self-heal fix #3 (2026-05-20): default fallback timer. Per the
 # orchestrator prompt §3.0 the orc is supposed to set 2× ETA manually
 # for every dispatch, but the convention was unenforced — observable in
@@ -63,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --ticket)        PROJECT_TICKET="$2";   shift 2 ;;
     --thread)        OWNER_THREAD="$2";     shift 2 ;;
     --conversation)  OWNER_CONVERSATION="$2"; shift 2 ;;
+    --force-after-answer) FORCE_AFTER_ANSWER="1"; shift ;;
     --force-cross-team) FORCE_CROSS_TEAM="true"; shift ;;
     --fallback-minutes) FALLBACK_MINUTES="$2"; shift 2 ;;
     --json|-j)       INPUT_JSON="$2";       shift 2 ;;
@@ -310,7 +312,8 @@ POOL_BODY=$(jq -n \
   --arg delegatedBy "${CREWLY_SESSION_NAME:-}" \
   --arg ownerThread "${OWNER_THREAD:-}" \
   --arg ownerConversation "${OWNER_CONVERSATION:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $delegatedBy != "" then {delegatedBy: $delegatedBy} else {} end) + (if $ownerThread != "" then {ownerThread: $ownerThread} else {} end) + (if $ownerConversation != "" then {ownerConversation: $ownerConversation} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end) + (if $projectTicketId != "" then {projectTicketId: $projectTicketId} else {} end)')
+  --arg forceAfterAnswer "${FORCE_AFTER_ANSWER:-}" \
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $delegatedBy != "" then {delegatedBy: $delegatedBy} else {} end) + (if $ownerThread != "" then {ownerThread: $ownerThread} else {} end) + (if $ownerConversation != "" then {ownerConversation: $ownerConversation} else {} end) + (if $forceAfterAnswer != "" then {forceAfterAnswer: true} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end) + (if $projectTicketId != "" then {projectTicketId: $projectTicketId} else {} end)')
 # projectTicketId / metadata.delegatedBy: work for an agent on a project runs
 # through a project ticket (specs/2026-09-28-project-tickets.md §11). The
 # backend uses --ticket, or creates a ticket and links this WorkItem to it.

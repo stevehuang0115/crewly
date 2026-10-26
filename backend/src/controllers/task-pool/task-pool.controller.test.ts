@@ -91,6 +91,7 @@ const mockService = {
   patchMetadata: jest.fn(),
   addToPool: jest.fn(),
   isOwnerThreadUnreadable: jest.fn().mockResolvedValue(false),
+  agentAnswersInOwnerThread: jest.fn().mockResolvedValue([]),
   getAllItems: jest.fn().mockResolvedValue([]),
   cancelQueued: jest.fn(),
   updateItemStatus: jest.fn(),
@@ -1416,6 +1417,51 @@ describe('TaskPoolController', () => {
       expect(res.json.mock.calls[0][0]).toEqual(expect.objectContaining({ success: false, code: 'owner_thread_unreadable' }));
       expect(mockService.isOwnerThreadUnreadable).toHaveBeenCalledWith('room:not-a-thread', expect.anything());
       expect(mockService.addToPool).not.toHaveBeenCalled();
+    });
+
+    describe('thread already answered by another agent (CREW-878)', () => {
+      const THREAD = 'C0MKT:1792400000.000100';
+      const body = (metadata: Record<string, unknown> = {}) => ({
+        type: 'delegate', owner: 'team_lead', target: 'crewly-product-leo', title: 'Assess',
+        metadata: { delegatedBy: 'ella', ownerThread: THREAD, ...metadata },
+      });
+
+      it('refuses with 409 and lists the post when an agent answered after the owner', async () => {
+        mockService.agentAnswersInOwnerThread.mockResolvedValueOnce([{ agent: 'luna', at: 1, preview: 'Here is the answer' }]);
+        const res = mockRes();
+        await addItem(mockReq({ body: body() }), res);
+        expect(res.status).toHaveBeenCalledWith(409);
+        const sent = res.json.mock.calls[0][0];
+        expect(sent).toEqual(expect.objectContaining({ success: false, code: 'thread_already_answered' }));
+        expect(sent.error).toContain('luna');
+        expect(sent.error).toContain('Here is the answer');
+        expect(sent.error).toContain('--force-after-answer');
+        expect(mockService.agentAnswersInOwnerThread).toHaveBeenCalledWith(THREAD, expect.anything(), 'crewly-product-leo');
+        expect(mockService.addToPool).not.toHaveBeenCalled();
+      });
+
+      it('delegates normally when nobody answered', async () => {
+        const res = mockRes();
+        await addItem(mockReq({ body: body() }), res);
+        expect(res.status).not.toHaveBeenCalledWith(409);
+        expect(mockService.addToPool).toHaveBeenCalledTimes(1);
+      });
+
+      it('--force-after-answer delegates anyway and does not even look', async () => {
+        mockService.agentAnswersInOwnerThread.mockResolvedValue([{ agent: 'luna', at: 1, preview: 'x' }]);
+        const res = mockRes();
+        await addItem(mockReq({ body: body({ forceAfterAnswer: true }) }), res);
+        expect(res.status).not.toHaveBeenCalledWith(409);
+        expect(mockService.agentAnswersInOwnerThread).not.toHaveBeenCalled();
+        expect(mockService.addToPool).toHaveBeenCalledTimes(1);
+        mockService.agentAnswersInOwnerThread.mockResolvedValue([]);
+      });
+
+      it('a delegation without --thread is never checked', async () => {
+        const res = mockRes();
+        await addItem(mockReq({ body: { type: 'delegate', owner: 'team_lead', target: 'crewly-product-leo', title: 'Assess', metadata: { delegatedBy: 'ella' } } }), res);
+        expect(mockService.agentAnswersInOwnerThread).not.toHaveBeenCalled();
+      });
     });
 
     describe('project tickets (delegation through tickets)', () => {

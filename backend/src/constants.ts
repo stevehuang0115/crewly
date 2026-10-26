@@ -8121,6 +8121,18 @@ export const TL_DELEGATION_CONSTANTS = {
 	OWNER_THREAD_FIELD: 'ownerThread',
 	/** WorkItem.metadata / add-body field: the owner's chat conversation a delegation answers (crewly#1357) */
 	OWNER_CONVERSATION_FIELD: 'ownerConversation',
+	/** WorkItem.metadata / add-body field: delegate anyway although another agent already answered the thread (`--force-after-answer`) */
+	FORCE_AFTER_ANSWER_FIELD: 'forceAfterAnswer',
+	/** Error code of a delegation refused because another agent already answered the named thread */
+	THREAD_ALREADY_ANSWERED_CODE: 'thread_already_answered',
+	/** Agent posts remembered per thread */
+	THREAD_POSTS_KEPT: 10,
+	/** Threads remembered in the answer log */
+	THREAD_LOG_MAX_THREADS: 500,
+	/** A thread post is forgotten after this long (ms) */
+	THREAD_POST_TTL_MS: 24 * 60 * 60 * 1000,
+	/** Characters of a post shown in the refusal */
+	THREAD_POST_PREVIEW_CHARS: 160,
 	/** A done item still lets its agent post in the owner's thread this long (ms) */
 	DONE_THREAD_GRACE_MS: 60 * 60 * 1000,
 	/** Claude Code tools that count as hands-on file edits */

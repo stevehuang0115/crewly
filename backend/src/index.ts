@@ -3211,6 +3211,7 @@ void (async () => {
 				}
 				await this.startOwnerMessageWatchdog(chatService);
 				await this.startOwnerCompletionReport(chatService);
+				await this.startThreadAnswerLog();
 				// Owner read state (#1400): every change (read, mark-unread, new
 				// message raising a count) goes out as a `read_state` frame — to local
 				// WS subscribers and, through the gateway's broadcast hook, over the
@@ -7635,6 +7636,20 @@ void (async () => {
 			await BrowserApprovalService.getInstance()?.restore();
 		} catch (error) {
 			this.logger.warn('Held browser actions not restored', { error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	/**
+	 * Start remembering which agent posted in which owner Slack thread, so
+	 * `delegate-task --thread` can refuse a delegation into a thread another
+	 * agent already answered (CREW-878). Best-effort: a failure here never
+	 * affects boot.
+	 */
+	private async startThreadAnswerLog(): Promise<void> {
+		try {
+			(await import('./services/messaging/thread-answer-log.js')).installThreadAnswerLog();
+		} catch (error) {
+			this.logger.warn('Thread answer log not started', { error: error instanceof Error ? error.message : String(error) });
 		}
 	}
 

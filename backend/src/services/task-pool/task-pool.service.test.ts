@@ -4,6 +4,7 @@
  * @module services/task-pool/task-pool.service.test
  */
 
+import { ThreadAnswerLog, setThreadAnswerLog } from '../messaging/thread-answer-log.js';
 import { TaskPoolService, WorkItemClaimedError } from './task-pool.service.js';
 import { originOfWorkItem } from '../orc/work-item-destination.js';
 import { setOwnerThreadSentinel, type OwnerThreadSentinelService } from '../messaging/owner-thread-sentinel.service.js';
@@ -326,6 +327,68 @@ describe('TaskPoolService', () => {
         expect(await service.isOwnerThreadUnreadable('4c090d56-0e5c-4efe-a60f-102179761f67:2abe83ec-1643-4a0f-b8a2-be5350e726c4')).toBe(false);
         expect(await service.isOwnerThreadUnreadable('garbage')).toBe(true);
         expect(await service.isOwnerThreadUnreadable('fbecfa4b-3474-4c61-8a72-79cccb0d1941')).toBe(true);
+      });
+
+      // CREW-878: another agent already answered the owner in the named thread.
+      describe('agentAnswersInOwnerThread (CREW-878)', () => {
+        const KEY = 'C0MKT:1792400000.000100';
+        const ownerTurn878 = { conversationId: 'room-mkt', slackChannelId: 'C0MKT', slackThreadKey: KEY, receivedAt: 1_000_000 };
+        let log: ThreadAnswerLog;
+        let clock = 1_000_000;
+        beforeEach(() => {
+          clock = 1_000_000;
+          log = new ThreadAnswerLog(() => clock);
+          setThreadAnswerLog(log);
+          service.setTurnOriginLookup((s) => (s === 'ella' ? ownerTurn878 : undefined));
+          jest.spyOn(Date, 'now').mockImplementation(() => clock);
+        });
+        afterEach(() => {
+          setThreadAnswerLog(null);
+          jest.restoreAllMocks();
+        });
+
+        it('lists a post another agent made (reply --work-item included) after the owner message', async () => {
+          clock += 60_000;
+          log.record({ agent: 'luna', slackChannelId: 'C0MKT', threadTs: '1792400000.000100', text: 'Answered via work item' });
+          const answers = await service.agentAnswersInOwnerThread(KEY, 'ella');
+          expect(answers.map((a) => a.agent)).toEqual(['luna']);
+          expect(answers[0].preview).toBe('Answered via work item');
+        });
+
+        it('no answer, no warning', async () => {
+          expect(await service.agentAnswersInOwnerThread(KEY, 'ella')).toEqual([]);
+        });
+
+        it('the delegator\'s own post is not "someone else answered"', async () => {
+          clock += 1000;
+          log.record({ agent: 'ella', slackChannelId: 'C0MKT', threadTs: '1792400000.000100', text: 'On it' });
+          expect(await service.agentAnswersInOwnerThread(KEY, 'ella')).toEqual([]);
+        });
+
+        it('the target\'s own post is not "someone else answered"', async () => {
+          clock += 1000;
+          log.record({ agent: 'luna', slackChannelId: 'C0MKT', threadTs: '1792400000.000100', text: 'First part' });
+          expect(await service.agentAnswersInOwnerThread(KEY, 'ella', 'luna')).toEqual([]);
+          expect((await service.agentAnswersInOwnerThread(KEY, 'ella', 'sam')).map((p) => p.agent)).toEqual(['luna']);
+        });
+
+        it('a post older than the owner\'s last message does not count', async () => {
+          log.record({ agent: 'luna', slackChannelId: 'C0MKT', threadTs: '1792400000.000100', text: 'earlier answer' });
+          clock += 5000;
+          service.setTurnOriginLookup(() => ({ ...ownerTurn878, receivedAt: clock }));
+          expect(await service.agentAnswersInOwnerThread(KEY, 'ella')).toEqual([]);
+        });
+
+        it('unknown owner time or no log never blocks', async () => {
+          clock += 1000;
+          log.record({ agent: 'luna', slackChannelId: 'C0MKT', threadTs: '1792400000.000100', text: 'x' });
+          service.setTurnOriginLookup(() => undefined);
+          service.setOwnerAskedAtLookup(async () => null);
+          expect(await service.agentAnswersInOwnerThread(KEY, 'ella')).toEqual([]);
+          setThreadAnswerLog(null);
+          expect(await service.agentAnswersInOwnerThread(KEY, 'ella')).toEqual([]);
+          expect(await service.agentAnswersInOwnerThread('garbage', 'ella')).toEqual([]);
+        });
       });
 
       it('an unreadable explicit thread falls back to normal inheritance (a delegation: the delegator)', async () => {

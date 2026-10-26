@@ -198,6 +198,15 @@ describe('delegate-task owner thread + no member fits (crewly#1083)', () => {
     expect((add?.body as { metadata?: Record<string, unknown> }).metadata).not.toHaveProperty('ownerThread');
   });
 
+  it('--force-after-answer sets forceAfterAnswer on the WorkItem metadata, and is absent without it (CREW-878)', async () => {
+    await runSkill([...base, '--thread', 'C0THINK:1790000000.000100', '--force-after-answer']);
+    await runSkill([...base, '--thread', 'C0THINK:1790000000.000100']);
+    const adds = captured.filter((c) => c.path.includes('/task-pool/add')).map((c) => (c.body as { metadata: Record<string, unknown> }).metadata);
+    expect(adds).toHaveLength(2);
+    expect(adds[0].forceAfterAnswer).toBe(true);
+    expect(adds[1]).not.toHaveProperty('forceAfterAnswer');
+  });
+
   it('--conversation sends the owner conversation id on the WorkItem metadata (crewly#1357)', async () => {
     await runSkill([...base, '--conversation', 'room-video']);
     const add = captured.find((c) => c.path.includes('/task-pool/add'));
