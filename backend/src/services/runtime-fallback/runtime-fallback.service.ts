@@ -334,6 +334,11 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 	 * One of the owner's other Claude Code accounts was signed in: if it was
 	 * marked signed out, probe it and bring it back.
 	 *
+	 * Signing in does NOT put the account in any fallback order and does not
+	 * move agents to it. The owner turns an account on deliberately in
+	 * Settings → Runtimes (adding `claude-code@<name>` to an order). Orders
+	 * that already hold the entry keep working as they are.
+	 *
 	 * @param account - Account name
 	 * @returns Resolves when done; never rejects
 	 */
@@ -343,53 +348,26 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 		try {
 			await this.recheckAfterLogin(target);
 		} finally {
-			// The owner is away: a freshly signed-in account must be usable at once,
-			// without a trip to Settings, and agents stuck on an exhausted runtime
-			// move to it now rather than on their next message.
-			if (this.addToChains(target)) this.logger.info('Added the signed-in Claude Code account to the fallback order', { runtime: target });
 			this.availability = null;
-			void this.reevaluateExhausted().catch((err) =>
-				this.logger.warn('Re-evaluating agents after an account sign-in failed', { runtime: target, error: err instanceof Error ? err.message : String(err) }),
-			);
+			// An account the owner already turned on may have been the one stuck
+			// signed out: agents waiting on an exhausted runtime can use it now.
+			if (this.isInAnyChain(target)) {
+				void this.reevaluateExhausted().catch((err) =>
+					this.logger.warn('Re-evaluating agents after an account sign-in failed', { runtime: target, error: err instanceof Error ? err.message : String(err) }),
+				);
+			}
 		}
 	}
 
 	/**
-	 * Insert a target right after the last `claude-code` / `claude-code@*`
-	 * entry of the global chain (first when there is none), and of every
-	 * member chain that already holds a Claude Code entry. Saves when changed.
+	 * Whether the owner put a runtime in the global order or in any member order.
 	 *
-	 * @param target - `claude-code@<account>`
-	 * @returns True when a chain changed
+	 * @param target - Runtime id, e.g. `claude-code@work`
+	 * @returns True when some order holds it
 	 */
-	private addToChains(target: string): boolean {
-		const insert = (chain: string[]): string[] => {
-			if (chain.includes(target)) return chain;
-			let at = -1;
-			chain.forEach((r, i) => {
-				if (baseRuntimeOf(r) === RUNTIME_TYPES.CLAUDE_CODE) at = i;
-			});
-			const next = [...chain];
-			next.splice(at + 1, 0, target);
-			return next;
-		};
+	private isInAnyChain(target: string): boolean {
 		const settings = this.state.settings;
-		let changed = false;
-		const chain = insert(settings.chain);
-		if (chain !== settings.chain) {
-			settings.chain = chain;
-			changed = true;
-		}
-		for (const [memberId, own] of Object.entries(settings.memberChains)) {
-			if (!own.some((r) => baseRuntimeOf(r) === RUNTIME_TYPES.CLAUDE_CODE)) continue;
-			const next = insert(own);
-			if (next !== own) {
-				settings.memberChains[memberId] = next;
-				changed = true;
-			}
-		}
-		if (changed) this.save();
-		return changed;
+		return settings.chain.includes(target) || Object.values(settings.memberChains).some((own) => own.includes(target));
 	}
 
 	/**

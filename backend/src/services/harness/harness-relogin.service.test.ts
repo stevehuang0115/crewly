@@ -967,8 +967,10 @@ describe("HarnessReloginService — another of the owner's Claude Code accounts 
 		expect(ctx.verifyLogin).not.toHaveBeenCalled();
 		expect(onAccountLogin).toHaveBeenCalledWith('b');
 		expect(ctx.dms[ctx.dms.length - 1]).toMatch(/^Done: Claude Code account `b` is signed in on iriss-air\.lan\./);
-		expect(ctx.dms[ctx.dms.length - 1]).toContain('moving to it now');
-		expect(ctx.dms[ctx.dms.length - 1]).not.toContain('Settings');
+		expect(ctx.dms[ctx.dms.length - 1]).toContain('not used for fallback yet');
+		expect(ctx.dms[ctx.dms.length - 1]).toContain('Settings → Runtimes');
+		expect(ctx.dms[ctx.dms.length - 1]).not.toContain('is in the fallback order now');
+		expect(ctx.dms[ctx.dms.length - 1]).not.toContain('moving to it now');
 		expect(ctx.state.get('claude-code').seenLoggedInAt).toBeUndefined();
 	});
 
