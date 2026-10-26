@@ -7,7 +7,7 @@
  * @module controllers/memory/memory.controller.test
  */
 
-import { remember, recall, recordLearning, getMyContext, supersedeMemory, recordCorrection, decideCorrection, listCorrections } from './memory.controller.js';
+import { remember, recall, recordLearning, getMyContext, supersedeMemory, recordCorrection, decideCorrection, listCorrections, setGoal } from './memory.controller.js';
 
 // Mock LoggerService before any imports that use it
 jest.mock('../../services/core/logger.service.js', () => ({
@@ -57,14 +57,17 @@ jest.mock('../../services/memory/memory.service.js', () => ({
   },
 }));
 
-// Mock GoalTrackingService
+// Mock GoalTrackingService (isGoalStatus is the real rule, repeated here because the module is replaced)
+const mockSetGoal = jest.fn();
 jest.mock('../../services/memory/goal-tracking.service.js', () => ({
   GoalTrackingService: {
     getInstance: () => ({
       getGoals: jest.fn().mockResolvedValue([]),
       getCurrentFocus: jest.fn().mockResolvedValue(null),
+      setGoal: mockSetGoal,
     }),
   },
+  isGoalStatus: (v: unknown) => typeof v === 'string' && ['active', 'reached', 'superseded', 'cancelled'].includes(v.toLowerCase()),
 }));
 
 // Mock DailyLogService
@@ -114,6 +117,36 @@ describe('MemoryController', () => {
     mockLadderRecord.mockReset();
     mockLadderDecide.mockReset();
     mockLadderList.mockReset();
+    mockSetGoal.mockReset();
+  });
+
+  // ========================= setGoal =========================
+
+  describe('setGoal', () => {
+    it('rejects missing goal or projectPath', async () => {
+      await setGoal({ body: { goal: 'Ship it' } } as any, mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockSetGoal).not.toHaveBeenCalled();
+    });
+
+    it('appends a plain goal without a status', async () => {
+      mockSetGoal.mockResolvedValue(undefined);
+      await setGoal({ body: { goal: 'Ship it', projectPath: '/p', setBy: 'orchestrator' } } as any, mockRes as any, mockNext);
+      expect(mockSetGoal).toHaveBeenCalledWith('/p', 'Ship it', 'orchestrator', undefined);
+      expect(mockRes.json).toHaveBeenCalledWith({ success: true });
+    });
+
+    it('passes a known status (any case) through lower-cased and rejects an unknown one with 400 (#985)', async () => {
+      mockSetGoal.mockResolvedValue(undefined);
+      await setGoal({ body: { goal: 'Ship it\n- shipped', projectPath: '/p', setBy: 'owner', status: 'Reached' } } as any, mockRes as any, mockNext);
+      expect(mockSetGoal).toHaveBeenCalledWith('/p', 'Ship it\n- shipped', 'owner', 'reached');
+
+      mockSetGoal.mockClear();
+      await setGoal({ body: { goal: 'Ship it', projectPath: '/p', status: 'finished' } } as any, mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenLastCalledWith({ success: false, error: expect.stringContaining('Unknown status "finished"') });
+      expect(mockSetGoal).not.toHaveBeenCalled();
+    });
   });
 
   // ========================= remember =========================

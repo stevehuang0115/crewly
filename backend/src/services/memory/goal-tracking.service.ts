@@ -20,6 +20,19 @@ import { MEMORY_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
+/** Status word of a goals-log entry (see `MEMORY_CONSTANTS.GOAL_STATUSES`). */
+export type GoalStatus = (typeof MEMORY_CONSTANTS.GOAL_STATUSES)[keyof typeof MEMORY_CONSTANTS.GOAL_STATUSES];
+
+/**
+ * Whether a string is one of the goal statuses an entry heading may carry.
+ *
+ * @param value - Candidate status (any case)
+ * @returns true for active / reached / superseded / cancelled
+ */
+export function isGoalStatus(value: unknown): value is GoalStatus {
+  return typeof value === 'string' && (Object.values(MEMORY_CONSTANTS.GOAL_STATUSES) as string[]).includes(value.toLowerCase());
+}
+
 /**
  * Parameters for logging a decision via {@link GoalTrackingService.logDecision}.
  */
@@ -146,18 +159,28 @@ export class GoalTrackingService {
    * Appends a new goal entry to `goals.md`.
    *
    * If the file does not yet exist it is created with a Markdown header
-   * before the first entry is appended.
+   * before the first entry is appended. The log is append-only: a goal is
+   * closed by appending an entry with a status word, not by editing the
+   * original. `reached` records that the goal was met (the daily retro
+   * reviews it as a milestone, #985); `superseded` / `cancelled` retire it.
    *
    * @param projectPath - Absolute path to the project root
-   * @param goal - The goal text to record
+   * @param goal - The goal text to record (for a closed status: the goal that
+   *   was reached or retired, one line, then optional `- ` criteria lines)
    * @param setBy - Who set the goal (defaults to `'user'`)
+   * @param status - Optional status word written into the heading
+   * @throws Error when `status` is not a known goal status
    *
    * @example
    * ```typescript
    * await goalService.setGoal('/projects/phoenix', 'Achieve 80% test coverage', 'user');
+   * await goalService.setGoal('/projects/phoenix', 'Achieve 80% test coverage\n- backend 84%', 'owner', 'reached');
    * ```
    */
-  public async setGoal(projectPath: string, goal: string, setBy: string = 'user'): Promise<void> {
+  public async setGoal(projectPath: string, goal: string, setBy: string = 'user', status?: string): Promise<void> {
+    if (status !== undefined && !isGoalStatus(status)) {
+      throw new Error(`Unknown goal status "${status}"; use one of ${Object.values(MEMORY_CONSTANTS.GOAL_STATUSES).join(', ')}`);
+    }
     const goalsDir = this.getGoalsDir(projectPath);
     await ensureDir(goalsDir);
 
@@ -165,7 +188,8 @@ export class GoalTrackingService {
     const existing = await this.safeReadFile(goalsFile);
 
     const timestamp = new Date().toISOString();
-    const entry = `\n### [${timestamp}] Set by ${setBy}\n${goal}\n`;
+    const statusWord = status ? ` ${status.toUpperCase()} —` : '';
+    const entry = `\n### [${timestamp}]${statusWord} Set by ${setBy}\n${goal}\n`;
 
     if (existing === null) {
       const header = `# Project Goals\n\n`;
