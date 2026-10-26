@@ -711,6 +711,11 @@ describe('TicketAutopilotService', () => {
       await enable();
       await wf.create('p-ce', { title: 'A' }, owner);
       await svc.tick(); // day 1: a triage → a run trace
+      // A ticket run the same day, so the brief has a run to review (#985).
+      const b = await wf.create('p-ce', { title: 'Feed chips', labels: ['feed'], status: 'ready' }, owner);
+      const started = await wf.assign('p-ce', b.id, 'ce-dev', lead);
+      await settle();
+      const ticketTrace = started.workItem!.traceId as string;
       const retros = () => [...pool.items.values()].filter((w) => w.type === 'autopilot_retro');
 
       clock = new Date(2026, 9, 1, 8, 30);
@@ -730,6 +735,9 @@ describe('TicketAutopilotService', () => {
       expect(r.traceId).toBe(yesterdayRun.traceId);
       expect(r.briefMarkdown).toContain('Tickets: 1 triaged');
       expect(r.briefMarkdown).toContain(`--trace ${yesterdayRun.traceId}`);
+      // The ticket run of the day is listed with its numbers (#985 per-run review).
+      expect(store.getEntry(ticketTrace)).toMatchObject({ tags: { autopilot: { projectId: 'p-ce', day: '2026-09-30' } } });
+      expect(r.briefMarkdown).toMatch(new RegExp(`- CE-\\d+: Feed chips — [a-z ]+, wall [0-9a-z ]+, .*\\$[0-9.]+ — \\x60bash .*--trace ${ticketTrace}\\x60`));
 
       advance(HOUR);
       await svc.tick();

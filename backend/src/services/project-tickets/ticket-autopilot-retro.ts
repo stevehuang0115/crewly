@@ -9,7 +9,7 @@
 
 import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
 import type { AutopilotDayStats, AutopilotPeriodStats } from './ticket-autopilot-stats.js';
-import type { StallCause } from '../trace/trace-metrics.js';
+import type { StallCause, TraceMetricsSummary } from '../trace/trace-metrics.js';
 import type { ProjectTicketService } from './project-ticket.service.js';
 
 /** A problem class. */
@@ -200,13 +200,96 @@ export function statsLines(s: AutopilotPeriodStats): string[] {
   return lines;
 }
 
+/**
+ * One run of the day as the brief reviews it (#985: a retro per completed
+ * run, inside the daily retro rather than as its own wake). The numbers are
+ * the run's metrics summary; `review` is absent when the trace could not be read.
+ */
+export interface RetroTrace {
+  traceId: string;
+  title: string;
+  review?: Pick<TraceMetricsSummary, 'state' | 'wallMs' | 'stallMs' | 'stallMsByCause' | 'rework' | 'interventions' | 'costUsd'>;
+}
+
 /** Input of {@link buildRetroBrief}. */
 export interface RetroBriefInput {
   project: { id: string; name: string };
   day: string;
   stats: AutopilotDayStats;
   /** Traces of the day: run trace first, then ticket traces with a title */
-  traces: Array<{ traceId: string; title: string }>;
+  traces: RetroTrace[];
+}
+
+/** Stall time of a run that was the harness's fault (ms). */
+function harnessStallMs(r: NonNullable<RetroTrace['review']>): number {
+  return (r.stallMsByCause?.runtime_quota ?? 0) + (r.stallMsByCause?.delivery_failure ?? 0);
+}
+
+/** Stall time of a run that was the team's (ms): waiting on an agent, nobody pushing. */
+function teamStallMs(r: NonNullable<RetroTrace['review']>): number {
+  return (r.stallMsByCause?.waiting_on_agent ?? 0) + (r.stallMsByCause?.nobody_pushing ?? 0);
+}
+
+/**
+ * Why a run deserves a look in the retro. Empty for a run that went well:
+ * done, no stall but the owner's, no rework, few interventions.
+ *
+ * @param r - The run's numbers
+ * @returns Reasons, in the order they are shown
+ */
+export function retroReviewReasons(r: NonNullable<RetroTrace['review']>): string[] {
+  const out: string[] = [];
+  if (r.state === 'failed' || r.state === 'cancelled') out.push(`ended ${r.state}`);
+  const harness = harnessStallMs(r);
+  if (harness > 0) out.push(`stalled ${durationWords(harness)} on the harness (${STALL_WORDS.runtime_quota} / ${STALL_WORDS.delivery_failure})`);
+  const team = teamStallMs(r);
+  if (team > 0) out.push(`stalled ${durationWords(team)} on the team (${STALL_WORDS.waiting_on_agent} / ${STALL_WORDS.nobody_pushing})`);
+  if (r.rework > 0) out.push(`${r.rework} rework (send-backs, retries, failed verifications)`);
+  if (r.interventions >= TICKET_AUTOPILOT_CONSTANTS.RETRO_REVIEW_INTERVENTIONS) out.push(`${r.interventions} harness interventions`);
+  return out;
+}
+
+/**
+ * Order the day's ticket traces for the brief: the ones with reasons first
+ * (most reasons, then the longest), then the rest by wall time, then the
+ * ones that could not be read. Stable for equal keys.
+ *
+ * @param traces - Ticket traces (not the run trace)
+ * @returns A new array
+ */
+export function rankRetroTraces(traces: readonly RetroTrace[]): RetroTrace[] {
+  const key = (t: RetroTrace): [number, number, number] => {
+    if (!t.review) return [2, 0, 0];
+    const reasons = retroReviewReasons(t.review).length;
+    return [reasons > 0 ? 0 : 1, -reasons, -t.review.wallMs];
+  };
+  return traces
+    .map((t, i) => ({ t, i, k: key(t) }))
+    .sort((a, b) => a.k[0] - b.k[0] || a.k[1] - b.k[1] || a.k[2] - b.k[2] || a.i - b.i)
+    .map((x) => x.t);
+}
+
+/**
+ * One brief line for a ticket trace: title, the trace-read command, and
+ * (when read) the numbers with the reasons to look.
+ *
+ * @param t - Trace
+ * @returns Markdown list item
+ */
+export function retroTraceLine(t: RetroTrace): string {
+  const cmd = `\`bash $AGENT_SKILLS_PATH/core/trace-read/execute.sh --trace ${t.traceId}\``;
+  if (!t.review) return `- ${t.title} — ${cmd}`;
+  const r = t.review;
+  const reasons = retroReviewReasons(r);
+  const owner = r.stallMsByCause?.waiting_on_owner ?? 0;
+  const numbers = [
+    r.state.replace(/_/g, ' '),
+    `wall ${durationWords(r.wallMs)}`,
+    r.stallMs > 0 ? `stalled ${durationWords(r.stallMs)}${owner > 0 && owner === r.stallMs ? ' (all on the owner)' : ''}` : 'no stall',
+    usdWords(r.costUsd),
+  ].join(', ');
+  const flag = reasons.length ? ` — **read first**: ${reasons.join('; ')}` : '';
+  return `- ${t.title} — ${numbers}${flag} — ${cmd}`;
 }
 
 /**
@@ -218,9 +301,13 @@ export interface RetroBriefInput {
 export function buildRetroBrief(input: RetroBriefInput): string {
   const { project, day, stats } = input;
   const ref = project.id;
-  const traceLines = input.traces.length
-    ? input.traces.map((t) => `- ${t.title} — \`bash $AGENT_SKILLS_PATH/core/trace-read/execute.sh --trace ${t.traceId}\``)
-    : ['- (no traces)'];
+  // The run trace stays first; the ticket traces are ranked so the runs
+  // that need a retro line are read before the ones that went well.
+  const [run, ...tickets] = input.traces;
+  const ranked = run ? [run, ...rankRetroTraces(tickets)] : [];
+  const flagged = ranked.filter((t) => t.review && retroReviewReasons(t.review).length > 0).length;
+  const traceLines = ranked.length ? ranked.map(retroTraceLine) : ['- (no traces)'];
+  if (flagged > 0) traceLines.push('', `${flagged} of ${tickets.length} runs are flagged **read first**: say in the retro what happened in each (a line is enough when it was the owner's wait).`);
   return [
     `# Autopilot retro: ${project.name}, ${day}`,
     '',
@@ -234,7 +321,7 @@ export function buildRetroBrief(input: RetroBriefInput): string {
     '',
     ...traceLines,
     '',
-    'Read the run trace first, then the tickets that stalled, were sent back or cost the most. Keep each read short (`--max-chars 3000`).',
+    'Read the run trace first, then the flagged runs, then the tickets that cost the most. Keep each read short (`--max-chars 3000`).',
     '',
     '## What to write',
     '',

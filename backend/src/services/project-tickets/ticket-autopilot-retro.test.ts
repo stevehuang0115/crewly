@@ -5,6 +5,10 @@
 
 import {
   buildRetroBrief,
+  rankRetroTraces,
+  retroReviewReasons,
+  retroTraceLine,
+  type RetroTrace,
   buildWeeklyRetroBrief,
   isoWeekOf,
   isoWeekRange,
@@ -21,6 +25,7 @@ import {
   validateRetroInput,
 } from './ticket-autopilot-retro.js';
 import { computeAutopilotStats } from './ticket-autopilot-stats.js';
+import type { StallCause } from '../trace/trace-metrics.js';
 
 const stats = computeAutopilotStats({ projectId: 'p', days: ['2026-10-02'], traces: [], dailyBudgetTokens: 20_000_000, stallMinutes: 30, now: new Date(2026, 9, 3) });
 const day = stats.days[0];
@@ -62,6 +67,52 @@ describe('ticket-autopilot-retro', () => {
     expect(brief).toContain('trace-read/execute.sh --trace tr-20261002-aaaaaaaa');
     expect(brief).toContain('project-tickets/execute.sh retro --project p-ce --day 2026-10-02');
     expect(brief).toMatch(/harness_gap/);
+    expect(brief).not.toContain('read first');
+  });
+
+  it('ranks the day\'s runs so the ones that need a retro line come first, with their numbers (#985)', () => {
+    const causes = (over: Partial<Record<StallCause, number>>) => ({ runtime_quota: 0, delivery_failure: 0, waiting_on_owner: 0, waiting_on_agent: 0, nobody_pushing: 0, ...over });
+    const review = (over: Partial<NonNullable<RetroTrace['review']>>): NonNullable<RetroTrace['review']> => ({
+      state: 'done',
+      wallMs: 30 * 60_000,
+      stallMs: 0,
+      stallMsByCause: causes({}),
+      rework: 0,
+      interventions: 0,
+      costUsd: 0.4,
+      ...over,
+    });
+    const smooth: RetroTrace = { traceId: 'tr-20261002-00000001', title: 'CE-10 smooth', review: review({ wallMs: 4 * 3_600_000 }) };
+    const ownerWait: RetroTrace = { traceId: 'tr-20261002-00000002', title: 'CE-11 owner wait', review: review({ stallMs: 2 * 3_600_000, stallMsByCause: causes({ waiting_on_owner: 2 * 3_600_000 }) }) };
+    const harness: RetroTrace = {
+      traceId: 'tr-20261002-00000003',
+      title: 'CE-12 harness',
+      review: review({ state: 'failed', stallMs: 50 * 60_000, stallMsByCause: causes({ delivery_failure: 50 * 60_000 }), rework: 2, interventions: 3 }),
+    };
+    const team: RetroTrace = { traceId: 'tr-20261002-00000004', title: 'CE-13 team', review: review({ stallMs: 90 * 60_000, stallMsByCause: causes({ nobody_pushing: 90 * 60_000 }) }) };
+    const unread: RetroTrace = { traceId: 'tr-20261002-00000005', title: 'CE-14 unread' };
+
+    // A wait on the owner alone is not a reason; the harness and the team are.
+    expect(retroReviewReasons(smooth.review!)).toEqual([]);
+    expect(retroReviewReasons(ownerWait.review!)).toEqual([]);
+    expect(retroReviewReasons(harness.review!)).toEqual([
+      'ended failed',
+      'stalled 50m on the harness (runtime out of usage / signed out / a message was not delivered)',
+      '2 rework (send-backs, retries, failed verifications)',
+      '3 harness interventions',
+    ]);
+    expect(retroReviewReasons(team.review!)).toEqual(['stalled 1h 30m on the team (waiting on an agent / nobody pushing)']);
+    // Flagged first (most reasons), then the rest by wall time, unread last.
+    expect(rankRetroTraces([unread, smooth, ownerWait, team, harness]).map((t) => t.title)).toEqual(['CE-12 harness', 'CE-13 team', 'CE-10 smooth', 'CE-11 owner wait', 'CE-14 unread']);
+    expect(retroTraceLine(ownerWait)).toBe('- CE-11 owner wait — done, wall 30m, stalled 2h (all on the owner), $0.40 — `bash $AGENT_SKILLS_PATH/core/trace-read/execute.sh --trace tr-20261002-00000002`');
+    expect(retroTraceLine(unread)).toBe('- CE-14 unread — `bash $AGENT_SKILLS_PATH/core/trace-read/execute.sh --trace tr-20261002-00000005`');
+
+    const brief = buildRetroBrief({ project: { id: 'p-ce', name: 'CE' }, day: '2026-10-02', stats: day, traces: [{ traceId: 'tr-20261002-aaaaaaaa', title: 'Run trace 2026-10-02' }, smooth, harness] });
+    const lines = brief.split('\n');
+    const run = lines.findIndex((l) => l.includes('Run trace 2026-10-02'));
+    expect(lines[run + 1]).toContain('CE-12 harness — failed, wall 30m, stalled 50m, $0.40 — **read first**: ended failed;');
+    expect(lines[run + 2]).toContain('CE-10 smooth — done, wall 4h, no stall, $0.40 — `bash');
+    expect(brief).toContain('1 of 2 runs are flagged **read first**');
   });
 
   it('renders the wiki page grouped by class', () => {
