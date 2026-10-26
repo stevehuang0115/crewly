@@ -525,8 +525,9 @@ export class CrewlyServer {
 				API_SECURITY_CONSTANTS.DEFAULT_BIND_HOST,
 		};
 		// Single source of truth for "where is this instance's API": agents get
-		// it as CREWLY_API_URL and internal self-calls use it (#777).
-		setLocalApiPort(this.config.webPort);
+		// it as CREWLY_API_URL and internal self-calls use it (#777). An IP
+		// literal, so self-calls never wait on a DNS lookup (2026-10-26 outage).
+		setLocalApiPort(this.config.webPort, this.config.bindHost);
 
 		this.app = express();
 		this.httpServer = createServer(this.app);

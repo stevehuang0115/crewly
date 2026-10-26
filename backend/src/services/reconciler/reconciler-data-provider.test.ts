@@ -1302,7 +1302,7 @@ describe('LiveReconcilerDataProvider', () => {
         });
         expect(result).toBe(true);
         const url = (globalThis.fetch as jest.Mock).mock.calls[0][0] as string;
-        expect(url.startsWith('http://localhost:8797/api/')).toBe(true);
+        expect(url.startsWith('http://127.0.0.1:8797/api/')).toBe(true);
       } finally {
         resetLocalApiPortForTesting();
         globalThis.fetch = originalFetch;

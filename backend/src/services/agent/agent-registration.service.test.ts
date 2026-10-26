@@ -467,7 +467,7 @@ describe('AgentRegistrationService', () => {
 						CREWLY_SESSION_NAME: 'test-session',
 						CREWLY_ROLE: 'developer',
 						CREWLY_PROJECT_PATH: '/test/path',
-						CREWLY_API_URL: expect.stringMatching(/^http:\/\/localhost:\d+$/),
+						CREWLY_API_URL: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
 					}),
 				})
 			);
@@ -846,7 +846,7 @@ describe('AgentRegistrationService', () => {
 					'test-session',
 					expect.anything(),
 					expect.objectContaining({
-						env: expect.objectContaining({ CREWLY_API_URL: 'http://localhost:8797' }),
+						env: expect.objectContaining({ CREWLY_API_URL: 'http://127.0.0.1:8797' }),
 					}),
 				);
 				expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalled();
