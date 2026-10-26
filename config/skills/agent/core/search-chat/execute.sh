@@ -65,11 +65,11 @@ if [ "${CREWLY_SKILL_DRY_RUN:-}" = "1" ]; then
   exit 0
 fi
 
-# Posts a team member makes with `reply --work-item` / `--new-thread` go straight to
-# Slack and are not stored in the chat history this searches (CREW-877). Say so in
-# the output: an empty or partial result is not proof that such a post failed. The
-# reply itself returned the proof (slackChannelId + messageTs) to the member.
-NOTE="Not searched: replies a team member posts with 'reply --work-item', '--new-thread' or '--ticket' can go straight to Slack and are then not in this history. A missing hit does not mean such a post failed; ask the member for its messageTs (the reply returns it) or read the Slack thread."
+# Posts an agent makes with `reply --work-item` / `--new-thread` / `--ticket` are filed
+# in the chat history when the Slack channel is a team room or an agent DM (CREW-877).
+# In any other Slack channel they go to Slack only, so say so: a missing hit there is
+# not proof the post failed. The reply itself returned the proof (messageTs).
+NOTE="Not searched: posts in a Slack channel that is not a team room or an agent DM are not in this history. A missing hit does not mean a post failed; ask the poster for its messageTs (the reply returns it) or read the Slack thread."
 if ! RESP=$(api_call GET "$ENDPOINT"); then
   exit 1
 fi

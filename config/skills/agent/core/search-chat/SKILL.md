@@ -70,4 +70,4 @@ Output: `{ "data": { "count": N, "hits": [ { "id", "time", "channelId", "channel
 
 ## What it does not search
 
-Replies a team member posts with `reply --work-item`, `--new-thread` or `--ticket` can go straight to Slack and are not stored in this chat history. The result carries a `note` saying so. A missing hit does **not** mean such a post failed: the `reply` call itself returns `slackChannelId` and `messageTs` as proof it landed. Ask the member for those, or read the Slack thread, before posting the answer again.
+Posts an agent makes with `reply --work-item`, `--new-thread` or `--ticket` are in this history when the Slack channel is a team room or an agent DM. In any other Slack channel they go to Slack only and are not searched; the result carries a `note` saying so. A missing hit does **not** mean such a post failed: the `reply` call itself returns `slackChannelId` and `messageTs` as proof it landed. Ask the poster for those, or read the Slack thread, before posting the answer again.
