@@ -441,9 +441,10 @@ async function withSenderRoute(sender: AgentMessageSender): Promise<AgentMessage
  * A message from one agent to a team member whose session is down: queue it
  * and start the agent instead of answering 404 (#929).
  *
- * Only agent-to-agent messages take this path (the caller's `X-Agent-Session`
- * is the orchestrator or a team member). A raw write that hands over a WorkItem is
- * left to the pool, which already wakes offline targets for queued work (a
+ * Agent-to-agent messages take this path (the caller's `X-Agent-Session`
+ * is the orchestrator or a team member), with a start. A scheduled command's
+ * note (the scheduler credential) is queued too but starts nobody (CREW-362).
+ * A raw write that hands over a WorkItem is left to the pool, which already wakes offline targets for queued work (a
  * `deliver` that hands one over takes this path too, #1135), and
  * internal notifiers (the WorkItem dispatcher, worktree notices, …) keep their
  * 404 — a system notice is not a reason to start an agent.
@@ -458,6 +459,16 @@ async function queueMessageForOfflineMember(
 	sessionName: string,
 	data: string,
 ): Promise<OfflineAgentMessageResult | null> {
+	// A scheduled command's note (the crewly-web release line, CREW-362) to a
+	// member who is down: queued, never waking the agent. It is delivered when the
+	// agent next starts. A system notice is not a reason to start one.
+	if (getCallerIdentity(req).kind === 'scheduler') {
+		return queueForOfflineAgent(sessionName, data, {
+			findMember: (name) => StorageService.getInstance().findMemberBySessionName(name),
+			enqueue: (name, text) => SubAgentMessageQueue.getInstance().enqueue(name, text),
+			wake: null,
+		});
+	}
 	const caller = req.headers?.['x-agent-session'];
 	if (typeof caller !== 'string' || !caller) return null;
 	if (caller !== ORCHESTRATOR_SESSION_NAME) {
