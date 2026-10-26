@@ -237,6 +237,7 @@ describe('RoleBoundaryModule', () => {
 
 		expect(result).toContain('Hand to a short-lived sub-agent');
 		expect(result).toContain('spawn_subagent');
+		expect(result).toContain('Codex or Gemini CLI sub-agents');
 		expect(result).toMatch(/made no tool calls did nothing/);
 		expect(result.indexOf('Hand to a short-lived sub-agent')).toBeGreaterThan(result.indexOf('Create as project ticket'));
 	});

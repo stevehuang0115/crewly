@@ -329,7 +329,7 @@ export class RoleBoundaryModule implements PromptModule {
 			'- Can be independently blocked',
 			'- Worth tracking for metrics/audit',
 			'',
-			'**Hand to a short-lived sub-agent** (Claude Code\'s `Agent` tool; `spawn_subagent` on the in-process runtime) if:',
+			'**Hand to a short-lived sub-agent** (Claude Code\'s `Agent` tool; Codex or Gemini CLI sub-agents; `spawn_subagent` on the in-process runtime) if:',
 			'- Bounded and self-contained: parallel research, a large read you want out of your own context, a scoped fix',
 			'- Nobody needs to own it, review it, or hear about it — anything that does goes to a teammate',
 			'- Treat its result as evidence, not a claim: a sub-agent that made no tool calls did nothing',
