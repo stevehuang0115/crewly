@@ -523,6 +523,22 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // Another agent already answered the owner in the named thread: a second
+    // delegation there would get the owner two answers (CREW-878). Listed and
+    // refused; `--force-after-answer` delegates anyway.
+    const forced = (workItem.metadata as Record<string, unknown> | undefined)?.[TL_DELEGATION_CONSTANTS.FORCE_AFTER_ANSWER_FIELD] === true;
+    const answers = forced || namedOwnerThread === undefined ? [] : await getService().agentAnswersInOwnerThread(namedOwnerThread, delegatorOf(req, workItem));
+    if (answers.length > 0) {
+      logger.warn('Refused a delegation into a thread another agent already answered', { target: workItem.target, ownerThread: namedOwnerThread, answers: answers.length });
+      res.status(409).json({
+        success: false,
+        code: TL_DELEGATION_CONSTANTS.THREAD_ALREADY_ANSWERED_CODE,
+        error: `Not delegated: ${answers.map((a) => `${a.agent} already posted in ${String(namedOwnerThread)} after the owner's last message ("${a.preview}")`).join('; ')}. Read the thread first. If the owner still needs this work, delegate again with --force-after-answer.`,
+        answers,
+      });
+      return;
+    }
+
     // The same creator adding the same item for the same target within minutes gets the first one back
     // (ten identical "Follow through" and four duplicate briefs, audit 2026-10-14).
     const twin = findDuplicateWorkItem(

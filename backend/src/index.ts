@@ -7645,7 +7645,12 @@ void (async () => {
 	 *
 	 * @param chatV2 - The chat-v2 service (agent posts count as answers)
 	 */
-	private async startOwnerCompletionReport(chatV2: import('./services/chat-v2/chat-v2.service.js').ChatV2Service): Promise<void> {
+	private async startOwnerCompletionReport(chatV2: import('./services/chat-v2/chat-v2.service.js').ChatV2Service): Promise<void> {		// CREW-878: remember who posted in which owner thread (delegate-task --thread reads it).
+		try {
+			(await import('./services/messaging/thread-answer-log.js')).installThreadAnswerLog();
+		} catch (error) {
+			this.logger.warn('Thread answer log not started', { error: error instanceof Error ? error.message : String(error) });
+		}
 		try {
 			const { OwnerCompletionReportService, setOwnerCompletionReport } = await import('./services/orc/owner-completion-report.service.js');
 			const wiring = await import('./services/orc/owner-completion-report.wiring.js');

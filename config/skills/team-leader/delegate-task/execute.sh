@@ -20,6 +20,7 @@ REQUEST_ID=""
 PROJECT_TICKET=""
 OWNER_THREAD=""
 OWNER_CONVERSATION=""
+FORCE_AFTER_ANSWER=""
 NO_MEMBER_FITS=""
 KEPT_WORK_ITEM=""
 PROGRESS_CHECK_ARG=""
@@ -45,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --ticket)      PROJECT_TICKET="$2"; shift 2 ;;
     --thread)      OWNER_THREAD="$2";   shift 2 ;;
     --conversation) OWNER_CONVERSATION="$2"; shift 2 ;;
+    --force-after-answer) FORCE_AFTER_ANSWER="1"; shift ;;
     --no-member-fits) NO_MEMBER_FITS="$2"; shift 2 ;;
     --work-item)   KEPT_WORK_ITEM="$2"; shift 2 ;;
     --progress-check) PROGRESS_CHECK_ARG="$2"; shift 2 ;;
@@ -53,6 +55,7 @@ while [[ $# -gt 0 ]]; do
       echo "Usage: execute.sh --to worker-session --task 'implement feature' --priority high --project /path [--team teamId] [--tl-member memberId] [--request-id <ticket id from the [TICKET:TKT-123 <id>] line>] [--ticket <project ticket id, e.g. APP-12>]"
       echo "Work for a teammate on a project always runs through a project ticket: --ticket uses that backlog/ready ticket, otherwise one is created for you."
       echo "Owner request from Slack: add --thread <key> (from [SLACK-THREAD:<key>]) — the member answers the owner in that thread itself."
+      echo "A delegation into a --thread another agent already answered (after the owner's last message) is refused and lists the post; add --force-after-answer only when the owner still needs the work."
       echo "Owner request from the Crewly chat: add --conversation <id> (from [CHAT:<id>]). Without --thread/--conversation the result comes back to YOU, never to the owner."
       echo "Optional recurring progress check (off by default; the idle notification already wakes you): --progress-check <minutes, min 30>"
       echo "Keeping work yourself because no member fits: execute.sh --no-member-fits '<what is missing: access / tool / permission / everyone busy>' --task '<the work>' [--work-item <id>] [--ticket <ID>]"
@@ -296,7 +299,8 @@ POOL_BODY=$(jq -n \
   --arg delegatedBy "${CREWLY_SESSION_NAME:-${FROM_SESSION:-}}" \
   --arg ownerThread "${OWNER_THREAD:-}" \
   --arg ownerConversation "${OWNER_CONVERSATION:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority, directDelivery: true} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $delegatedBy != "" then {delegatedBy: $delegatedBy} else {} end) + (if $ownerThread != "" then {ownerThread: $ownerThread} else {} end) + (if $ownerConversation != "" then {ownerConversation: $ownerConversation} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end) + (if $projectTicketId != "" then {projectTicketId: $projectTicketId} else {} end)')
+  --arg forceAfterAnswer "${FORCE_AFTER_ANSWER:-}" \
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority, directDelivery: true} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $delegatedBy != "" then {delegatedBy: $delegatedBy} else {} end) + (if $ownerThread != "" then {ownerThread: $ownerThread} else {} end) + (if $ownerConversation != "" then {ownerConversation: $ownerConversation} else {} end) + (if $forceAfterAnswer != "" then {forceAfterAnswer: true} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end) + (if $projectTicketId != "" then {projectTicketId: $projectTicketId} else {} end)')
 # metadata.directDelivery: this script delivers the brief itself (below), so
 # the backend's workitem:queued push holds off and only fires if that
 # delivery never lands — the task reaches the worker once.
@@ -318,6 +322,12 @@ if [ "$POOL_OK" != "true" ] && printf '%s' "$POOL_ERR" | grep -q 'owner_thread_u
   REFUSAL=$(printf '%s' "$POOL_ERR" | grep 'owner_thread_unreadable' | tail -1 | jq -r '.details.error // empty' 2>/dev/null || true)
   jq -n --arg error "${REFUSAL:-The --thread you named is not a thread Crewly can read}" --arg to "$TO" \
     '{success: false, error: $error, to: $to, hint: "Nothing was delivered. Fix --thread and delegate again."}'
+  exit 1
+fi
+if [ "$POOL_OK" != "true" ] && printf '%s' "$POOL_ERR" | grep -q 'thread_already_answered'; then
+  REFUSAL=$(printf '%s' "$POOL_ERR" | grep 'thread_already_answered' | tail -1 | jq -r '.details.error // empty' 2>/dev/null || true)
+  jq -n --arg error "${REFUSAL:-Another agent already answered the owner in that thread}" --arg to "$TO" \
+    '{success: false, error: $error, to: $to, hint: "Nothing was delivered. Read the thread; if the owner still needs this work, delegate again with --force-after-answer."}'
   exit 1
 fi
 if [ "$POOL_OK" != "true" ] && printf '%s' "$POOL_ERR" | grep -q 'project_ticket_refused'; then
