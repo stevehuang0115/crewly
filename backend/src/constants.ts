@@ -8834,6 +8834,10 @@ export const PEOPLE_CONSTANTS = {
 	OWNER_ID: 'owner',
 	/** Env var naming the owner's Slack user id(s), comma-separated — for Slack credentials from env (no installer known) */
 	OWNER_SLACK_USER_ID_ENV: 'SLACK_OWNER_USER_ID',
+	/** How long after an agent read a person's grant a wiki page it writes is tagged with that person (#969) */
+	PRIVATE_SOURCE_WINDOW_MS: 20 * 60 * 1000,
+	/** Most agent sessions the private-source tracker remembers */
+	PRIVATE_SOURCE_SESSIONS_MAX: 500,
 	/** Error code when Crewly Cloud is too old for per-person access (sharing endpoint missing) */
 	CLOUD_UPDATE_REQUIRED_CODE: 'cloud_update_required',
 	/** What the dashboard shows for that */

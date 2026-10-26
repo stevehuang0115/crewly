@@ -56,6 +56,8 @@ export interface WikiQueryInput {
   agent?: string;
   /** Reader's role — pages whose `visibility` excludes it are hidden. Undefined = owner. */
   viewerRole?: string;
+  /** Person the reader acts for — pages `visible_to_people` others are hidden (#969). Undefined = owner. */
+  viewerPerson?: string;
   /** Include superseded pages (default false). */
   includeSuperseded?: boolean;
 }
@@ -166,7 +168,7 @@ export class WikiQueryService {
 
     const topK = input.topK ?? DEFAULT_TOP_K_PAGES;
     const recentN = input.recentLogEntries ?? DEFAULT_RECENT_LOG_ENTRIES;
-    const filters: WikiSearchFilters = { viewerRole: input.viewerRole, includeSuperseded: input.includeSuperseded === true };
+    const filters: WikiSearchFilters = { viewerRole: input.viewerRole, viewerPerson: input.viewerPerson, includeSuperseded: input.includeSuperseded === true };
 
     const index = await this.index.readForQuery(input.vaultPath, tokenize(input.query));
     const recentLog = await this.readRecentLog(input.vaultPath, recentN);
@@ -367,7 +369,7 @@ export class WikiQueryService {
       }
       const page = parsePage(content);
       if (page.frontmatter.superseded_by && !filters.includeSuperseded) continue;
-      if (!isVisibleTo(page.frontmatter, filters.viewerRole)) continue;
+      if (!isVisibleTo(page.frontmatter, filters.viewerRole, filters.viewerPerson)) continue;
       const truncated = Buffer.byteLength(content, 'utf8') > MAX_FULL_PAGE_BYTES;
       out.push({
         path: rel,

@@ -305,6 +305,7 @@ import { traceHarness, traceTurnActivity } from './services/trace/trace-recorder
 import { inputCircuitStats, setInputCircuitOpenListener } from './services/session/input-circuit-breaker.js';
 import { looksLikeShellPrompt } from './utils/screen-excerpt.js';
 import { harnessPastesSinceOutsideInput, shownMarkers } from './services/session/input-ledger.js';
+import { viewerPersonOf } from './services/people/acting-for.service.js';
 
 // ESM __dirname equivalent using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -3520,7 +3521,7 @@ void (async () => {
 									meetingWiring.vaultsOfAgent(await this.storageService.getTeams(), await this.storageService.getProjects(), agentSession, getCrewlyHomePath()),
 								searchWiki: async (vaults, query, agentSession) => {
 									const role = meetingWiring.teamsOfAgent(await this.storageService.getTeams(), agentSession)[0]?.role;
-									const out = await WikiSearchService.getInstance().searchAllVaults({ vaults, query, ...(role ? { viewerRole: role } : {}) });
+									const out = await WikiSearchService.getInstance().searchAllVaults({ vaults, query, ...(role ? { viewerRole: role } : {}), viewerPerson: viewerPersonOf(agentSession) });
 									return out.ok ? out.hits.map(meetingWiring.wikiHitToPage) : [];
 								},
 								readPage: meetingWiring.readWikiPage,

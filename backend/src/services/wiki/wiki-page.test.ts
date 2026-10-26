@@ -41,6 +41,21 @@ describe('wiki-page', () => {
     expect(isVisibleTo({ visibility: ['teacher'] }, undefined)).toBe(true);
   });
 
+  it('visible_to_people (#969): only the listed people and the owner read it, whatever the role', () => {
+    const fm = { visible_to_people: ['UALICE'] };
+    expect(isVisibleTo(fm, 'developer', 'UALICE')).toBe(true);
+    expect(isVisibleTo(fm, 'developer', 'UBOB')).toBe(false);
+    expect(isVisibleTo(fm, 'orchestrator', 'UBOB')).toBe(false);
+    expect(isVisibleTo(fm, 'developer', 'owner')).toBe(true);
+    expect(isVisibleTo(fm, 'developer', undefined)).toBe(true);
+    expect(isVisibleTo(fm, undefined, undefined)).toBe(true);
+    // the role list still applies to a listed person
+    expect(isVisibleTo({ ...fm, visibility: ['teacher'] }, 'developer', 'UALICE')).toBe(false);
+    expect(isVisibleTo({ ...fm, visibility: ['teacher'] }, 'teacher', 'UALICE')).toBe(true);
+    // no people list: a person reads like anyone else
+    expect(isVisibleTo({}, 'developer', 'UBOB')).toBe(true);
+  });
+
   it('oneLine unescapes literal \\n and truncates', () => {
     expect(oneLine('a\\n\\nb   c', 100)).toBe('a b c');
     expect(oneLine('x'.repeat(10), 5)).toBe('xxxx…');

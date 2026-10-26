@@ -18,6 +18,7 @@ import { isOwnerCaller, rejectNonOwner, sendOwnerAuthRequired } from '../../midd
 import { getActingFor, runAsActor, type Actor } from '../../services/people/acting-for.service.js';
 import { actorFromRequest, recordActivity, summarizeChange, type ActivityActor } from '../../services/activity/activity-log.service.js';
 import { getConnectorUseAudit } from '../../services/connector/connector-use-audit.service.js';
+import { getPrivateSourceTracker } from '../../services/people/private-source.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('ConnectorController');
 
@@ -67,6 +68,9 @@ export function requireConnectorAccess(connectorId: string) {
       if (await ConnectorAccessService.getInstance().isAllowed(connectorId, caller.role)) {
         // Who used which connection, acting for whom (once an hour per trio).
         getConnectorUseAudit().allowed({ connectorId, actor, actingFor: person, what: req.path });
+        // What this session reads now is that person's data: wiki pages it
+        // writes inside the window are visible to that person only (#969).
+        getPrivateSourceTracker().note(caller.session, person.id, connectorId);
         runAsActor(person, () => next());
         return;
       }

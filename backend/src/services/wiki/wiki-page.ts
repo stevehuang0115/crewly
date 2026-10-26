@@ -23,6 +23,8 @@ export interface WikiPageFrontmatter {
   tags?: string[];
   /** Roles allowed to read the page; empty/absent = everyone in the vault's instance. */
   visibility?: string[];
+  /** People (ids, #968) whose grants the page was written from; only they and the owner read it (#969). */
+  visible_to_people?: string[];
   source?: string;
   caller?: string;
   recorded?: string;
@@ -135,14 +137,19 @@ export function indexLineFor(relativePath: string, fm: Partial<WikiPageFrontmatt
 }
 
 /**
- * Whether a viewer role may read a page. No `visibility` list = public
- * within the instance; a canonical role (owner/orchestrator) always may.
+ * Whether a viewer may read a page. No `visibility` list = public within
+ * the instance; a canonical role (owner/orchestrator) always may. A page
+ * with `visible_to_people` (written from someone's private grant, #969) is
+ * read only by those people and the owner — whatever the viewer's role.
  *
  * @param fm - Page frontmatter
  * @param viewerRole - Role of the reader, or undefined for the owner/UI
+ * @param viewerPerson - Person the reader acts for; undefined = the owner
  * @returns True when readable
  */
-export function isVisibleTo(fm: Partial<WikiPageFrontmatter>, viewerRole?: string): boolean {
+export function isVisibleTo(fm: Partial<WikiPageFrontmatter>, viewerRole?: string, viewerPerson?: string): boolean {
+  const people = Array.isArray(fm.visible_to_people) ? fm.visible_to_people.map((v) => String(v)) : [];
+  if (people.length > 0 && viewerPerson !== undefined && viewerPerson !== 'owner' && !people.includes(viewerPerson)) return false;
   const list = Array.isArray(fm.visibility) ? fm.visibility.map((v) => String(v).toLowerCase()) : [];
   if (list.length === 0) return true;
   if (!viewerRole) return true;

@@ -31,6 +31,7 @@ import type {
   TaskHistoryEntry,
 } from '../../types/memory.types.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
+import { viewerPersonOf } from '../people/acting-for.service.js';
 
 /**
  * Categories for the unified remember operation
@@ -647,6 +648,7 @@ export class MemoryService implements IMemoryService {
         vaults: vaultPaths.map((vaultPath) => ({ vaultPath, label: this.wikiVaultLabel(vaultPath) })),
         query: context,
         viewerRole: ledger?.viewerRole,
+        viewerPerson: viewerPersonOf(ledger?.agent),
       });
       if (!outcome.ok) return [];
 
