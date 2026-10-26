@@ -9,7 +9,7 @@
 
 import { createHash } from 'node:crypto';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
-import { REPLY_ROUTING_CONSTANTS, TURN_TRIGGER_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, REPLY_ROUTING_CONSTANTS, TURN_TRIGGER_CONSTANTS } from '../../constants.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { parseSlackThreadKey } from '../slack/slack-thread-key.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -24,6 +24,7 @@ import {
   type ReplyResolution,
   type ReplyResolverDeps,
 } from './reply-destination-resolver.js';
+import { noticeRefusedDecisionReply, type RefusedReplyNoticeDeps } from './refused-decision-reply-notice.js';
 import { defaultWorkDestinationDeps, deliverToWorkDestination, type WorkDestinationDeps } from './work-item-destination.wiring.js';
 import { originOfWorkItem } from './work-item-destination.js';
 import { comparePostPlace, placeOfOwnerRoute, routeOfTrigger, type MessageRoute, type PostPlace, type RouteCheckOutcome } from './message-route.js';
@@ -110,6 +111,11 @@ export interface ReplyDeliveryDeps {
    * when taken. Omitted: the work-destination messenger is used as is.
    */
   answerAgent?: (fromSession: string, toSession: string, text: string) => Promise<boolean>;
+  /**
+   * Who is told when a reply to an owner-answered decision is refused and no
+   * fallback took it (CREW-372). Omitted: nobody (the agent still gets the error).
+   */
+  refusedReplyNotice?: RefusedReplyNoticeDeps;
 }
 
 /** What a delivery did. */
@@ -340,7 +346,28 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
       if (retry.ok) return retry;
     }
   }
-  return withCardFix(result, hintedThread, d);
+  const fixed = await withCardFix(result, hintedThread, d);
+  if (dest.source === 'decision' && !fixed.ok) await noticeRefusal(input, dest, fixed.error, d);
+  return fixed;
+}
+
+/**
+ * Every way of delivering a reply to an owner-answered decision has failed:
+ * tell the agent's lead (CREW-372). Best-effort; never changes the result.
+ *
+ * @param input - The reply
+ * @param dest - The decision destination that refused
+ * @param error - The error the agent is shown
+ * @param d - Collaborators
+ */
+async function noticeRefusal(input: DeliverReplyInput, dest: Exclude<ReplyDestination, { kind: 'unresolved' }>, error: string, d: ReplyDeliveryDeps): Promise<void> {
+  if (!d.refusedReplyNotice) return;
+  const decisionId = input.reference?.decisionId ?? /\bD-\d+\b/.exec(dest.reason)?.[0];
+  if (!decisionId) return;
+  const firstLine = error.split('\n')[0].trim();
+  const outcome = await noticeRefusedDecisionReply({ decisionId, agentSession: input.session, failedStep: firstLine || dest.reason }, d.refusedReplyNotice);
+  if (outcome.sent) logger.warn('Reply to an answered decision was refused — told the lead', { session: input.session, decisionId, to: outcome.to, target: outcome.target });
+  else logger.warn('Reply to an answered decision was refused — no notice sent', { session: input.session, decisionId, reason: outcome.reason });
 }
 
 /**
@@ -991,6 +1018,25 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
     deliverToConversation: deliverAgentReplyToConversation,
     workDestination: defaultWorkDestinationDeps,
     answerAgent: defaultAnswerAgent,
+    refusedReplyNotice: {
+      decision: async (id) => {
+        const all = (await DecisionService.getInstance()?.list('all').catch(() => [])) ?? [];
+        const x = all.find((y) => y.id === id);
+        return x ? { status: x.status, ...(x.card ? { card: { slackChannelId: x.card.slackChannelId, threadTs: x.card.threadTs ?? x.card.messageTs } } : {}) } : null;
+      },
+      leadOf: async (session) => {
+        const [{ StorageService }, { leadAbove }] = await Promise.all([import('../core/storage.service.js'), import('../task-pool/untargeted-router.js')]);
+        return leadAbove(session, await StorageService.getInstance().getTeams().catch(() => []));
+      },
+      tell: async (toSession, text) => (await import('./work-item-destination.wiring.js')).getAgentMessenger()?.(toSession, text) ?? false,
+      orchestrator: ORCHESTRATOR_SESSION_NAME,
+      postToCard: async (card, text) => {
+        const wd = await defaultWorkDestinationDeps();
+        await wd.post({ agentSession: ORCHESTRATOR_SESSION_NAME, target: card.slackChannelId, threadTs: card.threadTs, text });
+        return true;
+      },
+      now: () => Date.now(),
+    },
     priorRoomAnswer: async (input) => {
       const { getSlackTeamChannelService } = await import('../slack/slack-team-channel.service.js');
       return (await getSlackTeamChannelService()?.heldReplyFor(input)) ?? null;
