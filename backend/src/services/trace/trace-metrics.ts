@@ -87,6 +87,8 @@ export interface TraceMetrics {
 		/** Ongoing stall included */
 		totalMs: number;
 		byCause: Record<StallCause, number>;
+		/** Stall time per cause (ms, ongoing stall included; #1472) */
+		msByCause: Record<StallCause, number>;
 		/** Chronological; at most METRICS_MAX_STALL_ITEMS (the longest) */
 		items: TraceStall[];
 	};
@@ -123,6 +125,13 @@ export interface TraceMetricsSummary {
 	rework: number;
 	stalls: number;
 	stallMs: number;
+	/**
+	 * Stall time per cause (ms). Lets a list reader split a run's idle time
+	 * into harness causes (runtime_quota, delivery_failure), the owner
+	 * (waiting_on_owner) and the team (waiting_on_agent, nobody_pushing)
+	 * without reading every trace (#1472).
+	 */
+	stallMsByCause: Record<StallCause, number>;
 	ongoingStall: boolean;
 	interventions: number;
 	totalTokens: number;
@@ -833,7 +842,11 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 		}
 	}
 	const byCause = Object.fromEntries(STALL_CAUSES.map((c) => [c, 0])) as Record<StallCause, number>;
-	for (const s of stalls) byCause[s.cause] += 1;
+	const msByCause = Object.fromEntries(STALL_CAUSES.map((c) => [c, 0])) as Record<StallCause, number>;
+	for (const s of stalls) {
+		byCause[s.cause] += 1;
+		msByCause[s.cause] += s.ms;
+	}
 	const kept =
 		!options.detail && stalls.length > TRACE_CONSTANTS.METRICS_MAX_STALL_ITEMS
 			? [...stalls].sort((x, y) => y.ms - x.ms).slice(0, TRACE_CONSTANTS.METRICS_MAX_STALL_ITEMS).sort((x, y) => x.start.localeCompare(y.start))
@@ -866,7 +879,7 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 		// `manual` is not collected yet (see TraceMetrics.ownerTouches): not in the total.
 		ownerTouches: { ...touches, total: touches.answered + touches.approved + touches.sentBack + touches.corrected + touches.other },
 		rework: { ...rework, total: total(rework) },
-		stalls: { thresholdMinutes: stallMinutes, count: stalls.length, totalMs: stalls.reduce((s, x) => s + x.ms, 0), byCause, items: kept },
+		stalls: { thresholdMinutes: stallMinutes, count: stalls.length, totalMs: stalls.reduce((s, x) => s + x.ms, 0), byCause, msByCause, items: kept },
 		interventions: { ...interventions, total: total(interventions) },
 		usage: {
 			inputTokens: sum('inputTokens'),
@@ -999,6 +1012,7 @@ export function summarizeTraceMetrics(m: TraceMetrics): TraceMetricsSummary {
 		rework: m.rework.total,
 		stalls: m.stalls.count,
 		stallMs: m.stalls.totalMs,
+		stallMsByCause: { ...m.stalls.msByCause },
 		ongoingStall: m.stalls.items.some((s) => s.ongoing === true),
 		interventions: m.interventions.total,
 		totalTokens: m.usage.totalTokens,

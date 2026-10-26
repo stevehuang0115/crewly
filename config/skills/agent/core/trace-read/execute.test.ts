@@ -59,12 +59,20 @@ describe('trace-read skill', () => {
 				} });
 			}
 			if (url.pathname.startsWith('/api/requests/')) return send(404, { success: false, error: 'Request not found' });
+			if (url.pathname === '/api/projects') {
+				return send(200, { success: true, data: [{ id: 'proj-ce', name: 'careerengine', path: '/Users/me/careerengine' }] });
+			}
 			if (url.pathname === '/api/traces') {
+				const tagged = url.searchParams.get('autopilotProject') === 'proj-ce';
 				const row = (i: number) => ({
 					traceId: `tr-20261003-0000000${i}`,
 					root: { kind: 'request', summary: `Run number ${i} ${'x'.repeat(200)}` },
 					updatedAt: '2026-10-03T12:00:00.000Z',
-					metrics: { state: 'waiting_on_owner', wallMs: 7_500_000, activeMs: 900_000, waitingOwnerMs: 3_600_000, ownerTouches: 2, rework: 1, stalls: 1, ongoingStall: true, interventions: 3, costUsd: 1.234 },
+					...(tagged ? { tags: { autopilot: { projectId: 'proj-ce', day: '2026-10-03' }, labels: ['CE-7'] } } : {}),
+					metrics: {
+						state: 'waiting_on_owner', wallMs: 7_500_000, activeMs: 900_000, waitingOwnerMs: 3_600_000, ownerTouches: 2, rework: 1, stalls: 1, ongoingStall: true, interventions: 3, costUsd: 1.234,
+						...(tagged ? { stallMs: 5_400_000, stallMsByCause: { runtime_quota: 1_800_000, delivery_failure: 0, waiting_on_owner: 2_700_000, waiting_on_agent: 900_000, nobody_pushing: 0 } } : {}),
+					},
 				});
 				return send(200, { success: true, data: { traces: Array.from({ length: Number(url.searchParams.get('limit') ?? 10) }, (_, i) => row(i)), writeFailures: 0 } });
 			}
@@ -150,6 +158,30 @@ describe('trace-read skill', () => {
 		const many = await run('--since', '2026-10-01T00:00:00Z', '--limit', '200', '--max-chars', '1500');
 		expect(seen[seen.length - 1].url).toBe('/api/traces?since=2026-10-01T00%3A00%3A00Z&limit=100');
 		expect([...many.stdout.replace(/\n$/, '')].length).toBeLessThanOrEqual(1500);
+	});
+
+	it('closes the window with --until and narrows by project, day and label (#1472)', async () => {
+		// --project takes a name: the skill resolves it to the id through GET /api/projects.
+		const r = await run('--since', '2026-10-19T00:00:00Z', '--until', '2026-10-26T00:00:00Z', '--project', 'careerengine', '--day', '2026-10-03', '--label', 'CE-7', '--limit', '2', '--json');
+		expect(r.code).toBe(0);
+		expect(seen.map((s) => s.url)).toEqual([
+			'/api/projects',
+			'/api/traces?since=2026-10-19T00%3A00%3A00Z&until=2026-10-26T00%3A00%3A00Z&limit=2&autopilotProject=proj-ce&day=2026-10-03&label=CE-7',
+		]);
+		const out = JSON.parse(r.stdout);
+		expect(out.traces).toHaveLength(2);
+		expect(out.traces[0]).toMatchObject({ traceId: 'tr-20261003-00000000', project: 'proj-ce', day: '2026-10-03', labels: ['CE-7'], metrics: { stallMsByCause: { runtime_quota: 1_800_000 } } });
+		// An unknown project name is passed through as the id.
+		await run('--since', '2026-10-19T00:00:00Z', '--project', 'proj-other', '--limit', '1');
+		expect(seen[seen.length - 1].url).toBe('/api/traces?since=2026-10-19T00%3A00%3A00Z&limit=1&autopilotProject=proj-other');
+		// The text line splits stalled time between the harness, the owner and the team.
+		const text = await run('--since', '2026-10-19T00:00:00Z', '--project', 'proj-ce', '--limit', '1');
+		expect(text.stdout).toContain('stalls 1 (one ongoing) (harness 30m, owner 45m, team 15m), interventions 3');
+		// --max-chars may exceed 16000 for a list; a bad --day is refused.
+		const wide = await run('--since', '2026-10-19T00:00:00Z', '--limit', '100', '--max-chars', '64000');
+		expect([...wide.stdout.replace(/\n$/, '')].length).toBeGreaterThan(16000);
+		const bad = await run('--since', '2026-10-19T00:00:00Z', '--day', 'Friday');
+		expect(bad.code).not.toBe(0);
 	});
 
 	it('returns JSON with --json', async () => {
