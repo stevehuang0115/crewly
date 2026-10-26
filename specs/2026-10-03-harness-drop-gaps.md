@@ -248,3 +248,30 @@ Follow-up M2: crashes not yet told are carried in `liveness.json`
 (`crashAlert`). At most one crash DM goes out per `CRASH_MERGE_WINDOW_MS`
 (1 h); crashes in between are merged into the next DM with a count
 ("crashed 3 times between … (last: …)").
+
+## §13 Queued work for an agent the owner stopped
+
+The stop button clears the member's session name and records
+`dropoutReason: 'manual'`; the in-memory owner-stopped registry does not
+survive a restart, the member record does. A schedule that still targets the
+member (by its permanent agent id) keeps creating queued items.
+
+Before 1.20.424 the auto-claim recovery (`recoverPendingTasks`) knew members
+by session name only, so such a target was "unknown": the item was escalated
+as orphaned ("an agent that no longer exists or could not be started") to
+the orchestrator on every fire and every boot, while nothing could place it
+(Evership / Eve, 2026-10-26).
+
+Now:
+
+- members are known by session name **and** agent id; the wake path finds
+  the team and member by agent id / member-id suffix (`resolveCurrentSession`),
+  so a member that merely exited is started again even without a session
+  name (the start names the work item, which lets a schedule's item through
+  the dormant-team gate);
+- a target whose member the owner stopped (`dropoutReason: 'manual'` or the
+  registry) is **held**: not woken, not healed onto a lead, not escalated.
+  The item stays queued; one INFO line per target per hour says the owner
+  stopped its agent (start it again, or pause the schedule). Starting the
+  member clears the hold, as it always did.
+
