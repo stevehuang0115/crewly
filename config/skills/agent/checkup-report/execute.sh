@@ -9,6 +9,8 @@
 #   bash execute.sh --app-dir ./checkup-app                                        # copy the App page
 #   bash execute.sh --breaks …/analysis/breaks.json --business "Oak Pottery" --intake ./intake.json --out ./checkup-data
 #   bash execute.sh --daily "Replied to 3 open inquiries; 1 booked." --out ./checkup-data
+#   bash execute.sh --log-step intake --start --out ./checkup-data     # per-step time log (timelog.json)
+#   bash execute.sh '{"logStep":"intake","mark":"end","out":"./checkup-data"}'
 #   bash execute.sh '{"breaks":"…/breaks.json","business":"Oak Pottery","out":"./checkup-data"}'
 #
 # Output: one JSON line with the files written and the exact next command
@@ -23,13 +25,15 @@ command -v node >/dev/null 2>&1 || { printf '{"success":false,"error":"node is r
 ARGS=()
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   command -v jq >/dev/null 2>&1 || { printf '{"success":false,"error":"jq is required to read JSON input"}\n'; exit 1; }
-  for key in appDir breaks business intake examples out daily date; do
+  for key in appDir breaks business intake examples out daily date logStep at; do
     v=$(printf '%s' "$1" | jq -r --arg k "$key" '.[$k] // empty')
     if [ -n "$v" ]; then
-      case "$key" in appDir) flag=--app-dir ;; *) flag="--$key" ;; esac
+      case "$key" in appDir) flag=--app-dir ;; logStep) flag=--log-step ;; *) flag="--$key" ;; esac
       ARGS+=("$flag" "$v")
     fi
   done
+  mark=$(printf '%s' "$1" | jq -r '.mark // empty')
+  case "$mark" in start|end) ARGS+=("--$mark") ;; esac
   shift
 fi
 ARGS+=("$@")

@@ -68,6 +68,7 @@
     <div id="notes-wrap" class="hidden"><h2>Could not check</h2><ul class="plain" id="notes" data-crewly-id="notes"></ul></div>
     <h2>Files</h2>
     <ul class="plain" id="files" data-crewly-id="files"></ul>
+    <div id="timing-wrap" class="hidden"><h2>How long it took</h2><ul class="plain" id="timing" data-crewly-id="timing"></ul></div>
     <h2>Assumptions</h2>
     <ul class="plain" id="assumptions" data-crewly-id="assumptions"></ul>
     <button class="secondary" id="ask" data-crewly-id="ask">Ask about this report</button>
@@ -193,6 +194,15 @@
     (r.files || []).forEach(function (f) { files.appendChild(el('li', null, f.file + ' — ' + f.source + ' ' + f.kind + ', ' + f.rows + ' rows')); });
     var as = $('assumptions'); as.replaceChildren();
     Object.keys(r.assumptions || {}).forEach(function (k) { as.appendChild(el('li', null, k + ': ' + r.assumptions[k])); });
+    var timing = $('timing'); timing.replaceChildren();
+    var t = r.timing;
+    if (t && t.steps && t.steps.length) {
+      t.steps.forEach(function (s) {
+        timing.appendChild(el('li', null, s.step + ': ' + (s.endedAt ? s.minutes + ' min' : 'still running')));
+      });
+      timing.appendChild(el('li', 'note', 'Total ' + t.totalMinutes + ' min of agent time' + (t.open && t.open.length ? ' so far' : '')));
+    }
+    $('timing-wrap').classList.toggle('hidden', !(t && t.steps && t.steps.length));
   }
   $('ask').onclick = function () {
     crewly.notify('The owner opened the check-up report and tapped "Ask about this report". Reply in their DM with a one-line offer to walk through the top 3.').then(function () {

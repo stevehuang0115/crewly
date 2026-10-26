@@ -10,6 +10,8 @@
 //   node report.mjs --app-dir ./checkup-app                       # copy the App page to publish
 //   node report.mjs --breaks …/breaks.json --business "Oak Pottery" [--intake answers.json] --out ./checkup-data
 //   node report.mjs --daily "Replied to 3 open inquiries; 1 booked." [--date 2026-10-27] --out ./checkup-data
+//   node report.mjs --log-step intake --start --out ./checkup-data          # per-step time log → timelog.json
+//   node report.mjs --log-step intake --end --out ./checkup-data
 // =============================================================================
 import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
@@ -20,6 +22,9 @@ const APP_SRC = join(HERE, 'app');
 const DEFAULT_EXAMPLES = 3;
 /** Crewly App documents are capped at 256 KB; stay well under it. */
 const MAX_DOC_BYTES = 200 * 1024;
+/** The check-up's steps, in order; the time log accepts no other name. */
+export const STEPS = ['intake', 'connect', 'analyse', 'report', 'daily'];
+const TIMELOG_FILE = 'timelog.json';
 
 /** The "which number first" choices offered by the intake form, with how each is read off the breaks. */
 const FIRST_NUMBER_RULES = [
@@ -60,7 +65,8 @@ function examplesFor(b, limit) {
 /**
  * Build the report document the App renders from checkup-analyse output.
  * Items are summarised into a few examples per break so the document stays small
- * and no full list of people lands in the App's data.
+ * and no full list of people lands in the App's data. `opts.timelog` (from
+ * `readTimelog`) adds a `timing` block with minutes per step.
  */
 export function buildReportDoc(breaks, opts = {}) {
   const by = Object.fromEntries(breaks.breaks.map((b) => [b.type, b]));
@@ -91,7 +97,56 @@ export function buildReportDoc(breaks, opts = {}) {
     if (rule) doc.firstNumber = { asked: want, key: rule.key, label: rule.label, value: rule.value(by) };
     else doc.notes = [...doc.notes, `The owner asked to see "${want}" first; no break maps to it, so the top 3 lead.`];
   }
+  // How long the check-up took, when the agent logged its steps (`--log-step`).
+  if (opts.timelog && opts.timelog.steps.length) doc.timing = summariseTimelog(opts.timelog);
   return doc;
+}
+
+/** Read `<dir>/timelog.json`; an absent file is an empty log, a broken one throws. */
+export function readTimelog(dir) {
+  const file = join(dir, TIMELOG_FILE);
+  if (!existsSync(file)) return { steps: [] };
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  if (!raw || !Array.isArray(raw.steps)) throw new Error(`${file}: not a time log ({ steps: [] })`);
+  return raw;
+}
+
+/**
+ * Record the start or end of a check-up step in the time log.
+ *
+ * `--start` opens an entry (a second start on a still-open step restarts it);
+ * `--end` closes the latest open entry of that step and fills in `minutes`.
+ * `at` overrides the clock (ISO timestamp) for back-filling and tests.
+ *
+ * @returns the updated log and the entry touched
+ * @throws when the step is unknown, `--end` finds no open entry, or `at` is not a date
+ */
+export function logStep(log, step, mark, at) {
+  if (!STEPS.includes(step)) throw new Error(`unknown step "${step}"; use one of ${STEPS.join(', ')}`);
+  const when = at ? new Date(at) : new Date();
+  if (Number.isNaN(when.getTime())) throw new Error(`--at must be an ISO timestamp, got "${at}"`);
+  const iso = when.toISOString();
+  const open = [...log.steps].reverse().find((s) => s.step === step && !s.endedAt);
+  let entry;
+  if (mark === 'start') {
+    if (open) { open.startedAt = iso; entry = open; }
+    else { entry = { step, startedAt: iso, endedAt: null, minutes: null }; log.steps.push(entry); }
+  } else {
+    if (!open) throw new Error(`no open "${step}" entry to end; run --log-step ${step} --start first`);
+    if (when.getTime() < new Date(open.startedAt).getTime()) throw new Error(`end (${iso}) is before start (${open.startedAt})`);
+    open.endedAt = iso;
+    open.minutes = Math.round((when.getTime() - new Date(open.startedAt).getTime()) / 6000) / 10;
+    entry = open;
+  }
+  return { log, entry };
+}
+
+/** Fold a time log into the shape the report document carries: closed steps with minutes, plus the total. */
+export function summariseTimelog(log) {
+  const steps = log.steps.map((s) => ({ step: s.step, startedAt: s.startedAt, endedAt: s.endedAt, minutes: s.minutes }));
+  const closed = steps.filter((s) => s.endedAt);
+  const totalMinutes = Math.round(closed.reduce((a, s) => a + (s.minutes || 0), 0) * 10) / 10;
+  return { steps, totalMinutes, open: steps.filter((s) => !s.endedAt).map((s) => s.step) };
 }
 
 /** Read intake answers from a plain document or from app-data's `{ success, data }` output. */
@@ -119,7 +174,7 @@ function out(obj, code) {
 }
 
 function usage() {
-  out({ success: false, error: 'usage: report.mjs --app-dir <dir> | --breaks <breaks.json> [--business <name>] [--intake <answers.json>] [--examples N] --out <dir> | --daily "<summary>" [--date YYYY-MM-DD] --out <dir>' }, 1);
+  out({ success: false, error: 'usage: report.mjs --app-dir <dir> | --breaks <breaks.json> [--business <name>] [--intake <answers.json>] [--examples N] --out <dir> | --daily "<summary>" [--date YYYY-MM-DD] --out <dir> | --log-step <intake|connect|analyse|report|daily> --start|--end [--at <iso>] --out <dir>' }, 1);
 }
 
 function main(argv) {
@@ -135,14 +190,39 @@ function main(argv) {
     else if (a === '--out') o.out = next();
     else if (a === '--daily') o.daily = next();
     else if (a === '--date') o.date = next();
+    else if (a === '--log-step') o.logStep = next();
+    else if (a === '--start') o.mark = 'start';
+    else if (a === '--end') o.mark = 'end';
+    else if (a === '--at') o.at = next();
     else usage();
   }
-  if (!o.appDir && !o.breaks && !o.daily) usage();
-  if ((o.breaks || o.daily) && !o.out) usage();
+  if (!o.appDir && !o.breaks && !o.daily && !o.logStep) usage();
+  if ((o.breaks || o.daily || o.logStep) && !o.out) usage();
+  if (o.logStep && !o.mark) usage();
+  if (o.mark && !o.logStep) usage();
   if (o.date && !/^\d{4}-\d{2}-\d{2}$/.test(o.date)) out({ success: false, error: `--date must be YYYY-MM-DD, got "${o.date}"` }, 1);
   if (!Number.isFinite(o.examples) || o.examples < 0) out({ success: false, error: '--examples needs a number >= 0' }, 1);
 
   const result = { success: true };
+  if (o.logStep) {
+    let log;
+    try {
+      log = readTimelog(o.out);
+    } catch (e) {
+      out({ success: false, error: e.message }, 2);
+    }
+    let entry;
+    try {
+      ({ entry } = logStep(log, o.logStep, o.mark, o.at));
+    } catch (e) {
+      out({ success: false, error: e.message }, o.mark === 'end' && /no open/.test(e.message) ? 2 : 1);
+    }
+    mkdirSync(o.out, { recursive: true });
+    writeFileSync(join(o.out, TIMELOG_FILE), JSON.stringify(log, null, 2));
+    result.timelog = resolve(join(o.out, TIMELOG_FILE));
+    result.entry = entry;
+    result.timing = summariseTimelog(log);
+  }
   if (o.appDir) {
     result.appDir = resolve(o.appDir);
     result.copied = copyApp(o.appDir);
@@ -166,7 +246,13 @@ function main(argv) {
         out({ success: false, error: `${o.intake}: ${e.message}` }, 2);
       }
     }
-    const doc = buildReportDoc(breaks, { business: o.business, intake, examples: o.examples });
+    let timelog = null;
+    try {
+      timelog = readTimelog(o.out);
+    } catch (e) {
+      out({ success: false, error: e.message }, 2);
+    }
+    const doc = buildReportDoc(breaks, { business: o.business, intake, examples: o.examples, timelog });
     const json = JSON.stringify(doc, null, 2);
     if (Buffer.byteLength(json) > MAX_DOC_BYTES) out({ success: false, error: `report document is ${Buffer.byteLength(json)} bytes; lower --examples` }, 2);
     mkdirSync(o.out, { recursive: true });
@@ -175,6 +261,7 @@ function main(argv) {
     result.top3 = doc.top3;
     result.totals = doc.totals;
     result.firstNumber = doc.firstNumber || null;
+    result.timing = doc.timing || null;
     result.next = `app-data --app <appId> --set report current --data-file ${join(o.out, 'report-doc.json')}`;
   }
   if (o.daily) {

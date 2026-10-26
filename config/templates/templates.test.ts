@@ -185,3 +185,37 @@ describe('onboarding starter templates', () => {
     expect(lead?.systemPrompt).toMatch(/briefing/i);
   });
 });
+
+describe('Small Business Check-up template (crewly#1062)', () => {
+  const tmpl = discoverTemplates()
+    .map((t) => ({ ...t, data: JSON.parse(fs.readFileSync(t.filePath, 'utf-8')) }))
+    .find((t) => t.data.id === 'small-business-checkup');
+  const prompts = (): string => (tmpl?.data.members ?? []).map((m: { systemPrompt: string }) => m.systemPrompt).join('\n');
+
+  it('is a free, flat template with a lead, an analyst and a reviewer', () => {
+    expect(tmpl).toBeDefined();
+    expect(tmpl?.data.members.map((m: { name: string }) => m.name)).toEqual(['Checkup Lead', 'Data Analyst', 'Reviewer']);
+    expect(tmpl?.data).not.toHaveProperty('workflows');
+    expect(tmpl?.data).not.toHaveProperty('hierarchical');
+    expect(tmpl?.data).not.toHaveProperty('onboarding');
+  });
+
+  it('wires the three check-up skills and the App commands', () => {
+    for (const skill of ['checkup-report', 'ingest-exports', 'checkup-analyse', 'publish-app', 'app-data']) {
+      expect(prompts()).toContain(skill);
+    }
+  });
+
+  it('logs every step and makes the reviewer removable', () => {
+    expect(prompts()).toMatch(/--log-step/);
+    const reviewer = tmpl?.data.members[2];
+    expect(reviewer?.systemPrompt).toMatch(/optional/i);
+    expect(reviewer?.systemPrompt).toMatch(/removes you from the team/);
+    expect(tmpl?.data.members[0].systemPrompt).toMatch(/if there is no Reviewer/i);
+  });
+
+  it('keeps people data out of chat and the App', () => {
+    expect(prompts()).toMatch(/Never paste the whole list of people/);
+    expect(prompts()).toMatch(/--hash-names/);
+  });
+});

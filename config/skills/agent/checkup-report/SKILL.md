@@ -1,7 +1,7 @@
 ---
 name: Check-up Report
-description: The intake and report steps of the small-business check-up as one Crewly App. Copies the bundled App page (five intake questions, the report with the top 3 breaks and what an agent could do, a 7-day daily summary) into the project for publish-app, turns checkup-analyse's breaks.json into the App's report document (with the number the owner asked to see first), and writes daily-summary documents for app-data.
-version: 1.0.0
+description: The intake and report steps of the small-business check-up as one Crewly App. Copies the bundled App page (five intake questions, the report with the top 3 breaks and what an agent could do, a 7-day daily summary) into the project for publish-app, turns checkup-analyse's breaks.json into the App's report document (with the number the owner asked to see first), writes daily-summary documents for app-data, and keeps a per-step time log (--log-step) the report shows.
+version: 1.1.0
 category: productivity
 skillType: claude-skill
 assignableRoles:
@@ -12,6 +12,7 @@ triggers:
   - publish the check-up
   - intake questions
   - daily check-up summary
+  - log a check-up step
 tags:
   - check-up
   - small-business
@@ -84,10 +85,26 @@ bash app-data --app <appId> --set daily 2026-10-27 --data-file ./checkup-data/da
 Say what changed and what was done, in the owner's language, under 300
 characters. Seven entries, then stop unless the owner asks for more.
 
-## Time log
+The free **Small Business Check-up** team template (`small-business-checkup`)
+runs these steps with a Checkup Lead, a Data Analyst and an optional Reviewer
+who checks `report-doc.json` before it is published; remove the Reviewer from
+the team to skip that step.
 
-Record the start and end of each step (intake, connect, analyse, report) in
-your work notes; the check-up is measured by how long it really takes.
+## Time log — how long the check-up really took
+
+Mark the start and end of every step; the report shows the minutes per step
+and the total, and the owner sees them under "How long it took".
+
+```bash
+bash execute.sh --log-step intake --start --out ./checkup-data     # steps: intake, connect, analyse, report, daily
+bash execute.sh --log-step intake --end --out ./checkup-data
+```
+
+`--out` is the same directory as the report; the log is `timelog.json` there
+and `--breaks` folds it in as `timing` (closed steps with minutes, the total,
+and any step still open). A second `--start` on an open step restarts it;
+`--end` with no open entry fails (exit 2) so a forgotten start is noticed.
+`--at <iso>` back-fills a time you know. One `daily` entry per day is fine.
 
 ## Report back
 
