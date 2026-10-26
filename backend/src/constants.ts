@@ -7760,6 +7760,14 @@ export const DECISION_WORDING_CONSTANTS = {
  * questions posted by the responsible agent's own Slack bot as a Block Kit
  * card, answered with a button, a reaction or a thread reply.
  */
+/** The notice sent when an agent's reply to an owner-answered decision is refused (CREW-372). */
+export const REFUSED_DECISION_REPLY_CONSTANTS = {
+	/** One notice per decision per this window (ms) */
+	NOTICE_WINDOW_MS: 30 * 60 * 1000,
+	/** Most entries the rate-limit map keeps before old ones are dropped */
+	MAX_TRACKED: 200,
+} as const;
+
 export const DECISION_CONSTANTS = {
 	/**
 	 * Layout revision of the card blocks. Bump whenever the card layout changes

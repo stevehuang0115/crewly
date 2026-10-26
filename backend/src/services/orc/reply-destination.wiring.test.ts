@@ -12,6 +12,7 @@ import {
   resolveSlackPlace,
   type ReplyDeliveryDeps,
 } from './reply-destination.wiring.js';
+import { resetRefusedReplyNoticesForTesting } from './refused-decision-reply-notice.js';
 import { AgentPromptReferenceService } from './agent-prompt-reference.service.js';
 
 function resolver(over: Partial<ReplyResolverDeps> = {}): ReplyResolverDeps {
@@ -184,6 +185,59 @@ describe('deliverReply — CREW-335: a reply to a decision whose card has no cha
     expect(error).not.toMatch(/may not be a member/);
     expect(error).toMatch(/could not post it into its Slack thread/);
     expect(error).not.toMatch(/reply --decision D-457/);
+  });
+
+  describe('CREW-372: the lead is told when every fallback fails', () => {
+    const notice = () => ({
+      decision: jest.fn(async () => ({ status: 'resolved', card: { slackChannelId: 'C0CE00001', threadTs: '1791427303.380879' } })),
+      leadOf: jest.fn(async () => 'sam'),
+      tell: jest.fn(async () => true),
+      postToCard: jest.fn(async () => true),
+      now: () => Date.now(),
+    });
+    beforeEach(() => resetRefusedReplyNoticesForTesting());
+
+    it('every route refused → one notice to the lead naming D-n, the agent and the step', async () => {
+      const n = notice();
+      const post = jest.fn(async () => { throw new Error('boom'); });
+      const d = deps({ deliverToConversation: jest.fn(async () => null), workDestination: async () => work(post as never), refusedReplyNotice: n }, decisionResolver);
+      const r = await deliverReply({ session: 'nova', content: 'done', reference: { decisionId: 'D-457' } }, d);
+      expect(r.ok).toBe(false);
+      expect(n.tell).toHaveBeenCalledTimes(1);
+      const [to, text] = n.tell.mock.calls[0] as unknown as [string, string];
+      expect(to).toBe('sam');
+      expect(text).toMatch(/D-457/);
+      expect(text).toMatch(/nova/);
+      expect(text).toMatch(/Slack thread/);
+    });
+
+    it('a fallback delivered it → no notice', async () => {
+      const n = notice();
+      const post = jest.fn(async (r: { target: string }) => ({ channelId: r.target, messageTs: '9.9' }));
+      const d = deps({ deliverToConversation: jest.fn(async () => null), workDestination: async () => work(post as never), refusedReplyNotice: n }, decisionResolver);
+      const r = await deliverReply({ session: 'nova', content: 'done', reference: { decisionId: 'D-457' } }, d);
+      expect(r.ok).toBe(true);
+      expect(n.tell).not.toHaveBeenCalled();
+      expect(n.postToCard).not.toHaveBeenCalled();
+    });
+
+    it('a refused reply that is not about a decision → no notice', async () => {
+      const n = notice();
+      const d = deps({ deliverToConversation: jest.fn(async () => null), refusedReplyNotice: n }, { ownsConversation: async () => false });
+      const r = await deliverReply({ session: 'nova', content: 'x', reference: { ticket: 'TKT-187' } }, d);
+      expect(r.ok).toBe(false);
+      expect(n.decision).not.toHaveBeenCalled();
+      expect(n.tell).not.toHaveBeenCalled();
+    });
+
+    it('a failing notice does not change what the agent is told', async () => {
+      const n = { ...notice(), decision: jest.fn(async () => { throw new Error('store down'); }) };
+      const post = jest.fn(async () => { throw new Error('boom'); });
+      const d = deps({ deliverToConversation: jest.fn(async () => null), workDestination: async () => work(post as never), refusedReplyNotice: n }, decisionResolver);
+      const r = await deliverReply({ session: 'nova', content: 'a different reply, not a duplicate', reference: { decisionId: 'D-457' } }, d);
+      expect(r.ok).toBe(false);
+      expect(!r.ok && r.error).toMatch(/could not post it into its Slack thread/);
+    });
   });
 
   it('a genuine membership failure still says so', async () => {
