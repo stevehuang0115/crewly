@@ -115,7 +115,17 @@ What an agent reads through a person's grant is that person's data. A wiki page 
 - **Reading** (`isVisibleTo(fm, viewerRole, viewerPerson)`): a page with `visible_to_people` is hidden from any `viewerPerson` not on the list; `undefined` (the owner's dashboard, an unknown session) and `owner` read everything; the role list still applies to a listed person. `viewerPerson` comes from `viewerPersonOf(session)` = the session's acting-for person (`owner` → undefined) on `POST /api/wiki/query`, memory recall's BM25 wiki search, and the meeting wiki search. The dashboard's own search routes carry no viewer and show everything to the owner.
 - **Owner-only instance**: every turn acts for `owner`, so pages get `visible_to_people: [owner]` and every reader is the owner — no visible change until a member appears.
 
-Not covered: tagging the agent's reply to a channel (the audience check) and recall from another machine.
+Not covered: recall from another machine.
+
+## Private-sourced replies: the audience check (#969, 2026-10-26)
+
+A reply an agent writes shortly after reading someone's grant draws on that person's data, so it does not go where other people read.
+
+- **Where** (`services/orc/reply-audience.ts`, called from `deliverReply` after the destination resolver and before any post): when the private-source tracker has people other than `owner` for the session and the resolved destination is a shared place, the reply is moved to the agent's owner DM (`source: 'owner-dm'`), opened with `_Held from #room: this draws on Alice's data, which only you and they may see. Say "share it" and I will post it there._`. With no owner DM the reply is held and the agent gets the reason and what to do (`held: true`, never a silent drop).
+- **Shared place**: a chat-v2 conversation that is not a `dm` (or unknown to chat-v2) and mirrors no Slack DM; a Slack channel thread, ticket thread or new top-level post. **Private**: the owner DM, a Slack DM, an internal message to another agent (`kind: 'agent'`).
+- **Audit**: `connector.private_output.redirected` (target = the owner DM) or `connector.private_output.held`, both with `after.people` and `after.heldFrom`, under Settings › Activity filter `connector.private_output.`.
+- **Owner-only instance**: the tracker only ever holds `owner`, so nothing changes. The deps are optional (`ReplyDeliveryDeps.audience`); tests without them see the old behaviour.
+- Not covered: the "Share this in #channel?" decision card (the note asks the owner to say so in the DM instead), and a colleague re-posting an internal message it received.
 
 ## Private-sourced project memory (#969, 2026-10-26)
 

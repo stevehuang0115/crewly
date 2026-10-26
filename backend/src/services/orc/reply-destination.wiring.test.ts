@@ -66,6 +66,31 @@ describe('deliverReply', () => {
     expect(d.deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'room-ce', thread: 'C0CE00001:1.1', metadata: { deliversTicket: 'TKT-187' } }));
   });
 
+  it('a reply drawing on a person\'s private data goes to the owner DM, not the shared room (#969)', async () => {
+    const record = jest.fn();
+    const d = deps({
+      audience: {
+        recentPeople: (s) => (s === 'owen' ? ['UALICE'] : []),
+        conversationKind: (id) => (id === 'dm-owen' ? 'dm' : 'shared'),
+        ownerDm: async () => 'dm-owen',
+        personName: () => 'Alice',
+        record,
+      },
+      conversationPlace: (id) => (id === 'room-ce' ? '#ce' : null),
+    });
+    const r = await deliverReply({ session: 'owen', content: 'Her Q3 invoices total 12k', reference: { ticket: 'TKT-187' } }, d);
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.destination).toEqual(expect.objectContaining({ kind: 'conversation', conversationId: 'dm-owen', source: 'owner-dm' }));
+    expect(d.deliver).toHaveBeenCalledTimes(1);
+    expect(d.deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'dm-owen', content: expect.stringMatching(/^_Held from #ce: this draws on Alice's data.*\n\nHer Q3 invoices total 12k$/s) }));
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ action: 'connector.private_output.redirected' }));
+
+    // Nobody's grant read: the same reply lands in the ticket thread as before.
+    const d2 = deps({ audience: { recentPeople: () => [], conversationKind: () => 'shared', ownerDm: async () => 'dm-owen', record } });
+    const r2 = await deliverReply({ session: 'quinn', content: 'Her Q3 invoices total 12k', reference: { ticket: 'TKT-187' } }, d2);
+    expect(r2.ok && r2.destination).toEqual(expect.objectContaining({ conversationId: 'room-ce' }));
+  });
+
   it('never shows run-trace markers to the owner', async () => {
     const d = deps();
     await deliverReply({ session: 'owen', content: 'preview: https://x\n[TRACE:tr-20261003-0123abcd]', reference: { ticket: 'TKT-187' } }, d);
