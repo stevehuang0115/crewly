@@ -80,6 +80,18 @@ const CONFIRM_FOOTER = /(Esc to cancel|Enter to confirm|Press enter to confirm|e
 const BUSY_MARKER = /esc to interrupt/i;
 
 /**
+ * Claude Code with a background (fork) agent still running. The main agent
+ * sits at its prompt — no spinner, no "esc to interrupt" — while the fork
+ * works, so the screen looks idle; the status line and the agent panel say
+ * otherwise. Stopping or restarting such an agent kills the fork's work
+ * (2026-10-26: a 33-minute film render).
+ */
+const BACKGROUND_WORK_MARKER = /(Waiting for \d+ background agents? to finish|^\s*◯\s+fork\s+\S)/im;
+
+/** Evidence name for {@link BACKGROUND_WORK_MARKER}; the activity monitor reads it. */
+export const BACKGROUND_AGENT_EVIDENCE = 'screen:background-agent';
+
+/**
  * Claude Code's rm safety prompt, shown even in bypass-permissions mode when
  * the rm target cannot be resolved statically. The harness declines it.
  */
@@ -170,7 +182,9 @@ export function detectPromptOnScreen(screen: string): {
 } {
 	const { text, lines } = bottomRegion(screen);
 	const evidence: string[] = [];
-	const busy = BUSY_MARKER.test(text);
+	const spinner = BUSY_MARKER.test(text);
+	const backgroundWork = BACKGROUND_WORK_MARKER.test(text);
+	const busy = spinner || backgroundWork;
 	let selfAnswer: SelfAnswer | undefined;
 
 	const selector = SELECTOR_LINE.test(text);
@@ -198,8 +212,11 @@ export function detectPromptOnScreen(screen: string): {
 		kind = 'menu';
 		evidence.push('screen:selection-dialog');
 	}
-	if (busy) {
+	if (spinner) {
 		evidence.push('screen:busy-marker');
+	}
+	if (backgroundWork) {
+		evidence.push(BACKGROUND_AGENT_EVIDENCE);
 	}
 	return { kind, evidence, busy, linesExamined: lines, ...(selfAnswer ? { selfAnswer } : {}) };
 }

@@ -14,7 +14,7 @@ import type { AgentEvent } from '../../types/event-bus.types.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { parseRuntimeTokens } from '../monitoring/runtime-token-parser.service.js';
 import { getSettingsService } from '../settings/settings.service.js';
-import { computeAgentAttention, declineKeystrokes, type AttentionResult } from './agent-attention.js';
+import { computeAgentAttention, declineKeystrokes, BACKGROUND_AGENT_EVIDENCE, type AttentionResult } from './agent-attention.js';
 import type { AgentRegistrationService } from '../agent/agent-registration.service.js';
 import { markWaiting, clearWaiting, getWaiting } from './agent-attention-registry.js';
 import { EscalationRouterService } from '../v3/escalation-router.service.js';
@@ -342,22 +342,24 @@ export class ActivityMonitorService {
    * @param backend - Session backend to read screen and title from
    * @param identity - Agent identity for the event
    * @param now - ISO timestamp of this poll
+   * @returns The attention verdict for this poll (its evidence tells the
+   *   caller about background agents), or null when the screen could not be read
    */
   private async evaluateAttention(
     backend: ISessionBackend,
     identity: { teamId: string; teamName: string; memberId: string; memberName: string; sessionName: string },
     now: string,
-  ): Promise<void> {
+  ): Promise<AttentionResult | null> {
     try {
       const screen = backend.captureOutput(identity.sessionName, AGENT_ATTENTION_CONSTANTS.CAPTURE_LINES);
       const title = backend.getTerminalTitle?.(identity.sessionName) ?? '';
       const result = computeAgentAttention({ screen, title });
       if (result.verdict !== 'waiting_on_human' || !result.kind) {
         await this.clearAttention(identity.sessionName, identity, now);
-        return;
+        return result;
       }
       if (result.selfAnswer && this.selfAnswerPrompt(backend, identity.sessionName, screen, result, now)) {
-        return;
+        return result;
       }
       const isNew = markWaiting({
         sessionName: identity.sessionName,
@@ -366,7 +368,7 @@ export class ActivityMonitorService {
         evidence: result.evidence,
         ...(result.titleLabel ? { titleLabel: result.titleLabel } : {}),
       });
-      if (!isNew) return;
+      if (!isNew) return result;
       this.logger.warn('Agent is waiting on a human (blocked on a prompt)', {
         sessionName: identity.sessionName,
         kind: result.kind,
@@ -382,11 +384,13 @@ export class ActivityMonitorService {
         evidence: result.evidence,
         ...(result.titleLabel ? { titleLabel: result.titleLabel } : {}),
       });
+      return result;
     } catch (error) {
       this.logger.warn('waiting_on_human evaluation failed (non-fatal)', {
         sessionName: identity.sessionName,
         error: error instanceof Error ? error.message : String(error),
       });
+      return null;
     }
   }
 
@@ -828,11 +832,13 @@ export class ActivityMonitorService {
                 continue;
               }
 
-              // waiting_on_human (#815): is the agent blocked on a prompt?
-              await this.evaluateAttention(backend, {
+              // waiting_on_human (#815): is the agent blocked on a prompt? The same
+              // screen read says whether a background (fork) agent is still running.
+              const attention = await this.evaluateAttention(backend, {
                 teamId: team.id, teamName: team.name, memberId: member.id, memberName: member.name, sessionName: member.sessionName,
               }, now);
               attentionChecked.add(member.sessionName);
+              const backgroundWork = attention?.evidence.includes(BACKGROUND_AGENT_EVIDENCE) ?? false;
 
               // Antigravity can hang on a finished "Running command..." spinner: Escape un-sticks it.
               if (effectiveRuntimeType(member.sessionName, member.runtimeType ?? '') === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
@@ -855,14 +861,17 @@ export class ActivityMonitorService {
                 }
               }
 
-              // A silent screen mid-turn (long tool call, long tool input) is not idle.
+              // A silent screen mid-turn (long tool call, long tool input) is not idle,
+              // and neither is a prompt with a background (fork) agent still running:
+              // the runtime reports no turn then, but stopping the agent kills the fork.
               const memberMidTurn = this.isRuntimeMidTurn(member.sessionName);
-              let newWorkingStatus: WorkingStatus = outputChanged || memberMidTurn ? 'in_progress' : 'idle';
+              let newWorkingStatus: WorkingStatus = outputChanged || memberMidTurn || backgroundWork ? 'in_progress' : 'idle';
 
               // Auto-reset: if in_progress for longer than MAX_IN_PROGRESS_MS, force idle
-              // (never while the runtime reports a turn — see the orchestrator branch)
+              // (never while the runtime reports a turn — see the orchestrator branch —
+              // or a background agent is running; a long render is not a stuck spinner)
               const memberKey = member.sessionName;
-              if (newWorkingStatus === 'in_progress' && !memberMidTurn) {
+              if (newWorkingStatus === 'in_progress' && !memberMidTurn && !backgroundWork) {
                 let busySince = this.busyTransitionTimestamps.get(memberKey);
                 if (!busySince) {
                   // Seed timestamp when status is already in_progress but no transition was

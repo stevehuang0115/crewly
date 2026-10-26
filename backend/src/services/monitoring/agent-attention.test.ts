@@ -16,6 +16,7 @@ import {
 	computeAgentAttention,
 	declineKeystrokes,
 	detectPromptOnScreen,
+	BACKGROUND_AGENT_EVIDENCE,
 } from './agent-attention.js';
 import { AGENT_ATTENTION_CONSTANTS } from '../../constants.js';
 import { PLAN_MODE_PATTERNS } from '../continuation/patterns/waiting-patterns.js';
@@ -74,6 +75,28 @@ describe('agent attention: captured screen fixtures', () => {
 	it.each(fixtures)('$file: selfAnswer is $selfAnswer', (f) => {
 		const r = computeAgentAttention({ screen: f.screen, title: f.title });
 		expect(r.selfAnswer).toBe(f.selfAnswer);
+	});
+
+	describe('background (fork) agents', () => {
+		const byFile = (file: string): string => fixtures.find((f) => f.file === file)!.screen;
+
+		it('a prompt with a fork still running is busy, not idle, and says why', () => {
+			const r = computeAgentAttention({ screen: byFile('claude-idle-background-agent.txt') });
+			expect(r.verdict).toBe('busy');
+			expect(r.evidence).toContain(BACKGROUND_AGENT_EVIDENCE);
+			expect(r.evidence).not.toContain('screen:busy-marker');
+		});
+
+		it('a dialog raised while a fork runs is still waiting_on_human, with the fork noted', () => {
+			const r = computeAgentAttention({ screen: byFile('claude-dangerous-rm.txt') });
+			expect(r.verdict).toBe('waiting_on_human');
+			expect(r.evidence).toContain(BACKGROUND_AGENT_EVIDENCE);
+		});
+
+		it('an idle prompt without the agent panel is not busy', () => {
+			expect(computeAgentAttention({ screen: byFile('claude-idle.txt') }).evidence).not.toContain(BACKGROUND_AGENT_EVIDENCE);
+			expect(detectPromptOnScreen('  ⏺ main\n  ◯ fork\n').busy).toBe(false); // a panel row needs a label
+		});
 	});
 
 	describe('self-answered prompts', () => {
