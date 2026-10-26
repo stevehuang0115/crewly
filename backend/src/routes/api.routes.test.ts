@@ -65,6 +65,7 @@ jest.mock('../controllers/intent-task/intent-task.routes.js', () => ({ createInt
 jest.mock('../controllers/task-pool/task-pool.routes.js', () => ({ createTaskPoolRouter: () => Router(), createTaskScoreRouter: () => Router() }));
 jest.mock('../controllers/request/request.routes.js', () => ({ createRequestRouter: () => Router() }));
 jest.mock('../controllers/reconciler/reconciler.routes.js', () => ({ createReconcilerRouter: () => Router() }));
+jest.mock('../controllers/subagents/subagents.routes.js', () => ({ createSubagentsRouter: () => Router() }));
 jest.mock('../controllers/team-health/team-health.routes.js', () => ({ createTeamHealthRouter: () => Router() }));
 jest.mock('../controllers/fission/fission.routes.js', () => ({ createFissionRouter: () => Router() }));
 jest.mock('../controllers/mission/mission-policy.routes.js', () => ({ createMissionPolicyRouter: () => Router() }));

@@ -53,6 +53,7 @@ import { createHarnessRouter } from '../controllers/harness/harness.routes.js';
 import { createSkillSetupRouter } from '../controllers/skill-setup/skill-setup.routes.js';
 import { createBundleRouter } from '../controllers/bundle/bundle.routes.js';
 import { createReconcilerRouter } from '../controllers/reconciler/reconciler.routes.js';
+import { createSubagentsRouter } from '../controllers/subagents/subagents.routes.js';
 import { createWorktreeJanitorRouter } from '../controllers/worktree-janitor/worktree-janitor.routes.js';
 import { createTeamHealthRouter } from '../controllers/team-health/team-health.routes.js';
 import { createUsageLedgerRouter } from '../controllers/usage-ledger/usage-ledger.routes.js';
@@ -272,6 +273,8 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Reconciler routes for status monitoring, manual trigger, and history
   router.use('/reconciler', createReconcilerRouter());
+  // Bounded in-process helpers for agents on any runtime (#1317)
+  router.use('/subagents', createSubagentsRouter());
 
   // Worktree janitor: dry-run listing (GET /worktrees) and manual pass (POST /run)
   router.use('/worktree-janitor', createWorktreeJanitorRouter());
