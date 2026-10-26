@@ -70,6 +70,7 @@ import {
   type WorkItemType,
   type WorkItemOwner,
   DEFAULT_MAX_RETRIES,
+  REVIEW_ESCALATED_TO_OWNER_KEY,
 } from '../../types/v2/work-item.types.js';
 import { isMissionExecutable, type Mission } from '../../types/v2/mission.types.js';
 import { getMissionPath } from '../v3/mission-paths.js';
@@ -88,6 +89,10 @@ import type {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+/** Why the owner is asked to review work the orchestrator did itself. */
+const ORC_OWN_WORK_REVIEW_REASON =
+  'The orchestrator did this work itself and has no separate reviewer; it cannot verify its own work.';
 
 /**
  * Event types the bridge subscribes to. Listed in the same order as the
@@ -250,6 +255,14 @@ export interface BridgeDependencies {
    * so older callers keep the orchestrator fallback.
    */
   loadTeams?: () => Promise<Team[]>;
+  /**
+   * Asks the owner to review a finished item that has no other reviewer: the
+   * orchestrator did the work itself and the gate refuses self-review. The
+   * bridge stamps {@link REVIEW_ESCALATED_TO_OWNER_KEY} before calling it.
+   * Optional: without it the item is only stamped and the owner receipt
+   * lists it.
+   */
+  escalateReviewToOwner?: (wi: WorkItem) => Promise<void>;
   /** Optional logger override (defaults to component logger). */
   logger?: ComponentLogger;
 }
@@ -275,6 +288,8 @@ export class EventToWorkItemBridge {
   private readonly loadMission: (missionId: string) => Promise<Mission | null>;
   private readonly loadTeam: (teamId: string) => Promise<Team | null>;
   private readonly loadTeams: (() => Promise<Team[]>) | null;
+  /** Owner review escalation for work with no other reviewer (null = stamp only). */
+  private readonly escalateReviewToOwner: ((wi: WorkItem) => Promise<void>) | null;
   private readonly logger: ComponentLogger;
   private unsubscribers: InProcessUnsubscribe[] = [];
   private started = false;
@@ -292,6 +307,7 @@ export class EventToWorkItemBridge {
     this.loadMission = deps.loadMission;
     this.loadTeam = deps.loadTeam;
     this.loadTeams = deps.loadTeams ?? null;
+    this.escalateReviewToOwner = deps.escalateReviewToOwner ?? null;
     this.logger =
       deps.logger ?? LoggerService.getInstance().createComponentLogger('EventToWorkItemBridge');
   }
@@ -328,6 +344,25 @@ export class EventToWorkItemBridge {
         return teams.find((t) => t.id === teamId) ?? null;
       },
       loadTeams: () => storage.getTeams(),
+      escalateReviewToOwner: async (wi: WorkItem) => {
+        const { EscalationRouterService } = await import('../v3/escalation-router.service.js');
+        await EscalationRouterService.getInstance().escalateUnreviewedToOwner(
+          {
+            id: wi.id,
+            title: wi.title,
+            type: wi.type,
+            target: wi.target ?? null,
+            retryCount: wi.retryCount ?? 0,
+            maxRetries: wi.maxRetries ?? DEFAULT_MAX_RETRIES,
+            error: wi.error ?? null,
+            requestId: wi.requestId ?? null,
+            missionId: wi.missionId ?? null,
+            parentWorkItemId: wi.parentWorkItemId ?? null,
+          },
+          0,
+          { reason: ORC_OWN_WORK_REVIEW_REASON },
+        );
+      },
     });
   }
 
@@ -486,6 +521,16 @@ export class EventToWorkItemBridge {
         worker: sourceWI.target,
         requestId: sourceWI.requestId,
       });
+    }
+    if (reviewer === sourceWI.target) {
+      // The orchestrator did this work itself and leads no team with another
+      // lead in it: the fallback reviewer is the worker. A review item
+      // targeted at it is refused by the gate as self_review on every
+      // attempt and redelivered every 5 min (2026-10-26, WorkItem 599125f5:
+      // the orc cancelled the review by hand). The chain's last step is the
+      // owner (#813), so the review goes there now instead of after the TTL.
+      await this.routeOwnWorkReviewToOwner(sourceWI);
+      return;
     }
     const target = reviewer;
     const verifyId = `${sourceWI.id}:verify:${sourceWI.id}`;
@@ -1061,6 +1106,38 @@ export class EventToWorkItemBridge {
       if (c?.sessionName && c.sessionName !== worker) return c.sessionName;
     }
     return null;
+  }
+
+  /**
+   * Route the review of work the orchestrator did itself to the owner: stamp
+   * the item as owner-escalated (the owner receipt lists it; the orchestrator
+   * stays refused as self-reviewer) and raise the pending escalation whose
+   * resolution renders the owner's verdict. Best-effort: a failed escalation
+   * is logged, the stamp alone still keeps the item visible.
+   *
+   * @param sourceWI - The finished item whose worker is its own fallback reviewer
+   */
+  private async routeOwnWorkReviewToOwner(sourceWI: WorkItem): Promise<void> {
+    this.logger.info('Worker has no separate reviewer (the orchestrator did the work) — review goes to the owner', {
+      sourceWorkItemId: sourceWI.id,
+      worker: sourceWI.target,
+      requestId: sourceWI.requestId,
+    });
+    try {
+      const stamped = await this.taskPool.stampReviewEscalation(sourceWI.id, REVIEW_ESCALATED_TO_OWNER_KEY);
+      if (!stamped) {
+        this.logger.warn('Could not stamp the owner review escalation (item no longer awaiting review?)', {
+          sourceWorkItemId: sourceWI.id,
+        });
+        return;
+      }
+      await this.escalateReviewToOwner?.(sourceWI);
+    } catch (err) {
+      this.logger.warn('Owner review escalation failed (non-fatal)', {
+        sourceWorkItemId: sourceWI.id,
+        error: formatError(err),
+      });
+    }
   }
 
   /**
