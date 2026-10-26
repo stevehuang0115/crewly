@@ -27,6 +27,11 @@ jest.mock('../../services/session/index.js', () => ({
 	// resetAllMocks does not wipe it.
 	createSessionCommandHelper: (backend: { getSession: (n: string) => { write: (d: string) => void } }) => ({
 		sendMessage: async (name: string, message: string): Promise<void> => {
+			if (message === 'HOLD') {
+				// An earlier paste of ours is still settling in the box.
+				const { TuiPasteHoldError } = jest.requireActual<typeof import('../../services/session/tui-input-guard.js')>('../../services/session/tui-input-guard.js');
+				throw new TuiPasteHoldError('just-submitted');
+			}
 			if (message === 'GUARD') {
 				const { TuiInputGuardError } = jest.requireActual<typeof import('../../services/session/tui-input-guard.js')>('../../services/session/tui-input-guard.js');
 				throw new TuiInputGuardError('before-submit', { state: 'foreign', text: '按这个草稿回吧GUARD', lineCount: 1 });
@@ -536,6 +541,23 @@ describe('TerminalController', () => {
 			jest.useRealTimers();
 			expect(mockRes.status).toHaveBeenCalledWith(409);
 			expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'input_not_ours' }));
+			expect(mockSession.write).not.toHaveBeenCalledWith('\r');
+		});
+
+		// 2026-10-26 14:21: Quinn's first send to Sam got a 500 ("Just submitted
+		// an earlier paste of ours; holding this message") and was resent by
+		// hand. A settling input box queues the message like a mid-turn hold.
+		it('queues with 202 when an earlier paste of ours is still settling in the box', async () => {
+			mockReq = {
+				params: { sessionName: 'test-session' } as any,
+				body: { data: 'HOLD', mode: 'message' },
+			};
+			mockGetQueueSize.mockReturnValue(1);
+			await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+			expect(mockEnqueue).toHaveBeenCalledWith('test-session', 'HOLD');
+			expect(mockRes.status).toHaveBeenCalledWith(202);
+			expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ queued: true, position: 1, queueSize: 1 }));
+			expect(mockRes.status).not.toHaveBeenCalledWith(500);
 			expect(mockSession.write).not.toHaveBeenCalledWith('\r');
 		});
 
