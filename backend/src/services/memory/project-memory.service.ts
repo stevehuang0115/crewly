@@ -28,10 +28,20 @@ import { MEMORY_CONSTANTS, CREWLY_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 import { isTaskCompletionLog } from './task-log-filter.js';
+import { mergePeople, personMayView } from '../people/private-source.service.js';
 
 /**
  * Search results from cross-entity search
  */
+/**
+ * Who is reading project memory (#969). An entry tagged `visibleToPeople` is
+ * hidden from any person not on its list; the owner (no `person`) sees all.
+ */
+export interface ProjectMemoryViewer {
+  /** Acting-for person of the reading session; undefined for the owner */
+  person?: string;
+}
+
 export interface SearchResults {
   patterns: PatternEntry[];
   decisions: DecisionEntry[];
@@ -57,7 +67,7 @@ export interface IProjectMemoryService {
   recordLearning(projectPath: string, agentId: string, agentRole: string, learning: string, metadata?: Record<string, unknown>): Promise<void>;
   getRecentLearnings(projectPath: string, limit?: number): Promise<string>;
   generateProjectContext(projectPath: string): Promise<string>;
-  searchAll(projectPath: string, query: string): Promise<SearchResults>;
+  searchAll(projectPath: string, query: string, viewer?: ProjectMemoryViewer): Promise<SearchResults>;
   getProjectMemory(projectPath: string): Promise<ProjectMemory | null>;
   addTaskHistory(projectPath: string, entry: TaskHistoryEntry): Promise<string>;
   getTaskHistory(projectPath: string, capability?: string): Promise<TaskHistoryEntry[]>;
@@ -389,6 +399,10 @@ export class ProjectMemoryService implements IProjectMemoryService {
         existing.files = [...new Set([...(existing.files || []), ...pattern.files])];
         updated = true;
       }
+      if (pattern.visibleToPeople && pattern.visibleToPeople.length > 0) {
+        existing.visibleToPeople = mergePeople(existing.visibleToPeople, pattern.visibleToPeople);
+        updated = true;
+      }
       if (updated) {
         await this.savePatterns(projectPath, patterns);
       }
@@ -509,7 +523,12 @@ export class ProjectMemoryService implements IProjectMemoryService {
         title: decision.title,
         decidedBy: decision.decidedBy,
       });
-      if (this.markDecisionsSuperseded(projectPath, decisions, existing.id, options.supersedes)) {
+      let changed = this.markDecisionsSuperseded(projectPath, decisions, existing.id, options.supersedes);
+      if (decision.visibleToPeople && decision.visibleToPeople.length > 0) {
+        existing.visibleToPeople = mergePeople(existing.visibleToPeople, decision.visibleToPeople);
+        changed = true;
+      }
+      if (changed) {
         await this.saveDecisions(projectPath, decisions);
       }
       return existing.id;
@@ -635,8 +654,16 @@ export class ProjectMemoryService implements IProjectMemoryService {
 
     if (existing) {
       // Update with better solution if provided
+      let changed = false;
       if (gotcha.solution && gotcha.solution.length > (existing.solution?.length || 0)) {
         existing.solution = gotcha.solution;
+        changed = true;
+      }
+      if (gotcha.visibleToPeople && gotcha.visibleToPeople.length > 0) {
+        existing.visibleToPeople = mergePeople(existing.visibleToPeople, gotcha.visibleToPeople);
+        changed = true;
+      }
+      if (changed) {
         await this.saveGotchas(projectPath, gotchas);
       }
       // Observability: surface dedup hits at WARN so regressions are visible (was debug).
@@ -995,8 +1022,9 @@ export class ProjectMemoryService implements IProjectMemoryService {
    * @param query - Search query
    * @returns Search results from all categories
    */
-  public async searchAll(projectPath: string, query: string): Promise<SearchResults> {
+  public async searchAll(projectPath: string, query: string, viewer: ProjectMemoryViewer = {}): Promise<SearchResults> {
     const queryLower = query.toLowerCase();
+    const mayView = (e: { visibleToPeople?: string[] }): boolean => personMayView(e.visibleToPeople, viewer.person);
 
     const [patterns, decisions, gotchas, relationships] = await Promise.all([
       this.getPatterns(projectPath),
@@ -1006,20 +1034,23 @@ export class ProjectMemoryService implements IProjectMemoryService {
     ]);
 
     const matchingPatterns = patterns.filter(p =>
+      mayView(p) && (
       p.title.toLowerCase().includes(queryLower) ||
-      p.description.toLowerCase().includes(queryLower)
+      p.description.toLowerCase().includes(queryLower))
     );
 
     const matchingDecisions = decisions.filter(d =>
+      mayView(d) && (
       d.title.toLowerCase().includes(queryLower) ||
       d.decision.toLowerCase().includes(queryLower) ||
-      d.rationale.toLowerCase().includes(queryLower)
+      d.rationale.toLowerCase().includes(queryLower))
     );
 
     const matchingGotchas = gotchas.filter(g =>
+      mayView(g) && (
       g.title.toLowerCase().includes(queryLower) ||
       g.problem.toLowerCase().includes(queryLower) ||
-      g.solution.toLowerCase().includes(queryLower)
+      g.solution.toLowerCase().includes(queryLower))
     );
 
     const matchingRelationships = relationships.filter(r =>

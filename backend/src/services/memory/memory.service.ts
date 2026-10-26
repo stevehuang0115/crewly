@@ -21,6 +21,7 @@ import { isHiddenFromDefaultRecall } from './role-knowledge-eligibility.js';
 import { isTaskCompletionLog } from './task-log-filter.js';
 import { isNoiseLogBody } from '../wiki/wiki-log-entries.js';
 import { MEMORY_CONSTANTS } from '../../constants.js';
+import { getPrivateSourceTracker } from '../people/private-source.service.js';
 import type {
   RoleKnowledgeEntry,
   RoleKnowledgeCategory,
@@ -898,9 +899,15 @@ export class MemoryService implements IMemoryService {
       throw new Error('projectPath is required for project scope');
     }
 
+    // #969: an entry written shortly after the session read a person's connector
+    // grant is that person's data — readable by them and the owner only.
+    const people = getPrivateSourceTracker().recentPeople(params.agentId);
+    const visibleToPeople = people.length > 0 ? people : undefined;
+
     switch (params.category) {
       case 'pattern':
         return this.projectMemory.addPattern(params.projectPath, {
+          visibleToPeople,
           category: params.metadata?.patternCategory || 'other',
           // P0-SEV defense-in-depth: derive title from content when caller omits
           // metadata.title, instead of a static default that collides on every call.
@@ -916,6 +923,7 @@ export class MemoryService implements IMemoryService {
 
       case 'decision':
         return this.projectMemory.addDecision(params.projectPath, {
+          visibleToPeople,
           title: params.metadata?.title || this.deriveTitleFromContent(params.content, 'Untitled Decision'),
           decision: params.content,
           rationale: params.metadata?.rationale || '',
@@ -926,6 +934,7 @@ export class MemoryService implements IMemoryService {
 
       case 'gotcha':
         return this.projectMemory.addGotcha(params.projectPath, {
+          visibleToPeople,
           title: params.metadata?.title || this.deriveTitleFromContent(params.content, 'Gotcha'),
           problem: params.content,
           solution: params.metadata?.solution || '',
@@ -948,6 +957,7 @@ export class MemoryService implements IMemoryService {
 
       case 'user_preference':
         return this.projectMemory.addPattern(params.projectPath, {
+          visibleToPeople,
           category: 'user_preference',
           title: params.metadata?.title || this.deriveTitleFromContent(params.content, 'User Preference'),
           description: params.content,
@@ -1025,9 +1035,11 @@ export class MemoryService implements IMemoryService {
     // Fetch from project memory
     if ((params.scope === 'project' || params.scope === 'both') && params.projectPath) {
       promises.push(
-        this.projectMemory.searchAll(params.projectPath, params.context).then((searchResults) => {
-          result.projectMemories = this.formatSearchResults(searchResults, params.limit);
-        }),
+        this.projectMemory
+          .searchAll(params.projectPath, params.context, { person: viewerPersonOf(params.agentId) })
+          .then((searchResults) => {
+            result.projectMemories = this.formatSearchResults(searchResults, params.limit);
+          }),
       );
     }
 
