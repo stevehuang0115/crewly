@@ -3,7 +3,9 @@
  */
 import express from 'express';
 import request from 'supertest';
-import { registerUsageRoutes, type UsageControllerDeps } from './usage.controller.js';
+import { clearClaudeWindowCache, registerUsageRoutes, type UsageControllerDeps } from './usage.controller.js';
+import type { ClaudeWindowId } from '../../constants.js';
+import type { ClaudeWindowReport } from '../../services/usage/claude-window.service.js';
 import { SpendCapError } from '../../services/spend/spend-cap.service.js';
 import { UsageBackfillError } from '../../services/usage/usage-backfill.service.js';
 import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
@@ -31,6 +33,66 @@ describe('usage routes', () => {
 	const deps: UsageControllerDeps = { caps: () => caps, stats: () => stats };
 
 	beforeEach(() => jest.clearAllMocks());
+
+	describe('GET /system/usage/claude-window', () => {
+		const report = (windows?: ClaudeWindowId[]): ClaudeWindowReport => ({
+			measuredAt: '2026-10-12T10:00:00.000Z',
+			windows: (windows ?? ['five_hour']).map((id) => ({
+				id,
+				label: id,
+				startedAt: '2026-10-12T05:00:00.000Z',
+				partial: false,
+				turns: 1,
+				input: 1,
+				cachedInput: 0,
+				cacheWrite: 0,
+				output: 1,
+				billable: 2,
+			})),
+			lastLimit: null,
+			filesScanned: 1,
+			truncated: false,
+			estimatedFiveHourCapacity: null,
+		});
+
+		beforeEach(() => clearClaudeWindowCache());
+
+		it('measures the 5-hour window when none is named', async () => {
+			const claudeWindow = jest.fn(async (windows?: ClaudeWindowId[]) => report(windows));
+			const res = await request(app({ ...deps, claudeWindow })).get('/api/system/usage/claude-window');
+
+			expect(res.status).toBe(200);
+			expect(claudeWindow).toHaveBeenCalledWith(undefined);
+			expect(res.body.data.windows).toHaveLength(1);
+		});
+
+		it('passes the windows asked for and drops names it does not know', async () => {
+			const claudeWindow = jest.fn(async (windows?: ClaudeWindowId[]) => report(windows));
+			await request(app({ ...deps, claudeWindow })).get('/api/system/usage/claude-window?windows=seven_day,thirty_day');
+
+			expect(claudeWindow).toHaveBeenCalledWith(['seven_day']);
+		});
+
+		it('builds once for repeated requests, and not at all after a failure is cleared', async () => {
+			const claudeWindow = jest.fn(async (windows?: ClaudeWindowId[]) => report(windows));
+			const server = app({ ...deps, claudeWindow });
+			await request(server).get('/api/system/usage/claude-window');
+			await request(server).get('/api/system/usage/claude-window');
+
+			expect(claudeWindow).toHaveBeenCalledTimes(1);
+		});
+
+		it('answers 500 and does not cache a failed build', async () => {
+			const claudeWindow = jest.fn(async () => {
+				throw new Error('transcripts unreadable');
+			});
+			const server = app({ ...deps, claudeWindow });
+
+			expect((await request(server).get('/api/system/usage/claude-window')).status).toBe(500);
+			await request(server).get('/api/system/usage/claude-window');
+			expect(claudeWindow).toHaveBeenCalledTimes(2);
+		});
+	});
 
 	it('GET /system/usage aggregates with days and groupBy (open to agents, read-only)', async () => {
 		const res = await request(app(deps)).get('/api/system/usage?days=30&groupBy=team,workItem').set('X-Agent-Session', 'dev-1');
