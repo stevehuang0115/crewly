@@ -969,16 +969,13 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
       const { channel } = c.ensureDmChannel({ agentSession: session, principal: { userId: SLACK_AGENT_DM_CONSTANTS.OWNER_USER_ID, source: 'oss' } });
       return channel.id;
     },
+    // The one rule for "this thread is the agent's own work": live items and
+    // items finished within the done grace (crewly#1496: a `--thread` hint
+    // was refused 45 min after the item was verified, while `--work-item`
+    // on the same item resolved to that thread).
     delegatedThread: async (session, slackChannelId, threadTs) => {
-      const { originOfWorkItem: originOf } = await import('./work-item-destination.js');
-      const { TERMINAL_WORK_ITEM_STATUSES } = await import('../../types/v2/work-item.types.js');
-      return (await pool()).some((w) => {
-        if (w.target !== session || TERMINAL_WORK_ITEM_STATUSES.has(w.status)) return false;
-        const o = originOf(w);
-        if (!o || o.kind !== 'owner') return false;
-        const key = parseSlackThreadKey(o.threadTs && o.slackChannelId ? `${o.slackChannelId}:${o.threadTs}` : undefined);
-        return !!key && key.slackChannelId === slackChannelId && key.threadTs === threadTs;
-      });
+      const { isDelegatedInThread } = await import('./work-item-destination.js');
+      return isDelegatedInThread(await pool(), session, slackChannelId, threadTs, Date.now());
     },
     surfacedOwnerConversations: (session) => SubAgentMessageQueue.getInstance().surfacedUnansweredConversations(session),
     // What the agent answers: the latest input that names it, not a reminder

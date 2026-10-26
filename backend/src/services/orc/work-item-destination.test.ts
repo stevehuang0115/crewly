@@ -267,6 +267,9 @@ describe('owner-thread hand-over (crewly#1083)', () => {
   it('isDelegatedInThread: done work keeps the thread open for a grace period only', () => {
     const done = (ago: number) => wi({ target: 'tt-sage', status: 'done', completedAt: new Date(NOW - ago).toISOString(), metadata: { origin: ownerOrigin } });
     expect(isDelegatedInThread([done(10 * 60 * 1000)], 'tt-sage', 'C0THINK', '1790000000.000100', NOW)).toBe(true);
+    // Verified by the lead 45 min ago (crewly#1496, Sage): still the agent's thread.
+    const verified = wi({ target: 'tt-sage', status: 'verified', completedAt: new Date(NOW - 45 * 60 * 1000).toISOString(), metadata: { origin: ownerOrigin } });
+    expect(isDelegatedInThread([verified], 'tt-sage', 'C0THINK', '1790000000.000100', NOW)).toBe(true);
     expect(isDelegatedInThread([done(2 * HOUR)], 'tt-sage', 'C0THINK', '1790000000.000100', NOW)).toBe(false);
     const failed = wi({ target: 'tt-sage', status: 'failed', metadata: { origin: ownerOrigin } });
     expect(isDelegatedInThread([failed], 'tt-sage', 'C0THINK', '1790000000.000100', NOW)).toBe(false);
