@@ -17,6 +17,13 @@ import { ApprovalQueueService, type PendingApproval } from './approval-queue.ser
 import { OutputFilterService } from './output-filter.service.js';
 import { parseTextToolCalls, coerceArgs, resolveToolName, type TextToolCall, type SchemaLike } from './text-tool-calls.js';
 import { unverifiedDesktopWork } from './desktop-task.tool.js';
+import {
+  createSpawnSubagentTool,
+  createSubagentRegistry,
+  restrictToolsForSubagent,
+  type SubagentRegistry,
+  type SubagentReport,
+} from './subagent.js';
 import type { ToolDefinition, McpClientLike } from './types.js';
 import {
   type CrewlyAgentConfig,
@@ -477,6 +484,12 @@ export class AgentRunnerService {
   private outputFilter: OutputFilterService = new OutputFilterService();
   /** @internal Override for testing — replaces the AI SDK generateText call */
   _generateTextFn: GenerateTextFn | null = null;
+  /** Children spawned by this runner (#1317): how many run now, how many ever */
+  private readonly subagentRegistry: SubagentRegistry = createSubagentRegistry();
+  /** What this runner reported when it is itself a sub-agent */
+  private subagentReport: SubagentReport | null = null;
+  /** Tokens spent by children since the last run result, folded into the next one */
+  private childUsage = { input: 0, output: 0, cachedInput: 0 };
 
   /**
    * Create a new AgentRunnerService.
@@ -1070,7 +1083,9 @@ export class AgentRunnerService {
       },
     };
     const mcpTools = Object.keys(this.mcpToolDefs).length > 0 ? this.mcpToolDefs : undefined;
-    const tools = createTools(this.apiClient, this.config.sessionName, this.config.projectPath, callbacks, this.currentConversationId, this.currentSlackContext, mcpTools);
+    const tools = this.attachSubagentTools(
+      createTools(this.apiClient, this.config.sessionName, this.config.projectPath, callbacks, this.currentConversationId, this.currentSlackContext, mcpTools),
+    );
 
     // Create abort controller that merges external signal with internal control
     const runAbort = new AbortController();
@@ -1132,6 +1147,72 @@ export class AgentRunnerService {
       if (softTimer) clearTimeout(softTimer);
       this.currentRunAbort = null;
     }
+  }
+
+  /**
+   * Give a run its sub-agent tools (#1317).
+   *
+   * A sub-agent (config.subagent set) gets the restricted map — file, search
+   * and shell tools confined to its cwd, plus `report_to_parent` — and
+   * nothing that talks to people or spawns further helpers. Any other runner
+   * gets the full map plus `spawn_subagent`, whose children are built from
+   * this runner's config and counted in its registry and usage.
+   *
+   * @param tools - The full `createTools()` map
+   * @returns The map this run should see
+   */
+  private attachSubagentTools(tools: Record<string, ToolDefinition>): Record<string, ToolDefinition> {
+    if (this.config.subagent) {
+      return restrictToolsForSubagent(tools, this.config.subagent, (report) => { this.subagentReport = report; });
+    }
+    return {
+      ...tools,
+      spawn_subagent: createSpawnSubagentTool({
+        parentConfig: this.config,
+        registry: this.subagentRegistry,
+        createRunner: (config) => new AgentRunnerService(config, this.modelManager, this.apiClient),
+        onUsage: (usage) => this.recordChildUsage(usage),
+      }),
+    };
+  }
+
+  /**
+   * What this runner reported through `report_to_parent`, when it is a
+   * sub-agent; null for a parent or a child that never reported.
+   *
+   * @returns The last report
+   */
+  getSubagentReport(): SubagentReport | null {
+    return this.subagentReport;
+  }
+
+  /**
+   * Count a child's tokens against this runner (#1317): they are spent on
+   * this agent's behalf, so its ledger and spend cap must see them.
+   *
+   * @param usage - The child's usage
+   */
+  recordChildUsage(usage: { input: number; output: number; cachedInput: number }): void {
+    this.childUsage.input += usage.input;
+    this.childUsage.output += usage.output;
+    this.childUsage.cachedInput += usage.cachedInput;
+  }
+
+  /**
+   * Fold pending child usage into a run's reported usage and this runner's
+   * totals, then reset it. Context occupancy is not touched: a child's
+   * tokens never sat in this runner's context window.
+   *
+   * @param own - The run's own usage
+   * @returns Own plus children
+   */
+  private absorbChildUsage(own: { input: number; output: number; cachedInput: number }): { input: number; output: number; cachedInput: number } {
+    const child = this.childUsage;
+    if (child.input === 0 && child.output === 0 && child.cachedInput === 0) return own;
+    this.childUsage = { input: 0, output: 0, cachedInput: 0 };
+    this.state.totalTokens.input += child.input;
+    this.state.totalTokens.output += child.output;
+    return { input: own.input + child.input, output: own.output + child.output, cachedInput: own.cachedInput + child.cachedInput };
   }
 
   /**
@@ -1637,7 +1718,7 @@ export class AgentRunnerService {
       return {
         text,
         steps: stepCount,
-        usage,
+        usage: this.absorbChildUsage(usage),
         toolCalls,
         finishReason,
         budgetWarning,
@@ -1818,7 +1899,7 @@ export class AgentRunnerService {
     return {
       text: finalText,
       steps: result.steps.length,
-      usage,
+      usage: this.absorbChildUsage(usage),
       toolCalls,
       finishReason: result.finishReason,
       budgetWarning,

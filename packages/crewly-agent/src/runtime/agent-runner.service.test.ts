@@ -253,6 +253,65 @@ describe('AgentRunnerService', () => {
     });
   });
 
+  describe('sub-agents (#1317)', () => {
+    const okResult = {
+      text: 'done',
+      steps: [{ toolCalls: [], toolResults: [] }],
+      usage: { inputTokens: 10, outputTokens: 5 },
+      finishReason: 'stop',
+    };
+
+    it('gives a normal agent spawn_subagent on top of the full tool set', async () => {
+      await runner.initialize();
+      mockGenerateText.mockResolvedValueOnce(okResult);
+      await runner.run('hi');
+      const tools = mockGenerateText.mock.calls[0][0].tools as Record<string, unknown>;
+      expect(tools.spawn_subagent).toBeDefined();
+      expect(tools.report_to_parent).toBeUndefined();
+      expect(tools.send_message).toBeDefined();
+      expect(tools.read_file).toBeDefined();
+    });
+
+    it('gives a sub-agent only the confined file/search/shell tools plus report_to_parent', async () => {
+      const child = new AgentRunnerService(
+        {
+          ...baseConfig,
+          sessionName: 'test-session/sub-1',
+          projectPath: '/tmp/proj',
+          subagent: { cwd: '/tmp/proj', readOnly: false, depth: 1, parentSession: 'test-session' },
+        },
+        mockModelManager,
+        mockApiClient,
+      );
+      child._generateTextFn = mockGenerateText;
+      await child.initialize();
+      mockGenerateText.mockResolvedValueOnce(okResult);
+      await child.run('task');
+      const tools = mockGenerateText.mock.calls[0][0].tools as Record<string, unknown>;
+      expect(tools.report_to_parent).toBeDefined();
+      expect(tools.read_file).toBeDefined();
+      expect(tools.bash_exec).toBeDefined();
+      expect(tools.spawn_subagent).toBeUndefined();
+      expect(tools.send_message).toBeUndefined();
+      expect(tools.delegate_task).toBeUndefined();
+      expect(tools.remember).toBeUndefined();
+      expect(child.getSubagentReport()).toBeNull();
+    });
+
+    it('folds a child\'s tokens into the parent\'s next run result and totals, once', async () => {
+      await runner.initialize();
+      runner.recordChildUsage({ input: 1000, output: 200, cachedInput: 50 });
+      mockGenerateText.mockResolvedValueOnce(okResult);
+      const first = await runner.run('one');
+      expect(first.usage).toEqual({ input: 1010, output: 205, cachedInput: 50 });
+      expect(runner.getState().totalTokens).toEqual({ input: 1010, output: 205 });
+
+      mockGenerateText.mockResolvedValueOnce(okResult);
+      const second = await runner.run('two');
+      expect(second.usage).toEqual({ input: 10, output: 5, cachedInput: 0 });
+    });
+  });
+
   describe('serial queue', () => {
     beforeEach(async () => {
       await runner.initialize();
