@@ -36,6 +36,7 @@ import { getTurnTriggerTracker, type TurnTrigger } from '../trace/turn-trigger.j
 import { triggeredByMetadata, triggeredByPhrase, withTriggeredByLine } from './triggered-by.js';
 import { stripOwnerTextIds } from '../../utils/owner-text-ids.utils.js';
 import { memberNameFromSession } from '../../utils/member-session-name.utils.js';
+import { checkReplyAudience, type ReplyAudienceDeps } from './reply-audience.js';
 
 /** How long an identical reply from one agent counts as a duplicate send. */
 const REPLY_DUPLICATE_WINDOW_MS = 120_000;
@@ -116,6 +117,12 @@ export interface ReplyDeliveryDeps {
    * fallback took it (CREW-372). Omitted: nobody (the agent still gets the error).
    */
   refusedReplyNotice?: RefusedReplyNoticeDeps;
+  /**
+   * The audience check (crewly#969): a reply written shortly after the agent
+   * read someone's connector grant goes to the owner DM instead of a shared
+   * place. Omitted: no check.
+   */
+  audience?: ReplyAudienceDeps;
 }
 
 /** What a delivery did. */
@@ -291,6 +298,20 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
   let dest = await resolve(input.hints);
   if (dest.kind === 'unresolved') {
     return { ok: false, destination: dest, error: notDelivered(dest.reason, dest.fix) };
+  }
+  // crewly#969: what the agent read through a person's grant is that person's
+  // data; a reply drawing on it does not go where other people read.
+  if (d.audience) {
+    const verdict = await checkReplyAudience(input.session, dest, { ...d.audience, ...(d.conversationPlace ? { conversationPlace: d.conversationPlace } : {}) });
+    if (verdict.kind === 'held') {
+      logger.warn('Agent reply held: it draws on private data and the place is shared', { session: input.session, heldFrom: verdict.heldFrom, people: verdict.people });
+      return { ok: false, destination: dest, error: notDelivered(verdict.reason, verdict.fix), held: true };
+    }
+    if (verdict.kind === 'redirect') {
+      logger.info('Agent reply moved to the owner DM: it draws on private data', { session: input.session, heldFrom: verdict.heldFrom, people: verdict.people });
+      dest = verdict.destination;
+      input = { ...input, content: `${verdict.note}\n\n${input.content}` };
+    }
   }
   let result = await attempt(input, dest, prompt, d);
   if (result.ok || ('held' in result && result.held)) return result;
@@ -1053,6 +1074,42 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
     routedTrigger: (session) => getTurnTriggerTracker().openRoutedTrigger(session),
     currentTrace: (session) => getTraceContext().currentTrace(session),
     conversationPlace: (id) => chatConversationPlace(chatLookup, id),
+    audience: await defaultAudienceDeps(resolver, chatLookup),
+  };
+}
+
+/**
+ * The real audience-check lookups (crewly#969): the private-source tracker,
+ * chat-v2 conversation kinds and the people directory.
+ *
+ * @param resolver - Resolver deps (for the owner DM and Slack mirrors)
+ * @param chatLookup - chat-v2 lookups, or null
+ * @returns The deps
+ */
+async function defaultAudienceDeps(resolver: ReplyResolverDeps, chatLookup: ChatChannelLookup | null): Promise<ReplyAudienceDeps> {
+  const [{ getPrivateSourceTracker }, { getPeopleDirectory }] = await Promise.all([
+    import('../people/private-source.service.js'),
+    import('../people/people-directory.service.js'),
+  ]);
+  return {
+    recentPeople: (session) => getPrivateSourceTracker().recentPeople(session),
+    conversationKind: (id) => {
+      try {
+        const ch = chatLookup?.getChannelForBridge(id);
+        return !ch ? 'unknown' : ch.type === 'dm' ? 'dm' : 'shared';
+      } catch {
+        return 'unknown';
+      }
+    },
+    slackChannelOf: (id) => resolver.slackChannelOfConversation(id),
+    ownerDm: (session) => resolver.ownerDm(session),
+    personName: (id) => {
+      try {
+        return getPeopleDirectory().get(id)?.name ?? undefined;
+      } catch {
+        return undefined;
+      }
+    },
   };
 }
 
