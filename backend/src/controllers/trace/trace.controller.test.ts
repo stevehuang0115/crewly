@@ -54,6 +54,16 @@ describe('trace.controller', () => {
 		await request(app).get('/api/traces?since=yesterday').expect(400);
 	});
 
+	it('closes the window with until (#1472)', async () => {
+		const a = start('request', 'TKT-002');
+		const before = await request(app).get('/api/traces?until=2000-01-01T00:00:00Z').expect(200);
+		expect(before.body.data.traces).toEqual([]);
+		const window = await request(app).get('/api/traces?since=2000-01-01T00:00:00Z&until=2999-01-01T00:00:00Z').expect(200);
+		expect(window.body.data.traces.map((t: { traceId: string }) => t.traceId)).toContain(a);
+		await request(app).get('/api/traces?until=last-week').expect(400);
+		await request(app).get('/api/traces?since=2999-01-01T00:00:00Z&until=2000-01-01T00:00:00Z').expect(400);
+	});
+
 	describe('autopilot traces: who may read them (specs/2026-10-03-autopilot-experiments.md)', () => {
 		let owned: Express;
 		let check: jest.Mock;

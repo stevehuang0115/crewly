@@ -236,7 +236,8 @@ async function allowTraceRead(req: Request, res: Response, id: string): Promise<
 /**
  * GET /api/traces
  *
- * @param req - Query: since (ISO), type (root kind), limit, metrics (0 to leave them out), stallMinutes
+ * @param req - Query: since / until (ISO; together a closed window, #1472), type (root kind), limit,
+ *   metrics (0 to leave them out), stallMinutes, autopilotProject, day, label
  * @param res - `{ success, data: { traces, writeFailures } }`
  */
 export async function listTraces(req: Request, res: Response): Promise<void> {
@@ -244,6 +245,16 @@ export async function listTraces(req: Request, res: Response): Promise<void> {
 	const since = sinceRaw ? new Date(sinceRaw) : undefined;
 	if (since && Number.isNaN(since.getTime())) {
 		res.status(400).json({ success: false, error: 'since must be an ISO date' });
+		return;
+	}
+	const untilRaw = queryString(req.query.until);
+	const until = untilRaw ? new Date(untilRaw) : undefined;
+	if (until && Number.isNaN(until.getTime())) {
+		res.status(400).json({ success: false, error: 'until must be an ISO date' });
+		return;
+	}
+	if (since && until && until < since) {
+		res.status(400).json({ success: false, error: 'until must not be before since' });
 		return;
 	}
 	const type = queryString(req.query.type);
@@ -286,6 +297,7 @@ export async function listTraces(req: Request, res: Response): Promise<void> {
 	const requested = queryInt(req.query.limit, TRACE_CONSTANTS.DEFAULT_LIST_LIMIT);
 	const entries = store.list({
 		...(since ? { since } : {}),
+		...(until ? { until } : {}),
 		...(type && isTraceRootKind(type) ? { rootKind: type } : {}),
 		...(autopilotProjectId ? { autopilotProjectId } : {}),
 		...(day ? { day } : {}),

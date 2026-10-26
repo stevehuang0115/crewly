@@ -150,6 +150,10 @@ describe('TraceStore', () => {
 		store.createRoot({ ...root('tr-20261003-00000002', now), kind: 'experiment' });
 		expect(store.list().map((e) => e.traceId)).toEqual(['tr-20261003-00000002', 'tr-20261001-00000001']);
 		expect(store.list({ since: new Date('2026-10-02T00:00:00Z') }).map((e) => e.traceId)).toEqual(['tr-20261003-00000002']);
+		// until closes the window (#1472): a week's reader pages by [since, until].
+		expect(store.list({ until: new Date('2026-10-02T00:00:00Z') }).map((e) => e.traceId)).toEqual(['tr-20261001-00000001']);
+		expect(store.list({ since: new Date('2026-10-01T00:00:00Z'), until: new Date('2026-10-01T00:00:00Z') }).map((e) => e.traceId)).toEqual(['tr-20261001-00000001']);
+		expect(store.list({ since: new Date('2026-10-01T00:00:01Z'), until: new Date('2026-10-02T00:00:00Z') })).toEqual([]);
 		expect(store.list({ rootKind: 'request' }).map((e) => e.traceId)).toEqual(['tr-20261001-00000001']);
 		expect(store.list({ limit: 1 })).toHaveLength(1);
 	});

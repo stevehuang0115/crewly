@@ -317,6 +317,9 @@ describe('trace-metrics', () => {
 			const m = computeTraceMetrics(root({ kind: 'goal' }), [skill(0, 'ella'), skill(100, 'ella')], { now });
 			expect(m.stalls.items).toEqual([expect.objectContaining({ cause: 'nobody_pushing', ms: 100 * MIN })]);
 			expect(m.stalls.byCause).toEqual({ runtime_quota: 0, delivery_failure: 0, waiting_on_owner: 0, waiting_on_agent: 0, nobody_pushing: 1 });
+			// Time per cause rides along in the list summary so a week's reader can split idle time (#1472).
+			expect(m.stalls.msByCause).toEqual({ runtime_quota: 0, delivery_failure: 0, waiting_on_owner: 0, waiting_on_agent: 0, nobody_pushing: 100 * MIN });
+			expect(summarizeTraceMetrics(m).stallMsByCause).toEqual(m.stalls.msByCause);
 		});
 
 		it('is not a stall while an agent is busy, and harness pushes are not progress', () => {
