@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Business check-up</title>
+<style>
+  :root { --ink: #1c1c1e; --muted: #6b6b70; --line: #e4e4e8; --accent: #1f6feb; --bg: #fff; --card: #f6f7f9; --warn: #b4540a; }
+  * { box-sizing: border-box; }
+  body { font: 16px/1.45 system-ui, -apple-system, sans-serif; margin: 0; padding: 16px 16px 48px; max-width: 640px; color: var(--ink); background: var(--bg); }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 28px 0 8px; }
+  h3 { font-size: 16px; margin: 0 0 6px; }
+  p { margin: 0 0 10px; }
+  .muted { color: var(--muted); font-size: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin: 0 0 12px; }
+  .rank { display: inline-block; min-width: 28px; height: 28px; line-height: 28px; text-align: center; border-radius: 14px; background: var(--accent); color: #fff; font-weight: 600; margin-right: 8px; }
+  .num { font-size: 20px; font-weight: 600; }
+  .est { margin: 8px 0 4px; }
+  .formula { font-size: 13px; color: var(--muted); border-left: 3px solid var(--line); padding-left: 8px; margin: 6px 0; }
+  .agent { background: #eef4ff; border-radius: 8px; padding: 8px 10px; margin-top: 8px; font-size: 15px; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { text-align: left; padding: 8px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.r, th.r { text-align: right; white-space: nowrap; }
+  label { display: block; font-weight: 600; margin: 16px 0 6px; }
+  input, textarea, select, button { font: inherit; font-size: 16px; width: 100%; min-height: 44px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); }
+  textarea { min-height: 72px; resize: vertical; }
+  button { background: var(--accent); color: #fff; border: 0; font-weight: 600; margin-top: 16px; }
+  button.secondary { background: var(--card); color: var(--ink); border: 1px solid var(--line); margin-top: 8px; }
+  .chips { margin: 0 -4px; }
+  .chip { display: inline-block; margin: 4px; padding: 8px 12px; min-height: 44px; line-height: 28px; border: 1px solid var(--line); border-radius: 22px; background: #fff; cursor: pointer; }
+  .chip.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #msg { min-height: 20px; color: var(--warn); margin-top: 8px; }
+  .ok { color: #1a7f37; }
+  .hidden { display: none; }
+  .tabs { display: flex; margin: 0 0 16px; border-bottom: 1px solid var(--line); }
+  .tab { flex: 1; text-align: center; padding: 12px 4px; min-height: 44px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+  .tab.on { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  ul.plain { list-style: none; padding: 0; margin: 0; }
+  ul.plain li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .note { font-size: 14px; color: var(--muted); }
+</style>
+</head><body>
+<h1 id="title" data-crewly-id="title">Business check-up</h1>
+<p class="muted" id="subtitle" data-crewly-id="subtitle">Loading…</p>
+
+<div class="tabs" id="tabs">
+  <div class="tab on" id="tab-report" data-crewly-id="tab-report">Report</div>
+  <div class="tab" id="tab-intake" data-crewly-id="tab-intake">Your answers</div>
+  <div class="tab" id="tab-daily" data-crewly-id="tab-daily">Daily</div>
+</div>
+
+<!-- ───────── Report ───────── -->
+<section id="report" data-crewly-id="report">
+  <div id="report-empty" class="card hidden" data-crewly-id="report-empty">
+    <h3>No report yet</h3>
+    <p class="muted">Answer the five questions under "Your answers" and share your exports. The report appears here when the check-up is done.</p>
+  </div>
+  <div id="report-body" class="hidden">
+    <div class="card" id="headline" data-crewly-id="headline">
+      <div class="muted" id="asof"></div>
+      <p class="est"><span class="num" id="total-hours"></span> h/week &nbsp;·&nbsp; <span class="num" id="total-dollars"></span>/month</p>
+      <p class="note">Estimates from the assumptions at the end. Change an assumption and the numbers follow.</p>
+    </div>
+    <div id="first-number" class="card hidden" data-crewly-id="first-number"></div>
+    <h2>Top 3</h2>
+    <div id="top3" data-crewly-id="top3"></div>
+    <h2>Every break</h2>
+    <table data-crewly-id="all-breaks"><thead><tr><th>Break</th><th class="r">Count</th><th class="r">h/wk</th><th class="r">$/mo</th></tr></thead><tbody id="all-rows"></tbody></table>
+    <div id="notes-wrap" class="hidden"><h2>Could not check</h2><ul class="plain" id="notes" data-crewly-id="notes"></ul></div>
+    <h2>Files</h2>
+    <ul class="plain" id="files" data-crewly-id="files"></ul>
+    <h2>Assumptions</h2>
+    <ul class="plain" id="assumptions" data-crewly-id="assumptions"></ul>
+    <button class="secondary" id="ask" data-crewly-id="ask">Ask about this report</button>
+  </div>
+</section>
+
+<!-- ───────── Intake ───────── -->
+<section id="intake" class="hidden" data-crewly-id="intake">
+  <p class="muted">Five questions, two minutes. Your answers tell the check-up where to look first.</p>
+  <label for="q-apps">1. Which apps does the business run on?</label>
+  <div class="chips" id="q-apps-chips" data-crewly-id="q-apps"></div>
+  <input id="q-apps" placeholder="Others, comma-separated">
+  <label for="q-task">2. Which weekly task takes the most time?</label>
+  <textarea id="q-task" data-crewly-id="q-task" placeholder="e.g. copying new sign-ups from the form into the roster and the mailing list"></textarea>
+  <label>3. What do you fear slipping through?</label>
+  <div class="chips" id="q-fear-chips" data-crewly-id="q-fear"></div>
+  <input id="q-fear" placeholder="Anything else">
+  <label for="q-hops">4. How many apps does one customer pass through, from first contact to payment?</label>
+  <select id="q-hops" data-crewly-id="q-hops"><option value="">Pick one</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5 or more</option></select>
+  <label for="q-first">5. Which number do you want to see first?</label>
+  <div class="chips" id="q-first-chips" data-crewly-id="q-first"></div>
+  <input id="q-first" placeholder="Or say it in your words">
+  <button id="save" data-crewly-id="save">Save answers</button>
+  <div id="msg" data-crewly-id="msg"></div>
+</section>
+
+<!-- ───────── Daily ───────── -->
+<section id="daily" class="hidden" data-crewly-id="daily">
+  <p class="muted">A short summary each day for 7 days after the report: what changed, what was done.</p>
+  <ul class="plain" id="daily-list" data-crewly-id="daily-list"></ul>
+  <p class="muted hidden" id="daily-empty">Nothing yet.</p>
+</section>
+
+<script>
+  // Old Safari (iOS 12) has no replaceChildren; the owner's family iPad must still render this.
+  if (!Element.prototype.replaceChildren) {
+    Element.prototype.replaceChildren = function () {
+      while (this.firstChild) this.removeChild(this.firstChild);
+      for (var i = 0; i < arguments.length; i += 1) this.appendChild(arguments[i]);
+    };
+  }
+  var $ = function (id) { return document.getElementById(id); };
+  var APP_CHIPS = ['Square', 'Stripe', 'QuickBooks', 'Mailchimp', 'Jotform', 'Jackrabbit', 'Mindbody', 'Calendly', 'HubSpot', 'Google Sheets', 'Gmail'];
+  var FEAR_CHIPS = ['Unanswered inquiries', 'Signed up but never paid', 'Customers who stopped coming', 'Unpaid invoices', 'Typing the same person twice'];
+  var FIRST_CHIPS = ['Money owed to me', 'Inquiries I missed', 'Hours lost to double entry', 'Customers who lapsed'];
+  var state = { report: null, intake: null, tab: 'report' };
+
+  function text(el, s) { el.textContent = s == null ? '' : String(s); }
+  function el(tag, cls, s) { var e = document.createElement(tag); if (cls) e.className = cls; if (s != null) e.textContent = String(s); return e; }
+  function money(n) { return '$' + Math.round(Number(n) || 0).toLocaleString(); }
+  function chips(container, options, picked) {
+    container.replaceChildren();
+    options.forEach(function (opt) {
+      var c = el('span', 'chip' + (picked.indexOf(opt) >= 0 ? ' on' : ''), opt);
+      c.setAttribute('role', 'button');
+      c.onclick = function () { c.classList.toggle('on'); };
+      container.appendChild(c);
+    });
+  }
+  function pickedChips(container) {
+    return Array.prototype.map.call(container.querySelectorAll('.chip.on'), function (c) { return c.textContent; });
+  }
+  function splitList(s) { return String(s || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean); }
+
+  // ── tabs ──
+  function showTab(name) {
+    state.tab = name;
+    ['report', 'intake', 'daily'].forEach(function (t) {
+      $(t).classList.toggle('hidden', t !== name);
+      $('tab-' + t).classList.toggle('on', t === name);
+    });
+  }
+  $('tab-report').onclick = function () { showTab('report'); };
+  $('tab-intake').onclick = function () { showTab('intake'); };
+  $('tab-daily').onclick = function () { showTab('daily'); };
+
+  // ── report ──
+  function renderReport() {
+    var r = state.report;
+    var hasReport = r && Array.isArray(r.breaks) && r.breaks.length;
+    $('report-empty').classList.toggle('hidden', !!hasReport);
+    $('report-body').classList.toggle('hidden', !hasReport);
+    text($('title'), (r && r.business) ? r.business + ' check-up' : 'Business check-up');
+    if (!hasReport) { text($('subtitle'), 'The report is not ready yet.'); return; }
+    text($('subtitle'), 'Where your apps disagree, and what it costs.');
+    text($('asof'), 'As of ' + r.asOf + ' · data ' + r.period.from + ' to ' + r.period.to + ' · ' + r.stats.people + ' people across ' + r.stats.systems.join(', '));
+    text($('total-hours'), r.totals.hoursPerWeek);
+    text($('total-dollars'), money(r.totals.dollarsPerMonth));
+
+    var fn = $('first-number');
+    if (r.firstNumber) {
+      fn.classList.remove('hidden'); fn.replaceChildren();
+      fn.appendChild(el('div', 'muted', 'The number you asked to see first'));
+      fn.appendChild(el('div', 'num', r.firstNumber.value));
+      fn.appendChild(el('div', 'note', r.firstNumber.label));
+    } else { fn.classList.add('hidden'); }
+
+    var byType = {}; r.breaks.forEach(function (b) { byType[b.type] = b; });
+    var top = $('top3'); top.replaceChildren();
+    (r.top3 || []).forEach(function (t, i) {
+      var b = byType[t]; if (!b) return;
+      var card = el('div', 'card'); card.setAttribute('data-crewly-id', 'top-' + (i + 1));
+      var h = el('h3'); h.appendChild(el('span', 'rank', i + 1)); h.appendChild(document.createTextNode(b.label + ' — ' + b.count)); card.appendChild(h);
+      card.appendChild(el('p', 'est', b.estimate.hoursPerWeek + ' h/week · ' + money(b.estimate.dollarsPerMonth) + '/month (estimate)'));
+      card.appendChild(el('div', 'formula', b.estimate.formula));
+      if (b.examples && b.examples.length) {
+        var ul = el('ul', 'plain'); b.examples.forEach(function (x) { ul.appendChild(el('li', 'note', x)); }); card.appendChild(ul);
+      }
+      card.appendChild(el('div', 'agent', 'What an agent could do: ' + b.whatAnAgentCouldDo));
+      top.appendChild(card);
+    });
+    if (!top.children.length) top.appendChild(el('p', 'muted', 'No breaks found in this data.'));
+
+    var rows = $('all-rows'); rows.replaceChildren();
+    r.breaks.forEach(function (b) {
+      var tr = el('tr'); tr.appendChild(el('td', null, b.label)); tr.appendChild(el('td', 'r', b.count));
+      tr.appendChild(el('td', 'r', b.estimate.hoursPerWeek)); tr.appendChild(el('td', 'r', money(b.estimate.dollarsPerMonth))); rows.appendChild(tr);
+    });
+    var notes = $('notes'); notes.replaceChildren();
+    (r.notes || []).forEach(function (n) { notes.appendChild(el('li', null, n)); });
+    $('notes-wrap').classList.toggle('hidden', !(r.notes && r.notes.length));
+    var files = $('files'); files.replaceChildren();
+    (r.files || []).forEach(function (f) { files.appendChild(el('li', null, f.file + ' — ' + f.source + ' ' + f.kind + ', ' + f.rows + ' rows')); });
+    var as = $('assumptions'); as.replaceChildren();
+    Object.keys(r.assumptions || {}).forEach(function (k) { as.appendChild(el('li', null, k + ': ' + r.assumptions[k])); });
+  }
+  $('ask').onclick = function () {
+    crewly.notify('The owner opened the check-up report and tapped "Ask about this report". Reply in their DM with a one-line offer to walk through the top 3.').then(function () {
+      text($('ask'), 'Sent — your agent will reply in chat'); $('ask').disabled = true;
+    }).catch(function (e) { text($('ask'), 'Could not send: ' + e.message); });
+  };
+
+  // ── intake ──
+  function renderIntake() {
+    var a = state.intake || {};
+    chips($('q-apps-chips'), APP_CHIPS, a.apps || []);
+    $('q-apps').value = (a.apps || []).filter(function (x) { return APP_CHIPS.indexOf(x) < 0; }).join(', ');
+    $('q-task').value = a.slowestTask || '';
+    chips($('q-fear-chips'), FEAR_CHIPS, a.fears || []);
+    $('q-fear').value = (a.fears || []).filter(function (x) { return FEAR_CHIPS.indexOf(x) < 0; }).join(', ');
+    $('q-hops').value = a.appsPerCustomer || '';
+    chips($('q-first-chips'), FIRST_CHIPS, a.firstNumber ? [a.firstNumber] : []);
+    $('q-first').value = (a.firstNumber && FIRST_CHIPS.indexOf(a.firstNumber) < 0) ? a.firstNumber : '';
+    if (a.savedAt) { $('msg').className = 'ok'; text($('msg'), 'Saved ' + a.savedAt.slice(0, 16).replace('T', ' ')); }
+  }
+  $('save').onclick = function () {
+    var first = pickedChips($('q-first-chips'))[0] || $('q-first').value.trim() || null;
+    var answers = {
+      apps: pickedChips($('q-apps-chips')).concat(splitList($('q-apps').value)),
+      slowestTask: $('q-task').value.trim(),
+      fears: pickedChips($('q-fear-chips')).concat(splitList($('q-fear').value)),
+      appsPerCustomer: $('q-hops').value,
+      firstNumber: first,
+      savedAt: new Date().toISOString()
+    };
+    if (!answers.apps.length && !answers.slowestTask) { $('msg').className = ''; text($('msg'), 'Tell us at least which apps you use.'); return; }
+    $('save').disabled = true;
+    crewly.db.set('intake', 'answers', answers).then(function () {
+      state.intake = answers; $('msg').className = 'ok'; text($('msg'), 'Saved. Your agent will take it from here.'); $('save').disabled = false;
+      return crewly.notify('The owner saved their check-up answers (intake/answers). Read them with app-data and start the connect step.');
+    }).catch(function (e) { $('msg').className = ''; text($('msg'), 'Could not save: ' + e.message); $('save').disabled = false; });
+  };
+
+  // ── daily ──
+  function renderDaily(docs) {
+    var list = $('daily-list'); list.replaceChildren();
+    docs.sort(function (a, b) { return String(b.data.date).localeCompare(String(a.data.date)); });
+    docs.forEach(function (d) {
+      var li = el('li'); li.appendChild(el('div', 'muted', d.data.date)); li.appendChild(el('div', null, d.data.summary)); list.appendChild(li);
+    });
+    $('daily-empty').classList.toggle('hidden', docs.length > 0);
+  }
+
+  // ── load ──
+  function notFoundAsNull(e) { if (e && e.code === 'not_found') return null; throw e; }
+  function loadAll() {
+    return Promise.all([
+      crewly.db.get('report', 'current').then(function (d) { return d.data; }, notFoundAsNull),
+      crewly.db.get('intake', 'answers').then(function (d) { return d.data; }, notFoundAsNull),
+      crewly.db.list('daily', { limit: 30 }).then(function (r) { return r.docs; })
+    ]).then(function (res) {
+      state.report = res[0]; state.intake = res[1];
+      renderReport(); renderIntake(); renderDaily(res[2]);
+      if (!state.report && !state.intake) showTab('intake');
+    });
+  }
+  crewly.ready.then(function () {
+    return loadAll().then(function () {
+      crewly.db.subscribe('report', function () { loadAll().catch(fail); });
+      crewly.db.subscribe('daily', function () { loadAll().catch(fail); });
+    });
+  }).catch(fail);
+  function fail(e) { text($('subtitle'), 'Could not load: ' + (e && e.message ? e.message : e)); }
+</script>
+</body></html>
