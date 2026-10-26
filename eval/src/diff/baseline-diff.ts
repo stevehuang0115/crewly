@@ -71,6 +71,17 @@ export interface DiffReport {
   /** Tasks only in the current run (no baseline yet) */
   tasksNew: number;
   rows: DiffRow[];
+  /**
+   * Not-yet tasks (ids passed by the caller) whose current run finished and
+   * passed every check: candidates to leave the not-yet set.
+   */
+  notYetNowPassing: string[];
+}
+
+/** Optional inputs to {@link diffResults}. */
+export interface DiffOptions {
+  /** Ids of the tasks in the not-yet set */
+  notYetIds?: string[];
 }
 
 /**
@@ -134,12 +145,14 @@ export async function loadResults(dir: string, runtime?: RuntimeType): Promise<L
  * @param baseline - Results from the recorded baseline
  * @param current - Results from the fresh run
  * @param dirs - Where each side was read from (for the report header)
+ * @param opts - Optional: the not-yet set, so a flagged task that now passes is called out
  * @returns The diff report; rows are sorted by task id then runtime
  */
 export function diffResults(
   baseline: EvalResult[],
   current: EvalResult[],
   dirs: { baselineDir: string; currentDir: string },
+  opts: DiffOptions = {},
 ): DiffReport {
   const key = (r: EvalResult): string => `${r.taskId}\u0000${r.runtime}`;
   const base = new Map(baseline.map((r) => [key(r), r]));
@@ -162,12 +175,21 @@ export function diffResults(
     return { taskId, runtime, baseline: bs, current: cs, verdict, reason };
   });
 
+  const notYet = new Set(opts.notYetIds ?? []);
+  const notYetNowPassing = [...new Set(
+    current
+      .filter((r) => notYet.has(r.taskId) && r.completionType === 'agent_done')
+      .filter((r) => r.verificationResults.length > 0 && r.verificationResults.every((v) => v.passed))
+      .map((r) => r.taskId),
+  )].sort();
+
   return {
     ...dirs,
     tasksCompared: rows.filter((r) => r.baseline && r.current).length,
     tasksMissing: rows.filter((r) => r.verdict === 'missing').length,
     tasksNew: rows.filter((r) => r.verdict === 'new').length,
     rows,
+    notYetNowPassing,
   };
 }
 
@@ -207,6 +229,10 @@ export function renderDiffMarkdown(report: DiffReport): string {
   }
   lines.push('');
   lines.push(`Regression = fewer checks passed, lost completion, or score down by more than ${SCORE_TOLERANCE} points.`);
+  if (report.notYetNowPassing.length > 0) {
+    lines.push('');
+    lines.push(`Not-yet tasks now passing every check: ${report.notYetNowPassing.join(', ')}. Remove their \`notYet\` mark and record a baseline that includes them.`);
+  }
   if (report.tasksCompared === 0) {
     lines.push('');
     lines.push('No task appears on both sides, so nothing was compared. Run the set first, or pass --baseline.');

@@ -69,6 +69,20 @@ export interface EvalTask {
   baselineCostUsd: number;
   /** How the pass condition was established (business tasks); omitted for code tasks */
   provenance?: TaskProvenance;
+  /**
+   * Set when current models fail this task. A "not yet" task is left out of
+   * `run --all` and run on its own (`run --not-yet`) after a model change;
+   * when a run passes every check the diff says so and the flag comes off.
+   */
+  notYet?: NotYetMark;
+}
+
+/** Why a task sits in the "not yet" set, and since when. */
+export interface NotYetMark {
+  /** Date the task was marked, `YYYY-MM-DD` */
+  since: string;
+  /** Which runtimes/models failed it and how (one line) */
+  reason: string;
 }
 
 /**

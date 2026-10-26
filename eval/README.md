@@ -79,6 +79,26 @@ checker (D1), steps, autonomy and cost.
 `npm test` copies each fixture to a temp directory and runs the checker twice:
 it must fail on the bare fixture and pass with `solutions/<task>/` copied in.
 
+## The not-yet set
+
+Some tasks are meant to be ahead of the models: a task current models fail is
+marked in the registry with `notYet: { since: 'YYYY-MM-DD', reason: '…' }`
+(which runtimes failed it and how). A marked task:
+
+- is left out of `run --all` (the line "Not-yet set left out" names it), so the
+  regular baseline is not dragged down by tasks nobody can do yet;
+- runs on its own with `run --not-yet` after every model change, or with
+  `run --all --include-not-yet`; `run --task <id>` always runs it;
+- is listed by `node dist/cli.js not-yet` and tagged `[not yet since …]` in
+  `list`;
+- when a run finishes `agent_done` with every check passing, the diff report
+  ends with "Not-yet tasks now passing every check: …". Then remove the mark
+  and record a baseline that includes the task.
+
+Mark a task only from a recorded run that shows every runtime failing it, and
+say so in the reason. The set is empty today: no run of the current set has
+been recorded on the current models yet.
+
 ## Re-run after a model change and diff
 
 One command re-runs the set and compares it with the last recorded baseline:
@@ -136,4 +156,5 @@ accepts its reference solution). Executors are only exercised by a real run.
 - Confirm the business tasks' pass conditions with owners (move them from
   `inferred` to `interviewed`); add the `crewly-agent` runtime's file-only
   mode if a run shows the agent insists on a git repo.
-- A standing "not yet" set: tasks current models fail, re-run on every model change.
+- Fill the not-yet set from the 2026-10 run (a task every runtime fails gets
+  `notYet: { since, reason }`).

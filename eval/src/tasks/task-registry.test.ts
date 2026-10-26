@@ -12,7 +12,7 @@ import { cpSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, basename } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { ALL_TASKS, getTaskById, getTasksByCategory } from './task-registry.js';
+import { ALL_TASKS, NOT_YET_TASKS, getTaskById, getTasksByCategory, selectTasks } from './task-registry.js';
 
 const EVAL_ROOT = resolve(__dirname, '..', '..');
 
@@ -74,3 +74,22 @@ describe.each(getTasksByCategory('business').map((t) => [t.id, basename(t.repoPa
     });
   },
 );
+
+describe('the not-yet set', () => {
+  it('is empty today and run --all equals the whole registry', () => {
+    expect(NOT_YET_TASKS).toEqual([]);
+    expect(selectTasks({ kind: 'all' })).toEqual(ALL_TASKS);
+    expect(selectTasks({ kind: 'not_yet' })).toEqual([]);
+  });
+
+  it('selects by id regardless of the flag and drops unknown ids', () => {
+    expect(selectTasks({ kind: 'ids', ids: ['D2', 'nope'] }).map((t) => t.id)).toEqual(['D2']);
+  });
+
+  it('every marked task carries a date and a reason', () => {
+    for (const t of NOT_YET_TASKS) {
+      expect(t.notYet?.since).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(t.notYet?.reason.trim().length).toBeGreaterThan(0);
+    }
+  });
+});

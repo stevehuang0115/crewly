@@ -114,6 +114,33 @@ Shape:
 Not in this slice: running them (attended, owner tokens); owner interviews;
 the "not yet" set.
 
+## Slice 4: the not-yet set (2026-10-26)
+
+`EvalTask.notYet?: { since: 'YYYY-MM-DD'; reason: string }` marks a task
+current models fail. `task-registry.ts` exports `NOT_YET_TASKS` and
+`selectTasks(selection)`:
+
+- `{ kind: 'all', includeNotYet? }` — every task minus the set, unless asked;
+- `{ kind: 'not_yet' }` — only the set;
+- `{ kind: 'ids', ids }` — exactly those, flagged or not.
+
+CLI: `run --all` (prints the ids it left out), `run --all --include-not-yet`,
+`run --not-yet` (exit 1 with a message when the set is empty), `not-yet`
+(lists the set with date and reason), `list` tags flagged tasks.
+
+Diff: `diffResults(…, { notYetIds })` fills `report.notYetNowPassing` with the
+flagged tasks whose current run is `agent_done` and passes every check (a
+timeout or a partial pass never qualifies); `renderDiffMarkdown` ends with
+"Not-yet tasks now passing every check: …" when there are any. The CLI passes
+`NOT_YET_TASKS` ids on every `diff` / `run --diff`.
+
+The set is empty until a recorded run on current models shows a task failing
+on every runtime; the mark carries the date and that evidence.
+
+Tests: `task-registry.test.ts` (set empty, `all` = registry, id selection
+ignores the flag, every mark has date + reason), `baseline-diff.test.ts`
+(promotion only for a full pass with completion; default empty).
+
 ## Acceptance for this slice
 
 - `cd eval && npm ci && npm run build && npm test` pass from a clean clone.
