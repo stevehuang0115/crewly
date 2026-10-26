@@ -42,6 +42,24 @@ text across every conversation from the chat's Find box, and lands in the right 
   search shows the whole conversation. Picking any conversation from the list drops the filter.
 - Phones: the search takes the conversation pane; Back returns to the list.
 
+## Work-item posts (CREW-877)
+
+`reply --work-item` / `--new-thread` / `--ticket` post straight to Slack (`SlackAgentPostService`, chat mirror off), so
+they used to have no chat row and could not be found; a lead read the empty result as "the reply failed" and posted the
+answer again. `defaultWorkDestinationDeps().post` now files a row with `ChatV2Service.recordSlackOnlyAgentPost`:
+
+- **Where:** the chat channel the Slack channel maps to (team room or agent DM); any other Slack channel is not recorded
+  (the helper returns why). A threaded post goes under the thread root that has a row; with no root row it carries
+  `slackThreadKey` only (never `slackThreadTs`, which would make it look like the root). A top-level post is its own root.
+- **Who:** `sender_id` / `agent_session` = the posting agent, `direction` `out`, never the orchestrator, never an owner row.
+- **Quiet:** the insert emits no `chat_message`. Everything that reacts to a row hangs off that event (dispatch to
+  agents, the Slack mirrors that would post it again, the live gateway, owner-turn and delivery trackers), and the post
+  is already in Slack.
+- **No double rows:** a row is skipped when any row already carries that Slack `slackChannelId` + `slackTs`; the client id
+  `slack-only:<channel>:<ts>` makes a retry a no-op.
+- **Cloud:** synced like any agent row (`cloud_sync` 1, outbox trigger), so the owner's phone and Cloud history match Slack.
+- **Failure:** best-effort; a failed record is logged and never fails the post.
+
 ## Not here
 
 - Relay RPC + portal / phone UI (same `ChatSearchResults` once `relay-chat-client` gains `searchMessages`).

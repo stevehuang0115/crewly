@@ -11,6 +11,7 @@
  * @module services/orc/work-item-destination.wiring
  */
 
+import { recordWorkPost } from './work-post-record.js';
 import { MESSAGE_ROUTE_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
 import { describeRoute, formatRouteToken, isMessageRoute, replyCommandFor, type MessageRoute } from './message-route.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
@@ -347,6 +348,17 @@ export async function defaultWorkDestinationDeps(): Promise<WorkDestinationDeps>
       const service = getSlackAgentPostService();
       if (!service) throw new Error('Slack is not set up');
       const r = await service.post(req);
+      // CREW-877: this post went straight to Slack with the chat mirror off, so it
+      // would have no chat row and `search-chat` could not find it. File one,
+      // quietly (nothing is woken, delivered or re-posted). Best-effort: the post
+      // already landed.
+      await recordWorkPost({
+        agentSession: req.agentSession,
+        slackChannelId: r.channelId,
+        messageTs: r.messageTs,
+        ...(req.threadTs ? { threadTs: req.threadTs } : {}),
+        text: req.text,
+      });
       return { channelId: r.channelId, messageTs: r.messageTs };
     },
     findChannelId: async (name) => {
