@@ -966,9 +966,12 @@ export class CloudSyncService extends EventEmitter {
       }
 
       this.heartbeatFailures = 0;
+      NetworkStatusService.getInstance().recordSuccess('cloud-sync');
       this.markContact();
     } catch (error) {
       this.heartbeatFailures++;
+      // Offline-class codes (ENOTFOUND on `cause`) count toward the breaker; a Cloud outage does not.
+      NetworkStatusService.getInstance().recordFailure('cloud-sync', error);
       this.logger.warn('Heartbeat failed', {
         error: error instanceof Error ? error.message : String(error),
         failures: this.heartbeatFailures,
@@ -1124,9 +1127,11 @@ export class CloudSyncService extends EventEmitter {
 
       this.devices = Array.from(deduped.values());
       this.devicePollFailures = 0;
+      NetworkStatusService.getInstance().recordSuccess('cloud-sync');
       this.emit('devices_updated', this.getDevices());
     } catch (error) {
       this.devicePollFailures++;
+      NetworkStatusService.getInstance().recordFailure('cloud-sync', error);
       this.logger.warn('Device poll failed', {
         error: error instanceof Error ? error.message : String(error),
         failures: this.devicePollFailures,
@@ -1195,6 +1200,8 @@ export class CloudSyncService extends EventEmitter {
 
       if (!rawMessages || rawMessages.length === 0) {
         this.messagePollFailures = 0;
+        // The usual outcome of a poll: an answer, so the network is up.
+        NetworkStatusService.getInstance().recordSuccess('cloud-sync');
         this.markContact();
         return 0;
       }
@@ -1261,11 +1268,17 @@ export class CloudSyncService extends EventEmitter {
       await this.ackMessages(messageIds);
 
       this.messagePollFailures = 0;
+      // Any answer from Cloud ends an offline episode, so the breaker never
+      // stays tripped while the polls already succeed.
+      NetworkStatusService.getInstance().recordSuccess('cloud-sync');
       this.markContact();
       this.logger.debug('Polled and processed messages', { count: rawMessages.length });
       return rawMessages.length;
     } catch (error) {
       this.messagePollFailures++;
+      // The fastest Cloud caller (every few seconds): with it the breaker trips
+      // within seconds of a DNS outage instead of waiting for the recovery loop.
+      NetworkStatusService.getInstance().recordFailure('cloud-sync', error);
       this.logger.warn('Message poll failed', {
         error: error instanceof Error ? error.message : String(error),
         failures: this.messagePollFailures,

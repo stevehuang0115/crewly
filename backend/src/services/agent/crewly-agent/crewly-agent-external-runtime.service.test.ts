@@ -725,9 +725,9 @@ describe('CrewlyAgentExternalRuntimeService.initializeInProcess — API URL (#77
 
     await svc.initializeInProcess('crewly-orc');
 
-    expect(inner.storedConfig?.apiBaseUrl).toBe('http://localhost:8797');
+    expect(inner.storedConfig?.apiBaseUrl).toBe('http://127.0.0.1:8797');
     expect(inner.spawnAgentProcess).toHaveBeenCalledWith(
-      expect.objectContaining({ apiBaseUrl: 'http://localhost:8797' }),
+      expect.objectContaining({ apiBaseUrl: 'http://127.0.0.1:8797' }),
     );
   });
 

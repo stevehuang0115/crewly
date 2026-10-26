@@ -42,7 +42,12 @@ One process-wide judgement, `NetworkStatusService`
   otherwise.
 
 Reporters: the relay WebSocket (`error` → failure, `open` → success), the
-Cloud Sync recovery loop (catch → failure, 2xx → success), and since 1.20.416
+Cloud Sync recovery loop (catch → failure, 2xx → success), since 1.20.422 the
+three regular Cloud Sync polls too (heartbeat, device poll, message poll:
+catch → failure, any answer → success — the message poll runs every few
+seconds, so the breaker trips within seconds of a DNS outage instead of
+minutes into the recovery loop, and resets with the first poll that answers),
+and since 1.20.416
 the three other callers that `fetch` api.crewlyai.com directly: the Slack
 instance registry (`cloudRequest`), the Slack Cloud config refresh
 (`fetchFromCloud`) and the conversation upload (`send`). Each reports the *raw*
@@ -77,6 +82,26 @@ Consumers:
 The queued work is still queued when the network returns; the reconciler's
 normal loop picks it up with no special resume path.
 
+## Self-calls never wait on DNS (1.20.422)
+
+The 2026-10-26 Wi-Fi drop (23:52–00:10Z) showed a second failure mode the
+breaker cannot see. The DNS errors were connect timeouts, not `ENOTFOUND`, so
+the breaker stayed quiet; meanwhile the reconciler's `start` wakes of two
+agents failed seven times with `fetch failed` after exactly 10 s and five
+dispatch writes timed out at 45 s — all calls from the backend to **itself**
+(`http://localhost:8787/...`). Node resolves every hostname, `localhost`
+included, with `getaddrinfo` on the libuv threadpool (4 threads); the pool was
+full of hanging Cloud lookups, so the self-call's lookup queued behind them
+until undici's connect timeout.
+
+`getLocalApiBaseUrl()` therefore hands out an IP literal, never a hostname
+(`backend/src/utils/local-api-url.utils.ts`, `selfCallHost`): `127.0.0.1` for
+a wildcard (`0.0.0.0`, `::`) or hostname bind, the bind address itself when
+the server binds a specific IP (IPv6 bracketed). Node skips the lookup for IP
+literals, so a self-call — and an agent's `CREWLY_API_URL` — never waits on
+DNS. The server passes its bind host at construction
+(`setLocalApiPort(port, bindHost)`).
+
 ## Not covered (follow-ups)
 
 - Agents already running when the network drops are left alone. Their runtime
@@ -97,6 +122,12 @@ normal loop picks it up with no special resume path.
   offline with no API call, start proceeds after `recordSuccess`.
 - `cloud-disconnect-notice.service.test.ts`: no DM while offline, sent on the
   first check after the network is back.
+- `cloud-sync.service.test.ts`: three regular message polls failing with
+  `ENOTFOUND` on `cause` trip the breaker, a 503 never does, the next answer
+  resets it.
+- `local-api-url.utils.test.ts`: the base URL is `http://127.0.0.1:N`; a
+  specific bind address becomes the host (IPv6 bracketed); wildcards and
+  hostnames mean loopback.
 - `slack-instance-registry.service.test.ts`, `slack-cloud-config.service.test.ts`,
   `conversation-cloud-sync.service.test.ts`: three ENOTFOUND fetches trip the
   breaker through the raw error, the next answer clears it; the upload warns

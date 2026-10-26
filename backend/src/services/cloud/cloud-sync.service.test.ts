@@ -8,6 +8,7 @@
  */
 
 import { CloudSyncService, registerRetryDelay } from './cloud-sync.service.js';
+import { NetworkStatusService } from '../core/network-status.service.js';
 import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
 import type { CloudSyncConfig, SyncDevice } from './cloud-sync.types.js';
 
@@ -1253,6 +1254,41 @@ describe('CloudSyncService', () => {
         ([url]) => typeof url === 'string' && url.includes('/queue/poll')
       );
       expect(pollCall).toBeUndefined();
+    });
+
+    it('feeds the offline breaker: DNS failures of the regular poll trip it, the next answer resets it', async () => {
+      NetworkStatusService.resetInstance();
+      try {
+        service.start(testConfig);
+        await flushPromises();
+        (service as unknown as { queueId: string }).queueId = 'q-abc';
+        const net = NetworkStatusService.getInstance();
+
+        // A Cloud outage (5xx) never counts (one here: five poll failures in a
+        // row would put the service itself into its error state and skip polls).
+        mockFetch.mockResolvedValue(mockResponse({ success: false }, 503));
+        await service.pollMessages();
+        expect(net.getStatus().consecutiveFailures).toBe(0);
+
+        // undici: `TypeError: fetch failed` with the DNS code on `cause`.
+        const dnsDown = (): Error =>
+          Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('getaddrinfo ENOTFOUND api.crewlyai.com'), { code: 'ENOTFOUND' }) });
+        mockFetch.mockImplementation(async () => {
+          throw dnsDown();
+        });
+        await service.pollMessages();
+        await service.pollMessages();
+        expect(net.isOffline()).toBe(false);
+        await service.pollMessages();
+        expect(net.isOffline()).toBe(true);
+        expect(net.getStatus()).toMatchObject({ lastFailureSource: 'cloud-sync', lastErrorCode: 'ENOTFOUND' });
+
+        mockFetch.mockResolvedValue(mockResponse({ success: true, messages: [] }));
+        await service.pollMessages();
+        expect(net.isOffline()).toBe(false);
+      } finally {
+        NetworkStatusService.resetInstance();
+      }
     });
 
     it('long-polls with ?wait= once a queueId is registered', async () => {
