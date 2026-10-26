@@ -109,10 +109,22 @@ a child's tokens never sat in the parent's window.
   evidence (no tool calls = did nothing). Runtime-neutral wording: Claude
   Code's `Agent` tool or `spawn_subagent`.
 
-## Not yet (slice 2b)
+## Slice 2b findings (2026-10-26; codex-cli 0.160.0, gemini 0.40.1)
 
-- Codex / Gemini CLI: check their native sub-agents at the pinned versions;
-  otherwise a `spawn-subagent` skill wrapping a one-shot in-process run.
+- **Codex CLI** has native sub-agents (on by default; `~/.codex/agents/*.toml`)
+  and hooks that mirror Claude Code's `SubagentStart` / `SubagentStop`
+  (stop can `decision: block`). The #852 guard is reusable: read
+  `agent_transcript_path`, count rollout `function_call` items. Open
+  decisions: where Crewly puts the hook config (`-c hooks.…` launch override
+  is the candidate) and the `--dangerously-bypass-hook-trust` launch flag,
+  since non-managed hooks are skipped until trusted via `/hooks`.
+- **Gemini CLI** has sub-agents (`.gemini/agents/*.md`, `tools`,
+  `max_turns` 30, `timeout_mins` 10, no nesting) but no sub-agent hook
+  events, so only guidance applies. The TL rule now names Codex/Gemini
+  sub-agents too.
+
+## Not yet
+
 - Traces (`/api/traces`) do not record in-process tool calls at all today, so
   there is nothing to attach a child to there; revisit if in-process runs get
   trace spans.
