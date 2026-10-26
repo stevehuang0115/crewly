@@ -52,7 +52,39 @@ team template that strings the steps together is the remaining slice.
     `daily-<date>.json`; `next` = app-data `--set daily <date>`.
   - Exit 0 done; 2 an input missing or not a breaks.json; 1 usage.
 - `execute.sh` — flags or JSON (`appDir`, `breaks`, `business`, `intake`,
-  `examples`, `out`, `daily`, `date`).
+  `examples`, `out`, `daily`, `date`, `logStep`, `mark`, `at`).
+
+### Time log (slice 3)
+
+`--log-step <intake|connect|analyse|report|daily> --start|--end [--at <iso>]
+--out <dir>` keeps `<dir>/timelog.json`:
+
+```json
+{ "steps": [ { "step": "intake", "startedAt": "…", "endedAt": "…", "minutes": 12.5 } ] }
+```
+
+`--start` opens an entry (a second start on a still-open step restarts it);
+`--end` closes the latest open entry of that step, fills in `minutes` (one
+decimal) and refuses when nothing is open (exit 2) or the end is before the
+start (exit 1). Unknown step → exit 1. `--breaks` reads `timelog.json` from
+the same `--out` and adds `timing: { steps, totalMinutes, open }` to the
+report document; the page shows it under "How long it took" (minutes per
+step, "still running" for open ones, the total). No log → no `timing` and
+no block.
+
+### Team template (slice 3)
+
+`config/templates/small-business-checkup.json` — free, flat (members only,
+no workflows): **Checkup Lead** (product-manager; runs intake → connect →
+analyse → report → daily, logs every step, waits for the Reviewer when one is
+on the team), **Data Analyst** (researcher; connectors or `ingest-exports`,
+`--hash-names` for children's data, `checkup-analyse`, reports the files and
+unsupported checks), **Reviewer** (qa; checks `report-doc.json` against
+`breaks.json` and the intake, answers "approved" or a numbered fix list).
+The reviewer is the switch for the review step: remove the member and the
+lead publishes on its own check. `templates.test.ts` pins the member list,
+the skills named, the `--log-step` instruction, the removable reviewer and
+the no-people-in-chat rule.
 
 ## Flow for the agent (SKILL.md)
 
@@ -62,22 +94,23 @@ team template that strings the steps together is the remaining slice.
 4. `checkup-report --breaks … --business … --intake … --out ./checkup-data` →
    `app-data --set report current --data-file …` → `publish-app --app <id> --share`.
 5. Seven days of `checkup-report --daily "…"` → `app-data --set daily <date>`.
-6. Time per step goes in the agent's work notes (the per-step time log #1062
-   asks for; a structured log is the template slice's job).
+6. `checkup-report --log-step <step> --start|--end --out ./checkup-data`
+   around every step; the report carries the minutes.
 
 ## Tests
 
-`execute.test.sh` (74 checks, not in CI): the page's sandbox rules by grep
+`execute.test.sh` (98 checks, not in CI): the page's sandbox rules by grep
 and a Node syntax parse; `--app-dir` copy; the report document from the
 analyse fixtures (shape, no items, examples per type and cap, each
 first-number mapping incl. free text and app-data output shape, unmappable
-→ note, hashed → counts only); `--daily`; JSON input; every error path. The
+→ note, hashed → counts only); `--daily`; the time log (start/end, restart,
+minutes, JSON input, folded into the report, every error path); every other
+error path. The
 page was also rendered in jsdom with a mock `window.crewly` in both the
 report and the empty/intake state (not committed; tabs, first number, top 3
 cards, table, daily list, ask → notify, chips → saved document all behaved).
 
 ## Not in this slice
 
-- The team template and a structured per-step time log.
 - A visitor (public) view; the App stays private to the owner.
 - Charts; the report is text and one table on purpose (phone, old iPads).

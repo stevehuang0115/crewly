@@ -89,5 +89,8 @@ delete process.env.CREWLY_PROJECT_PATH;
 delete process.env.CREWLY_MISSIONS_DIR;
 
 afterAll(() => {
-  rmSync(isolatedHome, { recursive: true, force: true });
+  // A trace or log writer can still be flushing into the isolated home when
+  // the suite ends (CI 2026-10-26: ENOTEMPTY on `.crewly/traces`); retry
+  // instead of failing the suite over its own cleanup.
+  rmSync(isolatedHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });

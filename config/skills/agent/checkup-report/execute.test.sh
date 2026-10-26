@@ -133,5 +133,42 @@ bash "$EXEC" --daily "   " --out "$T/x" >/dev/null 2>&1; check "empty daily exit
 bash "$EXEC" --breaks "$T/an/breaks.json" --examples lots --out "$T/x" >/dev/null 2>&1; check "bad examples exits 1" "$?" "1"
 bash "$EXEC" --bogus >/dev/null 2>&1; check "unknown flag exits 1" "$?" "1"
 
+# 9. --log-step: per-step time log
+check "page has a timing block" "$(grep -c 'data-crewly-id="timing"' "$PAGE")" "1"
+bash "$EXEC" --log-step intake --start --at 2026-10-26T09:00:00Z --out "$T/tl" >/dev/null; check "log start exits 0" "$?" "0"
+check "timelog written" "$([ -f "$T/tl/timelog.json" ] && echo yes || echo no)" "yes"
+check "open entry" "$(jq -c '.steps[0] | {step, endedAt, minutes}' "$T/tl/timelog.json")" '{"step":"intake","endedAt":null,"minutes":null}'
+LOUT="$(bash "$EXEC" --log-step intake --end --at 2026-10-26T09:12:30Z --out "$T/tl")"
+check "log end exits 0" "$?" "0"
+check "minutes = 12.5" "$(jq -r '.steps[0].minutes' "$T/tl/timelog.json")" "12.5"
+check "end output carries the entry" "$(printf '%s' "$LOUT" | jq -r '.entry.endedAt')" "2026-10-26T09:12:30.000Z"
+check "end output totals" "$(printf '%s' "$LOUT" | jq -c '.timing | {totalMinutes, open}')" '{"totalMinutes":12.5,"open":[]}'
+bash "$EXEC" --log-step connect --start --at 2026-10-26T09:13:00Z --out "$T/tl" >/dev/null
+bash "$EXEC" --log-step connect --start --at 2026-10-26T09:14:00Z --out "$T/tl" >/dev/null
+check "restart replaces the open start" "$(jq -r '[.steps[] | select(.step=="connect")] | length, .[0].startedAt' "$T/tl/timelog.json" | tr '\n' ' ')" "1 2026-10-26T09:14:00.000Z "
+bash "$EXEC" --log-step connect --end --at 2026-10-26T10:14:00Z --out "$T/tl" >/dev/null
+bash "$EXEC" --log-step analyse --start --at 2026-10-26T10:15:00Z --out "$T/tl" >/dev/null
+bash "$EXEC" --log-step analyse --end --at 2026-10-26T10:21:00Z --out "$T/tl" >/dev/null
+bash "$EXEC" --log-step report --start --at 2026-10-26T10:22:00Z --out "$T/tl" >/dev/null
+JLOG="$(bash "$EXEC" "{\"logStep\":\"report\",\"mark\":\"end\",\"at\":\"2026-10-26T10:30:00Z\",\"out\":\"$T/tl\"}")"
+check "json input logs a step" "$(printf '%s' "$JLOG" | jq -r '.entry.minutes')" "8"
+check "four closed steps" "$(jq -r '[.steps[] | select(.endedAt)] | length' "$T/tl/timelog.json")" "4"
+check "same step twice keeps both" "$(bash "$EXEC" --log-step daily --start --at 2026-10-27T09:00:00Z --out "$T/tl" >/dev/null; bash "$EXEC" --log-step daily --end --at 2026-10-27T09:03:00Z --out "$T/tl" >/dev/null; bash "$EXEC" --log-step daily --start --at 2026-10-28T09:00:00Z --out "$T/tl" >/dev/null; jq -r '[.steps[] | select(.step=="daily")] | length' "$T/tl/timelog.json")" "2"
+bash "$EXEC" --breaks "$T/an/breaks.json" --business "Oak Pottery" --out "$T/tl" >/dev/null
+check "report folds the time log in" "$(jq -c '.timing | {totalMinutes, open, n: (.steps|length)}' "$T/tl/report-doc.json")" '{"totalMinutes":89.5,"open":["daily"],"n":6}'
+check "timing steps carry minutes" "$(jq -r '.timing.steps[1] | "\(.step) \(.minutes)"' "$T/tl/report-doc.json")" "connect 60"
+check "no time log → no timing" "$(jq -r 'has("timing")' "$D")" "false"
+bash "$EXEC" --log-step cook --start --out "$T/tl" >/dev/null 2>&1; check "unknown step exits 1" "$?" "1"
+bash "$EXEC" --log-step analyse --end --out "$T/tl" >/dev/null 2>&1; check "end without start exits 2" "$?" "2"
+bash "$EXEC" --log-step intake --out "$T/tl" >/dev/null 2>&1; check "log-step without --start/--end exits 1" "$?" "1"
+bash "$EXEC" --start --out "$T/tl" >/dev/null 2>&1; check "--start without --log-step exits 1" "$?" "1"
+bash "$EXEC" --log-step intake --start >/dev/null 2>&1; check "log-step without --out exits 1" "$?" "1"
+bash "$EXEC" --log-step intake --start --at yesterday --out "$T/tl" >/dev/null 2>&1; check "bad --at exits 1" "$?" "1"
+bash "$EXEC" --log-step intake --start --at 2026-10-26T09:00:00Z --out "$T/tl2" >/dev/null
+bash "$EXEC" --log-step intake --end --at 2026-10-26T08:00:00Z --out "$T/tl2" >/dev/null 2>&1; check "end before start exits 1" "$?" "1"
+printf '{"nope":1}' > "$T/tl3.json"; mkdir -p "$T/tl3"; cp "$T/tl3.json" "$T/tl3/timelog.json"
+bash "$EXEC" --log-step intake --start --out "$T/tl3" >/dev/null 2>&1; check "broken timelog exits 2" "$?" "2"
+bash "$EXEC" --breaks "$T/an/breaks.json" --out "$T/tl3" >/dev/null 2>&1; check "report with broken timelog exits 2" "$?" "2"
+
 echo "checkup-report: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
