@@ -123,6 +123,50 @@ a child's tokens never sat in the parent's window.
   events, so only guidance applies. The TL rule now names Codex/Gemini
   sub-agents too.
 
+## Slice 2b: `spawn-subagent` for every runtime
+
+The in-process tool only exists inside the crewly-agent worker. A Claude
+Code, Codex or Gemini agent runs in a terminal; Codex's own sub-agents need
+a hook-trust decision and Gemini's have no hooks, so neither gives Crewly the
+"evidence, not trust" view. The fallback is the same helper over HTTP:
+
+- **`POST /api/subagents`** (`controllers/subagents/`) — body `{task, cwd,
+  readOnly?, maxSteps?, model?}`; the parent is the caller's
+  `X-Agent-Session` (403 without one). Refusals are 400 with a `code`:
+  `nested` (a `…/sub-N` caller), `too_many` (3 running for that parent),
+  `task_missing` / `task_too_long` (12,000 chars), `cwd_invalid` (must be an
+  existing absolute directory), `model_invalid` (must be `provider/modelId`
+  on a known provider). The reply waits for the child and is 200 with the
+  outcome even when the child failed or timed out — `success: false` and
+  `stoppedReason` are the parent's evidence.
+- **`SubagentRunService`** (`services/agent/crewly-agent/subagent-run.service.ts`)
+  starts one `CrewlyAgentExternalRuntimeService` rooted at `cwd` with
+  `initializeInProcess(<parent>/sub-<n>, {…, role: 'subagent', subagent:
+  {cwd, readOnly, depth: 1, parentSession}}, 'subagent')` — the config now
+  passes `role` and `subagent` through, so the worker restricts its tools
+  exactly as for an in-process child — sends the task as its one message,
+  races it against the sub-agent budget (600 s, bounded 5 s under the
+  runtime's IPC deadline so the IPC path's recycle-and-respawn never runs),
+  summarises the result the same way as `summarizeSubagentRun` in the
+  package (report from the `report_to_parent` call; files from successful
+  `edit_file` / `write_file` plus the report), and always shuts the worker
+  down and unregisters it. The child is registered in the in-process
+  registry while it runs so its process is attributed. Start and finish
+  lines go to the parent's in-process log buffer (`spawn-subagent →` /
+  `←`). The child's tokens are booked under its own session: the parent runs
+  in a terminal and has no ledger row.
+- **Model.** `model` names it; otherwise the fallback settings'
+  `crewlyAgentModel` (DeepSeek unless changed), because that is the model the
+  owner has a key for; else the runtime default.
+- **Skill `spawn-subagent`** (`config/skills/agent/spawn-subagent/`) —
+  `--task` (or `--task-file`), `--cwd` (default `$CREWLY_PROJECT_PATH`, else
+  `$PWD`), `--read-only`, `--max-steps`, `--model`; checks the cwd and the
+  numbers before sending, calls the endpoint with a 660 s curl budget, and
+  prints the outcome unwrapped. Bash test with a Python stub backend.
+- **Prompt.** `buildSubagentPrompt` is duplicated in the backend service
+  word for word; keep the two in step by hand (no shared package between
+  backend and worker for this).
+
 ## Not yet
 
 - Traces (`/api/traces`) do not record in-process tool calls at all today, so

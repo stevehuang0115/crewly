@@ -86,6 +86,23 @@ export interface ConversationState {
 }
 
 /**
+ * What makes a worker a short-lived helper of another agent (#1317). The
+ * worker restricts its tools to read/grep/edit under `cwd` plus
+ * `report_to_parent`, and never gets `spawn_subagent` itself. Mirrors
+ * `SubagentPolicy` in packages/crewly-agent.
+ */
+export interface SubagentPolicy {
+  /** Directory the child works in and may write under */
+  cwd: string;
+  /** No shell and no file writes when true */
+  readOnly: boolean;
+  /** 1 for a direct child; a child never gets `spawn_subagent`, so it stays 1 */
+  depth: number;
+  /** Session name of the agent that spawned it */
+  parentSession: string;
+}
+
+/**
  * Configuration for the Crewly Agent runtime
  */
 export interface CrewlyAgentConfig {
@@ -97,6 +114,8 @@ export interface CrewlyAgentConfig {
   sessionName: string;
   /** Agent role (e.g. developer, product-manager) */
   role?: string;
+  /** Set when this worker is a bounded helper of another agent (#1317) */
+  subagent?: SubagentPolicy;
   /** Base URL for the Crewly REST API */
   apiBaseUrl: string;
   /** System prompt content (loaded from prompt.md) */
@@ -504,6 +523,21 @@ export const CREWLY_AGENT_DEFAULTS = {
   ERROR_LOOP_THRESHOLD: 3,
   /** Default max history messages before compaction */
   MAX_HISTORY_MESSAGES: 100,
+  /** Limits for a helper spawned for one bounded task (#1317); same values as packages/crewly-agent */
+  SUBAGENT: {
+    /** Model steps a child gets when the parent names none */
+    MAX_STEPS: 30,
+    /** Hard cap on the steps a parent may grant */
+    MAX_STEPS_CAP: 60,
+    /** Wall-clock budget per child */
+    TIMEOUT_MS: 600_000,
+    /** Children one parent may have running at once */
+    MAX_CONCURRENT: 3,
+    /** Characters of the child's report kept for the parent */
+    SUMMARY_MAX_CHARS: 6000,
+    /** Characters a task may have; longer means the parent is pasting context it should summarise */
+    TASK_MAX_CHARS: 12_000,
+  },
   /** Default compaction threshold (80% of context window) */
   COMPACTION_THRESHOLD: 0.8,
   /**
