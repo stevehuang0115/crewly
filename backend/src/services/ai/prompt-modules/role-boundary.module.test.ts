@@ -229,6 +229,19 @@ describe('RoleBoundaryModule', () => {
 	});
 
 	/**
+	 * #1317: the decomposition rules say when a short-lived sub-agent beats a
+	 * teammate, for every runtime that has one.
+	 */
+	it('tells a team lead when to use a short-lived sub-agent instead of a teammate', async () => {
+		const result = await module.build({ ...baseConfig, orgRole: 'team-lead' });
+
+		expect(result).toContain('Hand to a short-lived sub-agent');
+		expect(result).toContain('spawn_subagent');
+		expect(result).toMatch(/made no tool calls did nothing/);
+		expect(result.indexOf('Hand to a short-lived sub-agent')).toBeGreaterThan(result.indexOf('Create as project ticket'));
+	});
+
+	/**
 	 * Orchestrator includes narrowed scope constraints.
 	 */
 	it('should include orchestrator scope constraints', async () => {
