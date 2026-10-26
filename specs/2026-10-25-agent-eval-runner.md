@@ -84,6 +84,36 @@ if the baseline files stop parsing.
 Not in this slice: running the models (costs the owner's tokens, so it is done
 attended), the business tasks, the "not yet" set.
 
+## Slice 3: business tasks (2026-10-26)
+
+Four tasks of category `business`, ids D1–D4, in `task-registry.ts`:
+
+| Id | Fixture | Agent writes | Checker recomputes |
+|---|---|---|---|
+| D1 | `transactions.csv`, `category-rules.md` | `reports/2026-09-summary.json`, `reports/needs-review.csv` | income/expenses/net/byCategory from the CSV and the keyword rules; the uncategorized rows (2) must be listed and excluded |
+| D2 | `brand.md`, `products.json` | `posts/week-41.json` (3 posts) | one post per platform, distinct exact product names, no banned words, length limits, ≥3 Instagram hashtags, text ends with the order link |
+| D3 | `inbox/001–006.txt`, `availability.json` | `intake/triage.json`, `intake/replies/<id>.md` | type per message against ground truth; booking slot in the accepted set, no slot used twice; reply exists for every non-spam message, names the sender and (bookings) the slot's `YYYY-MM-DD` and `HH:MM` |
+| D4 | `invoices.csv`, `today.txt`, `reminder-template.md` | `reminders/<inv>.md`, `reminders/index.csv` | overdue = unpaid and due < today; reminder per overdue invoice and no other; exact amount / due date / `<n> days overdue` / link; index header and order |
+
+Shape:
+
+- `TaskCategory` gains `'business'`; `EvalTask.provenance?: 'inferred' |
+  'interviewed'` records where the bar came from. All four are `inferred`.
+- `setupCommands: []` (no npm install); `verification` is one check,
+  `node ../../checks/<fixture>/check.mjs`, `expected: 'all_pass'`. The runner
+  executes it in `runs/<runId>/`, so `../../checks/` is `eval/checks/`. The
+  checker is outside the fixture so the agent's working copy never contains
+  the answer key.
+- `solutions/<fixture>/` holds a reference output. `task-registry.test.ts`
+  copies each fixture to a temp dir and asserts the checker exits non-zero on
+  the bare fixture and zero with the solution overlaid, so a checker that
+  passes nothing or rejects its own solution fails CI.
+- Scorer unchanged: the D2 dimension's tsc/lint/tests bonuses never fire for
+  business tasks, which keep the baseline 50.
+
+Not in this slice: running them (attended, owner tokens); owner interviews;
+the "not yet" set.
+
 ## Acceptance for this slice
 
 - `cd eval && npm ci && npm run build && npm test` pass from a clean clone.

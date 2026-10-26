@@ -1,0 +1,32 @@
+[
+  {
+    "message": "001",
+    "type": "booking",
+    "slot": "S1"
+  },
+  {
+    "message": "002",
+    "type": "complaint",
+    "slot": null
+  },
+  {
+    "message": "003",
+    "type": "spam",
+    "slot": null
+  },
+  {
+    "message": "004",
+    "type": "booking",
+    "slot": "S3"
+  },
+  {
+    "message": "005",
+    "type": "other",
+    "slot": null
+  },
+  {
+    "message": "006",
+    "type": "booking",
+    "slot": "S2"
+  }
+]
