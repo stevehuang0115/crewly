@@ -1673,6 +1673,147 @@ describe('ReconcilerService', () => {
   // -------------------------------------------------------------------------
   // CREW-304: wake storm — outcomes, failure backoff, pending starts
   // -------------------------------------------------------------------------
+  describe('failing redelivery is reported to the lead (CREW-577)', () => {
+    const MIN = 60_000;
+    const idleTarget = (): Map<string, AgentHealth> =>
+      new Map([['ce-nova', { sessionName: 'ce-nova', status: 'active', activeWorkItemCount: 0, lastSeenAt: new Date().toISOString() } as AgentHealth]]);
+    const queued = () => makeWorkItem({ id: 'wi-282', status: 'queued', type: 'delegate', target: 'ce-nova', createdAt: new Date(Date.now() - 30 * MIN).toISOString() });
+    const wire = (executeWakeAction: jest.Mock) => {
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([queued()]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(idleTarget()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      service.setWakeTuning({ successBackoffBaseMs: 0, successBackoffMaxMs: 0 });
+      const addToPool = jest.fn().mockResolvedValue(undefined);
+      service.setIdleHolderReporting({
+        loadTeams: async () => [{
+          id: 'team-ce', name: 'CE', members: [
+            { id: 'owen', sessionName: 'ce-owen', canDelegate: true, hierarchyLevel: 1 },
+            { id: 'nova', sessionName: 'ce-nova' },
+          ],
+        } as never],
+        addToPool,
+        stamp: jest.fn().mockResolvedValue(undefined),
+        findWorkItem: async () => ({ id: 'wi-282', title: 'CE-282 brief' }) as never,
+      });
+      return addToPool;
+    };
+    const runPasses = async (n: number) => {
+      for (let i = 0; i < n; i++) {
+        await service.runFast();
+        jest.advanceTimersByTime(31 * MIN); // past the failure backoff
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+
+    beforeEach(() => jest.setSystemTime(new Date('2026-10-26T13:10:00Z')));
+
+    it('the third failed redelivery in a row puts one review on the lead, with the reason', async () => {
+      const executeWakeAction = jest.fn().mockResolvedValue({ outcome: 'failed', reason: 'over its daily token cap' });
+      const addToPool = wire(executeWakeAction);
+
+      await runPasses(2);
+      expect(addToPool).not.toHaveBeenCalled();
+      await runPasses(1);
+
+      expect(executeWakeAction).toHaveBeenCalledTimes(3);
+      expect(addToPool).toHaveBeenCalledTimes(1);
+      expect(addToPool.mock.calls[0][0]).toMatchObject({
+        type: 'review',
+        target: 'ce-owen',
+        metadata: { reviewReason: 'redelivery_miss', sourceWorkItemId: 'wi-282' },
+      });
+      expect(addToPool.mock.calls[0][0].description).toContain('over its daily token cap');
+      expect(addToPool.mock.calls[0][0].title).toContain('CE-282 brief');
+    });
+
+    it('is told once however long it keeps failing', async () => {
+      const addToPool = wire(jest.fn().mockResolvedValue({ outcome: 'failed', reason: 'x' }));
+      await runPasses(7);
+      expect(addToPool).toHaveBeenCalledTimes(1);
+    });
+
+    it('a delivered redelivery in between resets the count (no report)', async () => {
+      const executeWakeAction = jest.fn()
+        .mockResolvedValueOnce({ outcome: 'failed', reason: 'x' })
+        .mockResolvedValueOnce({ outcome: 'failed', reason: 'x' })
+        .mockResolvedValueOnce({ outcome: 'ok' })
+        .mockResolvedValueOnce({ outcome: 'failed', reason: 'x' })
+        .mockResolvedValueOnce({ outcome: 'failed', reason: 'x' });
+      const addToPool = wire(executeWakeAction);
+      await runPasses(5);
+      expect(executeWakeAction).toHaveBeenCalledTimes(5);
+      expect(addToPool).not.toHaveBeenCalled();
+    });
+
+    it('another item\'s successful wake on the same agent does not reset the count (CE-282, 2026-10-12)', async () => {
+      const other = makeWorkItem({ id: 'wi-other', status: 'queued', type: 'delegate', target: 'ce-nova', createdAt: new Date(Date.now() - 30 * MIN).toISOString() });
+      const executeWakeAction = jest.fn().mockImplementation(async (action: { workItemId: string }) =>
+        action.workItemId === 'wi-282' ? { outcome: 'failed', reason: 'x' } : { outcome: 'ok' });
+      // Pass 1-2: only CE-282 is queued (fails twice); pass 3: another item's wake succeeds (clears the
+      // session's failure record); pass 4: CE-282 fails a third time.
+      const getActiveWorkItems = jest.fn()
+        .mockResolvedValueOnce([queued()])
+        .mockResolvedValueOnce([queued()])
+        .mockResolvedValueOnce([other])
+        .mockResolvedValue([queued()]);
+      provider = createMockProvider({
+        getActiveWorkItems,
+        getAgentHealthMap: jest.fn().mockResolvedValue(idleTarget()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      service.setWakeTuning({ successBackoffBaseMs: 0, successBackoffMaxMs: 0 });
+      const addToPool = jest.fn().mockResolvedValue(undefined);
+      service.setIdleHolderReporting({ loadTeams: async () => [], addToPool, stamp: jest.fn() });
+      await runPasses(4);
+      expect(executeWakeAction.mock.calls.map((c) => c[0].workItemId)).toEqual(['wi-282', 'wi-282', 'wi-other', 'wi-282']);
+      expect(addToPool).toHaveBeenCalledTimes(1);
+      expect(addToPool.mock.calls[0][0].metadata.sourceWorkItemId).toBe('wi-282');
+    });
+
+    it('pending and skipped redeliveries (waiting on the queue, memory stop, offline) never count', async () => {
+      const addToPool = wire(jest.fn().mockResolvedValue({ outcome: 'pending', reason: "an earlier notice still waits on the agent's queue" }));
+      await runPasses(6);
+      expect(addToPool).not.toHaveBeenCalled();
+      const addToPool2 = wire(jest.fn().mockResolvedValue({ outcome: 'skipped', reason: 'target stopped for memory' }));
+      await runPasses(6);
+      expect(addToPool2).not.toHaveBeenCalled();
+    });
+
+    it('failures of a start (not a redelivery) are not reported by this path', async () => {
+      const wi = makeWorkItem({ id: 'wi-s', status: 'queued', target: 'ce-nova', createdAt: new Date(Date.now() - 30 * MIN).toISOString() });
+      const executeWakeAction = jest.fn().mockResolvedValue({ outcome: 'failed', reason: 'x' });
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(new Map([['ce-nova', { sessionName: 'ce-nova', status: 'inactive', teamId: 't1', memberId: 'm1', activeWorkItemCount: 0 } as AgentHealth]])),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      const addToPool = jest.fn().mockResolvedValue(undefined);
+      service.setIdleHolderReporting({ loadTeams: async () => [], addToPool, stamp: jest.fn() });
+      await runPasses(5);
+      expect(executeWakeAction.mock.calls.every((c) => c[0].strategy !== 'redeliver')).toBe(true);
+      expect(addToPool).not.toHaveBeenCalled();
+    });
+
+    it('without reporting wired, failing redeliveries only back off (no throw)', async () => {
+      const executeWakeAction = jest.fn().mockResolvedValue({ outcome: 'failed', reason: 'x' });
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([queued()]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(idleTarget()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      service.setWakeTuning({ successBackoffBaseMs: 0, successBackoffMaxMs: 0 });
+      await expect(runPasses(4)).resolves.toBeUndefined();
+      expect(executeWakeAction).toHaveBeenCalledTimes(4);
+    });
+  });
+
   describe('wake pacing (CREW-304)', () => {
     const MIN = 60_000;
     const stoppedAgent = (session = 'ce-vera'): Map<string, AgentHealth> =>

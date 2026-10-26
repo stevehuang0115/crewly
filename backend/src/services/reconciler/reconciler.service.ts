@@ -52,6 +52,7 @@ import {
 } from './reconcile-rules.js';
 import type { AgentHealth, DecisionHoldLink } from './reconcile-rules.js';
 import { surfaceIdleHolders, type IdleHolderSurfacerDeps } from './idle-holder-surfacer.js';
+import { surfaceRedeliveryMiss } from './redelivery-escalation.js';
 import { WORK_ITEM_BLOCK_SOURCES } from '../../types/v2/work-item.types.js';
 import { getSettingsService } from '../settings/index.js';
 import { LoggerService } from '../core/logger.service.js';
@@ -243,6 +244,14 @@ export class ReconcilerService {
    * the queue.
    */
   private readonly wakeFailures = new Map<string, { failures: number; nextAt: number; session: string; workItemId: string }>();
+  /**
+   * Consecutive failed redeliveries per WorkItem (CREW-577). Separate from {@link wakeFailures}, which is
+   * cleared for the whole session when any other wake of it succeeds (CE-282, 2026-10-12: the count restarted
+   * at 1 after attempt 3 and the lead was never told). Cleared when that item's own redelivery succeeds.
+   */
+  private readonly redeliveryMisses = new Map<string, number>();
+  /** WorkItems whose failing redelivery was already reported to a lead (once per item, CREW-577) */
+  private readonly escalatedRedeliveries = new Set<string>();
   /**
    * Successful wakes per `session + WorkItem`: the next wake of the same pair waits a doubling
    * backoff while the item stays queued (the wake "worked" but the agent did not take the item).
@@ -1200,6 +1209,7 @@ export class ReconcilerService {
 
     this.pendingTraced.delete(session);
     if (res.outcome === 'ok') {
+      this.redeliveryMisses.delete(action.workItemId);
       for (const [key, entry] of this.wakeFailures) {
         if (entry.session === session) this.wakeFailures.delete(key);
       }
@@ -1238,6 +1248,44 @@ export class ReconcilerService {
       result.errors.push(
         `Wake action failed for agent ${session} (strategy: ${action.strategy})`,
       );
+    }
+    if (action.strategy === 'redeliver') {
+      const misses = (this.redeliveryMisses.get(action.workItemId) ?? 0) + 1;
+      this.redeliveryMisses.set(action.workItemId, misses);
+      if (this.redeliveryMisses.size > RECONCILER_WAKE_CONSTANTS.REDELIVERY_ESCALATED_KEPT) {
+        const oldest = this.redeliveryMisses.keys().next().value;
+        if (oldest !== undefined && oldest !== action.workItemId) this.redeliveryMisses.delete(oldest);
+      }
+      if (misses >= RECONCILER_WAKE_CONSTANTS.REDELIVERY_ESCALATE_AFTER) {
+        void this.escalateRedeliveryMiss(action.workItemId, session, misses, res.reason);
+      }
+    }
+  }
+
+  /**
+   * Tell the target's lead, once per WorkItem, that its brief keeps failing
+   * to reach the agent (CREW-577). Best-effort: never throws, and does
+   * nothing when idle-holder reporting is not wired.
+   *
+   * @param workItemId - The queued WorkItem
+   * @param session - Its target
+   * @param attempts - Consecutive failed redeliveries
+   * @param reason - Why the last one failed
+   */
+  private async escalateRedeliveryMiss(workItemId: string, session: string, attempts: number, reason?: string): Promise<void> {
+    if (!this.idleHolderDeps || this.escalatedRedeliveries.has(workItemId)) return;
+    this.escalatedRedeliveries.add(workItemId);
+    if (this.escalatedRedeliveries.size > RECONCILER_WAKE_CONSTANTS.REDELIVERY_ESCALATED_KEPT) {
+      const oldest = this.escalatedRedeliveries.values().next().value;
+      if (oldest !== undefined && oldest !== workItemId) this.escalatedRedeliveries.delete(oldest);
+    }
+    const log = LoggerService.getInstance().createComponentLogger('ReconcilerService');
+    try {
+      const review = await surfaceRedeliveryMiss({ workItemId, session, attempts, ...(reason ? { reason } : {}) }, this.idleHolderDeps);
+      log.warn('Brief keeps failing to reach its target — reported to its lead', { workItemId, session, attempts, reason, lead: review.target, reviewWorkItemId: review.id });
+    } catch (err) {
+      this.escalatedRedeliveries.delete(workItemId);
+      log.warn('Reporting a failing redelivery failed (non-fatal)', { workItemId, error: err instanceof Error ? err.message : String(err) });
     }
   }
 

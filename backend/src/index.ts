@@ -1866,6 +1866,7 @@ void (async () => {
 				loadTeams: () => this.storageService.getTeams(),
 				addToPool: (wi) => TaskPoolService.getInstance().addToPool(wi),
 				stamp: (id, patch) => TaskPoolService.getInstance().mergeItemMetadata(id, patch),
+				findWorkItem: (id) => TaskPoolService.getInstance().findWorkItem(id),
 			});
 
 			// Subscribe EventBus events for targeted reconciliation
