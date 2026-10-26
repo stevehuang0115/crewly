@@ -9,6 +9,10 @@ User-visible changes. Newest first.
 - **`spawn-subagent` says when the provider is out of credit (crewly#1317).** Where the fallback service has marked the in-process runtime exhausted (DeepSeek's "Insufficient Balance", for example), the skill now refuses with `provider_exhausted` and the date instead of starting a helper that fails at its first model call with "No output generated"; a helper that does fail carries the worker's last stderr lines in `error`, and its log file (`<parent>__sub-<n>.log`) is written — a slash in the session name had sent it to a directory that does not exist.
 - **The check-up App no longer shows "0 min" for a step that took seconds (crewly#1062).** A step or total under a minute reads "under a minute".
 
+### Fixed
+
+- **A remote MCP session's opening handshake no longer counts as a connector use (crewly#969).** Only a `tools/call` writes `connector.use.allowed` (named after the tool); `initialize` and `tools/list` at session start do not, so a restart no longer writes one line per agent.
+
 ### Added
 
 - **The activity log now says who used which connection, acting for whom, and whether it was allowed (crewly#969).** Settings › Activity (filter `connector.use.`) gets `connector.use.refused` for every refusal — a role off the owner's allowlist (with the allowed roles) or Crewly Cloud refusing a grant that is not shared with the person the agent acts for (with who authorized it, where Cloud says) — on the Google Workspace, Canva and Microsoft To Do routes, the remote MCP proxy and Zoho drafts; and `connector.use.allowed` once per agent, connection and person per hour, so a run of Drive searches is one line, not fifty. The log is read-only for agents; the window is in memory and empty after a restart.

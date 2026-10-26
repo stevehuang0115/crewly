@@ -14,6 +14,8 @@ import express, { type Application } from 'express';
 import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 import { proxyRemoteMcp, rpcIdOf, setRemoteMcpProxyDeps, type ProxyDeps } from './remote-mcp-proxy.controller.js';
 import type { RemoteMcpServer } from '../../services/connector/remote-mcp.service.js';
+import { ConnectorUseAuditService, setConnectorUseAuditForTesting } from '../../services/connector/connector-use-audit.service.js';
+import type { ActivityEntryInput } from '../../services/activity/activity-log.service.js';
 
 const logs: unknown[][] = [];
 jest.mock('../../services/core/logger.service.js', () => {
@@ -86,6 +88,32 @@ beforeEach(() => {
 
 const rpc = (body: unknown, session = 'dev-1') =>
   request(app).post('/api/connectors/remote-mcp/zoho/mcp').set('X-Agent-Session', session).set('Content-Type', 'application/json').set('Accept', 'application/json, text/event-stream').send(JSON.stringify(body));
+
+describe('audit log of connector use (issue #969)', () => {
+  let written: ActivityEntryInput[];
+  beforeEach(() => {
+    written = [];
+    setConnectorUseAuditForTesting(new ConnectorUseAuditService({ record: (e) => written.push(e) }));
+  });
+  afterEach(() => setConnectorUseAuditForTesting(null));
+
+  it('counts a tool call as a use, named after the tool, and not the session handshake', async () => {
+    await rpc({ jsonrpc: '2.0', id: 1, method: 'initialize' });
+    await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+    expect(written).toHaveLength(0);
+    await rpc({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'search_leads', arguments: {} } });
+    await rpc({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'search_leads', arguments: {} } });
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ action: 'connector.use.allowed', actor: { type: 'agent' }, target: { type: 'connector', id: 'mcp:zoho' }, after: { what: 'search_leads' } });
+  });
+
+  it('writes a refusal with the allowed roles when the role may not use the server', async () => {
+    allowed = false;
+    await rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ action: 'connector.use.refused', target: { type: 'connector', id: 'mcp:zoho' }, after: { reason: 'role_not_allowed', allowedRoles: ['sales'] } });
+  });
+});
 
 it('refuses the owner and anonymous callers with 403 (never 401)', async () => {
   const res = await request(app).post('/api/connectors/remote-mcp/zoho/mcp').send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
