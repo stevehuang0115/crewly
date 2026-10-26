@@ -244,6 +244,12 @@ export class ReconcilerService {
    * the queue.
    */
   private readonly wakeFailures = new Map<string, { failures: number; nextAt: number; session: string; workItemId: string }>();
+  /**
+   * Consecutive failed redeliveries per WorkItem (CREW-577). Separate from {@link wakeFailures}, which is
+   * cleared for the whole session when any other wake of it succeeds (CE-282, 2026-10-12: the count restarted
+   * at 1 after attempt 3 and the lead was never told). Cleared when that item's own redelivery succeeds.
+   */
+  private readonly redeliveryMisses = new Map<string, number>();
   /** WorkItems whose failing redelivery was already reported to a lead (once per item, CREW-577) */
   private readonly escalatedRedeliveries = new Set<string>();
   /**
@@ -1203,6 +1209,7 @@ export class ReconcilerService {
 
     this.pendingTraced.delete(session);
     if (res.outcome === 'ok') {
+      this.redeliveryMisses.delete(action.workItemId);
       for (const [key, entry] of this.wakeFailures) {
         if (entry.session === session) this.wakeFailures.delete(key);
       }
@@ -1242,8 +1249,16 @@ export class ReconcilerService {
         `Wake action failed for agent ${session} (strategy: ${action.strategy})`,
       );
     }
-    if (action.strategy === 'redeliver' && failures >= RECONCILER_WAKE_CONSTANTS.REDELIVERY_ESCALATE_AFTER) {
-      void this.escalateRedeliveryMiss(action.workItemId, session, failures, res.reason);
+    if (action.strategy === 'redeliver') {
+      const misses = (this.redeliveryMisses.get(action.workItemId) ?? 0) + 1;
+      this.redeliveryMisses.set(action.workItemId, misses);
+      if (this.redeliveryMisses.size > RECONCILER_WAKE_CONSTANTS.REDELIVERY_ESCALATED_KEPT) {
+        const oldest = this.redeliveryMisses.keys().next().value;
+        if (oldest !== undefined && oldest !== action.workItemId) this.redeliveryMisses.delete(oldest);
+      }
+      if (misses >= RECONCILER_WAKE_CONSTANTS.REDELIVERY_ESCALATE_AFTER) {
+        void this.escalateRedeliveryMiss(action.workItemId, session, misses, res.reason);
+      }
     }
   }
 

@@ -1749,6 +1749,32 @@ describe('ReconcilerService', () => {
       expect(addToPool).not.toHaveBeenCalled();
     });
 
+    it('another item\'s successful wake on the same agent does not reset the count (CE-282, 2026-10-12)', async () => {
+      const other = makeWorkItem({ id: 'wi-other', status: 'queued', type: 'delegate', target: 'ce-nova', createdAt: new Date(Date.now() - 30 * MIN).toISOString() });
+      const executeWakeAction = jest.fn().mockImplementation(async (action: { workItemId: string }) =>
+        action.workItemId === 'wi-282' ? { outcome: 'failed', reason: 'x' } : { outcome: 'ok' });
+      // Pass 1-2: only CE-282 is queued (fails twice); pass 3: another item's wake succeeds (clears the
+      // session's failure record); pass 4: CE-282 fails a third time.
+      const getActiveWorkItems = jest.fn()
+        .mockResolvedValueOnce([queued()])
+        .mockResolvedValueOnce([queued()])
+        .mockResolvedValueOnce([other])
+        .mockResolvedValue([queued()]);
+      provider = createMockProvider({
+        getActiveWorkItems,
+        getAgentHealthMap: jest.fn().mockResolvedValue(idleTarget()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      service.setWakeTuning({ successBackoffBaseMs: 0, successBackoffMaxMs: 0 });
+      const addToPool = jest.fn().mockResolvedValue(undefined);
+      service.setIdleHolderReporting({ loadTeams: async () => [], addToPool, stamp: jest.fn() });
+      await runPasses(4);
+      expect(executeWakeAction.mock.calls.map((c) => c[0].workItemId)).toEqual(['wi-282', 'wi-282', 'wi-other', 'wi-282']);
+      expect(addToPool).toHaveBeenCalledTimes(1);
+      expect(addToPool.mock.calls[0][0].metadata.sourceWorkItemId).toBe('wi-282');
+    });
+
     it('pending and skipped redeliveries (waiting on the queue, memory stop, offline) never count', async () => {
       const addToPool = wire(jest.fn().mockResolvedValue({ outcome: 'pending', reason: "an earlier notice still waits on the agent's queue" }));
       await runPasses(6);
