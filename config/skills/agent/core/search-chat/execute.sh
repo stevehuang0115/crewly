@@ -65,4 +65,16 @@ if [ "${CREWLY_SKILL_DRY_RUN:-}" = "1" ]; then
   exit 0
 fi
 
-api_call GET "$ENDPOINT"
+# Posts a team member makes with `reply --work-item` / `--new-thread` go straight to
+# Slack and are not stored in the chat history this searches (CREW-877). Say so in
+# the output: an empty or partial result is not proof that such a post failed. The
+# reply itself returned the proof (slackChannelId + messageTs) to the member.
+NOTE="Not searched: replies a team member posts with 'reply --work-item', '--new-thread' or '--ticket' can go straight to Slack and are then not in this history. A missing hit does not mean such a post failed; ask the member for its messageTs (the reply returns it) or read the Slack thread."
+if ! RESP=$(api_call GET "$ENDPOINT"); then
+  exit 1
+fi
+if printf '%s' "$RESP" | jq -e 'type == "object"' >/dev/null 2>&1; then
+  printf '%s' "$RESP" | jq -c --arg note "$NOTE" '. + {note: $note}'
+else
+  printf '%s\n' "$RESP"
+fi

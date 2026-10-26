@@ -67,3 +67,7 @@ Output: `{ "data": { "count": N, "hits": [ { "id", "time", "channelId", "channel
 - Try a shorter or different keyword when nothing comes back; CJK text is
   matched as written, without word splitting.
 - To read around a hit, search again with `--channel` and a one-day range.
+
+## What it does not search
+
+Replies a team member posts with `reply --work-item`, `--new-thread` or `--ticket` can go straight to Slack and are not stored in this chat history. The result carries a `note` saying so. A missing hit does **not** mean such a post failed: the `reply` call itself returns `slackChannelId` and `messageTs` as proof it landed. Ask the member for those, or read the Slack thread, before posting the answer again.
