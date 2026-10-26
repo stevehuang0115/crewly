@@ -96,3 +96,13 @@ update" and is disabled.
 4. Owner identity unified on `owner` (OSS + Cloud).
 5. Dedicated agents no longer drop agent @-mentions.
 6. "Usable by" against auth 1.9.0 shows "Requires a Cloud update".
+
+## Audit log of connector use (#969, 2026-10-26)
+
+The owner can answer "who used which grant, acting for whom, when, and was it allowed" from Settings › Activity (filter `connector.use.`). Two actions, written by `backend/src/services/connector/connector-use-audit.service.ts` through the activity log (#881):
+
+- `connector.use.refused` — written every time. `after.reason` is `role_not_allowed` (the role gate in `requireConnectorAccess`, the remote MCP proxy, the Zoho draft route; `after.allowedRoles` lists the owner's allowlist) or `grant_not_shared` (Crewly Cloud answered `not_permitted` for the person the call acts for; Google carries `after.authorizedBy` and the product in `after.what`). The actor is the agent the role decision was made for (`caller.session`), the person in `after.actingFor` / `after.actingForRole` comes from the acting-for context.
+- `connector.use.allowed` — one Drive search is one call, so an allowed use is written once per actor, connection and person per hour (`ACTIVITY_LOG_CONSTANTS.USE_ALLOWED_WINDOW_MS`); the note says further uses in that hour are not logged. The in-memory window map is capped at `USE_KEYS_MAX` keys (oldest dropped) and is empty after a restart. The remote MCP proxy and Zoho draft log allowed uses without a person (they do not run under the acting-for context).
+
+Not covered yet (still open on #969): tagging memory and wiki writes with the person they came from, and the audience check on sharing them.
+

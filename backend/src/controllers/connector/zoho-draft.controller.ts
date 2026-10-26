@@ -14,6 +14,8 @@ import { LoggerService } from '../../services/core/logger.service.js';
 import { getCallerIdentity } from '../../middleware/caller-identity.middleware.js';
 import { resolveAgentCaller } from '../../utils/agent-caller.utils.js';
 import { ConnectorAccessService } from '../../services/connector/connector-access.service.js';
+import { getConnectorUseAudit } from '../../services/connector/connector-use-audit.service.js';
+import { actorFromRequest } from '../../services/activity/activity-log.service.js';
 import { RemoteMcpService, remoteMcpConnectorId } from '../../services/connector/remote-mcp.service.js';
 import { saveZohoDraft, ZohoDraftError, type ZohoDraftInput } from '../../services/connector/zoho-draft.service.js';
 
@@ -46,9 +48,11 @@ export async function saveZohoDraftHandler(req: Request, res: Response): Promise
       return;
     }
     if (!(await zohoDraftDeps.isAllowed(id, caller.role || 'unknown'))) {
+      getConnectorUseAudit().refused({ connectorId: remoteMcpConnectorId(id), actor: actorFromRequest(req), actingFor: null, reason: 'role_not_allowed', what: 'zoho-draft' });
       res.status(403).json({ success: false, error: `Your role (${caller.role}) may not use Zoho.` });
       return;
     }
+    getConnectorUseAudit().allowed({ connectorId: remoteMcpConnectorId(id), actor: actorFromRequest(req), actingFor: null, what: 'zoho-draft' });
     const out = await zohoDraftDeps.save((req.body ?? {}) as ZohoDraftInput);
     logger.info('Zoho draft saved for agent', { session: caller.session });
     res.status(202).json({ success: true, drafted: true, sent: false, accountId: out.accountId, detail: out.result });
