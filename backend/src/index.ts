@@ -3211,6 +3211,7 @@ void (async () => {
 				}
 				await this.startOwnerMessageWatchdog(chatService);
 				await this.startOwnerCompletionReport(chatService);
+				await this.startThreadAnswerLog();
 				// Owner read state (#1400): every change (read, mark-unread, new
 				// message raising a count) goes out as a `read_state` frame — to local
 				// WS subscribers and, through the gateway's broadcast hook, over the
@@ -7639,18 +7640,27 @@ void (async () => {
 	}
 
 	/**
+	 * Start remembering which agent posted in which owner Slack thread, so
+	 * `delegate-task --thread` can refuse a delegation into a thread another
+	 * agent already answered (CREW-878). Best-effort: a failure here never
+	 * affects boot.
+	 */
+	private async startThreadAnswerLog(): Promise<void> {
+		try {
+			(await import('./services/messaging/thread-answer-log.js')).installThreadAnswerLog();
+		} catch (error) {
+			this.logger.warn('Thread answer log not started', { error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	/**
 	 * Finished owner-requested work is reported back where the owner asked
 	 * (services/orc/owner-completion-report.service.ts). Best-effort: a
 	 * failure here never affects boot.
 	 *
 	 * @param chatV2 - The chat-v2 service (agent posts count as answers)
 	 */
-	private async startOwnerCompletionReport(chatV2: import('./services/chat-v2/chat-v2.service.js').ChatV2Service): Promise<void> {		// CREW-878: remember who posted in which owner thread (delegate-task --thread reads it).
-		try {
-			(await import('./services/messaging/thread-answer-log.js')).installThreadAnswerLog();
-		} catch (error) {
-			this.logger.warn('Thread answer log not started', { error: error instanceof Error ? error.message : String(error) });
-		}
+	private async startOwnerCompletionReport(chatV2: import('./services/chat-v2/chat-v2.service.js').ChatV2Service): Promise<void> {
 		try {
 			const { OwnerCompletionReportService, setOwnerCompletionReport } = await import('./services/orc/owner-completion-report.service.js');
 			const wiring = await import('./services/orc/owner-completion-report.wiring.js');
