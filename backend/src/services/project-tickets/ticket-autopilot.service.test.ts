@@ -730,6 +730,9 @@ describe('TicketAutopilotService', () => {
       expect(r.traceId).toBe(yesterdayRun.traceId);
       expect(r.briefMarkdown).toContain('Tickets: 1 triaged');
       expect(r.briefMarkdown).toContain(`--trace ${yesterdayRun.traceId}`);
+      // Each ticket run of the day is listed with its numbers (#985 per-run review).
+      const ticketRuns = store.listTagged({ autopilotProjectId: 'p-ce', day: '2026-09-30' }).filter((e) => e.root.kind !== 'autopilot' && e.root.kind !== 'triage');
+      for (const t of ticketRuns) expect(r.briefMarkdown).toMatch(new RegExp(`- .* — [a-z ]+, wall [0-9a-z ]+, .* — \\x60bash .*--trace ${t.traceId}\\x60`));
 
       advance(HOUR);
       await svc.tick();

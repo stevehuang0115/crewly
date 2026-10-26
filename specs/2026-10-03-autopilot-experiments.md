@@ -254,6 +254,16 @@ while an autopilot experiment on the project is running, else off).
   trace), skipped while a retro item of the project is still live.
 - **Brief.** The day's stats in a few lines, the traces of that day with
   their `trace-read` commands, the four classes, and the submit command.
+  Each ticket trace (at most `RETRO_BRIEF_TRACES`, 25) is read for its
+  numbers — state, wall time, stall time (by cause), rework, interventions,
+  cost — and listed on one line; runs that need a retro line are ranked
+  first and flagged **read first**: ended failed / cancelled, stalled on the
+  harness (runtime quota, delivery failure) or on the team (waiting on an
+  agent, nobody pushing), any rework, or `RETRO_REVIEW_INTERVENTIONS` (2) or
+  more interventions. A wait on the owner alone is shown but not flagged. A
+  trace that cannot be read is listed without numbers. This is the #985
+  "retro at trace completion": every completed run of the day gets its
+  review inside the daily retro, without a wake per run.
 - **Submit.** `project-tickets retro --project P --day D --summary "…"
   --problem "harness_gap|Title|detail|evidence" …` →
   `POST /api/project-ticket-autopilot/:project/retro`

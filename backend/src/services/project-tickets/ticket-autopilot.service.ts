@@ -118,6 +118,7 @@ import {
 } from './ticket-autopilot-stats.js';
 import {
   buildRetroBrief,
+  type RetroTrace,
   buildWeeklyRetroBrief,
   isoWeekOf,
   isoWeekRange,
@@ -134,7 +135,7 @@ import {
   type RetroInput,
 } from './ticket-autopilot-retro.js';
 import { getTraceStore } from '../trace/trace-store.js';
-import { clampStallMinutes, defaultStallMinutes } from '../trace/trace-metrics.js';
+import { clampStallMinutes, computeTraceMetrics, defaultStallMinutes, summarizeTraceMetrics } from '../trace/trace-metrics.js';
 import type { TraceEvent, TraceIndexEntry, TraceRoot } from '../trace/trace.types.js';
 import type { TraceListFilter } from '../trace/trace-store.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
@@ -1702,6 +1703,40 @@ export class TicketAutopilotService {
    *
    * @returns Reader
    */
+  /**
+   * The day's ticket traces for the retro brief, each with its numbers
+   * (state, wall, stalls by cause, rework, interventions, cost) so the brief
+   * can flag the runs that need a retro line (#985). A trace that cannot be
+   * read is listed without numbers; the brief is never blocked on a read.
+   *
+   * @param project - Project
+   * @param day - Reviewed day (YYYY-MM-DD)
+   * @returns Traces, newest first (at most RETRO_BRIEF_TRACES)
+   */
+  private async retroTraces(project: Project, day: string): Promise<RetroTrace[]> {
+    const reader = this.traceReader();
+    const entries = reader
+      .listTagged({ autopilotProjectId: project.id, day })
+      .filter((e) => e.root.kind !== 'autopilot' && e.root.kind !== 'triage')
+      .slice(0, TICKET_AUTOPILOT_CONSTANTS.RETRO_BRIEF_TRACES);
+    const now = this.now();
+    const out: RetroTrace[] = [];
+    for (const e of entries) {
+      const line: RetroTrace = { traceId: e.traceId, title: e.root.summary };
+      try {
+        const full = await reader.readAll(e.traceId);
+        if (full) {
+          const s = summarizeTraceMetrics(computeTraceMetrics(full.root ?? e.root, full.events, { now }));
+          line.review = { state: s.state, wallMs: s.wallMs, stallMs: s.stallMs, stallMsByCause: s.stallMsByCause, rework: s.rework, interventions: s.interventions, costUsd: s.costUsd };
+        }
+      } catch (error) {
+        this.logger.debug('Retro brief: trace not read, listed without numbers', { traceId: e.traceId, error: error instanceof Error ? error.message : String(error) });
+      }
+      out.push(line);
+    }
+    return out;
+  }
+
   private traceReader(): AutopilotTraceReader {
     if (this.deps.traces) return this.deps.traces;
     return {
@@ -1866,11 +1901,7 @@ export class TicketAutopilotService {
         this.logger.info('Autopilot retro skipped: the previous one is still open', { projectId: project.id, day });
         continue;
       }
-      const runs = this.traceReader()
-        .listTagged({ autopilotProjectId: project.id, day })
-        .filter((e) => e.root.kind !== 'autopilot' && e.root.kind !== 'triage')
-        .slice(0, 25)
-        .map((e) => ({ traceId: e.traceId, title: e.root.summary }));
+      const runs = await this.retroTraces(project, day);
       const brief = buildRetroBrief({ project: { id: project.id, name: project.name }, day, stats: dayStats, traces: [{ traceId: runTrace, title: `Run trace ${day}` }, ...runs] });
       const workItem = createWorkItem({
         type: TICKET_AUTOPILOT_CONSTANTS.RETRO_WORK_ITEM_TYPE,

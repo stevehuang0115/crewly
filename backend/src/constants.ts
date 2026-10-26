@@ -109,6 +109,10 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	RETRO_METADATA_KIND: 'autopilot_retro',
 	/** Local hour (0-23) at or after which yesterday's retro is scheduled */
 	RETRO_HOUR_LOCAL: 9,
+	/** Most ticket traces listed (and read for their numbers) in a daily retro brief */
+	RETRO_BRIEF_TRACES: 25,
+	/** A run's harness interventions from which the brief flags it for review */
+	RETRO_REVIEW_INTERVENTIONS: 2,
 	/** Wiki folder (inside the project vault) the retros are written to */
 	RETRO_WIKI_DIR: 'llm-curated/autopilot-retros',
 	/** Project (by name) harness-gap tickets are filed on */
