@@ -32,4 +32,4 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
 fi
 ARGS+=("$@")
 
-exec node "$INGEST" "${ARGS[@]}"
+exec node "$INGEST" ${ARGS[@]+"${ARGS[@]}"}
