@@ -4,7 +4,21 @@
  */
 
 /** Evaluation task categories */
-export type TaskCategory = 'bug_fix' | 'feature' | 'refactor' | 'analysis' | 'collaboration';
+export type TaskCategory =
+  | 'bug_fix'
+  | 'feature'
+  | 'refactor'
+  | 'analysis'
+  | 'collaboration'
+  | 'business';
+
+/**
+ * Where a task's pass condition came from.
+ * - `inferred`: written by us from what the owner's teams are seen doing; the
+ *   bar may not match what a real owner would accept.
+ * - `interviewed`: confirmed with an owner of that kind of business.
+ */
+export type TaskProvenance = 'inferred' | 'interviewed';
 
 /** Difficulty tier */
 export type TaskTier = 'easy' | 'medium' | 'hard';
@@ -53,6 +67,8 @@ export interface EvalTask {
   timeLimitMinutes: number;
   /** Baseline cost in USD (Claude Code Opus) */
   baselineCostUsd: number;
+  /** How the pass condition was established (business tasks); omitted for code tasks */
+  provenance?: TaskProvenance;
 }
 
 /**
