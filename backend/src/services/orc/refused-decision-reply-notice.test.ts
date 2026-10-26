@@ -8,6 +8,7 @@ function deps(over: Partial<RefusedReplyNoticeDeps> = {}): RefusedReplyNoticeDep
     decision: async () => ({ status: 'resolved', card: CARD }),
     leadOf: async () => 'sam',
     tell: jest.fn(async () => true),
+    orchestrator: 'crewly-orc',
     postToCard: jest.fn(async () => true),
     now: () => 1_000_000,
     ...over,
@@ -55,20 +56,54 @@ describe('noticeRefusedDecisionReply (CREW-372)', () => {
     expect((await noticeRefusedDecisionReply(input, deps({ decision: async () => ({ status: 'defaulted', card: CARD }) }))).sent).toBe(true);
   });
 
-  it('with no lead, or a lead that cannot be reached, uses the card thread', async () => {
+  it('order is lead → orchestrator → plain card line, each only when the one before failed', async () => {
     const noLead = deps({ leadOf: async () => null });
-    expect(await noticeRefusedDecisionReply(input, noLead)).toEqual({ sent: true, to: 'card', target: 'C0CE00001:1791427303.380879' });
-    expect(noLead.postToCard).toHaveBeenCalledWith(CARD, 'nova', expect.stringContaining('D-457'));
+    expect(await noticeRefusedDecisionReply(input, noLead)).toEqual({ sent: true, to: 'orchestrator', target: 'crewly-orc' });
+    expect(noLead.tell).toHaveBeenCalledWith('crewly-orc', expect.stringContaining('D-457'));
+    expect(noLead.postToCard).not.toHaveBeenCalled();
+
     resetRefusedReplyNoticesForTesting();
-    const unreachable = deps({ tell: jest.fn(async () => false) });
-    expect((await noticeRefusedDecisionReply(input, unreachable)).sent).toBe(true);
-    expect(unreachable.postToCard).toHaveBeenCalledTimes(1);
+    const leadDown = deps({ tell: jest.fn(async (to: string) => to === 'crewly-orc') });
+    expect(await noticeRefusedDecisionReply(input, leadDown)).toEqual({ sent: true, to: 'orchestrator', target: 'crewly-orc' });
+    expect(leadDown.tell.mock.calls.map((c) => c[0])).toEqual(['sam', 'crewly-orc']);
+
+    resetRefusedReplyNoticesForTesting();
+    const allDown = deps({ tell: jest.fn(async () => false) });
+    expect(await noticeRefusedDecisionReply(input, allDown)).toEqual({ sent: true, to: 'card', target: 'C0CE00001:1791427303.380879' });
+    expect(allDown.tell.mock.calls.map((c) => c[0])).toEqual(['sam', 'crewly-orc']);
+  });
+
+  it('the card line is plain: no session name, no error text, no internal words', async () => {
+    const d = deps({ tell: jest.fn(async () => false) });
+    await noticeRefusedDecisionReply({ ...input, failedStep: 'thread_not_found fallback blew up' }, d);
+    const [, line] = d.postToCard.mock.calls[0] as unknown as [unknown, string];
+    expect(line).toBe('Your answer on D-457 was received, but the follow-up message did not get through; we are on it.');
+    for (const bad of ['nova', 'sam', 'crewly-orc', 'thread_not_found', 'fallback', 'failed step', 'session']) expect(line.toLowerCase()).not.toContain(bad);
+  });
+
+  it('the agent IS a lead (no lead above it) → the orchestrator, never itself', async () => {
+    const d = deps({ leadOf: async () => null });
+    const r = await noticeRefusedDecisionReply({ ...input, agentSession: 'sam' }, d);
+    expect(r).toEqual({ sent: true, to: 'orchestrator', target: 'crewly-orc' });
+    expect(d.tell.mock.calls.map((c) => c[0])).toEqual(['crewly-orc']);
+    // a lead that resolves to the agent itself is skipped too
+    resetRefusedReplyNoticesForTesting();
+    const self = deps({ leadOf: async () => 'sam' });
+    await noticeRefusedDecisionReply({ ...input, agentSession: 'sam' }, self);
+    expect(self.tell.mock.calls.map((c) => c[0])).toEqual(['crewly-orc']);
+  });
+
+  it('the orchestrator is the failing agent and has no lead → only the card line', async () => {
+    const d = deps({ leadOf: async () => null });
+    const r = await noticeRefusedDecisionReply({ ...input, agentSession: 'crewly-orc' }, d);
+    expect(r.sent && r.to).toBe('card');
+    expect(d.tell).not.toHaveBeenCalled();
   });
 
   it('reports why when nobody could be told, and does not rate-limit that', async () => {
-    const d = deps({ leadOf: async () => null, decision: async () => ({ status: 'resolved' }) });
+    const d = deps({ leadOf: async () => null, tell: jest.fn(async () => false), decision: async () => ({ status: 'resolved' }) });
     const r = await noticeRefusedDecisionReply(input, d);
-    expect(r).toEqual({ sent: false, reason: 'no team lead and no card thread' });
+    expect(r).toEqual({ sent: false, reason: 'the orchestrator could not be reached' });
     expect((await noticeRefusedDecisionReply(input, deps())).sent).toBe(true);
   });
 

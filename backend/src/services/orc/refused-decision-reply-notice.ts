@@ -1,7 +1,9 @@
 /**
- * Tell the team lead (and, failing that, the owner's card thread) when an
- * agent's reply to an owner-answered decision could not be delivered anywhere
- * (CREW-372, fix 4 of the CREW-335 research).
+ * Tell the team lead (then the orchestrator, then as a last resort the
+ * owner's card thread with a plain line) when an agent's reply to an
+ * owner-answered decision could not be delivered anywhere (CREW-372, fix 4 of
+ * the CREW-335 research). Owner contact goes through the orchestrator; the
+ * internal text (session names, errors) never reaches the owner's thread.
  *
  * In CREW-335 the refusal went only to the agent that had just run the command
  * that failed; the owner's answer then sat for 1h34m until a later [BLOCKED]
@@ -27,15 +29,17 @@ export interface RefusedReplyNoticeDeps {
   leadOf(agentSession: string): Promise<string | null>;
   /** Message an agent; true when taken */
   tell(toSession: string, text: string): Promise<boolean>;
-  /** Post into a decision card's Slack thread; true when it landed */
-  postToCard(card: { slackChannelId: string; threadTs: string }, agentSession: string, text: string): Promise<boolean>;
+  /** The orchestrator's session name */
+  orchestrator: string;
+  /** Post a plain line into a decision card's Slack thread (as the orchestrator, never as the agent); true when it landed */
+  postToCard(card: { slackChannelId: string; threadTs: string }, text: string): Promise<boolean>;
   /** Clock (epoch ms) */
   now(): number;
 }
 
 /** What the notice did. */
 export type RefusedReplyNoticeResult =
-  | { sent: true; to: 'lead' | 'card'; target: string }
+  | { sent: true; to: 'lead' | 'orchestrator' | 'card'; target: string }
   | { sent: false; reason: string };
 
 /** When each decision was last noticed (rate limit). */
@@ -80,16 +84,31 @@ export async function noticeRefusedDecisionReply(
       `The owner has answered, so the work behind it may be waiting. Failed step: ${input.failedStep} ` +
       `Check with ${input.agentSession} and get the reply (or the result) to the owner another way.`;
 
+    const tried: string[] = [];
     const lead = await deps.leadOf(input.agentSession);
-    if (lead && (await deps.tell(lead, text))) {
-      noticedAt.set(input.decisionId, now);
-      return { sent: true, to: 'lead', target: lead };
+    if (lead && lead !== input.agentSession) {
+      if (await deps.tell(lead, text)) {
+        noticedAt.set(input.decisionId, now);
+        return { sent: true, to: 'lead', target: lead };
+      }
+      tried.push(`${lead} could not be reached`);
     }
-    if (decision.card && (await deps.postToCard(decision.card, input.agentSession, text))) {
-      noticedAt.set(input.decisionId, now);
-      return { sent: true, to: 'card', target: `${decision.card.slackChannelId}:${decision.card.threadTs}` };
+    if (deps.orchestrator !== input.agentSession && deps.orchestrator !== lead) {
+      if (await deps.tell(deps.orchestrator, text)) {
+        noticedAt.set(input.decisionId, now);
+        return { sent: true, to: 'orchestrator', target: deps.orchestrator };
+      }
+      tried.push('the orchestrator could not be reached');
     }
-    return { sent: false, reason: lead ? `${lead} could not be reached and ${decision.card ? 'the card thread did not take it' : 'the decision has no card'}` : 'no team lead and no card thread' };
+    if (decision.card) {
+      const plain = `Your answer on ${input.decisionId} was received, but the follow-up message did not get through; we are on it.`;
+      if (await deps.postToCard(decision.card, plain)) {
+        noticedAt.set(input.decisionId, now);
+        return { sent: true, to: 'card', target: `${decision.card.slackChannelId}:${decision.card.threadTs}` };
+      }
+      tried.push('the card thread did not take it');
+    }
+    return { sent: false, reason: tried.length ? tried.join('; ') : 'no team lead, orchestrator or card thread to tell' };
   } catch (err) {
     return { sent: false, reason: err instanceof Error ? err.message : String(err) };
   }

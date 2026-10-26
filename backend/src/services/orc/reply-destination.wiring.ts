@@ -9,7 +9,7 @@
 
 import { createHash } from 'node:crypto';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
-import { REPLY_ROUTING_CONSTANTS, TURN_TRIGGER_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, REPLY_ROUTING_CONSTANTS, TURN_TRIGGER_CONSTANTS } from '../../constants.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { parseSlackThreadKey } from '../slack/slack-thread-key.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -1029,9 +1029,10 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
         return leadAbove(session, await StorageService.getInstance().getTeams().catch(() => []));
       },
       tell: async (toSession, text) => (await import('./work-item-destination.wiring.js')).getAgentMessenger()?.(toSession, text) ?? false,
-      postToCard: async (card, agentSession, text) => {
+      orchestrator: ORCHESTRATOR_SESSION_NAME,
+      postToCard: async (card, text) => {
         const wd = await defaultWorkDestinationDeps();
-        await wd.post({ agentSession, target: card.slackChannelId, threadTs: card.threadTs, text });
+        await wd.post({ agentSession: ORCHESTRATOR_SESSION_NAME, target: card.slackChannelId, threadTs: card.threadTs, text });
         return true;
       },
       now: () => Date.now(),

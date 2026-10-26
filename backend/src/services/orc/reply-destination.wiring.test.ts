@@ -192,6 +192,7 @@ describe('deliverReply — CREW-335: a reply to a decision whose card has no cha
       decision: jest.fn(async () => ({ status: 'resolved', card: { slackChannelId: 'C0CE00001', threadTs: '1791427303.380879' } })),
       leadOf: jest.fn(async () => 'sam'),
       tell: jest.fn(async () => true),
+      orchestrator: 'crewly-orc',
       postToCard: jest.fn(async () => true),
       now: () => Date.now(),
     });
