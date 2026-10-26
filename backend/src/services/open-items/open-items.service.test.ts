@@ -6,12 +6,13 @@
  * ask-owner question is not carded twice, and the backfill dry-run.
  */
 import { RequestService } from '../v3/request.service.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { createWorkItem, type WorkItem } from '../../types/v2/work-item.types.js';
 import type { Request } from '../../types/v2/request.types.js';
 import type { RequestOpenItem } from '../../types/v2/open-item.types.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import type { ComponentLogger } from '../core/logger.service.js';
-import { OpenItemsService, isConcreteInterimPromise, markRestartReminded, owedCommitments, plausiblyFulfils, supersededReason, type OpenItemsDeps, type OpenItemsChatMessage, type QuestionCardInput, type FollowUpInput } from './open-items.service.js';
+import { OpenItemsService, isConcreteInterimPromise, markRestartReminded, owedCommitments, plausiblyFulfils, supersededReason, withCanonicalSender, type OpenItemsDeps, type OpenItemsChatMessage, type QuestionCardInput, type FollowUpInput } from './open-items.service.js';
 import { planCommitmentNotes } from '../restart/interrupted-turns.js';
 import { buildFollowUpWorkItem, followUpBlockedReason } from './open-items.wiring.js';
 import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
@@ -187,6 +188,18 @@ function kaiWork(h: Harness, requestId: string, status: WorkItem['status'] = 'ru
 }
 
 describe('OpenItemsService — the ticket stays open', () => {
+  it('an orchestrator reply posted under its display name tracks items for its session, so the card and the answer reach it (D-952, 2026-10-26)', async () => {
+    const h = harness();
+    const t = await ticket(h, 'done');
+    kaiWork(h, t.id);
+    const updated = await h.service.onAgentMessage(msg(h, ATLAS_REPLY, 'Orchestrator'));
+    const items = updated!.openItems!;
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.map((i) => i.agent)).toEqual(items.map(() => ORCHESTRATOR_SESSION_NAME));
+    expect(h.cards.map((c) => c.item.agent)).toEqual([ORCHESTRATOR_SESSION_NAME]);
+    expect(withCanonicalSender({ senderId: 'ce-owen-ad0320ab' })).toEqual({ senderId: 'ce-owen-ad0320ab' });
+  });
+
   it('a done ticket whose agent leaves open items moves to awaiting_followup (TKT-185)', async () => {
     const h = harness();
     const t = await ticket(h, 'done');

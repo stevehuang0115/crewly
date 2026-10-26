@@ -28,6 +28,7 @@ jest.mock('../core/logger.service.js', () => ({
 
 // Mock constants
 jest.mock('../../constants.js', () => ({
+	ORCHESTRATOR_SESSION_NAME: 'crewly-orc',
 	SUB_AGENT_QUEUE_CONSTANTS: {
 		MAX_QUEUE_SIZE: 5, // Small size for testing overflow
 		FLUSH_INTER_MESSAGE_DELAY: 2000,
@@ -630,6 +631,16 @@ describe('SubAgentMessageQueue — surviving a restart', () => {
 	});
 	afterEach(() => {
 		try { fs.rmSync(storePath, { force: true }); } catch { /* nothing to clean */ }
+	});
+
+	it("keys a message held for the orchestrator's display name by its session, live and restored (D-952, 2026-10-26)", () => {
+		fs.writeFileSync(storePath, JSON.stringify({ queues: { Orchestrator: [{ data: 'D-952 skipped', queuedAt: Date.now() - 1000 }] } }));
+		const queue = SubAgentMessageQueue.getInstance(storePath);
+		// Reads are by session: nothing waits under the alias.
+		expect(queue.getQueueSize('Orchestrator')).toBe(0);
+		expect(queue.getQueueSize('crewly-orc')).toBe(1);
+		queue.enqueue('orc', 'and this one');
+		expect(queue.dequeueAll('crewly-orc').map((m) => m.data)).toEqual(['D-952 skipped', 'and this one']);
 	});
 
 	it('brings undelivered messages back after the process ends', () => {

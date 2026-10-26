@@ -7,7 +7,7 @@
  * @module services/decisions/decision.wiring
  */
 
-import { ORCHESTRATOR_SESSION_NAME, RECURRING_CHANGE_HANDOFF_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
+import { RECURRING_CHANGE_HANDOFF_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
 import type { Team } from '../../types/index.js';
 import type { SlackIncomingMessage, SlackInteractionEvent, SlackReactionEvent } from '../../types/slack.types.js';
 import { isUserAllowed } from '../../types/slack.types.js';
@@ -19,6 +19,7 @@ import { getSlackTeamChannelService, slackIdentityFor } from '../slack/slack-tea
 import { getOwnerMessageWatchdog } from '../messaging/owner-message-watchdog.service.js';
 import { getOwnerThreadSentinel, reportOwnerThreadBlocking } from '../messaging/owner-thread-sentinel.service.js';
 import { sentinelEventForDecision } from '../messaging/owner-thread-sentinel.wiring.js';
+import { isOrchestratorSender } from '../../utils/orchestrator-alias.utils.js';
 import { ProjectTicketService } from '../project-tickets/project-ticket.service.js';
 import { checkDecisionHold } from '../project-tickets/ticket-hold-registry.js';
 import type { ProjectTicketWorkflowService } from '../project-tickets/project-ticket-workflow.service.js';
@@ -244,7 +245,8 @@ export function createDecisionService(input: DecisionWiringInput): DecisionServi
         return null;
       }
     },
-    deliverToAgent: (session, text) => (session === ORCHESTRATOR_SESSION_NAME ? input.sendToOrchestrator(text) : input.sendToAgent(session, text)),
+    // The asker may be recorded under a display name ("Orchestrator", D-952): every alias routes to the orchestrator's own queue.
+    deliverToAgent: (session, text) => (isOrchestratorSender(session) ? input.sendToOrchestrator(text) : input.sendToAgent(session, text)),
     ...(input.queueForAgent ? { queueForAgent: input.queueForAgent } : {}),
     closeWatchdog: (session, slackChannelId, threadTs) => {
       const watchdog = getOwnerMessageWatchdog();

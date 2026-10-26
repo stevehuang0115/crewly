@@ -52,6 +52,7 @@ import { isStaleCommitment, staleCommitmentNotice, supersededReason } from './st
 import { isPastReminderCutoff, leadStaleNotice, reminderFooter } from '../orc/harness-reminder.js';
 import { gateVerdict, siblingQuestion, type GateVerdict } from './open-item-gate.js';
 import { questionCardSkipReason } from './question-card-gate.js';
+import { canonicalAgentSession } from '../../utils/orchestrator-alias.utils.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -68,6 +69,18 @@ export interface OpenItemsChatMessage {
   /** Epoch ms (defaults to now) */
   createdAt?: number;
   metadata?: Record<string, unknown>;
+}
+
+/**
+ * The message with its sender named by session: the orchestrator's display
+ * name becomes `ORCHESTRATOR_SESSION_NAME`, any other sender stays as posted.
+ *
+ * @param message - A chat-v2 row
+ * @returns The same row, or a copy whose senderId is the orchestrator's session
+ */
+export function withCanonicalSender<T extends Pick<OpenItemsChatMessage, 'senderId'>>(message: T): T {
+  const senderId = canonicalAgentSession(message.senderId);
+  return senderId === message.senderId ? message : { ...message, senderId };
 }
 
 /** Where a request's conversation lives in Slack, when it does. */
@@ -782,7 +795,11 @@ export class OpenItemsService {
    * @param message - The message
    * @returns The request it changed, or null
    */
-  async onAgentMessage(message: OpenItemsChatMessage): Promise<Request | null> {
+  async onAgentMessage(posted: OpenItemsChatMessage): Promise<Request | null> {
+    // The orchestrator's rows carry its display name ("Orchestrator") as
+    // senderId: its items and cards must name its session, or the owner's
+    // answer is queued for a session that does not exist (D-952, 2026-10-26).
+    const message = withCanonicalSender(posted);
     if (message.senderType === 'user') return this.onOwnerMessage(message);
     if (message.senderType !== 'agent' || !message.content?.trim()) return null;
     // An interim note ("got it — here is my plan, the doc in ~30 min") is not
@@ -954,7 +971,8 @@ export class OpenItemsService {
    * @param opts - `live`: the message was just posted in the owner's conversation
    * @returns Planned items
    */
-  async plan(request: Request, message: OpenItemsChatMessage, at: Date, opts: { live?: boolean } = {}): Promise<PlannedOpenItem[]> {
+  async plan(request: Request, posted: OpenItemsChatMessage, at: Date, opts: { live?: boolean } = {}): Promise<PlannedOpenItem[]> {
+    const message = withCanonicalSender(posted);
     const names = await this.deps.colleagueNames?.(message.senderId).catch(() => [] as string[]);
     const owner = this.deps.ownerSlackUserId?.() ?? (request.origin?.author?.startsWith('U') ? request.origin.author : null);
     const found = extractOpenItems(message.content, {

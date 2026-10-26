@@ -58,7 +58,7 @@
  */
 
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { isOrchestratorSender } from '../../utils/orchestrator-alias.utils.js';
 
 /** Reminder cadence (ms): first reminder at 3 min, then 10 min, then 30 min, then stop. */
 const REMINDER_CADENCE_MS = [
@@ -430,17 +430,7 @@ export function parseSlackConversationId(
   return { channelId, threadTs };
 }
 
-/**
- * Is this sender the orchestrator itself (by session name or the display
- * names the prompt/skills use for it)?
- *
- * @param sender - `senderName` as posted to `/chat/agent-response`
- * @returns True for the orchestrator
- */
-export function isOrchestratorSender(sender: string): boolean {
-  const s = (sender ?? '').trim().toLowerCase();
-  return s === ORCHESTRATOR_SESSION_NAME.toLowerCase() || s === 'orchestrator' || s === 'orc';
-}
+export { isOrchestratorSender } from '../../utils/orchestrator-alias.utils.js';
 
 function serializeKey(k: SlackThreadKey): string {
   return `${k.channelId}::${k.threadTs}`;
