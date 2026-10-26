@@ -2490,19 +2490,29 @@ export class SlackTeamChannelService {
           this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients, heldBy);
         }
       } else if (!remoteAgent) {
-        // Never a silent no-op: say why nobody got it.
-        this.logger.warn('Slack room message reached nobody on this machine', {
-          teamId: mapping.teamId,
-          slackChannel: `#${mapping.slackChannelName}`,
-          ts: message.ts,
-          planned: planned ? [...planned.keys()] : null,
-          failed: (dispatch?.huddleOutcomes ?? []).filter((o) => !o.dispatched).map((o) => o.sessionName),
-          awakeHere: presence?.state.awakeHere ?? null,
-          awakeElsewhere: presence?.state.awakeElsewhere ?? null,
-          wakeWhenAllAsleep: presence?.state.wakeWhenAllAsleep ?? null,
-          handoffTo,
-          recipients,
-        });
+        if (oneResponder?.pinned?.reason === 'decision-consumed') {
+          // The decision path delivered it to the card's asker; nobody else was
+          // meant to get it. (The WARN below read as a lost message, 2026-10-26.)
+          this.logger.info('Slack room message was a decision answer; its asker has it', {
+            slackChannel: `#${mapping.slackChannelName}`,
+            ts: message.ts,
+            asker: oneResponder.pinned.answeredBy ?? null,
+          });
+        } else {
+          // Never a silent no-op: say why nobody got it.
+          this.logger.warn('Slack room message reached nobody on this machine', {
+            teamId: mapping.teamId,
+            slackChannel: `#${mapping.slackChannelName}`,
+            ts: message.ts,
+            planned: planned ? [...planned.keys()] : null,
+            failed: (dispatch?.huddleOutcomes ?? []).filter((o) => !o.dispatched).map((o) => o.sessionName),
+            awakeHere: presence?.state.awakeHere ?? null,
+            awakeElsewhere: presence?.state.awakeElsewhere ?? null,
+            wakeWhenAllAsleep: presence?.state.wakeWhenAllAsleep ?? null,
+            handoffTo,
+            recipients,
+          });
+        }
         // A message deferred to another machine is watched there, by its
         // owner, only — two machines running the fallback would answer twice.
         // One the decision path consumed, or whose responder runs on another

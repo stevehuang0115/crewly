@@ -4668,6 +4668,11 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
     // Before this change Ella — the thread's last local speaker — was told it as `required`.
     expect(prompts).toEqual([]);
     expect(result!.dispatch?.contextOnly).toEqual([ELLA]);
+    // Atlas has the answer via the decision path: not "reached nobody" (a WARN
+    // that read as a lost message in the 2026-10-26 log audit).
+    const log = (service as unknown as { logger: { warn: jest.Mock; info: jest.Mock } }).logger;
+    expect(log.warn).not.toHaveBeenCalledWith('Slack room message reached nobody on this machine', expect.anything());
+    expect(log.info).toHaveBeenCalledWith('Slack room message was a decision answer; its asker has it', expect.objectContaining({ asker: ATLAS }));
     // The asker already has it; it is not also queued for it as context.
     expect(real.contextBacklog.peek(ATLAS, roomId).map((e) => e.messageId)).not.toContain(result!.message.id);
     expect(real.contextBacklog.peek(ELLA, roomId)).toEqual([
