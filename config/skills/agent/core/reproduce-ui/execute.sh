@@ -21,11 +21,15 @@ print_usage() {
 Usage:
   bash execute.sh --route /tickets?tab=runs                 Open a route, wait for its key element, save evidence
   bash execute.sh --feature "Run detail" --param id=<uuid>   Resolve the route from the feature map
+  bash execute.sh --report "runs tab is blank, Tickets"      Match a bug report to a feature, then run it
   bash execute.sh --route /wiki --wait '[data-testid="wiki-recent-list"]' --full-page
 
 Options:
   --route      Path to open (with ?tab= when the page has tabs)
   --feature    A route or a word from a Routes row of FEATURE_MAP.md (needs the map)
+  --report     A bug report: the owner's sentence plus the words you read on the
+               screenshot; scored against the map's Features (needs the map)
+  --report-file  The same, read from a file
   --param k=v  Value for a :param in the route (repeatable)
   --wait       CSS selector to wait for (default: the feature's first data-testid, else body)
   --map        FEATURE_MAP.md path (default: <project>/frontend/FEATURE_MAP.md when present)
@@ -38,17 +42,20 @@ Options:
   --help | -h  Show this help
 
 Output: one JSON line with the evidence folder (screenshot.png, console.json,
-requests.json, report.md, summary.json). Exit 0 when the element appeared, 2
-when it did not (evidence still saved), 1 on a usage or browser error.
+requests.json, report.md, summary.json; summary.ticketLine is the line to put
+in the ticket). Exit 0 when the element appeared, 2 when it did not (evidence
+still saved), 1 on a usage or browser error, 3 when the report matches no
+single feature (candidates on stderr; pass --route).
 EOF_USAGE
 }
 
-ROUTE=""; FEATURE=""; WAIT=""; MAP=""; BASE_URL=""; OUT=""; TIMEOUT=""; FULL_PAGE=""; BROWSER=""; DRY_RUN=""
+ROUTE=""; FEATURE=""; REPORT=""; WAIT=""; MAP=""; BASE_URL=""; OUT=""; TIMEOUT=""; FULL_PAGE=""; BROWSER=""; DRY_RUN=""
 PARAMS=()
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   ROUTE=$(printf '%s' "$1" | jq -r '.route // empty')
   FEATURE=$(printf '%s' "$1" | jq -r '.feature // empty')
+  REPORT=$(printf '%s' "$1" | jq -r '.report // empty')
   WAIT=$(printf '%s' "$1" | jq -r '.wait // empty')
   MAP=$(printf '%s' "$1" | jq -r '.map // empty')
   BASE_URL=$(printf '%s' "$1" | jq -r '.baseUrl // empty')
@@ -64,6 +71,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --route)     [ $# -ge 2 ] || error_exit "--route requires a value";    ROUTE="$2";    shift 2 ;;
     --feature)   [ $# -ge 2 ] || error_exit "--feature requires a value";  FEATURE="$2";  shift 2 ;;
+    --report)    [ $# -ge 2 ] || error_exit "--report requires text";      REPORT="$2";   shift 2 ;;
+    --report-file) [ $# -ge 2 ] || error_exit "--report-file requires a path"; [ -f "$2" ] || error_exit "--report-file not found: $2"; REPORT="$(cat "$2")"; shift 2 ;;
     --param)     [ $# -ge 2 ] || error_exit "--param requires k=v";        PARAMS+=("$2"); shift 2 ;;
     --wait)      [ $# -ge 2 ] || error_exit "--wait requires a selector";  WAIT="$2";     shift 2 ;;
     --map)       [ $# -ge 2 ] || error_exit "--map requires a path";       MAP="$2";      shift 2 ;;
@@ -78,7 +87,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[ -n "$ROUTE" ] || [ -n "$FEATURE" ] || error_exit "one of --route or --feature is required (--help for usage)"
+[ -n "$ROUTE" ] || [ -n "$FEATURE" ] || [ -n "$REPORT" ] || error_exit "one of --route, --feature or --report is required (--help for usage)"
 command -v node >/dev/null 2>&1 || error_exit "node is required"
 
 # The map: explicit, else the project's checkout, else the package's own copy (a repo install).
@@ -95,6 +104,6 @@ for kv in "${PARAMS[@]+"${PARAMS[@]}"}"; do
   export "RU_PARAM_${key}=${val}"
 done
 
-RU_MAIN=1 RU_ROUTE="$ROUTE" RU_FEATURE="$FEATURE" RU_WAIT="$WAIT" RU_MAP="$MAP" RU_BASE_URL="$BASE_URL" \
+RU_MAIN=1 RU_ROUTE="$ROUTE" RU_FEATURE="$FEATURE" RU_REPORT="$REPORT" RU_WAIT="$WAIT" RU_MAP="$MAP" RU_BASE_URL="$BASE_URL" \
 RU_OUT="$OUT" RU_TIMEOUT_MS="$TIMEOUT" RU_FULL_PAGE="$FULL_PAGE" RU_BROWSER="$BROWSER" RU_DRY_RUN="$DRY_RUN" \
 RU_PKG_ROOT="$PKG_ROOT" node "${SCRIPT_DIR}/reproduce.mjs"

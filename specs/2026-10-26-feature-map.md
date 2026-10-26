@@ -119,13 +119,54 @@ First real finding: the dashboard's CSP (`script-src 'self' 'unsafe-eval'`)
 blocked the inline theme-init script on every load; fixed by hashing the
 inline scripts of the built `index.html` into `script-src` at startup.
 
-## Slice 3 — bug report → reproduce with evidence → fix (open)
+## Slice 3 — bug report → reproduce with evidence → fix
 
-Given a screenshot and a sentence: match the screenshot to a feature by its
-elements and words, run the reproduce CLI on that feature, attach the
-evidence to the ticket, then fix. Needs slice 2 and a way to match a
-screenshot to a map entry (OCR of visible labels against the map's words is
-enough to start).
+`reproduce-ui` 1.1.0 takes the report itself. The agent reads the
+screenshot (it can; no OCR step) and writes the owner's sentence plus the
+headings, tab names and labels it sees into `--report "<text>"` (or
+`--report-file`, or `report` in the JSON input). `matchReport` in
+`reproduce.mjs` scores every **Features** section of the map:
+
+- tokens: lower-case words of three or more characters, a stopword list of
+  words that name no feature ("page", "blank", "error", "loading" …), a
+  trailing plural `s` dropped so "runs" meets "run";
+- a word in the feature's title or **Expected** line scores 2, in its route
+  segments, **Reach** or **Elements** (ids split on `-`) 1, and a word that
+  is one of its tab names (`tabs \`board\` · \`runs\`` in the heading) 4 —
+  the tab also becomes the `?tab=` of the route;
+- the best feature is chosen when two or more of its words matched, it has
+  3+ points and at least 1.5× the runner-up. One word is never enough
+  ("Usage" alone is a `--feature`), so a vague report cannot pick a page by
+  accident.
+
+A match runs exactly as `--route` would (the tab panel is the wait target);
+the plan and `summary.json` carry `match` (title, score, matched words, the
+other candidates) and `report` (the text). No match, or two features about
+equally: exit 3 with the candidates and their scores on stderr, so the agent
+picks one and passes `--route`. `--route`/`--feature` take precedence over
+`--report`.
+
+**Evidence for the ticket**: `summary.ticketLine` (also the "For the ticket"
+section of `report.md`, which now also quotes the report and names the words
+that chose the feature): `Reproduced \`/tickets?tab=runs\`: key element
+\`[data-testid="tickets-panel-runs"]\` NOT found (Timeout …); 1 console
+error; 2 failed requests (first: POST …/api/b → 500); evidence: <dir>`. A 5xx
+is named first, then a network failure, then the first 4xx. The agent puts
+that line in the ticket, fixes, re-runs and adds the second line as proof.
+
+Wired into the developer `debugging` SOP step 2; tests in
+`execute.test.sh` (fixture map with Expected lines; tab pick, Expected pick,
+no match, one-word, even split, report file, JSON input, precedence, no map,
+`ticketLine` and `report.md` rendering through a node import — no browser).
+
+Checked against the real map: "the runs tab under tickets is blank" →
+`/tickets?tab=runs` [6] over `/tickets/runs/:id` [4]; "settings activity log
+empty" → `/settings?tab=activity`; "Wiki recent pages not showing" →
+`/wiki`; "something is off" → exit 3, no candidates.
+
+Not done: the flow does not open the ticket or post the line itself — the
+agent does, because which ticket (or Slack thread) the report came from is
+the conversation's knowledge, not the skill's.
 
 ## Non-goals
 

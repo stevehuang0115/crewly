@@ -39,7 +39,7 @@ Name **one command** you have already run at least once that shows the user's ex
 
 ## 2. Reproduce and minimise
 
-For a dashboard (UI) report, run the `reproduce-ui` skill on the feature first: `bash config/skills/agent/core/reproduce-ui/execute.sh --route "/tickets?tab=runs"` (route and `?tab=` from `frontend/FEATURE_MAP.md`; `--feature <word>` resolves it from the map). Read its `console.json` and `requests.json` before the screenshot — a failed `/api/...` call explains most blank or stale pages — and put the evidence folder in the ticket.
+For a dashboard (UI) report, run the `reproduce-ui` skill on the feature first. A screenshot and a sentence is enough: read the screenshot, then `bash config/skills/agent/core/reproduce-ui/execute.sh --report "<the sentence> <headings, tab names and labels you see>"` matches it to a `frontend/FEATURE_MAP.md` entry and opens it (exit 3 = ambiguous: it lists the candidate routes, run again with `--route`; `--feature <word>` and `--route "/tickets?tab=runs"` work when you already know the page). Read its `console.json` and `requests.json` before the screenshot — a failed `/api/...` call explains most blank or stale pages. Put its `ticketLine` (from the JSON it prints, also in `report.md`) in the ticket; after the fix run it again and add the second line as proof.
 
 Cut inputs one at a time. Done when every remaining element is load-bearing.
 

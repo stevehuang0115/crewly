@@ -34,19 +34,22 @@ cat > "$MAP" <<'EOF_MAP'
 
 ### Dashboard (`/`)
 
+- **Expected**: "Waiting on you" first, then "Crew now" with the health bar.
 - **Elements**: `dashboard`, `crew-now`.
 
 ### Tickets hub (`/tickets`, tabs `board` · `runs`)
 
+- **Expected**: Board = kanban columns; Runs = one row per work item.
 - **Elements**: `tickets-panel-${tab}`, `tickets-page`, `tickets-board`.
 
 ### Run detail (`/tickets/runs/:id`)
 
+- **Expected**: the work item's header, metrics and timeline.
 - **Elements**: `workitem-detail-loading|error|not-found`, `workitem-detail`.
 
 ### Usage (`/usage`)
 
-- **Expected**: one headline.
+- **Expected**: one headline with tokens by team.
 EOF_MAP
 export CREWLY_API_URL="http://127.0.0.1:18799"
 export CREWLY_HOME="$T/home"
@@ -60,7 +63,7 @@ check "help names --feature" "$(printf '%s' "$OUT" | grep -c -- '--feature')" "$
 # ---- no route / feature ----
 ERR=$(bash "$EXEC" --dry-run 2>&1 >/dev/null); RC=$?
 check "no route: exit 1" "$RC" "1"
-check "no route: error says so" "$(printf '%s' "$ERR" | jq -r .error | grep -c 'route or --feature')" "1"
+check "no route: error says so" "$(printf '%s' "$ERR" | jq -r .error | grep -c 'route, --feature or --report')" "1"
 
 # ---- route + map: wait selector from the Elements line; ${} and a|b skipped ----
 OUT=$(bash "$EXEC" --route "/tickets?tab=runs" --map "$MAP" --dry-run)
@@ -112,6 +115,73 @@ check "full page" "$(printf '%s' "$OUT" | jq -r .fullPage)" "true"
 OUT=$(bash "$EXEC" '{"route":"/usage","map":"'"$MAP"'","dryRun":true,"params":{"id":"1"},"fullPage":true}')
 check "json input: route" "$(printf '%s' "$OUT" | jq -r .path)" "/usage"
 check "json input: fullPage" "$(printf '%s' "$OUT" | jq -r .fullPage)" "true"
+
+# ---- --report: a bug report matched to a feature (slice 3) ----
+OUT=$(bash "$EXEC" --report "the runs tab under tickets is blank" --map "$MAP" --dry-run)
+check "report: tab word picks the hub with ?tab=" "$(printf '%s' "$OUT" | jq -r .route)" "/tickets?tab=runs"
+check "report: wait = that tab's panel" "$(printf '%s' "$OUT" | jq -r .waitFor)" '[data-testid="tickets-panel-runs"]'
+check "report: match title" "$(printf '%s' "$OUT" | jq -r .match.title)" "Tickets hub"
+check "report: matched words (plural dropped)" "$(printf '%s' "$OUT" | jq -c .match.matched)" '["run","ticket"]'
+check "report: runner-up listed" "$(printf '%s' "$OUT" | jq -r '.match.candidates[0].route')" "/tickets/runs/:id"
+check "report: text kept in the plan" "$(printf '%s' "$OUT" | jq -r .report)" "the runs tab under tickets is blank"
+
+OUT=$(bash "$EXEC" --report "Tokens by team headline missing on the usage page" --map "$MAP" --dry-run)
+check "report: Expected words pick Usage" "$(printf '%s' "$OUT" | jq -r .route)" "/usage"
+
+OUT=$(bash "$EXEC" --report "Waiting on you never loads, Crew now spins" --map "$MAP" --dry-run)
+check "report: Dashboard by its Expected words" "$(printf '%s' "$OUT" | jq -r .route)" "/"
+
+ERR=$(bash "$EXEC" --report "nothing happens at all" --map "$MAP" --dry-run 2>&1 >/dev/null); RC=$?
+check "report with no match: exit 3" "$RC" "3"
+check "report with no match: says so" "$(printf '%s' "$ERR" | jq -r .error | grep -c 'matches no feature')" "1"
+
+ERR=$(bash "$EXEC" --report "tickets" --map "$MAP" --dry-run 2>&1 >/dev/null); RC=$?
+check "one-word report: exit 3" "$RC" "3"
+check "one-word report: asks for more words" "$(printf '%s' "$ERR" | jq -r .error | grep -c 'too weakly')" "1"
+check "one-word report: best candidate first" "$(printf '%s' "$ERR" | jq -r '.candidates[0].route')" "/tickets"
+
+ERR=$(bash "$EXEC" --report "the work item is wrong" --map "$MAP" --dry-run 2>&1 >/dev/null); RC=$?
+check "even report: exit 3" "$RC" "3"
+check "even report: says equally" "$(printf '%s' "$ERR" | jq -r .error | grep -c 'about equally')" "1"
+check "even report: lists candidates" "$(printf '%s' "$ERR" | jq -r '.candidates | length' )" "2"
+
+printf 'runs tab under\ntickets is blank\n' > "$T/report.txt"
+OUT=$(bash "$EXEC" --report-file "$T/report.txt" --map "$MAP" --dry-run)
+check "report-file: same match" "$(printf '%s' "$OUT" | jq -r .route)" "/tickets?tab=runs"
+ERR=$(bash "$EXEC" --report-file "$T/nope.txt" --map "$MAP" --dry-run 2>&1 >/dev/null); RC=$?
+check "report-file missing: exit 1" "$RC" "1"
+
+OUT=$(bash "$EXEC" '{"report":"runs tab under tickets","map":"'"$MAP"'","dryRun":true}')
+check "json input: report" "$(printf '%s' "$OUT" | jq -r .route)" "/tickets?tab=runs"
+
+OUT=$(bash "$EXEC" --route /usage --report "runs tab under tickets" --map "$MAP" --dry-run)
+check "route beats report" "$(printf '%s' "$OUT" | jq -r .route)" "/usage"
+check "route beats report: no match block" "$(printf '%s' "$OUT" | jq -r .match)" "null"
+
+ERR=$(bash "$EXEC" --report "runs tab" --map "$T/missing.md" --dry-run 2>&1 >/dev/null); RC=$?
+check "report without map: exit 1" "$RC" "1"
+check "report without map: explains" "$(printf '%s' "$ERR" | jq -r .error | grep -c 'needs the feature map')" "1"
+
+# ---- ticketLine / report sections (pure functions, no browser) ----
+OUT=$(cd "$HERE" && node --input-type=module -e '
+import { ticketLine, renderReport } from "./reproduce.mjs";
+const reqs = [{ url: "http://x/api/a", method: "GET", status: 404 }, { url: "http://x/api/b", method: "POST", status: 500 }];
+const s = { route: "/tickets?tab=runs", url: "http://x/tickets?tab=runs", finalUrl: "", title: "T", waitFor: "[data-testid=\"p\"]", waitSource: "map",
+  found: false, error: "Timeout 60000ms", timings: { navigationMs: 1, elementMs: null, totalMs: 2 }, consoleErrors: 1, failedRequests: 2, dir: "/e/1",
+  screenshot: null, feature: null, report: "runs tab blank\nsecond line", match: { title: "Tickets hub", score: 6, matched: ["run", "ticket"] } };
+s.ticketLine = ticketLine(s, reqs);
+console.log(s.ticketLine);
+console.log(renderReport(s, [{ type: "error", text: "boom" }], reqs));
+')
+check "ticketLine: not found + 5xx first" "$(printf '%s' "$OUT" | sed -n 1p)" 'Reproduced `/tickets?tab=runs`: key element `[data-testid="p"]` NOT found (Timeout 60000ms); 1 console error; 2 failed requests (first: POST http://x/api/b → 500); evidence: /e/1'
+check "report.md: match line" "$(printf '%s' "$OUT" | grep -c 'Matched from the report: Tickets hub (score 6, words: run, ticket)')" "1"
+check "report.md: ticket section" "$(printf '%s' "$OUT" | grep -c '^## For the ticket')" "1"
+check "report.md: report quoted" "$(printf '%s' "$OUT" | grep -c '^> second line')" "1"
+OUT=$(cd "$HERE" && node --input-type=module -e '
+import { ticketLine } from "./reproduce.mjs";
+console.log(ticketLine({ route: "/", found: true, consoleErrors: 0, failedRequests: 0, dir: "/e/2" }, []));
+')
+check "ticketLine: rendered, nothing failed" "$OUT" 'Reproduced `/`: rendered; 0 console errors; 0 failed requests; evidence: /e/2'
 
 ERR=$(bash "$EXEC" --route relative --dry-run 2>&1 >/dev/null); RC=$?
 check "route must start with /" "$(printf '%s' "$ERR" | jq -r .error | grep -c 'must start with /')" "1"
