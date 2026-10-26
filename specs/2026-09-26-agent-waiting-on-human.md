@@ -115,11 +115,38 @@ Its `/shift\+tab\s+to\s+cycle/i` matched the footer of **every idle Claude Code 
 
 The pattern is replaced with plan-menu text ("Claude has written up a plan", "Ready to code?"). Fixture tests assert that the idle footer does not match and the real plan menu does.
 
+## Prompts the harness answers itself (2026-10-26)
+
+One Claude Code prompt is shown even under `--dangerously-skip-permissions`:
+"Dangerous rm operation on statically-unresolvable target", raised when an
+`rm` target is a relative path or glob the CLI cannot resolve (typically after
+a `cd` in the same command). Nobody is at the machine to answer it, so an agent
+would wait on it until the owner noticed (seen 2026-10-26: a fork agent's
+`cd dir && rm -f qc/*` held a product manager for 20 minutes).
+
+`detectPromptOnScreen` marks that prompt with `evidence: screen:dangerous-rm`
+and `selfAnswer: 'decline'`. In `evaluateAttention` the monitor then:
+
+1. moves the selector to the "No" option and confirms
+   (`declineKeystrokes(screen)`: counts option lines from the cursor line to
+   the first `No` option, so the two-option rm prompt and the four-option
+   command prompt both work) — nothing is deleted;
+2. queues `AGENT_ATTENTION_CONSTANTS.SELF_ANSWER.DANGEROUS_RM_MESSAGE` for the
+   agent through the registration service (delivered when the agent is idle):
+   what happened, and to re-run with absolute paths only;
+3. remembers the decline per session and skips the owner escalation while
+   the screen redraws. If the prompt is still there after `RETRY_AFTER_MS`
+   (20 s), or the PTY is not reachable, the usual escalation to the owner runs.
+
+Ordinary command approvals (`Do you want to proceed?` without the rm text)
+are not answered: an owner who runs agents with custom `runtimeCommands`
+without bypass wants to see them.
+
 ## Known limits
 
 - **Orchestrator:** the monitor evaluates team members only, not the orchestrator session.
 - **Title transitions:** detection is poll-based (30 s). A prompt answered within one poll is never seen, which is fine.
-- **Claude Code permission prompts:** these are rare for Crewly agents, which launch with `--dangerously-skip-permissions`. The common real cases are:
+- **Claude Code permission prompts:** these are rare for Crewly agents, which launch with `--dangerously-skip-permissions` (the rm safety prompt above is the exception, and is answered by the harness). The common real cases are:
   - trust dialogs
   - onboarding menus
   - plan menus

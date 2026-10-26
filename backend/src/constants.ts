@@ -1623,6 +1623,27 @@ export const AGENT_ATTENTION_CONSTANTS = {
 	BLOCK_WORK_ITEM_AFTER_MS: 300_000,
 	/** WorkItem blockedReason / escalation reason used for this state. */
 	BLOCKED_REASON: 'waiting_on_human',
+	/**
+	 * Prompts the harness answers itself. Claude Code shows "Dangerous rm
+	 * operation on statically-unresolvable target" even under
+	 * --dangerously-skip-permissions, and no human is at this machine to
+	 * answer it, so an agent would wait on it forever (seen 2026-10-26: a fork
+	 * agent's `cd dir && rm -f qc/*` held a product manager for 20 minutes).
+	 * The harness picks "No" (nothing is deleted) and tells the agent how to
+	 * re-run the command so the prompt does not come back.
+	 */
+	SELF_ANSWER: {
+		/** Terminal key sequences used to move the selector and confirm. */
+		KEYS: { UP: '\x1b[A', DOWN: '\x1b[B', ENTER: '\r' },
+		/** If the prompt is still on screen this long after the decline, the
+		 *  usual owner escalation takes over. */
+		RETRY_AFTER_MS: 20_000,
+		/** Queued for the agent after a decline (delivered when it is idle). */
+		DANGEROUS_RM_MESSAGE:
+			'[Crewly] Claude Code asked for confirmation of an rm whose target it could not resolve statically (a relative path or glob, usually after a cd). ' +
+			'No human is at this machine, so Crewly answered No: nothing was deleted. ' +
+			'Re-run with absolute paths only, e.g. `rm -f /abs/path/dir/*` without a `cd` in front, or `find /abs/path/dir -maxdepth 1 -type f -delete`. Then carry on with your task.',
+	},
 } as const;
 
 /**

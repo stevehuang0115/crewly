@@ -1,0 +1,16 @@
+⏺ The first cut is delivered; this reminder sent nothing further to the owner.
+  The video and the side-by-side sheet are in their thread (the upload returned file ids), with the note. Posting again would only duplicate.
+  The electricity cut and the third cut with the opening shots are still in progress; I will send them separately.
+✻ Waiting for 1 background agent to finish
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command · from the fork agent
+ Make 1-second contact sheets
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ cd ~/work/film/v2 && mkdir -p qc && rm -f qc/* && for k in 0 1 2 3 4; do s=$((k*16)); ffmpeg -v error -y -ss $s -t 16 -i film_v2.mp4 -vf
+ │ "fps=1,scale=480:-1,drawtext=text='%{pts\:hms}':x=6:y=6:fontsize=18:fontcolor=yellow,tile=4x4" -frames:v 1 qc/sheet$k.jpg; done; ls qc
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Dangerous rm operation on statically-unresolvable target: /home/user/project/qc/*
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+ Esc to cancel · Tab to amend · ctrl+x ctrl+k twice to stop background agents

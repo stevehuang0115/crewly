@@ -1506,6 +1506,7 @@ void (async () => {
 		this.systemResourceAlertService = new SystemResourceAlertService();
 		this.teamsJsonWatcherService.setEventBusService(this.eventBusService);
 		this.activityMonitorService.setEventBusService(this.eventBusService);
+		this.activityMonitorService.setAgentRegistrationService(this.apiController.agentRegistrationService);
 		setEventBusControllerService(this.eventBusService);
 		setTeamControllerEventBusService(this.eventBusService);
 
