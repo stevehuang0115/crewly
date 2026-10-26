@@ -87,6 +87,25 @@ describe('diffResults', () => {
   });
 });
 
+describe('the not-yet set in a diff', () => {
+  it('names a flagged task whose current run passes every check', () => {
+    const r = diffResults([], [result('Z9', 2, 2, 70), result('A1', 1, 2, 50)], DIRS, { notYetIds: ['Z9', 'A1'] });
+    expect(r.notYetNowPassing).toEqual(['Z9']);
+    expect(renderDiffMarkdown(r)).toContain('Not-yet tasks now passing every check: Z9.');
+  });
+
+  it('does not promote a timed-out run, a partial pass, or an unflagged task', () => {
+    const cur = [result('Z9', 2, 2, 70, { completionType: 'timeout' }), result('Z8', 1, 2, 50), result('A1', 2, 2, 90)];
+    const r = diffResults([], cur, DIRS, { notYetIds: ['Z9', 'Z8'] });
+    expect(r.notYetNowPassing).toEqual([]);
+    expect(renderDiffMarkdown(r)).not.toContain('Not-yet tasks');
+  });
+
+  it('defaults to an empty set', () => {
+    expect(diffResults([], [result('A1', 1, 1, 80)], DIRS).notYetNowPassing).toEqual([]);
+  });
+});
+
 describe('renderDiffMarkdown', () => {
   it('puts the task count in the first line and one row per task', () => {
     const md = renderDiffMarkdown(diffResults([result('A1', 2, 2, 81), result('B1', 1, 2, 60)], [result('A1', 2, 2, 82), result('B1', 0, 2, 40)], DIRS));

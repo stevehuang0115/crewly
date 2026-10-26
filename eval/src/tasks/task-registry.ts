@@ -347,6 +347,39 @@ export function getTaskById(id: string): EvalTask | undefined {
 }
 
 /**
+ * The tasks current models fail (`notYet` set). Empty until a recorded run
+ * shows a task failing on every runtime; see README "The not-yet set".
+ */
+export const NOT_YET_TASKS: EvalTask[] = ALL_TASKS.filter((t) => t.notYet !== undefined);
+
+/** Which tasks `run` should take. */
+export type TaskSelection =
+  | { kind: 'all'; includeNotYet?: boolean }
+  | { kind: 'not_yet' }
+  | { kind: 'ids'; ids: string[] };
+
+/**
+ * Resolve a run's task selection against the registry.
+ *
+ * - `all`: every task except the not-yet set, unless `includeNotYet`.
+ * - `not_yet`: only the not-yet set (re-run after a model change).
+ * - `ids`: exactly those tasks, flagged or not; unknown ids are dropped.
+ *
+ * @param selection - What the caller asked for
+ * @returns The tasks to run, in registry order
+ */
+export function selectTasks(selection: TaskSelection): EvalTask[] {
+  switch (selection.kind) {
+    case 'all':
+      return selection.includeNotYet ? ALL_TASKS : ALL_TASKS.filter((t) => t.notYet === undefined);
+    case 'not_yet':
+      return NOT_YET_TASKS;
+    case 'ids':
+      return ALL_TASKS.filter((t) => selection.ids.includes(t.id));
+  }
+}
+
+/**
  * Get all tasks matching a category.
  * @param category - Task category to filter by
  * @returns Array of matching tasks
