@@ -4,7 +4,7 @@
  * @module services/people/private-source.service.test
  */
 
-import { PrivateSourceTracker, getPrivateSourceTracker, setPrivateSourceTrackerForTesting } from './private-source.service.js';
+import { PrivateSourceTracker, getPrivateSourceTracker, mergePeople, personMayView, setPrivateSourceTrackerForTesting } from './private-source.service.js';
 
 function make(now: { t: number }, windowMs = 60_000, maxSessions?: number) {
   return new PrivateSourceTracker({ now: () => now.t, windowMs, ...(maxSessions ? { maxSessions } : {}) });
@@ -79,5 +79,24 @@ describe('singleton', () => {
     const mine = new PrivateSourceTracker();
     setPrivateSourceTrackerForTesting(mine);
     expect(getPrivateSourceTracker()).toBe(mine);
+  });
+});
+
+describe('personMayView / mergePeople (#969)', () => {
+  it('an untagged item is open to everyone; a tagged one to the owner and the listed people', () => {
+    expect(personMayView(undefined, 'UBOB')).toBe(true);
+    expect(personMayView([], 'UBOB')).toBe(true);
+    expect(personMayView(['UALICE'], undefined)).toBe(true);
+    expect(personMayView(['UALICE'], 'owner')).toBe(true);
+    expect(personMayView(['UALICE'], 'UALICE')).toBe(true);
+    expect(personMayView(['UALICE'], 'UBOB')).toBe(false);
+  });
+
+  it('mergePeople unions without duplicates and yields undefined when nothing restricts', () => {
+    expect(mergePeople(undefined, undefined)).toBeUndefined();
+    expect(mergePeople([], [])).toBeUndefined();
+    expect(mergePeople(['UALICE'], undefined)).toEqual(['UALICE']);
+    expect(mergePeople(undefined, ['UBOB'])).toEqual(['UBOB']);
+    expect(mergePeople(['UALICE', 'UBOB'], ['UBOB', 'UCAROL'])).toEqual(['UALICE', 'UBOB', 'UCAROL']);
   });
 });

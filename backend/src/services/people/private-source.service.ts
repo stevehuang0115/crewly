@@ -118,6 +118,35 @@ export class PrivateSourceTracker {
   }
 }
 
+/**
+ * Whether a viewer may read something tagged with a people list.
+ *
+ * No list means everyone. The owner (no `viewerPerson`, or the owner id) reads
+ * everything; any other person must be on the list.
+ *
+ * @param visibleToPeople - Person ids the item is restricted to, if any
+ * @param viewerPerson - Person reading, undefined for the owner
+ * @returns true when the viewer may read it
+ */
+export function personMayView(visibleToPeople: string[] | undefined, viewerPerson: string | undefined): boolean {
+  if (!visibleToPeople || visibleToPeople.length === 0) return true;
+  if (!viewerPerson || viewerPerson === PEOPLE_CONSTANTS.OWNER_ID) return true;
+  return visibleToPeople.includes(viewerPerson);
+}
+
+/**
+ * Union of two people lists, keeping the first list's order; undefined when both are empty.
+ *
+ * @param prior - List already on the item
+ * @param incoming - List from the new write
+ * @returns Merged list, or undefined when there is nothing to restrict
+ */
+export function mergePeople(prior: string[] | undefined, incoming: string[] | undefined): string[] | undefined {
+  const out = [...(prior ?? [])];
+  for (const p of incoming ?? []) if (!out.includes(p)) out.push(p);
+  return out.length > 0 ? out : undefined;
+}
+
 let instance: PrivateSourceTracker | null = null;
 
 /**

@@ -115,5 +115,12 @@ What an agent reads through a person's grant is that person's data. A wiki page 
 - **Reading** (`isVisibleTo(fm, viewerRole, viewerPerson)`): a page with `visible_to_people` is hidden from any `viewerPerson` not on the list; `undefined` (the owner's dashboard, an unknown session) and `owner` read everything; the role list still applies to a listed person. `viewerPerson` comes from `viewerPersonOf(session)` = the session's acting-for person (`owner` → undefined) on `POST /api/wiki/query`, memory recall's BM25 wiki search, and the meeting wiki search. The dashboard's own search routes carry no viewer and show everything to the owner.
 - **Owner-only instance**: every turn acts for `owner`, so pages get `visible_to_people: [owner]` and every reader is the owner — no visible change until a member appears.
 
-Not covered: project memory files outside the wiki (`memory/` patterns, decisions), tagging the agent's reply to a channel (the audience check), and recall from another machine.
+Not covered: tagging the agent's reply to a channel (the audience check) and recall from another machine.
+
+## Private-sourced project memory (#969, 2026-10-26)
+
+The same rule for the project memory files outside the wiki (`memory/` patterns, decisions, gotchas).
+
+- **Tagging** (`MemoryService.rememberForProject`): a project-scope `remember` whose session read for anyone inside the tracker window writes the entry with `visibleToPeople: [<person ids>]`. On a dedup hit the existing entry's list is unioned with the new one (`mergePeople`); a later public write of the same entry never clears it. Relationships carry no tag (component names, no agent attribution).
+- **Reading** (`ProjectMemoryService.searchAll(projectPath, query, { person })`): an entry with `visibleToPeople` is hidden from any `person` not on the list (`personMayView`); the owner (no `person`, or `owner`) sees everything. Memory recall passes `viewerPersonOf(agentId)`. `generateProjectContext` (the session-start context block) and the raw `getPatterns`/`getDecisions`/`getGotchas` readers are unfiltered: they serve the agent's own project, not a cross-person query.
 
