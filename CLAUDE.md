@@ -392,6 +392,7 @@ refactor: migrate MCP server from JavaScript to TypeScript
 - **Component composition** over inheritance
 - **Custom hooks** for shared logic
 - **Proper state management** (Context API or external library)
+- **Feature map** — `frontend/FEATURE_MAP.md` lists every route with how a user reaches it, what it should do, its `data-testid` anchors, backend calls and owning files (#811, `specs/2026-10-26-feature-map.md`). Adding, removing or renaming a route means updating its row (and `LEGACY_REDIRECTS` + "Old URLs" for a removed one) in the same PR; `frontend/src/utils/feature-map.test.ts` fails otherwise. Read the map before reproducing a UI bug report.
 
 ### MCP Server Development
 - **HTTP-based MCP protocol** implementation
