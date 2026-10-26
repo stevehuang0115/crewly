@@ -195,7 +195,7 @@ import { createCallerIdentityMiddleware } from './middleware/caller-identity.mid
 import { bodyParserExcept } from './middleware/body-parser-except.js';
 import { PeerProcessService } from './services/core/peer-process.service.js';
 import { createOwnerSessionPageMiddleware, createOwnerSessionRouter } from './controllers/auth/owner-session.controller.js';
-import { dashboardBuildHeader, dashboardBuildMessage, loadDashboardEntry } from './services/core/dashboard-build.js';
+import { dashboardBuildHeader, dashboardBuildMessage, loadDashboardEntry, loadInlineScriptHashes } from './services/core/dashboard-build.js';
 import {
 	apiTokenMiddleware,
 	healthGateMiddleware,
@@ -2036,13 +2036,16 @@ void (async () => {
 
 	private configureMiddleware(): void {
 		// Security middleware
+		const inlineScriptHashes = loadInlineScriptHashes(path.join(findPackageRoot(__dirname), 'frontend/dist/index.html'));
 		this.app.use(
 			helmet({
 				contentSecurityPolicy: {
 					directives: {
 						defaultSrc: ["'self'"],
 						styleSrc: ["'self'", "'unsafe-inline'"],
-						scriptSrc: ["'self'", "'unsafe-eval'"],
+						// The built page's inline theme script (packages/ui THEME_INIT_SCRIPT) runs
+						// only when its hash is listed; without it the page flashes the wrong theme.
+						scriptSrc: ["'self'", "'unsafe-eval'", ...inlineScriptHashes],
 						imgSrc: ["'self'", 'data:', 'https:', 'blob:'],
 						connectSrc: ["'self'", 'ws:', 'wss:', 'blob:'],
 						// Disable upgrade-insecure-requests for HTTP-only deployments (ESTestNode)
