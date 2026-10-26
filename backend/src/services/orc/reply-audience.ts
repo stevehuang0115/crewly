@@ -26,6 +26,8 @@ export const PRIVATE_REPLY_ACTIONS = {
   REDIRECTED: 'connector.private_output.redirected',
   /** The reply was held: no owner DM to move it to */
   HELD: 'connector.private_output.held',
+  /** The owner said to share it: posted to the shared place with `--share` */
+  SHARED: 'connector.private_output.shared',
 } as const;
 
 /** What the check needs to know. */
@@ -106,6 +108,44 @@ function namesOf(people: string[], deps: ReplyAudienceDeps): string {
 }
 
 /**
+ * The people (other than the owner) whose grants the session read recently.
+ *
+ * @param session - Agent session
+ * @param deps - Lookups
+ * @returns Person ids; empty when none or when the tracker fails
+ */
+export function privatePeopleOf(session: string, deps: Pick<ReplyAudienceDeps, 'recentPeople'>): string[] {
+  try {
+    return deps.recentPeople(session).filter((p) => p && p !== PEOPLE_CONSTANTS.OWNER_ID);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Note that the owner had a private-sourced reply posted to a shared place
+ * (`reply --share` after the owner said so in the agent's DM).
+ *
+ * @param session - Agent session
+ * @param dest - Where it goes
+ * @param deps - Lookups
+ * @returns The people the reply draws on (empty: nothing private, nothing logged)
+ */
+export function recordPrivateShare(session: string, dest: Exclude<ReplyDestination, { kind: 'unresolved' }>, deps: ReplyAudienceDeps): string[] {
+  const people = privatePeopleOf(session, deps);
+  if (people.length === 0 || !isSharedPlace(dest, deps)) return [];
+  const place = placeOf(dest, deps);
+  (deps.record ?? recordActivity)({
+    actor: { type: 'agent', id: session },
+    action: PRIVATE_REPLY_ACTIONS.SHARED,
+    target: dest.kind === 'conversation' ? { type: 'conversation', id: dest.conversationId } : { type: 'reply', id: session },
+    after: { people, sharedTo: place },
+    note: `${session} posted a reply drawing on ${namesOf(people, deps)}'s data to ${place} after the owner said to share it`,
+  });
+  return people;
+}
+
+/**
  * Check whether a reply may go where the resolver sent it.
  *
  * @param session - Agent session
@@ -118,12 +158,7 @@ export async function checkReplyAudience(
   dest: Exclude<ReplyDestination, { kind: 'unresolved' }>,
   deps: ReplyAudienceDeps,
 ): Promise<ReplyAudienceVerdict> {
-  let people: string[];
-  try {
-    people = deps.recentPeople(session).filter((p) => p && p !== PEOPLE_CONSTANTS.OWNER_ID);
-  } catch {
-    return { kind: 'open' };
-  }
+  const people = privatePeopleOf(session, deps);
   if (people.length === 0) return { kind: 'open' };
   if (!isSharedPlace(dest, deps)) return { kind: 'open' };
 
@@ -142,7 +177,7 @@ export async function checkReplyAudience(
     return {
       kind: 'held',
       reason: `it draws on ${who}'s data (read through their connection in the last minutes) and ${heldFrom} has other members`,
-      fix: `send it to the owner's DM (ask your team lead to open one), or ask the owner to share ${who}'s connection with the room first`,
+      fix: `send it to the owner's DM (ask your team lead to open one); once the owner says to share it there, run the same reply with --share`,
       people,
       heldFrom,
     };
@@ -162,7 +197,7 @@ export async function checkReplyAudience(
       source: 'owner-dm',
       reason: `held from ${heldFrom}: it draws on ${who}'s data`,
     },
-    note: `_Held from ${heldFrom}: this draws on ${who}'s data, which only you and they may see. Say "share it" and I will post it there._`,
+    note: `_Held from ${heldFrom}: this draws on ${who}'s data, which only you and they may see. Say "share it" here and I will post it there._`,
     people,
     heldFrom,
   };

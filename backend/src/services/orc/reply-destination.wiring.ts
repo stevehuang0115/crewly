@@ -36,7 +36,7 @@ import { getTurnTriggerTracker, type TurnTrigger } from '../trace/turn-trigger.j
 import { triggeredByMetadata, triggeredByPhrase, withTriggeredByLine } from './triggered-by.js';
 import { stripOwnerTextIds } from '../../utils/owner-text-ids.utils.js';
 import { memberNameFromSession } from '../../utils/member-session-name.utils.js';
-import { checkReplyAudience, type ReplyAudienceDeps } from './reply-audience.js';
+import { checkReplyAudience, recordPrivateShare, type ReplyAudienceDeps } from './reply-audience.js';
 
 /** How long an identical reply from one agent counts as a duplicate send. */
 const REPLY_DUPLICATE_WINDOW_MS = 120_000;
@@ -137,6 +137,8 @@ export type ReplyDelivery =
       messageTs?: string;
       /** The agent an internal message went to (work with an agent origin, crewly#1357) */
       agentSession?: string;
+      /** The shared place the reply was held from when it went to the owner DM instead (crewly#969) */
+      heldFrom?: string;
     }
   | { ok: false; error: string; destination: ReplyDestination; held?: boolean };
 
@@ -150,6 +152,12 @@ export interface DeliverReplyInput {
   noOwnerDm?: boolean;
   /** Post even when a colleague already answered the owner here (`--adds-new`) */
   addsNew?: boolean;
+  /**
+   * The owner said in the agent's DM to share a private-sourced reply in the
+   * shared place it was held from (`--share`, crewly#969). Honoured only
+   * while the owner's message in that DM is recent.
+   */
+  share?: boolean;
 }
 
 /**
@@ -301,19 +309,31 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
   }
   // crewly#969: what the agent read through a person's grant is that person's
   // data; a reply drawing on it does not go where other people read.
+  let heldFrom: string | undefined;
   if (d.audience) {
-    const verdict = await checkReplyAudience(input.session, dest, { ...d.audience, ...(d.conversationPlace ? { conversationPlace: d.conversationPlace } : {}) });
-    if (verdict.kind === 'held') {
-      logger.warn('Agent reply held: it draws on private data and the place is shared', { session: input.session, heldFrom: verdict.heldFrom, people: verdict.people });
-      return { ok: false, destination: dest, error: notDelivered(verdict.reason, verdict.fix), held: true };
-    }
-    if (verdict.kind === 'redirect') {
-      logger.info('Agent reply moved to the owner DM: it draws on private data', { session: input.session, heldFrom: verdict.heldFrom, people: verdict.people });
-      dest = verdict.destination;
-      input = { ...input, content: `${verdict.note}\n\n${input.content}` };
+    const audience = { ...d.audience, ...(d.conversationPlace ? { conversationPlace: d.conversationPlace } : {}) };
+    const shared = input.share === true && (await ownerSaidShare(input.session, d)) ? recordPrivateShare(input.session, dest, audience) : [];
+    if (shared.length > 0) {
+      logger.info('Agent posts a private-sourced reply to a shared place: the owner said to share it', { session: input.session, people: shared });
+    } else {
+      const verdict = await checkReplyAudience(input.session, dest, audience);
+      if (input.share === true && verdict.kind !== 'open') {
+        logger.warn('--share ignored: the owner did not say so in the agent DM recently', { session: input.session, heldFrom: verdict.heldFrom });
+      }
+      if (verdict.kind === 'held') {
+        logger.warn('Agent reply held: it draws on private data and the place is shared', { session: input.session, heldFrom: verdict.heldFrom, people: verdict.people });
+        return { ok: false, destination: dest, error: notDelivered(verdict.reason, verdict.fix), held: true };
+      }
+      if (verdict.kind === 'redirect') {
+        logger.info('Agent reply moved to the owner DM: it draws on private data', { session: input.session, heldFrom: verdict.heldFrom, people: verdict.people });
+        dest = verdict.destination;
+        heldFrom = verdict.heldFrom;
+        input = { ...input, content: `${verdict.note}\n\n${input.content}` };
+      }
     }
   }
   let result = await attempt(input, dest, prompt, d);
+  if (result.ok && heldFrom) result = { ...result, heldFrom };
   if (result.ok || ('held' in result && result.held)) return result;
 
   // Work handed over from the owner's DM with another agent (a lead's
@@ -1076,6 +1096,20 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
     conversationPlace: (id) => chatConversationPlace(chatLookup, id),
     audience: await defaultAudienceDeps(resolver, chatLookup),
   };
+}
+
+/**
+ * Whether the owner wrote to the agent in its owner DM recently — the
+ * approval `reply --share` stands on (crewly#969).
+ *
+ * @param session - Agent session
+ * @param d - Delivery deps
+ * @returns True when the owner DM exists and the owner asked there within the window
+ */
+async function ownerSaidShare(session: string, d: ReplyDeliveryDeps): Promise<boolean> {
+  if (!d.audience || !d.ownerAskedRecently) return false;
+  const dm = await d.audience.ownerDm(session).catch(() => null);
+  return !!dm && d.ownerAskedRecently(session, dm) === true;
 }
 
 /**

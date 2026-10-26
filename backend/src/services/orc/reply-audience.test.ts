@@ -4,7 +4,7 @@
  * @module services/orc/reply-audience.test
  */
 
-import { checkReplyAudience, isSharedPlace, PRIVATE_REPLY_ACTIONS, type ReplyAudienceDeps } from './reply-audience.js';
+import { checkReplyAudience, isSharedPlace, privatePeopleOf, recordPrivateShare, PRIVATE_REPLY_ACTIONS, type ReplyAudienceDeps } from './reply-audience.js';
 import type { ReplyDestination } from './reply-destination-resolver.js';
 
 type Resolved = Exclude<ReplyDestination, { kind: 'unresolved' }>;
@@ -92,6 +92,17 @@ describe('checkReplyAudience', () => {
     expect(v.reason).toMatch(/draws on Alice's data .* the CE-7 ticket thread has other members/);
     expect(v.fix).toMatch(/owner's DM/);
     expect(d.record).toHaveBeenCalledWith(expect.objectContaining({ action: PRIVATE_REPLY_ACTIONS.HELD }));
+  });
+
+  it('recordPrivateShare logs a shared post only when something private goes to a shared place', () => {
+    const d = deps();
+    expect(recordPrivateShare('owen', room, d)).toEqual(['UALICE']);
+    expect(d.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: PRIVATE_REPLY_ACTIONS.SHARED, target: { type: 'conversation', id: 'room-ce' }, after: { people: ['UALICE'], sharedTo: '#ce' } }),
+    );
+    expect(recordPrivateShare('owen', dm, d)).toEqual([]);
+    expect(recordPrivateShare('owen', room, deps({ recentPeople: () => ['owner'] }))).toEqual([]);
+    expect(privatePeopleOf('owen', { recentPeople: () => { throw new Error('boom'); } })).toEqual([]);
   });
 
   it('never throws: a failing tracker reads as open', async () => {

@@ -215,6 +215,7 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
           content,
           interim,
           ...(body.addsNew === true ? { addsNew: true } : {}),
+          ...(body.share === true ? { share: true } : {}),
           ...(reference ? { reference } : {}),
           ...(requestedConv || requestedThread
             ? { hints: { ...(requestedConv ? { conversationId: requestedConv } : {}), ...(requestedThread ? { thread: requestedThread } : {}) } }
@@ -257,6 +258,10 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
             ...(delivery.agentSession ? { agentSession: delivery.agentSession } : {}),
             destination: dest.kind === 'work' ? dest.destination.kind : 'conversation',
             via: dest.source,
+            // crewly#969: the reply went to the owner DM instead of a shared place.
+            ...(delivery.heldFrom
+              ? { heldFrom: delivery.heldFrom, note: `Posted to your DM with the owner instead of ${delivery.heldFrom}: it draws on someone's private data. When the owner says to share it there, run the same reply with --share.` }
+              : {}),
           },
         });
         return;

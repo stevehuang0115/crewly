@@ -91,6 +91,30 @@ describe('deliverReply', () => {
     expect(r2.ok && r2.destination).toEqual(expect.objectContaining({ conversationId: 'room-ce' }));
   });
 
+  it('reply --share posts the held reply to the room once the owner said so in the DM, and only then (#969)', async () => {
+    const record = jest.fn();
+    const audience = {
+      recentPeople: (s: string) => (s === 'owen' ? ['UALICE'] : []),
+      conversationKind: (id: string) => (id === 'dm-owen' ? 'dm' : 'shared') as 'dm' | 'shared',
+      ownerDm: async () => 'dm-owen',
+      personName: () => 'Alice',
+      record,
+    };
+    // The owner wrote in the DM recently: --share is honoured and logged.
+    const d = deps({ audience, ownerAskedRecently: (_s, c) => c === 'dm-owen' });
+    const r = await deliverReply({ session: 'owen', content: 'Her Q3 invoices total 12k', reference: { ticket: 'TKT-187' }, share: true }, d);
+    expect(r.ok && r.destination).toEqual(expect.objectContaining({ conversationId: 'room-ce' }));
+    expect(r.ok && r.heldFrom).toBeUndefined();
+    expect(d.deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'room-ce', content: 'Her Q3 invoices total 12k' }));
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ action: 'connector.private_output.shared', after: { people: ['UALICE'], sharedTo: 'conversation room-ce' } }));
+
+    // No recent owner message in the DM: --share is ignored and the reply goes to the DM with heldFrom set.
+    const d2 = deps({ audience, ownerAskedRecently: () => false });
+    const r2 = await deliverReply({ session: 'owen', content: 'Her Q3 invoices total 12k again', reference: { ticket: 'TKT-187' }, share: true }, d2);
+    expect(r2.ok && r2.destination).toEqual(expect.objectContaining({ conversationId: 'dm-owen', source: 'owner-dm' }));
+    expect(r2.ok && r2.heldFrom).toBe('conversation room-ce');
+  });
+
   it('never shows run-trace markers to the owner', async () => {
     const d = deps();
     await deliverReply({ session: 'owen', content: 'preview: https://x\n[TRACE:tr-20261003-0123abcd]', reference: { ticket: 'TKT-187' } }, d);
