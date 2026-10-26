@@ -277,6 +277,7 @@ import { ProjectTicketWorkflowService } from './services/project-tickets/project
 import { WorkItemWorktreeService } from './services/worktree/workitem-worktree.service.js';
 import { WorkItemWorktreeSubscriber, createTerminalNotifier } from './services/worktree/workitem-worktree.subscriber.js';
 import { ResourceModeService, RESOURCE_MODE_CONSTANTS, type RunningAgent } from './services/agent/resource-mode.service.js';
+import { memoryStopHold } from './services/agent/memory-stop-hold.js';
 import { getStallWatcher } from './services/stall/stall-watcher.service.js';
 import { getRestoreQueue, RESTORE_TIER, type RestoreEntry } from './services/agent/restore-queue.js';
 import {
@@ -7916,6 +7917,18 @@ void (async () => {
 	}
 
 	/**
+	 * Why an agent the machine stopped for memory must not be started yet
+	 * (memory-stop-hold.ts), or null. Every wake path for queued work and
+	 * queued messages asks; an owner start does not.
+	 *
+	 * @param sessionName - Agent a wake path wants to start
+	 * @returns Reason text while held, null otherwise
+	 */
+	private memoryStopHold(sessionName: string): string | null {
+		return memoryStopHold(sessionName, ResourceModeService.getInstance().getMode());
+	}
+
+	/**
 	 * The one hook every stop path runs: what the stopped agent owes goes back
 	 * in the queue and the agent is brought back with a reminder.
 	 *
@@ -7939,6 +7952,8 @@ void (async () => {
 				void scheduleDeferredStartRetry(name, {
 					activate: (n) => activateAgentBySession(this.apiController, n),
 					hasPending: (n) => SubAgentMessageQueue.getInstance().hasPending(n),
+					// Stopped for memory: wait for pressure to clear instead of taking back the slot it just freed.
+					hold: () => this.memoryStopHold(name),
 					firstPauseMs: 60_000,
 				});
 			},
@@ -7961,6 +7976,14 @@ void (async () => {
 		// Stopped on purpose: hold the queue until someone starts the agent.
 		if (isOwnerStopped(sessionName)) {
 			this.logger.info('Holding queued messages for an agent that was stopped on purpose (not waking it)', { sessionName });
+			return;
+		}
+		// The machine itself stopped it for memory: waking it 5 s later would take
+		// back the memory the stop freed. The retry starts it once pressure clears.
+		const memoryHold = this.memoryStopHold(sessionName);
+		if (memoryHold) {
+			this.logger.info('Holding queued messages for an agent stopped for memory until pressure clears', { sessionName, reason: memoryHold });
+			this.retryStartWhileQueued(sessionName);
 			return;
 		}
 		const last = this.queuedWakeAt.get(sessionName) ?? 0;
@@ -8007,8 +8030,9 @@ void (async () => {
 					return activateAgentBySession(this.apiController, n);
 				},
 				hasPending: (n) => SubAgentMessageQueue.getInstance().hasPending(n),
-				// Boot launches outside the restore queue keep its spacing and its memory gate (crewly#1353).
-				...(opts.boot ? { hold: () => this.bootLaunchHold() } : {}),
+				// Boot launches outside the restore queue keep its spacing and its memory gate (crewly#1353);
+				// an agent the machine stopped for memory waits for pressure to clear (memory-stop-hold.ts).
+				hold: () => (opts.boot ? this.bootLaunchHold() : null) ?? this.memoryStopHold(sessionName),
 				...(firstPauseMs !== undefined ? { firstPauseMs } : {}),
 			});
 		})().catch((err) => {
@@ -8063,6 +8087,8 @@ void (async () => {
 					!restoreQueue.isRestoring(name) &&
 					!isOwnerStopped(name) &&
 					!pausedTeamOfSession(name) &&
+					// Stopped for memory and the machine is still under pressure
+					!this.memoryStopHold(name) &&
 					!backend?.sessionExists(name) &&
 					!registration.getInProcessRuntime(name),
 			);

@@ -39,6 +39,7 @@ import { limitToOneProjectTicket } from '../task-pool/ticket-claim-policy.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import { NetworkStatusService } from '../core/network-status.service.js';
 import { ResourceModeService, RESOURCE_MODE_CONSTANTS } from '../agent/resource-mode.service.js';
+import { memoryStopHold } from '../agent/memory-stop-hold.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
@@ -1397,6 +1398,11 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           this.redeliverCount.delete(action.workItemId);
           return { outcome: 'skipped', reason: 'work item no longer queued' };
         }
+        // Its target is being stopped for memory right now (the released brief
+        // reached a dying session as a 500 on 2026-10-26): nothing to write to.
+        if (memoryStopHold(agentSessionName, ResourceModeService.getInstance().getMode())) {
+          return { outcome: 'skipped', reason: 'target stopped for memory' };
+        }
         // Per-WI redeliver backoff — the fast loop re-emits this every ~10s
         // while the WI stays queued; without the gate that floods the PTY,
         // and with a flat gate it still wakes the agent every few minutes.
@@ -1482,6 +1488,18 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
     // refused (crewly-product-team-sam, 2026-10-13).
     const blocked = this.lastWakeBlockedAt.get(agentSessionName);
     if (strategy === 'start') {
+      // The machine itself stopped this agent for memory moments ago (idle or
+      // emergency stop under pressure): starting it for the item it has just
+      // released would only redo the cold start and take back the memory the
+      // stop freed. Held while pressure lasts (memory-stop-hold.ts).
+      const memoryHold = memoryStopHold(agentSessionName, ResourceModeService.getInstance().getMode());
+      if (memoryHold) {
+        this.logger.debug('Skipping wake — the agent was stopped for memory and pressure persists', {
+          agent: agentSessionName,
+          reason: memoryHold,
+        });
+        return { outcome: 'skipped', reason: 'stopped for memory; held while pressure lasts' };
+      }
       // Don't re-attempt a wake the approval gate just refused. Its verdict
       // depends on owner messages, not on anything the reconciler can change
       // by asking again 10 seconds later.
