@@ -28,6 +28,13 @@ describe('ThreadAnswerLog', () => {
     expect(log.answersSince('C1:1.1', 1_000_000, 'ella').length).toBe(0);
   });
 
+  it('skips the target: handing the answerer its follow-up is not a second answer', () => {
+    clock += 10;
+    log.record(post('luna'));
+    expect(log.answersSince('C1:1.1', 1_000_000, 'ella', 'luna')).toEqual([]);
+    expect(log.answersSince('C1:1.1', 1_000_000, 'ella').map((p) => p.agent)).toEqual(['luna']);
+  });
+
   it('ignores posts with no thread and keeps threads apart', () => {
     clock += 10;
     log.record(post('luna', 'x', null));

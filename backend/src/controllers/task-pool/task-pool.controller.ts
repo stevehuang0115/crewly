@@ -527,7 +527,7 @@ export async function addItem(req: Request, res: Response): Promise<void> {
     // delegation there would get the owner two answers (CREW-878). Listed and
     // refused; `--force-after-answer` delegates anyway.
     const forced = (workItem.metadata as Record<string, unknown> | undefined)?.[TL_DELEGATION_CONSTANTS.FORCE_AFTER_ANSWER_FIELD] === true;
-    const answers = forced || namedOwnerThread === undefined ? [] : await getService().agentAnswersInOwnerThread(namedOwnerThread, delegatorOf(req, workItem));
+    const answers = forced || namedOwnerThread === undefined ? [] : await getService().agentAnswersInOwnerThread(namedOwnerThread, delegatorOf(req, workItem), workItem.target);
     if (answers.length > 0) {
       logger.warn('Refused a delegation into a thread another agent already answered', { target: workItem.target, ownerThread: namedOwnerThread, answers: answers.length });
       res.status(409).json({

@@ -62,16 +62,19 @@ export class ThreadAnswerLog {
 
   /**
    * Posts in a thread newer than the owner's last message, by anyone but the
-   * delegator (its own interim posts are not "someone else answered").
+   * delegator (its own interim posts are not "someone else answered") and the
+   * agent being delegated to (handing the thread's answerer its follow-up is
+   * not a second answer).
    *
    * @param key - `<channel>:<thread ts>`
    * @param ownerAt - Epoch ms of the owner's last message there
    * @param delegator - The agent delegating
+   * @param target - The agent delegated to
    * @returns Matching posts, oldest first (empty when none)
    */
-  answersSince(key: string, ownerAt: number, delegator?: string): ThreadPost[] {
+  answersSince(key: string, ownerAt: number, delegator?: string, target?: string): ThreadPost[] {
     const cutoff = this.now() - C.THREAD_POST_TTL_MS;
-    return (this.threads.get(key) ?? []).filter((p) => p.at > ownerAt && p.at >= cutoff && p.agent !== delegator);
+    return (this.threads.get(key) ?? []).filter((p) => p.at > ownerAt && p.at >= cutoff && p.agent !== delegator && p.agent !== target);
   }
 }
 

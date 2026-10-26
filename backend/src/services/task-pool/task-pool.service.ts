@@ -1061,16 +1061,18 @@ export class TaskPoolService {
 
   /**
    * Agent posts in an explicitly named Slack thread that are newer than the
-   * owner's last message there, by anyone but the delegator. A delegation
+   * owner's last message there, by anyone but the delegator and the target
+   * (the answerer's own follow-up is not a second answer). A delegation
    * into such a thread would get the owner a second answer (CREW-878).
    * Unknown history (no log yet, the owner's message time unknown, an unreadable
    * key) gives none: only a certain answer blocks a delegation.
    *
    * @param rawKey - `metadata.ownerThread`
    * @param creator - The delegating agent, when known
+   * @param target - The agent delegated to
    * @returns Posts oldest first; empty when none or unknown
    */
-  async agentAnswersInOwnerThread(rawKey: unknown, creator?: string): Promise<ThreadPost[]> {
+  async agentAnswersInOwnerThread(rawKey: unknown, creator?: string, target?: string): Promise<ThreadPost[]> {
     const log = getThreadAnswerLog();
     const key = parseSlackThreadKey(rawKey);
     if (!log || !key) return [];
@@ -1078,7 +1080,7 @@ export class TaskPoolService {
     if (!origin || origin.kind !== 'owner') return [];
     const ownerAt = await this.ownerAskedAt(origin, creator, Date.now()).catch(() => null);
     if (ownerAt === null) return [];
-    return log.answersSince(formatSlackThreadKey(key.slackChannelId, key.threadTs), ownerAt, creator);
+    return log.answersSince(formatSlackThreadKey(key.slackChannelId, key.threadTs), ownerAt, creator, target);
   }
 
   /**

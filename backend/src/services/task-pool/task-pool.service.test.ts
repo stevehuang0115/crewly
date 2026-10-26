@@ -365,6 +365,13 @@ describe('TaskPoolService', () => {
           expect(await service.agentAnswersInOwnerThread(KEY, 'ella')).toEqual([]);
         });
 
+        it('the target\'s own post is not "someone else answered"', async () => {
+          clock += 1000;
+          log.record({ agent: 'luna', slackChannelId: 'C0MKT', threadTs: '1792400000.000100', text: 'First part' });
+          expect(await service.agentAnswersInOwnerThread(KEY, 'ella', 'luna')).toEqual([]);
+          expect((await service.agentAnswersInOwnerThread(KEY, 'ella', 'sam')).map((p) => p.agent)).toEqual(['luna']);
+        });
+
         it('a post older than the owner\'s last message does not count', async () => {
           log.record({ agent: 'luna', slackChannelId: 'C0MKT', threadTs: '1792400000.000100', text: 'earlier answer' });
           clock += 5000;

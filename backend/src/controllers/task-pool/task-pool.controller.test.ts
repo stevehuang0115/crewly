@@ -1436,7 +1436,7 @@ describe('TaskPoolController', () => {
         expect(sent.error).toContain('luna');
         expect(sent.error).toContain('Here is the answer');
         expect(sent.error).toContain('--force-after-answer');
-        expect(mockService.agentAnswersInOwnerThread).toHaveBeenCalledWith(THREAD, expect.anything());
+        expect(mockService.agentAnswersInOwnerThread).toHaveBeenCalledWith(THREAD, expect.anything(), 'crewly-product-leo');
         expect(mockService.addToPool).not.toHaveBeenCalled();
       });
 
