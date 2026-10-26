@@ -1149,6 +1149,7 @@ export async function agentResponse(
         content: String(content),
         interim: req.body?.interim === true,
         ...(req.body?.addsNew === true ? { addsNew: true } : {}),
+        ...(req.body?.share === true ? { share: true } : {}),
         ...(reference ? { reference } : {}),
         ...(conversationId || req.body?.slackThread
           ? {

@@ -125,7 +125,8 @@ A reply an agent writes shortly after reading someone's grant draws on that pers
 - **Shared place**: a chat-v2 conversation that is not a `dm` (or unknown to chat-v2) and mirrors no Slack DM; a Slack channel thread, ticket thread or new top-level post. **Private**: the owner DM, a Slack DM, an internal message to another agent (`kind: 'agent'`).
 - **Audit**: `connector.private_output.redirected` (target = the owner DM) or `connector.private_output.held`, both with `after.people` and `after.heldFrom`, under Settings › Activity filter `connector.private_output.`.
 - **Owner-only instance**: the tracker only ever holds `owner`, so nothing changes. The deps are optional (`ReplyDeliveryDeps.audience`); tests without them see the old behaviour.
-- Not covered: the "Share this in #channel?" decision card (the note asks the owner to say so in the DM instead), and a colleague re-posting an internal message it received.
+- **Sharing** (`reply --share`, `DeliverReplyInput.share`): the owner's word in the agent's DM is the approval. When the owner wrote in that DM within `TURN_TRIGGER_CONSTANTS.OWNER_ANSWER_WINDOW_MS` (`ownerAskedRecently`), a reply sent with `--share` skips the check, posts to the shared place and is logged as `connector.private_output.shared` (`after.people`, `after.sharedTo`). Without a recent owner message `--share` is ignored (warn) and the reply is redirected as usual. The redirected delivery carries `heldFrom`; `POST /api/chat/reply` returns it with a `note` telling the agent to re-run the reply with `--share` once the owner says so.
+- Not covered: a decision card in the room itself (the owner answers in the DM instead), and a colleague re-posting an internal message it received.
 
 ## Private-sourced project memory (#969, 2026-10-26)
 

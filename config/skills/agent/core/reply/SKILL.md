@@ -115,6 +115,7 @@ argument -- a stray `"` splits the text and nothing is sent. Check for
 | `--interim` | a short note before the real answer (what you understood, how long); "working on it" stays up |
 | `--none` | nothing to answer (you answered elsewhere, or the message was not for you) |
 | `--adds-new` | post even though the agent chosen to answer the owner here already replied. Without it such a reply is held and you see that answer. Use it when you have something new, or when you were asked (an @ in the owner's message or in that answer is never held) |
+| `--share` | the owner said in your DM to share a reply that was held from a room: a reply that draws on someone's private data (read through their connection in the last 20 minutes) goes to your DM with the owner instead of a room, channel thread or ticket thread, and the result tells you `heldFrom`. When the owner answers there that it may be shared, run the same reply again with `--share` — it works only while the owner's message in that DM is recent |
 | `--new-thread "<title>"` | a new topic: a new top-level post in your team channel, opened with the title |
 | `--ticket <id>` | the ticket you answer about (`TKT-187`, `CE-7`) — goes to that ticket's thread |
 | `--to <messageId>` | the message you answer (from your prompt) — goes to its conversation and thread |

@@ -153,6 +153,7 @@ async function rerouteMismatchedAgentThread(req: Request, res: Response): Promis
     content: body.content,
     interim: body.interim === true,
     ...(body.addsNew === true ? { addsNew: true } : {}),
+    ...(body.share === true ? { share: true } : {}),
     hints: { conversationId, thread: body.threadId },
   });
   if (!delivery.ok) {
