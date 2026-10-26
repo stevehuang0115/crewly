@@ -207,6 +207,20 @@ describe('InProcessLogBuffer', () => {
       try { fs.unlinkSync(logPath); } catch { /* may not exist */ }
     });
 
+    it('writes a sub-agent session (`parent/sub-1`) to a flat file name (#1317)', (done) => {
+      const child = `${testSessionName}/sub-1`;
+      const logPath = path.join(sessionLogsDir, `${testSessionName}__sub-1.log`);
+      buffer.registerSession(child);
+      buffer.append(child, 'warn', '[stderr] HTTP 402 Insufficient Balance');
+      setTimeout(() => {
+        expect(fs.existsSync(logPath)).toBe(true);
+        expect(fs.readFileSync(logPath, 'utf-8')).toContain('Insufficient Balance');
+        buffer.removeSession(child);
+        try { fs.unlinkSync(logPath); } catch { /* best effort */ }
+        done();
+      }, 100);
+    });
+
     it('should create a log file on registerSession', (done) => {
       buffer.registerSession(testSessionName);
       const logPath = path.join(sessionLogsDir, `${testSessionName}.log`);

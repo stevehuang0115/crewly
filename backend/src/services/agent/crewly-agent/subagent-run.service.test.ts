@@ -12,6 +12,7 @@ import {
   SubagentRunService,
   SubagentRunRefused,
   buildSubagentPrompt,
+  lastWorkerStderr,
   parseRequestedModel,
   summarizeSubagentRun,
   type SubagentRuntime,
@@ -76,14 +77,17 @@ function fakeRuntime(reply: AgentRunResult | (() => Promise<AgentRunResult>) = r
  */
 function service(runtime: SubagentRuntime, extra: ConstructorParameters<typeof SubagentRunService>[0] = {}) {
   const append = jest.fn();
+  const capture = jest.fn<string, [string, number?]>().mockReturnValue('[crewly-agent] No output yet');
   const svc = new SubagentRunService({
     createRuntime: () => runtime,
-    logBuffer: { append },
+    logBuffer: { append, capture },
     defaultModel: () => MODEL,
+    exhaustedRuntimes: async () => [],
+    crewlyAgentModel: () => 'deepseek/deepseek-chat',
     isDirectory: (p) => p === '/repo',
     ...extra,
   });
-  return { svc, append };
+  return { svc, append, capture };
 }
 
 beforeEach(() => _resetInProcessRuntimeRegistryForTesting());
@@ -150,7 +154,44 @@ describe('summarizeSubagentRun', () => {
   });
 });
 
+describe('lastWorkerStderr', () => {
+  it('returns the last two stderr lines without their prefixes, or empty', () => {
+    const capture = (): string => [
+      '12:00:00 [INFO] Initialized',
+      '12:00:01 [WARN] [stderr] DeepSeek HTTP 402',
+      '12:00:01 [WARN] [stderr] Insufficient Balance',
+      '12:00:02 [ERROR] Agent error: No output generated.',
+    ].join('\n');
+    expect(lastWorkerStderr({ capture }, 's')).toBe('DeepSeek HTTP 402 | Insufficient Balance');
+    expect(lastWorkerStderr({ capture: () => '[crewly-agent] No output yet' }, 's')).toBe('');
+  });
+});
+
 describe('SubagentRunService.run', () => {
+  it('refuses with provider_exhausted when the crewly-agent runtime is out of credit on the child\'s provider', async () => {
+    const { runtime, init } = fakeRuntime();
+    const { svc } = service(runtime, {
+      exhaustedRuntimes: async () => [{ runtime: 'crewly-agent', since: '2026-10-01T22:14:46.280Z', ruleId: 'crewly-agent.insufficient_balance', kind: 'billing', switched: [], switchedTo: [], notified: true }],
+    });
+    await expect(svc.run('dev-1', { task: 'a', cwd: '/repo' })).rejects.toMatchObject({
+      code: 'provider_exhausted',
+      message: expect.stringContaining('deepseek is out of credit since 2026-10-01 (crewly-agent.insufficient_balance)'),
+    });
+    // Another provider is not the exhausted one: it runs.
+    await svc.run('dev-1', { task: 'a', cwd: '/repo', model: 'anthropic/claude-haiku-4-5' });
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it('attaches the worker\'s stderr to the error when the child fails', async () => {
+    const { runtime, handle } = fakeRuntime();
+    handle.mockRejectedValue(new Error('No output generated. Check the stream for errors.'));
+    const { svc, capture } = service(runtime);
+    capture.mockReturnValue('12:00:01 [WARN] [stderr] 402 Insufficient Balance');
+    const out = await svc.run('dev-1', { task: 'a', cwd: '/repo' });
+    expect(out).toMatchObject({ success: false, stoppedReason: 'error', error: 'No output generated. Check the stream for errors. — worker stderr: 402 Insufficient Balance' });
+    expect(capture).toHaveBeenCalledWith('dev-1/sub-1', 80);
+  });
+
   it('refuses before starting a worker: no parent, nested parent, empty task, long task, bad cwd, bad model', async () => {
     const { runtime, init } = fakeRuntime();
     const { svc } = service(runtime);
