@@ -11,7 +11,8 @@
 import type { Request, Response, NextFunction } from 'express';
 import { MemoryService } from '../../services/memory/memory.service.js';
 import type { RememberCategory, MemoryScope } from '../../services/memory/memory.service.js';
-import { GoalTrackingService } from '../../services/memory/goal-tracking.service.js';
+import { GoalTrackingService, isGoalStatus } from '../../services/memory/goal-tracking.service.js';
+import { MEMORY_CONSTANTS } from '../../constants.js';
 import { DailyLogService } from '../../services/memory/daily-log.service.js';
 import { LearningAccumulationService } from '../../services/memory/learning-accumulation.service.js';
 import { CorrectionLadderService, type CorrectionSource } from '../../services/memory/correction-ladder.service.js';
@@ -427,25 +428,31 @@ export async function listCorrections(req: Request, res: Response, next: NextFun
 /**
  * POST /api/memory/goals
  *
- * Set or append a project goal.
+ * Set or append a project goal. `status` (`reached`, `superseded`,
+ * `cancelled`, `active`) closes or re-labels a goal by appending an entry
+ * with that word in its heading; `reached` is a retro milestone (#985).
  *
- * @param req - Express request with body: { goal, projectPath, setBy? }
+ * @param req - Express request with body: { goal, projectPath, setBy?, status? }
  * @param res - Express response returning { success }
  * @param next - Express next function for error propagation
  */
 export async function setGoal(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { goal, projectPath, setBy } = req.body;
+    const { goal, projectPath, setBy, status } = req.body;
 
     if (!goal || !projectPath) {
       res.status(400).json({ success: false, error: 'Missing required parameters: goal, projectPath' });
       return;
     }
+    if (status !== undefined && !isGoalStatus(status)) {
+      res.status(400).json({ success: false, error: `Unknown status "${String(status)}"; use one of ${Object.values(MEMORY_CONSTANTS.GOAL_STATUSES).join(', ')}` });
+      return;
+    }
 
     const service = GoalTrackingService.getInstance();
-    await service.setGoal(projectPath, goal, setBy);
+    await service.setGoal(projectPath, goal, setBy, typeof status === 'string' ? status.toLowerCase() : undefined);
 
-    logger.info('Goal set via REST', { projectPath, setBy });
+    logger.info('Goal set via REST', { projectPath, setBy, ...(status ? { status } : {}) });
     res.json({ success: true });
   } catch (error) {
     logger.error('Failed to set goal', { error: error instanceof Error ? error.message : String(error) });

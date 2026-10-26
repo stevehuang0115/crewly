@@ -302,7 +302,19 @@ costs no extra wake:
 - A **milestone** of project P on local day D is an experiment card of P
   (autopilot scope, or a ticket link naming P) that closed on D — its last
   `measured` / `cancelled` timeline event, else `updatedAt` — or a project
-  OKR (mission) of P that is `completed` and was last written on D.
+  OKR (mission) of P that is `completed` and was last written on D — or
+  (2026-10-26) an entry of P's goals log `.crewly/goals/goals.md` whose
+  heading carries `REACHED` right after its timestamp
+  (`### [<iso>] REACHED — Set by <who>`), stamped on D. The goals log is
+  append-only, so a goal is closed by appending such an entry
+  (`set_goal` with `status: reached`; `superseded` / `cancelled` retire a
+  goal without a milestone; the words are `MEMORY_CONSTANTS.GOAL_STATUSES`,
+  hand-written `DONE` / `COMPLETED` / `MET` read as reached). The entry's
+  first non-bullet line is the goal, its `- ` lines the criteria or
+  evidence; the milestone id is `goal:<iso>`. Entries with a closed status
+  also drop out of the project's active goal that the replan brief quotes.
+  Before this, a goal set in the log never produced a milestone because the
+  log had no completion marker.
 - The tick reads D's milestones once per project (a day that is over does
   not gain one later; `retroNoMilestonesFor` in the state). With at least
   one, the retro for D is scheduled **even when** the daily retro is off

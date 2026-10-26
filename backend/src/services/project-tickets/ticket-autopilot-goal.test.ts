@@ -17,8 +17,10 @@ import {
   goalFromGoalsLog,
   goalFromMissions,
   goalsCompletedOn,
+  goalsReachedInLog,
   localDayOf,
   openExperimentsOf,
+  parseGoalsLog,
   readProjectGoal,
   readRetroMilestones,
 } from './ticket-autopilot-goal.js';
@@ -80,6 +82,81 @@ describe('goalFromGoalsLog', () => {
 
   it('takes a hand-written file without entry headers as one goal', () => {
     expect(goalFromGoalsLog('# Goals\n\nGrow the feed to 1,000 weekly visitors.\n')).toBe('Grow the feed to 1,000 weekly visitors.');
+  });
+
+  it('entries with a closed status word (reached / superseded / cancelled, any case or synonym) are history, not the goal', () => {
+    const raw = [
+      '# Project Goals',
+      '',
+      '### [2026-10-03T13:27:00Z] ACTIVE — Set by Steve (feed experiment go)',
+      '8 weeks to 11/29: 1,000 /feed visitors a week.',
+      '',
+      '## History (not active)',
+      '### [2026-10-02T23:11:27.873Z] SUPERSEDED (was D-136, set by Steve)',
+      'Site-wide organic traffic +30%.',
+      '',
+      '### [2026-10-05T10:00:00Z] Reached: Set by orchestrator',
+      'Ship the feed MVP',
+      '- /feed live 10/05',
+      '',
+      '### [2026-10-06T10:00:00Z] done - Set by owner',
+      'Old chore',
+      '',
+    ].join('\n');
+    expect(goalFromGoalsLog(raw)).toBe('(2026-10-03, set by steve (feed experiment go)) 8 weeks to 11/29: 1,000 /feed visitors a week.');
+    // Only closed entries: no active goal.
+    expect(goalFromGoalsLog('# Project Goals\n\n### [2026-10-05T10:00:00Z] REACHED — Set by owner\nShip the feed MVP\n')).toBeNull();
+    expect(parseGoalsLog(raw).map((e) => [e.status, e.label])).toEqual([
+      ['active', 'Set by Steve (feed experiment go)'],
+      ['superseded', '(was D-136, set by Steve)'],
+      ['reached', 'Set by orchestrator'],
+      ['reached', 'Set by owner'],
+    ]);
+  });
+});
+
+describe('goalsReachedInLog (#985): goals the log marks reached on the reviewed day', () => {
+  const raw = [
+    '# Project Goals',
+    '',
+    '### [2026-10-01T09:00:00] Set by owner',
+    'Ship the feed MVP',
+    '',
+    '### [2026-10-25T16:00:00] REACHED — Set by orchestrator',
+    'Ship the feed MVP',
+    '- /feed live since 10/24',
+    '* 3 posts a day',
+    '',
+    '### [2026-10-25T09:00:00] REACHED — Set by owner',
+    '- evidence first',
+    'Hire the editor',
+    '',
+    '### [2026-10-24T16:00:00] REACHED — Set by owner',
+    'The day before',
+    '',
+    '### [2026-10-25T18:00:00] SUPERSEDED — Set by owner',
+    'Not a milestone',
+    '',
+    '### Q4',
+    'No timestamp, never a milestone',
+    '',
+  ].join('\n');
+
+  it('lists the reached entries of the day, oldest first, with the first non-bullet line as the goal and bullets as criteria', () => {
+    expect(goalsReachedInLog(raw, '2026-10-25')).toEqual([
+      { kind: 'goal_completed', id: 'goal:2026-10-25T09:00:00', title: 'Hire the editor', status: 'reached', closedAt: '2026-10-25T09:00:00', criteria: ['evidence first'] },
+      {
+        kind: 'goal_completed',
+        id: 'goal:2026-10-25T16:00:00',
+        title: 'Ship the feed MVP',
+        status: 'reached',
+        closedAt: '2026-10-25T16:00:00',
+        criteria: ['/feed live since 10/24', '3 posts a day'],
+      },
+    ]);
+    expect(goalsReachedInLog(raw, '2026-10-26')).toEqual([]);
+    expect(goalsReachedInLog(null, '2026-10-25')).toEqual([]);
+    expect(goalsReachedInLog('# Project Goals\n', '2026-10-25')).toEqual([]);
   });
 });
 
@@ -299,9 +376,15 @@ describe('retro milestones (#985): cards closed and OKRs completed on the review
       await fs.mkdir(path.join(root, 'missions'), { recursive: true });
       await fs.writeFile(path.join(root, 'missions', 'm1.json'), JSON.stringify(mission('m1', { status: 'completed', updatedAt: '2026-10-25T16:00:00' })));
       await fs.writeFile(path.join(root, 'missions', 'bad.json'), '{not json');
+      await fs.mkdir(path.join(root, '.crewly', 'goals'), { recursive: true });
+      await fs.writeFile(
+        path.join(root, '.crewly', 'goals', 'goals.md'),
+        '# Project Goals\n\n### [2026-10-25T17:00:00] REACHED — Set by owner\nFeed MVP shipped\n- /feed live\n\n### [2026-10-26T09:00:00] Set by owner\nNext goal\n',
+      );
       const cards = [exp('EXP-1', {}), exp('EXP-2', { timeline: [{ at: '2026-10-25T13:00:00', event: 'measured' }] })];
       const all = await readRetroMilestones({ ...project, path: root }, '2026-10-25', cards);
-      expect(all.map((m) => m.id)).toEqual(['EXP-1', 'EXP-2', 'm1']);
+      expect(all.map((m) => m.id)).toEqual(['EXP-1', 'EXP-2', 'm1', 'goal:2026-10-25T17:00:00']);
+      expect(all[3]).toMatchObject({ kind: 'goal_completed', title: 'Feed MVP shipped', status: 'reached', criteria: ['/feed live'] });
       expect(await readRetroMilestones({ ...project, path: root }, '2026-10-25', cards, 2)).toHaveLength(2);
       expect(await readRetroMilestones({ ...project, path: root }, '2026-10-26', cards)).toEqual([]);
       // No missions folder at all: the cards alone.

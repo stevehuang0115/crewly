@@ -8,6 +8,9 @@
  * - the goals log `<project>/.crewly/goals/goals.md` (`set_goal` writes it,
  *   `get_goals` and the mission card read it): its entries of the last 30
  *   days, newest first (the log is append-only, so older ones are history);
+ *   an entry whose heading carries a closed status word (`REACHED`,
+ *   `SUPERSEDED`, `CANCELLED`, see `MEMORY_CONSTANTS.GOAL_STATUSES`) is not
+ *   active, and a `REACHED` entry is a milestone of its day;
  * - active project OKRs: missions with `status: active`, this project's id,
  *   and approval absent or approved.
  *
@@ -79,6 +82,69 @@ export interface RetroMilestone {
 /** Local day of an ISO timestamp (the retro reviews local days). */
 export type LocalDayOf = (iso: string) => string;
 
+/** One `### …` entry of a goals log, parsed. */
+export interface GoalsLogEntry {
+  /** Heading timestamp (ISO as written), or null when the heading has none */
+  at: string | null;
+  /** Status word of the heading, lower-cased (`active` when absent) */
+  status: string;
+  /** Rest of the heading after the timestamp and status (`Set by owner`) */
+  label: string;
+  /** Entry body, trimmed */
+  text: string;
+}
+
+/**
+ * Entry heading: `[<iso>] <STATUS> — <rest>`; the status word and the dash
+ * are optional. Hand-written synonyms of reached are accepted.
+ */
+const GOAL_ENTRY_HEAD = /^\[([^\]]+)\]\s*(?:(ACTIVE|REACHED|DONE|COMPLETED|MET|SUPERSEDED|CANCELLED|CANCELED)\b\s*(?:[—–:-]+\s*)?)?(.*)$/i;
+
+/** Hand-written status words mapped onto the canonical ones. */
+const GOAL_STATUS_SYNONYMS: Record<string, string> = {
+  done: MEMORY_CONSTANTS.GOAL_STATUSES.REACHED,
+  completed: MEMORY_CONSTANTS.GOAL_STATUSES.REACHED,
+  met: MEMORY_CONSTANTS.GOAL_STATUSES.REACHED,
+  canceled: MEMORY_CONSTANTS.GOAL_STATUSES.CANCELLED,
+};
+
+/** Statuses that take an entry out of the active goal. */
+const CLOSED_GOAL_STATUSES: ReadonlySet<string> = new Set([
+  MEMORY_CONSTANTS.GOAL_STATUSES.REACHED,
+  MEMORY_CONSTANTS.GOAL_STATUSES.SUPERSEDED,
+  MEMORY_CONSTANTS.GOAL_STATUSES.CANCELLED,
+]);
+
+/**
+ * Parse a goals log into its `### …` entries, file order. An entry's body
+ * ends at the next `###` entry or at a section heading (`## History`), so
+ * a hand-kept file can group old entries under one. Entries with an empty
+ * body are dropped. A file without entry headings has no entries (the
+ * caller treats its text as one goal).
+ *
+ * @param raw - File contents
+ * @returns Entries in file order
+ */
+export function parseGoalsLog(raw: string): GoalsLogEntry[] {
+  const chunks = raw.split(/^###\s+/m);
+  const out: GoalsLogEntry[] = [];
+  for (const chunk of chunks.slice(1)) {
+    const [head, ...body] = chunk.split(/\r?\n/);
+    const section = body.findIndex((l) => /^##\s/.test(l));
+    const text = (section >= 0 ? body.slice(0, section) : body).join('\n').trim();
+    if (!text) continue;
+    const m = GOAL_ENTRY_HEAD.exec(head.trim());
+    if (!m) {
+      out.push({ at: null, status: MEMORY_CONSTANTS.GOAL_STATUSES.ACTIVE, label: head.trim(), text });
+      continue;
+    }
+    const word = (m[2] ?? '').toLowerCase();
+    const status = word ? (GOAL_STATUS_SYNONYMS[word] ?? word) : MEMORY_CONSTANTS.GOAL_STATUSES.ACTIVE;
+    out.push({ at: m[1], status, label: (m[3] ?? '').trim(), text });
+  }
+  return out;
+}
+
 /**
  * The retro's local-day function: {@link localDateKey} of the parsed
  * timestamp; an unparsable one maps to '' (matches no day).
@@ -103,11 +169,13 @@ function cap(text: string, max: number): string {
 }
 
 /**
- * The newest entries of a goals log (`goals.md`), newest first.
+ * The newest active entries of a goals log (`goals.md`), newest first.
  *
- * Entries are `### [<iso>] Set by <who>` blocks. A file with only its
- * `# Project Goals` header (or blank) has no goal. Text without entry
- * headers is taken as one goal.
+ * Entries are `### [<iso>] Set by <who>` blocks, optionally with a status
+ * word after the timestamp (`### [<iso>] REACHED — Set by <who>`); an entry
+ * with a closed status (reached, superseded, cancelled) is history, not the
+ * goal. A file with only its `# Project Goals` header (or blank) has no
+ * goal. Text without entry headers is taken as one goal.
  *
  * The log is append-only, so with a `window` only entries from the last
  * {@link TICKET_AUTOPILOT_CONSTANTS.REPLAN_GOAL_ACTIVE_DAYS} days count as
@@ -135,15 +203,12 @@ export function goalFromGoalsLog(
   };
   const chunks = raw.split(/^###\s+/m);
   const entries: string[] = [];
-  for (const chunk of chunks.slice(1)) {
-    const [head, ...body] = chunk.split(/\r?\n/);
-    const text = body.join('\n').trim();
-    if (!text) continue;
-    const when = /^\[([^\]]+)\]\s*(.*)$/.exec(head.trim());
-    const stamp = when ? Date.parse(when[1]) : NaN;
+  for (const entry of parseGoalsLog(raw)) {
+    if (CLOSED_GOAL_STATUSES.has(entry.status)) continue;
+    const stamp = entry.at ? Date.parse(entry.at) : NaN;
     if (!active(Number.isFinite(stamp) ? stamp : null)) continue;
-    const label = when ? `${when[1].slice(0, 10)}${when[2] ? `, ${when[2].trim().toLowerCase()}` : ''}` : head.trim();
-    entries.push(`${label ? `(${label}) ` : ''}${text}`);
+    const label = entry.at ? `${entry.at.slice(0, 10)}${entry.label ? `, ${entry.label.toLowerCase()}` : ''}` : entry.label;
+    entries.push(`${label ? `(${label}) ` : ''}${entry.text}`);
   }
   if (entries.length === 0) {
     // Entries, but none active: no goal.
@@ -443,10 +508,41 @@ export function goalsCompletedOn(missions: Mission[], projectId: string, day: st
 }
 
 /**
+ * The goals-log entries marked reached on a local day — the retro's goal
+ * milestones from `goals.md` (#985). The heading's timestamp is the day;
+ * the body's first line is the goal, its `- ` lines the criteria or
+ * evidence. Entries without a timestamp never match a day.
+ *
+ * @param raw - File contents (null = no file)
+ * @param day - Reviewed local day
+ * @param localDay - Local day of a timestamp
+ * @returns Milestones, oldest first
+ */
+export function goalsReachedInLog(raw: string | null | undefined, day: string, localDay: LocalDayOf = localDayOf): RetroMilestone[] {
+  if (!raw) return [];
+  const out: RetroMilestone[] = [];
+  for (const entry of parseGoalsLog(raw)) {
+    if (entry.status !== MEMORY_CONSTANTS.GOAL_STATUSES.REACHED || !entry.at || localDay(entry.at) !== day) continue;
+    const lines = entry.text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const title = lines.find((l) => !/^[-*]\s/.test(l)) ?? lines[0];
+    const criteria = lines.filter((l) => /^[-*]\s/.test(l)).map((l) => l.replace(/^[-*]\s+/, '').trim()).filter(Boolean);
+    out.push({
+      kind: 'goal_completed',
+      id: `goal:${entry.at}`,
+      title: cap(title, TICKET_AUTOPILOT_CONSTANTS.REPLAN_GOAL_MAX_CHARS),
+      status: MEMORY_CONSTANTS.GOAL_STATUSES.REACHED,
+      closedAt: entry.at,
+      ...(criteria.length ? { criteria } : {}),
+    });
+  }
+  return out.sort((a, b) => a.closedAt.localeCompare(b.closedAt));
+}
+
+/**
  * The milestones of a project's reviewed day: its experiment cards closed
  * that day, then its OKRs completed that day (the project's missions
- * folder and the shared store). Never throws; a missions read failure
- * leaves the goals out.
+ * folder and the shared store), then the goals its goals log marks reached
+ * that day. Never throws; a read failure leaves that source out.
  *
  * @param project - Project id, name and path
  * @param day - Reviewed local day
@@ -469,5 +565,15 @@ export async function readRetroMilestones(
   } catch {
     goals = [];
   }
-  return [...cards, ...goals].slice(0, Math.max(0, max));
+  let reached: RetroMilestone[] = [];
+  try {
+    const raw = await fs.readFile(goalsLogPath(project.path), 'utf-8').catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') return null;
+      throw err;
+    });
+    reached = goalsReachedInLog(raw, day);
+  } catch {
+    reached = [];
+  }
+  return [...cards, ...goals, ...reached].slice(0, Math.max(0, max));
 }

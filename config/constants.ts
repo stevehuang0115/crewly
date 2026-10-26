@@ -792,6 +792,20 @@ export const MEMORY_CONSTANTS = {
   },
 
   /**
+   * Status word a goals-log entry heading may carry right after its
+   * timestamp: `### [<iso>] REACHED — Set by <who>`. A closed status
+   * (reached, superseded, cancelled) takes the entry out of the project's
+   * active goal; `reached` also makes it a milestone the daily retro
+   * reviews (#985). Entries without a status word are active.
+   */
+  GOAL_STATUSES: {
+    ACTIVE: 'active',
+    REACHED: 'reached',
+    SUPERSEDED: 'superseded',
+    CANCELLED: 'cancelled',
+  },
+
+  /**
    * File names for agent-level memory
    */
   AGENT_FILES: {
