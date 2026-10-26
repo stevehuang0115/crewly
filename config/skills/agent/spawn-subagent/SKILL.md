@@ -94,7 +94,10 @@ wrote, `usage` its tokens (booked under `sessionName`, `<you>/sub-<n>`).
 
 A refusal is an error with a `code`: `nested` (a helper cannot spawn),
 `too_many` (3 already running for you), `task_too_long`, `cwd_invalid`,
-`model_invalid`, `parent_required` (no agent session in this shell).
+`model_invalid`, `provider_exhausted` (the in-process model's provider is out
+of credit or quota: the message says since when; pass `--model` for a
+provider that has a key, or tell the owner), `parent_required` (no agent
+session in this shell).
 
 ## Reading the result
 

@@ -4,6 +4,10 @@ User-visible changes. Newest first.
 
 ## Unreleased
 
+### Fixed
+
+- **`spawn-subagent` says when the provider is out of credit (crewly#1317).** Where the fallback service has marked the in-process runtime exhausted (DeepSeek's "Insufficient Balance", for example), the skill now refuses with `provider_exhausted` and the date instead of starting a helper that fails at its first model call with "No output generated"; a helper that does fail carries the worker's last stderr lines in `error`, and its log file (`<parent>__sub-<n>.log`) is written — a slash in the session name had sent it to a directory that does not exist.
+
 ### Added
 
 - **Agents on every runtime can hand a bounded task to a short-lived helper (crewly#1317, slice 2b).** The new `spawn-subagent` skill runs one in-process helper for a Claude Code, Codex, Gemini or crewly-agent agent: `--task` (with its acceptance line), `--cwd` (where it may write; default the project), `--read-only`, `--max-steps` (default 30, cap 60), `--model`. The helper has read, grep, edit-under-cwd and `report_to_parent` only — it cannot message, delegate, schedule or spawn — and the call returns its report with `stoppedReason` (`done`, `did_nothing`, `steps_exhausted`, `incomplete`, `timeout`, `error`), the tools it used, the files it changed and its tokens, so a report with no tool calls reads as "did nothing". At most 3 helpers per agent at once; a helper cannot spawn helpers. Backed by `POST /api/subagents`. See `specs/2026-10-26-in-process-subagents.md`.

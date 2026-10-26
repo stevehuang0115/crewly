@@ -31,6 +31,8 @@ import { RUNTIME_TYPES } from '../../../constants.js';
 import { LoggerService } from '../../core/logger.service.js';
 import { getLocalApiBaseUrl } from '../../../utils/local-api-url.utils.js';
 import { getRuntimeFallbackService } from '../../runtime-fallback/runtime-fallback.service.js';
+import { RUNTIME_TYPES as FALLBACK_RUNTIME_TYPES } from '../../../constants.js';
+import type { ExhaustedRuntime } from '../../runtime-fallback/runtime-fallback.types.js';
 import { RuntimeServiceFactory } from '../runtime-service.factory.js';
 import { InProcessLogBuffer } from './in-process-log-buffer.js';
 import { registerInProcessRuntime, unregisterInProcessRuntime } from './in-process-runtime-registry.js';
@@ -96,6 +98,7 @@ export type SubagentRefusalCode =
   | 'task_too_long'
   | 'cwd_invalid'
   | 'model_invalid'
+  | 'provider_exhausted'
   | 'too_many';
 
 /** A run that was not started; `code` says which rule refused it */
@@ -117,8 +120,12 @@ export interface SubagentRuntime {
 export interface SubagentRunServiceDeps {
   /** Builds the worker runtime; defaults to a fresh crewly-agent runtime rooted at `cwd` */
   createRuntime?: (cwd: string) => SubagentRuntime;
-  /** Where the child's tokens and the parent's spawn lines are logged */
-  logBuffer?: Pick<InProcessLogBuffer, 'append'>;
+  /** Where the child's tokens and the parent's spawn lines are logged, and the child's stderr is read back */
+  logBuffer?: Pick<InProcessLogBuffer, 'append' | 'capture'>;
+  /** Runtimes the fallback service has marked out of credit or quota */
+  exhaustedRuntimes?: () => Promise<ExhaustedRuntime[]>;
+  /** The `provider/modelId` the crewly-agent runtime runs by default */
+  crewlyAgentModel?: () => string | undefined;
   /** Wall-clock budget per child; default `SUBAGENT.TIMEOUT_MS` bounded by the IPC deadline */
   timeoutMs?: number;
   /** The model when the caller names none */
@@ -174,6 +181,43 @@ export function parseRequestedModel(spec: string): { model: ModelConfig } | { er
       maxTokens: CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL.maxTokens,
     },
   };
+}
+
+/**
+ * Runtimes the fallback service holds as exhausted, or none when it is not wired.
+ *
+ * @returns The exhausted entries
+ */
+async function exhaustedRuntimesFromFallback(): Promise<ExhaustedRuntime[]> {
+  const svc = getRuntimeFallbackService();
+  if (!svc) return [];
+  try {
+    return (await svc.snapshot()).exhausted;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The crewly-agent model the fallback settings name, if the service is wired.
+ *
+ * @returns `provider/modelId` or undefined
+ */
+function crewlyAgentModelFromFallback(): string | undefined {
+  return getRuntimeFallbackService()?.getSettings().crewlyAgentModel;
+}
+
+/**
+ * The provider's last error as the worker printed it: `[stderr]` lines from
+ * the child's log buffer. The run itself only says "No output generated".
+ *
+ * @param buffer - The log buffer
+ * @param sessionName - The child's session
+ * @returns The last stderr lines, or empty
+ */
+export function lastWorkerStderr(buffer: Pick<InProcessLogBuffer, 'capture'>, sessionName: string): string {
+  const lines = buffer.capture(sessionName, 80).split('\n').filter((l) => l.includes('[stderr]'));
+  return lines.slice(-2).map((l) => l.slice(l.indexOf('[stderr]') + '[stderr]'.length).trim()).filter(Boolean).join(' | ');
 }
 
 /**
@@ -254,10 +298,12 @@ export function summarizeSubagentRun(
  */
 export class SubagentRunService {
   private readonly logger = LoggerService.getInstance().createComponentLogger('SubagentRunService');
-  private readonly logBuffer: Pick<InProcessLogBuffer, 'append'>;
+  private readonly logBuffer: Pick<InProcessLogBuffer, 'append' | 'capture'>;
   private readonly createRuntime: (cwd: string) => SubagentRuntime;
   private readonly timeoutMs: number | undefined;
   private readonly defaultModel: () => ModelConfig;
+  private readonly exhaustedRuntimes: () => Promise<ExhaustedRuntime[]>;
+  private readonly crewlyAgentModel: () => string | undefined;
   private readonly now: () => number;
   private readonly isDirectory: (path: string) => boolean;
   /** Children running per parent */
@@ -271,6 +317,8 @@ export class SubagentRunService {
       RuntimeServiceFactory.createFresh(RUNTIME_TYPES.CREWLY_AGENT, undefined, cwd) as unknown as CrewlyAgentExternalRuntimeService);
     this.timeoutMs = deps.timeoutMs;
     this.defaultModel = deps.defaultModel ?? defaultSubagentModel;
+    this.exhaustedRuntimes = deps.exhaustedRuntimes ?? exhaustedRuntimesFromFallback;
+    this.crewlyAgentModel = deps.crewlyAgentModel ?? crewlyAgentModelFromFallback;
     this.now = deps.now ?? Date.now;
     this.isDirectory = deps.isDirectory ?? ((p) => {
       try { return statSync(p).isDirectory(); } catch { return false; }
@@ -314,6 +362,22 @@ export class SubagentRunService {
       model = parsed.model;
     } else {
       model = this.defaultModel();
+    }
+
+    // The fallback service learns from real runs that the crewly-agent
+    // runtime's provider is out of credit (DeepSeek's HTTP 402 is one
+    // such). A child on that provider would fail in a second with "No
+    // output generated"; say why before starting a worker.
+    const exhausted = (await this.exhaustedRuntimes()).find((e) => e.runtime === FALLBACK_RUNTIME_TYPES.CREWLY_AGENT);
+    if (exhausted) {
+      const agentModel = this.crewlyAgentModel() ?? '';
+      const agentProvider = agentModel.includes('/') ? agentModel.slice(0, agentModel.indexOf('/')) : '';
+      if (agentProvider && agentProvider === model.provider) {
+        const since = exhausted.since ? ` since ${exhausted.since.slice(0, 10)}` : '';
+        const kind = exhausted.kind === 'billing' ? 'out of credit' : 'over its usage limit';
+        throw new SubagentRunRefused('provider_exhausted',
+          `${model.provider} is ${kind}${since} (${exhausted.ruleId ?? 'runtime-fallback'}); the sub-agent would fail at its first model call. Add credit or an API key in Settings, or pass model=provider/modelId for a provider that has one.`);
+      }
     }
 
     const limit = CREWLY_AGENT_DEFAULTS.SUBAGENT.MAX_CONCURRENT;
@@ -377,7 +441,9 @@ export class SubagentRunService {
       });
       outcome = summarizeSubagentRun(result, childSession, modelString, this.now() - started, false);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const base = error instanceof Error ? error.message : String(error);
+      const stderr = lastWorkerStderr(this.logBuffer, childSession);
+      const message = stderr ? `${base} — worker stderr: ${stderr}` : base;
       outcome = {
         success: false,
         stoppedReason: timedOut ? 'timeout' : 'error',
