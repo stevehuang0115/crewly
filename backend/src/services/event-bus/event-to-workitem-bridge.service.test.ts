@@ -949,7 +949,12 @@ describe('EventToWorkItemBridge — review routing (ticket-loop Phase 3)', () =>
    * @returns Bridge, bus, pool
    */
   function setup(teams: Team[], source: WorkItem) {
-    const taskPool = { ...buildFakeTaskPool([source]), verifyItem: jest.fn(async () => null) };
+    const taskPool = {
+      ...buildFakeTaskPool([source]),
+      verifyItem: jest.fn(async () => null),
+      stampReviewEscalation: jest.fn(async () => true),
+    };
+    const escalateReviewToOwner = jest.fn(async () => undefined);
     const bus = new EventBusService();
     const bridge = new EventToWorkItemBridge({
       eventBus: bus,
@@ -957,9 +962,10 @@ describe('EventToWorkItemBridge — review routing (ticket-loop Phase 3)', () =>
       loadMission: async () => null,
       loadTeam: async (id) => teams.find((t) => t.id === id) ?? null,
       loadTeams: async () => teams,
+      escalateReviewToOwner,
     });
     bridge.start();
-    return { bridge, bus, taskPool };
+    return { bridge, bus, taskPool, escalateReviewToOwner };
   }
 
   const worker = buildWorkItem({ target: 'dev-ann', metadata: { triggerSource: 'event' }, requestId: 'ticket-1' });
@@ -1000,6 +1006,37 @@ describe('EventToWorkItemBridge — review routing (ticket-loop Phase 3)', () =>
     expect(b.taskPool.addCalls).toHaveLength(1);
     expect(b.taskPool.addCalls[0]).toMatchObject({ target: 'crewly-orc' });
     expect(b.taskPool.verifyItem).not.toHaveBeenCalled();
+  });
+
+  // 2026-10-26, WorkItem 599125f5: the orc did the work, the review item was
+  // targeted at the orc, the gate refused it as self_review on every attempt
+  // and the reconciler redelivered it every 5 min until the orc cancelled it.
+  it('work the orchestrator did itself goes to the owner for review — no review item targeted at the worker', async () => {
+    const orcWork = buildWorkItem({ target: 'crewly-orc', metadata: { triggerSource: 'event' } });
+    const orcTeam = buildTeam({ id: 'orc-team', members: [member('orc', 'crewly-orc', { canDelegate: true, hierarchyLevel: 1 })] });
+    const { bridge, bus, taskPool, escalateReviewToOwner } = setup([orcTeam], orcWork);
+    bus.publish(buildEvent());
+    await bridge.flushPending();
+    expect(taskPool.addCalls).toHaveLength(0);
+    expect(taskPool.verifyItem).not.toHaveBeenCalled();
+    expect(taskPool.stampReviewEscalation).toHaveBeenCalledWith(orcWork.id, 'reviewOwnerEscalatedAt');
+    expect(escalateReviewToOwner).toHaveBeenCalledWith(expect.objectContaining({ id: orcWork.id }));
+  });
+
+  it('a failed owner escalation is logged, not thrown; a failed stamp raises nothing', async () => {
+    const orcWork = buildWorkItem({ target: 'crewly-orc', metadata: { triggerSource: 'event' } });
+    const a = setup([], orcWork);
+    a.escalateReviewToOwner.mockRejectedValueOnce(new Error('relay down'));
+    a.bus.publish(buildEvent());
+    await expect(a.bridge.flushPending()).resolves.not.toThrow();
+    expect(a.taskPool.addCalls).toHaveLength(0);
+
+    const b = setup([], orcWork);
+    b.taskPool.stampReviewEscalation.mockResolvedValueOnce(false);
+    b.bus.publish(buildEvent());
+    await b.bridge.flushPending();
+    expect(b.escalateReviewToOwner).not.toHaveBeenCalled();
+    expect(b.taskPool.addCalls).toHaveLength(0);
   });
 
   it('reviews a cron/auto item that explicitly requires verification instead of skipping it (#813)', async () => {
