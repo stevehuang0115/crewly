@@ -187,3 +187,12 @@ Every launch notes the process-wide `BootLaunchPacer`.
 
 ### 5.x Tight-memory rule, revised (2026-10-17)
 A boot launch is held when any of these holds: ResourceModeService is in pressure mode; the OS pressure flag is up; free memory is under the floor; or swap is at or above 80% while free memory is under twice the floor. The floor is `min(MIN_FREE_MB, MIN_FREE_FRACTION × physical memory)`, so an 8 GB machine uses about 1.6 GB, not 3 GB. Swap fill alone does not count, because macOS grows its swap file on demand and a small swap file sits near full on a healthy machine. This came from the Air holding Fern back while its own health check said memory was fine.
+
+### 5.y Runtime tight-memory rule aligned (2026-10-26)
+`memoryIsTightFor` (ResourceModeService, also the idle stop's own check) counted swap at or above 75 % on its own.
+On 2026-10-26 a 16 GB Mac with 4.8–6.7 GB free and `osPressure=false` on every sample entered pressure mode 11 times
+(18 idle stops, 13 starts queued behind the cap, 2 boot restores deferred, 3 agents that owed work stopped and
+restarted). Now swap counts only while free memory is also under `IDLE_STOP_MIN_FREE_MB × IDLE_STOP_SWAP_FREE_FACTOR`
+(2 GB), the same shape as the boot rule in 5.x. A machine really swapping itself to a crawl (2026-09-23, load 117)
+still trips the OS pressure flag, the CPU-load rule or the 85 % used share.
+

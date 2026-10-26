@@ -7,7 +7,9 @@ import { RESOURCE_MODE_CONSTANTS, ResourceModeService, memoryIsTightFor, type Ru
 import { getDefaultSettings } from '../../types/settings.types.js';
 
 const calm = { usedPercent: 40, freeMB: 8000, totalMB: 16384 };
-const tight = { usedPercent: 60, freeMB: 8000, totalMB: 16384, swapUsedPercent: 93 };
+const tight = { usedPercent: 60, freeMB: 1500, totalMB: 16384, swapUsedPercent: 93 };
+/** The 2026-10-26 reading: swap near full, 6 GB free, kernel calm — a healthy Mac. */
+const swapOnly = { usedPercent: 62, freeMB: 6223, totalMB: 16384, swapUsedPercent: 93.9, pressureElevated: false };
 
 function make(running: RunningAgent[], owners: string[] = [], max = 2) {
 	const svc = ResourceModeService.getInstance();
@@ -65,10 +67,18 @@ describe('mode transitions', () => {
 		expect(svc.stats()).toMatchObject({ resourceMode: 'pressure' });
 	});
 
-	it('memoryIsTightFor uses swap and OS pressure', () => {
+	it('memoryIsTightFor uses swap (with low free memory) and OS pressure', () => {
 		expect(memoryIsTightFor(calm)).toBe(false);
 		expect(memoryIsTightFor({ ...calm, pressureElevated: true })).toBe(true);
 		expect(memoryIsTightFor(tight)).toBe(true);
+	});
+
+	it('swap fill alone is not tight: a full swap file with 6 GB free and a calm kernel is a healthy Mac (2026-10-26)', () => {
+		expect(memoryIsTightFor(swapOnly)).toBe(false);
+		// Just under twice the free floor: swap counts again.
+		expect(memoryIsTightFor({ ...swapOnly, freeMB: 2047 })).toBe(true);
+		// The kernel's own flag still wins on its own.
+		expect(memoryIsTightFor({ ...swapOnly, pressureElevated: true })).toBe(true);
 	});
 });
 

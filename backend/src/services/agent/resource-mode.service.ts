@@ -83,17 +83,30 @@ export interface MemoryReading {
 }
 
 /**
- * Whether memory alone is tight (used share, free floor, swap, OS pressure).
+ * Whether memory alone is tight: the used share, the free floor, the OS
+ * pressure flag, or swap at or above its threshold while free memory is also
+ * under twice the floor.
+ *
+ * Swap fill alone does not count (same rule as `boot-pressure.ts`): macOS
+ * grows its swap file on demand and keeps it full for hours after the
+ * pressure is gone, so a 16 GB Mac with 5–6 GB available and the kernel
+ * reporting no pressure entered pressure mode 11 times on 2026-10-26 — 18
+ * idle stops, 13 starts queued behind the cap, 2 boot restores deferred, for
+ * nothing. A machine that is really swapping itself to a crawl still trips
+ * the OS pressure flag, the CPU-load rule or the used share.
  *
  * @param stats - Memory reading
  * @returns True when tight
  */
 export function memoryIsTightFor(stats: MemoryReading): boolean {
 	if (!stats.totalMB) return false;
+	const swapTight =
+		(stats.swapUsedPercent ?? 0) >= AGENT_SUSPEND_CONSTANTS.IDLE_STOP_SWAP_USED_PERCENT &&
+		stats.freeMB < AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MIN_FREE_MB * AGENT_SUSPEND_CONSTANTS.IDLE_STOP_SWAP_FREE_FACTOR;
 	return (
 		stats.usedPercent >= AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MEMORY_USED_PERCENT ||
 		stats.freeMB < AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MIN_FREE_MB ||
-		(stats.swapUsedPercent ?? 0) >= AGENT_SUSPEND_CONSTANTS.IDLE_STOP_SWAP_USED_PERCENT ||
+		swapTight ||
 		stats.pressureElevated === true
 	);
 }

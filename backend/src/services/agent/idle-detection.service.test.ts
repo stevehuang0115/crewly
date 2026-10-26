@@ -344,11 +344,26 @@ describe('IdleDetectionService', () => {
 			expect(mockTerminate).toHaveBeenCalledWith('agent-dev', 'developer');
 		});
 
-		it('stops it when the machine is swapping, even with "free" memory left', async () => {
-			// 2026-09-23: 4 GB "available" (inactive pages) while 10.7/12 GB of
-			// swap was in use and load was 117 — the gate said memory was fine.
+		it('does not stop it for a full swap file alone while memory is otherwise fine (healthy Mac, 2026-10-26)', async () => {
+			// macOS keeps swap full for hours after the pressure is gone: 93 %
+			// swap with 6 GB free and a calm kernel put a 16 GB Mac in pressure
+			// mode 11 times in a day. (The 2026-09-23 crawl — 4 GB "available",
+			// swap 89 %, load 117 — is caught by the OS pressure flag and the
+			// CPU-load rule of pressure mode, not by swap on its own.)
 			idleDev();
-			mockMemoryStats.mockImplementation(() => ({ usedPercent: 74, freeMB: 4100, totalMB: 16384, swapUsedPercent: 89 }));
+			mockMemoryStats.mockImplementation(() => ({ usedPercent: 62, freeMB: 6223, totalMB: 16384, swapUsedPercent: 93, pressureElevated: false }));
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+
+			await service.performCheck();
+
+			expect(mockTerminate).not.toHaveBeenCalled();
+		});
+
+		it('stops it when the machine is swapping and free memory is short', async () => {
+			idleDev();
+			mockMemoryStats.mockImplementation(() => ({ usedPercent: 74, freeMB: 1500, totalMB: 16384, swapUsedPercent: 89 }));
 			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
 			const service = IdleDetectionService.getInstance();
 			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);

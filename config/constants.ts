@@ -1160,11 +1160,18 @@ export const AGENT_SUSPEND_CONSTANTS = {
 	/** See {@link IDLE_STOP_MEMORY_USED_PERCENT}. */
 	IDLE_STOP_MIN_FREE_MB: 1024,
 	/**
-	 * Also tight when this share of swap is in use, or the OS reports memory
-	 * pressure: "free" counts reclaimable pages and stays high while the
-	 * machine swaps itself to a crawl (2026-09-23, load 117).
+	 * Also tight when the OS reports memory pressure, or when this share of
+	 * swap is in use while free memory is under IDLE_STOP_MIN_FREE_MB ×
+	 * {@link IDLE_STOP_SWAP_FREE_FACTOR}. Swap was first added alone because
+	 * "free" counts reclaimable pages and stayed high while the machine
+	 * swapped itself to a crawl (2026-09-23, load 117); that case still trips
+	 * the OS pressure flag and the CPU-load rule. Swap alone does not count:
+	 * macOS keeps its swap file full for hours on a healthy machine, which put
+	 * a 16 GB Mac with 5–6 GB free into pressure mode 11 times on 2026-10-26.
 	 */
 	IDLE_STOP_SWAP_USED_PERCENT: 75,
+	/** Swap counts only while free memory is under this many times IDLE_STOP_MIN_FREE_MB (2 GB). */
+	IDLE_STOP_SWAP_FREE_FACTOR: 2,
 	/** Roles that should never be auto-stopped (always-on) */
 	ALWAYS_ON_ROLES: ['orchestrator', 'auditor'] as const,
 	/** Idle timeout in ms before a worker agent is stopped (default 30 min) */
