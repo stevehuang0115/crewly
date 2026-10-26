@@ -33,6 +33,8 @@ import { LoggerService } from '../../services/core/logger.service.js';
 import { getCallerIdentity } from '../../middleware/caller-identity.middleware.js';
 import { resolveAgentCaller } from '../../utils/agent-caller.utils.js';
 import { ConnectorAccessService } from '../../services/connector/connector-access.service.js';
+import { getConnectorUseAudit } from '../../services/connector/connector-use-audit.service.js';
+import { actorFromRequest } from '../../services/activity/activity-log.service.js';
 import { RemoteMcpService, remoteMcpConnectorId, type RemoteMcpServer } from '../../services/connector/remote-mcp.service.js';
 import { RemoteMcpAuthService } from '../../services/connector/remote-mcp-auth.service.js';
 import { REMOTE_MCP_CONSTANTS } from '../../constants.js';
@@ -142,9 +144,12 @@ export async function proxyRemoteMcp(req: Request, res: Response): Promise<void>
   if (!(await deps.access().isAllowed(remoteMcpConnectorId(server.id), caller.role || 'unknown'))) {
     const allowed = await deps.access().allowedRoles(remoteMcpConnectorId(server.id)).catch(() => [] as string[]);
     logger.warn('Remote MCP proxy: role not allowed', { id, session: caller.session, role: caller.role, allowed });
+    getConnectorUseAudit().refused({ connectorId: remoteMcpConnectorId(server.id), actor: actorFromRequest(req), actingFor: null, reason: 'role_not_allowed', allowedRoles: allowed });
     refuse(res, body, `Your role (${caller.role}) may not use ${server.label}. The owner limited it to: ${allowed.join(', ')}.`, 403);
     return;
   }
+  // Issue #969: who used which server (once an hour per agent).
+  getConnectorUseAudit().allowed({ connectorId: remoteMcpConnectorId(server.id), actor: actorFromRequest(req), actingFor: null });
 
   // Per-tool deny list: inspect what we forward, and forward exactly that
   // (re-serialised), so a parser difference upstream cannot disagree with us.

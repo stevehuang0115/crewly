@@ -11,6 +11,7 @@
 import { PEOPLE_CONSTANTS } from '../../constants.js';
 import { connectingPerson, createSharingHandler } from '../connector/grant-sharing.handler.js';
 import { actorFromRequest, recordActivity } from '../../services/activity/activity-log.service.js';
+import { getConnectorUseAudit } from '../../services/connector/connector-use-audit.service.js';
 import type { Request, Response } from 'express';
 import { CANVA_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
@@ -84,6 +85,8 @@ export function sendCanvaError(req: Request, res: Response, err: unknown): void 
         break;
       case PEOPLE_CONSTANTS.NOT_PERMITTED_CODE:
         hint = PEOPLE_CONSTANTS.NOT_PERMITTED_HINT;
+        // Issue #969: Cloud refused the grant for the person this call acts for.
+        getConnectorUseAudit().refused({ connectorId: CANVA_CONSTANTS.CONNECTOR_ID, actor: actorFromRequest(req), reason: 'grant_not_shared', what: req.path });
         break;
       default:
         hint = err.status === 401 ? 'The Canva token was rejected; retry once — the cache has been cleared.' : 'Canva or Crewly Cloud failed; retry later.';

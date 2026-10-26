@@ -15,6 +15,8 @@ import { base64UrlDecode, type GmailService } from '../../services/google/gmail.
 import type { CalendarService } from '../../services/google/calendar.service.js';
 import { resetGmailSendGate } from '../../services/google/gmail-send-gate.js';
 import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
+import { ConnectorUseAuditService, setConnectorUseAuditForTesting } from '../../services/connector/connector-use-audit.service.js';
+import type { ActivityEntryInput } from '../../services/activity/activity-log.service.js';
 
 jest.mock('../../services/core/logger.service.js', () => ({
   LoggerService: {
@@ -128,6 +130,27 @@ describe('GET /gmail/search', () => {
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ success: false, error: 'validation' });
     expect(gmail.search).not.toHaveBeenCalled();
+  });
+
+  it('writes a connector.use.refused audit entry when Cloud says the grant is not shared (issue #969)', async () => {
+    const written: ActivityEntryInput[] = [];
+    setConnectorUseAuditForTesting(new ConnectorUseAuditService({ record: (e) => written.push(e) }));
+    try {
+      gmail.search.mockRejectedValueOnce(new GoogleWorkspaceError(403, 'not_permitted', 'not shared', { authorizedBy: 'Bob', product: 'gmail' }));
+      const res = await request(app).get('/api/google/gmail/search').query({ q: 'x' });
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('not_permitted');
+      // The role gate wrote the owner's allowed use first; the refusal follows.
+      const refused = written.filter((e) => e.action === 'connector.use.refused');
+      expect(refused).toHaveLength(1);
+      expect(refused[0]).toMatchObject({
+        target: { type: 'connector', id: 'google-workspace' },
+        after: { reason: 'grant_not_shared', authorizedBy: 'Bob', what: 'gmail' },
+      });
+      expect(refused[0].note).toContain('authorized by Bob');
+    } finally {
+      setConnectorUseAuditForTesting(null);
+    }
   });
 
   it('maps not_connected to 409 with the connect URL as the hint', async () => {

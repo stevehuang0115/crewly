@@ -11,6 +11,8 @@ import { requireConnectorAccess } from './connector.controller.js';
 import { ConnectorAccessService } from '../../services/connector/connector-access.service.js';
 import { RemoteMcpService } from '../../services/connector/remote-mcp.service.js';
 import { ActingForService, currentActor, setActingForForTesting } from '../../services/people/acting-for.service.js';
+import { ConnectorUseAuditService, setConnectorUseAuditForTesting } from '../../services/connector/connector-use-audit.service.js';
+import type { ActivityEntryInput } from '../../services/activity/activity-log.service.js';
 
 jest.mock('../../services/core/logger.service.js', () => ({
   LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }) }) },
@@ -133,6 +135,43 @@ describe('requireConnectorAccess', () => {
     mockCaller.mockRejectedValue(new Error('storage down'));
     const res = await request(app).get('/api/canva/designs');
     expect(res.status).toBe(200);
+  });
+});
+
+describe('requireConnectorAccess — audit log of connector use (issue #969)', () => {
+  let written: ActivityEntryInput[];
+  beforeEach(() => {
+    written = [];
+    setConnectorUseAuditForTesting(new ConnectorUseAuditService({ record: (e) => written.push(e) }));
+  });
+  afterEach(() => setConnectorUseAuditForTesting(null));
+
+  it('writes one connector.use.allowed entry for an allowed agent, not one per call', async () => {
+    mockCaller.mockResolvedValue({ session: 'a-dev', role: 'developer' });
+    await request(app).get('/api/canva/designs');
+    await request(app).get('/api/canva/designs');
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({
+      action: 'connector.use.allowed',
+      actor: { type: 'agent', id: 'a-dev' },
+      target: { type: 'connector', id: 'canva' },
+    });
+    expect(written[0].note).toContain('agent a-dev used canva');
+  });
+
+  it('writes a connector.use.refused entry with the allowed roles every time a role is refused', async () => {
+    mockCaller.mockResolvedValue({ session: 'a-dev', role: 'developer' });
+    access.isAllowed.mockResolvedValue(false);
+    access.allowedRoles.mockResolvedValue(['ops', 'support']);
+    await request(app).get('/api/canva/designs');
+    await request(app).get('/api/canva/designs');
+    expect(written).toHaveLength(2);
+    expect(written[0]).toMatchObject({
+      action: 'connector.use.refused',
+      actor: { type: 'agent', id: 'a-dev' },
+      target: { type: 'connector', id: 'canva' },
+      after: { reason: 'role_not_allowed', allowedRoles: ['ops', 'support'] },
+    });
   });
 });
 

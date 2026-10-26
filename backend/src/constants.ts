@@ -5495,6 +5495,8 @@ export const GOOGLE_PRODUCTS = ['gmail', 'calendar', 'drive'] as const;
 export type GoogleProduct = (typeof GOOGLE_PRODUCTS)[number];
 
 export const GOOGLE_WORKSPACE_CONSTANTS = {
+	/** Connector id on Connections and in the activity log */
+	CONNECTOR_ID: 'google-workspace',
 	/** Cloud API prefix for the Workspace grant (appended to the cloud URL) */
 	CLOUD_PATH: '/api/cloud/google/workspace',
 	/** Cloud sub-paths under CLOUD_PATH */
@@ -5649,6 +5651,8 @@ export const GOOGLE_WORKSPACE_CONSTANTS = {
  * Backs the canva-* skills.
  */
 export const CANVA_CONSTANTS = {
+	/** Connector id on Connections and in the activity log */
+	CONNECTOR_ID: 'canva',
 	/** Cloud API prefix for the Canva grant (appended to the cloud URL) */
 	CLOUD_PATH: '/api/cloud/canva',
 	CLOUD_ENDPOINTS: {
@@ -10187,6 +10191,10 @@ export const ACTIVITY_LOG_CONSTANTS = {
 	SECRET_KEY_PATTERN: /token|secret|password|passwd|credential|api[_-]?key|authorization|private[_-]?key/i,
 	/** What a masked value is written as */
 	MASK: '***',
+	/** An allowed connector use stands for later ones by the same actor, connection and person this long (issue #969) */
+	USE_ALLOWED_WINDOW_MS: 60 * 60 * 1000,
+	/** Most actor/connection/person keys the connector use audit remembers */
+	USE_KEYS_MAX: 2000,
 	/** Query parameter names of GET /api/activity */
 	QUERY: {
 		ACTOR_TYPE: 'actorType',

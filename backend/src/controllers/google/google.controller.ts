@@ -57,6 +57,7 @@ import {
 } from '../../services/google/google-reauth-notifier.service.js';
 import { buildPortalConnectUrl, PRODUCT_LABELS } from './google-connect-card.js';
 import { actorFromRequest, recordActivity } from '../../services/activity/activity-log.service.js';
+import { getConnectorUseAudit } from '../../services/connector/connector-use-audit.service.js';
 
 /** Who a held send is attributed to when the caller named no agent session. */
 const UNIDENTIFIED_SENDER = 'unidentified caller';
@@ -401,6 +402,14 @@ export async function sendGoogleError(req: Request, res: Response, err: unknown)
       }
       case PEOPLE_CONSTANTS.NOT_PERMITTED_CODE:
         hint = PEOPLE_CONSTANTS.NOT_PERMITTED_HINT;
+        // Issue #969: Cloud refused the grant for the person this call acts for.
+        getConnectorUseAudit().refused({
+          connectorId: GOOGLE_WORKSPACE_CONSTANTS.CONNECTOR_ID,
+          actor: actorFromRequest(req),
+          reason: 'grant_not_shared',
+          authorizedBy: err.details?.authorizedBy ?? null,
+          what: err.details?.product ?? req.path,
+        });
         break;
       default:
         hint = err.status === 401

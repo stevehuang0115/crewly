@@ -12,6 +12,8 @@ import { setCanvaControllerDeps, type CanvaControllerDeps } from './canva.contro
 import { CanvaError, type CanvaTokenService } from '../../services/canva/canva-token.service.js';
 import type { CanvaService } from '../../services/canva/canva.service.js';
 import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
+import { ConnectorUseAuditService, setConnectorUseAuditForTesting } from '../../services/connector/connector-use-audit.service.js';
+import type { ActivityEntryInput } from '../../services/activity/activity-log.service.js';
 
 jest.mock('../../services/core/logger.service.js', () => ({
   LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }) }) },
@@ -67,6 +69,21 @@ it('export reports success=false for a failed job; assets decode base64', async 
   canva.uploadAsset.mockResolvedValue({ id: 'a1', name: 'logo.png' });
   await request(app).post('/api/canva/assets').send({ name: 'logo.png', content: Buffer.from([1, 2]).toString('base64') });
   expect(canva.uploadAsset).toHaveBeenCalledWith('logo.png', Buffer.from([1, 2]));
+});
+
+it('writes a connector.use.refused audit entry when Cloud says the grant is not shared (issue #969)', async () => {
+  const written: ActivityEntryInput[] = [];
+  setConnectorUseAuditForTesting(new ConnectorUseAuditService({ record: (e) => written.push(e) }));
+  try {
+    canva.getDesign.mockRejectedValueOnce(new CanvaError(403, 'not_permitted', 'not shared'));
+    const res = await request(app).get('/api/canva/designs/d1');
+    expect(res.status).toBe(403);
+    const refused = written.filter((e) => e.action === 'connector.use.refused');
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({ target: { type: 'connector', id: 'canva' }, after: { reason: 'grant_not_shared' } });
+  } finally {
+    setConnectorUseAuditForTesting(null);
+  }
 });
 
 it('maps not_connected to 409 with the connect URL, validation to 400, and unexpected throws to 500', async () => {
