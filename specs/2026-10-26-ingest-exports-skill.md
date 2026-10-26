@@ -46,4 +46,5 @@ every role.
 
 Reading the files from Drive is done with the existing `drive-search` /
 `drive-read --out` skills (SKILL.md says so). Deleting ingested data at the
-end of a check-up is #1055's "end check-up" item.
+end of a check-up is the `checkup-end` skill
+(`specs/2026-10-26-checkup-end-skill.md`).

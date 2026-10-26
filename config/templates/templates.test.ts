@@ -201,9 +201,16 @@ describe('Small Business Check-up template (crewly#1062)', () => {
   });
 
   it('wires the three check-up skills and the App commands', () => {
-    for (const skill of ['checkup-report', 'ingest-exports', 'checkup-analyse', 'publish-app', 'app-data']) {
+    for (const skill of ['checkup-report', 'ingest-exports', 'checkup-analyse', 'checkup-end', 'publish-app', 'app-data']) {
       expect(prompts()).toContain(skill);
     }
+  });
+
+  it('ends the check-up by deleting the data and unpublishing the App', () => {
+    const lead = tmpl?.data.members[0].systemPrompt ?? '';
+    expect(lead).toMatch(/checkup-end --dir/);
+    expect(lead).toMatch(/publish-app --app <appId> --delete/);
+    expect(lead).toMatch(/receipt/);
   });
 
   it('logs every step and makes the reviewer removable', () => {
