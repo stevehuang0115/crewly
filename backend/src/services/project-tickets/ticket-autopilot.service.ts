@@ -104,7 +104,7 @@ import {
   type SelfReviewRecord,
   type TriageBriefMember,
 } from './ticket-autopilot-messages.js';
-import type { ProjectGoal, ReplanExperiment } from './ticket-autopilot-goal.js';
+import type { ProjectGoal, ReplanExperiment, RetroMilestone } from './ticket-autopilot-goal.js';
 import { autopilotRunTrace, startReplanTrace, startTriageTrace, traceAutopilotAction, type AutopilotTicketChange, createAutopilotTicketListener } from './ticket-autopilot-trace.js';
 import {
   computeAutopilotStats,
@@ -328,6 +328,12 @@ export interface TicketAutopilotDeps {
   roleDescription?: (role: string) => Promise<string | null>;
   /** Tagged traces for the stats (default: the process trace store + analysis) */
   traces?: AutopilotTraceReader;
+  /**
+   * The project's milestones of a reviewed day — experiment cards closed,
+   * OKRs completed (#985). A day with one gets its retro even when the
+   * retro is off or the autopilot did nothing. Absent = no milestones.
+   */
+  retroMilestones?: (project: Project, day: string) => Promise<RetroMilestone[]>;
   /** Whether an autopilot experiment on the project is running (turns the retro on by default) */
   runningExperiment?: (projectId: string) => Promise<boolean>;
   /**
@@ -391,6 +397,8 @@ interface ProjectState {
   triaged?: { day: string; ids: string[] };
   /** Reviewed day of the last retro scheduled */
   retroScheduledFor?: string;
+  /** Reviewed day already found to have no milestone (the day is over, so this does not change) */
+  retroNoMilestonesFor?: string;
   /** Retro scheduling reads keep failing: next try (ms) and how many failed */
   retroRetryAt?: number;
   retroFailures?: number;
@@ -1846,8 +1854,27 @@ export class TicketAutopilotService {
   }
 
   /**
+   * The project's milestones of a reviewed day (#985), from the dependency;
+   * none when it is absent or fails (a read failure never blocks the retro).
+   *
+   * @param project - Project
+   * @param day - Reviewed local day
+   * @returns Milestones
+   */
+  private async retroMilestonesOf(project: Project, day: string): Promise<RetroMilestone[]> {
+    if (!this.deps.retroMilestones) return [];
+    try {
+      return await this.deps.retroMilestones(project, day);
+    } catch (err) {
+      this.logger.debug('Retro milestones not read', { projectId: project.id, day, error: err instanceof Error ? err.message : String(err) });
+      return [];
+    }
+  }
+
+  /**
    * Schedule yesterday's retro for every enabled project that wants one
-   * (once per project per day, at or after RETRO_HOUR_LOCAL).
+   * (once per project per day, at or after RETRO_HOUR_LOCAL). A day with a
+   * milestone (an experiment card closed, an OKR completed) gets one too.
    *
    * @param projects - Enabled projects
    * @returns WorkItems created
@@ -1865,9 +1892,16 @@ export class TicketAutopilotService {
       const ps = (state.projects[project.id] ??= {});
       if (ps.retroScheduledFor === day) continue;
       if (ps.retroRetryAt && now.getTime() < ps.retroRetryAt) continue;
-      if (!(await this.retroOn(project))) continue;
+      // Milestones (#985): a card closed or an OKR completed on the reviewed
+      // day gets its retro even when the daily retro is off (a card's last
+      // day is also the day it stops turning the retro on) or the autopilot
+      // did nothing that day. The reviewed day is over, so "no milestone"
+      // is read once.
+      const milestones = ps.retroNoMilestonesFor === day ? [] : await this.retroMilestonesOf(project, day);
+      if (milestones.length === 0) ps.retroNoMilestonesFor = day;
+      if (milestones.length === 0 && !(await this.retroOn(project))) continue;
       const runTrace = autopilotRunTrace(project, yesterday, false);
-      if (!runTrace) {
+      if (!runTrace && milestones.length === 0) {
         // The autopilot did nothing that day: nothing to review.
         ps.retroScheduledFor = day;
         continue;
@@ -1887,9 +1921,9 @@ export class TicketAutopilotService {
       delete ps.retroFailures;
       delete ps.retroRetryAt;
       ps.retroScheduledFor = day;
-      // Only a day with real autopilot work gets a retro (skips and budget
-      // notices alone are not a run).
-      if (dayStats.triaged + dayStats.replans + dayStats.started + dayStats.done + dayStats.verified === 0) {
+      // Only a day with real autopilot work (or a milestone) gets a retro
+      // (skips and budget notices alone are not a run).
+      if (milestones.length === 0 && dayStats.triaged + dayStats.replans + dayStats.started + dayStats.done + dayStats.verified === 0) {
         this.logger.debug('Autopilot retro skipped: no autopilot work that day', { projectId: project.id, day });
         continue;
       }
@@ -1902,13 +1936,23 @@ export class TicketAutopilotService {
         continue;
       }
       const runs = await this.retroTraces(project, day);
-      const brief = buildRetroBrief({ project: { id: project.id, name: project.name }, day, stats: dayStats, traces: [{ traceId: runTrace, title: `Run trace ${day}` }, ...runs] });
+      const milestoneIds = milestones.map((m) => m.id);
+      const brief = buildRetroBrief({
+        project: { id: project.id, name: project.name },
+        day,
+        stats: dayStats,
+        runTrace: runTrace ? { traceId: runTrace, title: `Run trace ${day}` } : null,
+        traces: runs,
+        milestones,
+      });
       const workItem = createWorkItem({
         type: TICKET_AUTOPILOT_CONSTANTS.RETRO_WORK_ITEM_TYPE,
         owner: 'team_lead',
         target: driver.session,
-        title: `Autopilot retro: ${project.name} ${day}`,
-        description: `Review the ${day} autopilot run of ${project.name}: what shipped, where it stalled and why; classify each problem and submit the retro.`,
+        title: `Autopilot retro: ${project.name} ${day}${milestoneIds.length ? ` (milestone: ${milestoneIds.join(', ')})` : ''}`,
+        description: `Review the ${day} autopilot run of ${project.name}: what shipped, where it stalled and why; classify each problem and submit the retro.${
+          milestoneIds.length ? ' Review the milestones first.' : ''
+        }`,
         briefMarkdown: capBrief(brief),
         metadata: {
           kind: TICKET_AUTOPILOT_CONSTANTS.RETRO_METADATA_KIND,
@@ -1917,24 +1961,26 @@ export class TicketAutopilotService {
           teamId: driver.teamId,
           day,
           requiresVerification: false,
+          ...(milestoneIds.length ? { milestones: milestoneIds } : {}),
         },
       });
       workItem.createdAt = now.toISOString();
       workItem.targetSource = 'assigned';
-      workItem.traceId = runTrace;
+      if (runTrace) workItem.traceId = runTrace;
       await this.deps.pool.addToPool(workItem);
       ps.retroWorkItemId = workItem.id;
       traceAutopilotAction(project, 'retro_scheduled', {
-        summary: `${driver.session} asked for the ${day} retro of ${project.name}`,
+        summary: `${driver.session} asked for the ${day} retro of ${project.name}${milestoneIds.length ? ` (milestones: ${milestoneIds.join(', ')})` : ''}`,
         outcome: 'queued',
         workItemId: workItem.id,
         session: driver.session,
-        data: { day },
-        // Recorded in the reviewed day's run only: scheduling never starts today's run trace.
+        data: { day, ...(milestoneIds.length ? { milestones: milestoneIds } : {}) },
+        // Recorded in the reviewed day's run only: scheduling never starts
+        // today's run trace (a milestone day without a run records nothing).
         runTraceId: runTrace,
         now,
       });
-      this.logger.info('Autopilot retro scheduled', { projectId: project.id, day, driver: driver.session, workItemId: workItem.id });
+      this.logger.info('Autopilot retro scheduled', { projectId: project.id, day, driver: driver.session, workItemId: workItem.id, milestones: milestoneIds });
       out.push(workItem);
     }
     await this.saveState();
@@ -2002,7 +2048,8 @@ export class TicketAutopilotService {
       retroDeps,
       now,
     );
-    const markdown = renderRetroMarkdown({ project, retro, stats: stats?.days[0] ?? null, by, filed: filed.filed, runTraceId: runTrace });
+    const milestones = await this.retroMilestonesOf(project, retro.day);
+    const markdown = renderRetroMarkdown({ project, retro, stats: stats?.days[0] ?? null, by, filed: filed.filed, runTraceId: runTrace, milestones });
     const written = await retroDeps.writeWiki(project.path, wikiPath, markdown, by).catch((err) => {
       this.logger.warn('Could not write the autopilot retro to the wiki', { projectId: project.id, error: err instanceof Error ? err.message : String(err) });
       return false;

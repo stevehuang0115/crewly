@@ -1,6 +1,8 @@
 /**
  * Ticket autopilot — the project's goal and open experiments for the goal
- * replan (specs/2026-10-04-autopilot-goal-replan.md).
+ * replan (specs/2026-10-04-autopilot-goal-replan.md), and the milestones
+ * the daily retro reviews: experiment cards closed and OKRs completed on
+ * the reviewed day (#985, specs/2026-10-03-autopilot-experiments.md §4).
  *
  * The goal comes from the two places project goals live today:
  * - the goals log `<project>/.crewly/goals/goals.md` (`set_goal` writes it,
@@ -19,9 +21,10 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { MEMORY_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
 import { sortMissionsByPriority, type Mission } from '../../types/v2/mission.types.js';
-import type { Experiment } from '../../types/experiment.types.js';
+import type { Experiment, ExperimentProcessSummary } from '../../types/experiment.types.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 import { getMissionsDir } from '../v3/mission-paths.js';
+import { localDateKey } from './ticket-autopilot-decision.js';
 
 /** A project's active goal, as the replan brief quotes it. */
 export interface ProjectGoal {
@@ -46,6 +49,46 @@ export interface GoalProject {
   id: string;
   name: string;
   path: string;
+}
+
+/**
+ * A milestone the daily retro reviews (#985): an experiment card of the
+ * project closed (measured or cancelled), or a project OKR completed, on
+ * the reviewed day.
+ */
+export interface RetroMilestone {
+  kind: 'experiment_closed' | 'goal_completed';
+  /** EXP-n, or the mission id */
+  id: string;
+  title: string;
+  /** `done` / `cancelled` for a card, `completed` for a goal */
+  status: string;
+  /** When it closed (ISO) */
+  closedAt: string;
+  hypothesis?: string;
+  verdict?: string;
+  verdictReason?: string;
+  /** The card's primary metric: what was measured and the window totals, baseline → result */
+  outcome?: { metric: string; baseline: number | null; result: number | null };
+  /** Process numbers of an autopilot card over its windows */
+  process?: { baseline?: ExperimentProcessSummary; result?: ExperimentProcessSummary };
+  /** Success criteria of a completed goal */
+  criteria?: string[];
+}
+
+/** Local day of an ISO timestamp (the retro reviews local days). */
+export type LocalDayOf = (iso: string) => string;
+
+/**
+ * The retro's local-day function: {@link localDateKey} of the parsed
+ * timestamp; an unparsable one maps to '' (matches no day).
+ *
+ * @param iso - ISO timestamp
+ * @returns YYYY-MM-DD (local), or ''
+ */
+export function localDayOf(iso: string): string {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? localDateKey(new Date(ms)) : '';
 }
 
 /**
@@ -290,14 +333,141 @@ export function openExperimentsOf(
   project: GoalProject,
   max: number = TICKET_AUTOPILOT_CONSTANTS.REPLAN_MAX_EXPERIMENTS,
 ): ReplanExperiment[] {
+  const ofProject = experimentOfProject(project);
+  return experiments
+    .filter((e) => (e.status === 'planned' || e.status === 'running') && ofProject(e))
+    .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
+    .slice(0, Math.max(0, max))
+    .map((e) => ({ id: e.id, title: e.title, hypothesis: e.hypothesis, status: e.status, ...(e.dueAt ? { dueAt: e.dueAt } : {}) }));
+}
+
+/**
+ * Whether an experiment card belongs to a project: its autopilot scope is
+ * the project, or its ticket link names the project (id, name or path).
+ *
+ * @param project - Project
+ * @returns Predicate over cards
+ */
+function experimentOfProject(project: GoalProject): (e: Experiment) => boolean {
   const refs = new Set([project.id, project.name.toLowerCase(), path.resolve(project.path)]);
   const names = (ref: string | undefined): boolean => {
     if (!ref) return false;
     return refs.has(ref) || refs.has(ref.toLowerCase()) || (ref.startsWith('/') && refs.has(path.resolve(ref)));
   };
-  return experiments
-    .filter((e) => (e.status === 'planned' || e.status === 'running') && (e.autopilot?.projectId === project.id || (e.ticket?.kind === 'project' && names(e.ticket.project))))
-    .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
-    .slice(0, Math.max(0, max))
-    .map((e) => ({ id: e.id, title: e.title, hypothesis: e.hypothesis, status: e.status, ...(e.dueAt ? { dueAt: e.dueAt } : {}) }));
+  return (e) => e.autopilot?.projectId === project.id || (e.ticket?.kind === 'project' && names(e.ticket.project));
+}
+
+/**
+ * When a closed card closed: its last `measured` / `cancelled` timeline
+ * event, else `updatedAt`.
+ *
+ * @param e - Card
+ * @returns ISO timestamp, or null when the card records none
+ */
+export function experimentClosedAt(e: Experiment): string | null {
+  const events = Array.isArray(e.timeline) ? e.timeline : [];
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev && (ev.event === 'measured' || ev.event === 'cancelled') && ev.at) return ev.at;
+  }
+  return e.updatedAt || null;
+}
+
+/**
+ * The project's experiment cards closed (measured or cancelled) on a local
+ * day, oldest first — the retro's experiment milestones (#985).
+ *
+ * @param experiments - Every experiment
+ * @param project - Project
+ * @param day - Reviewed local day (YYYY-MM-DD)
+ * @param localDay - Local day of a timestamp
+ * @returns Milestones
+ */
+export function experimentsClosedOn(experiments: Experiment[], project: GoalProject, day: string, localDay: LocalDayOf = localDayOf): RetroMilestone[] {
+  const ofProject = experimentOfProject(project);
+  const closed: Array<{ e: Experiment; at: string }> = [];
+  for (const e of experiments) {
+    if (!e || (e.status !== 'done' && e.status !== 'cancelled') || !ofProject(e)) continue;
+    const at = experimentClosedAt(e);
+    if (at && localDay(at) === day) closed.push({ e, at });
+  }
+  closed.sort((a, b) => a.at.localeCompare(b.at));
+  return closed.map(({ e, at }) => {
+    const metric = [e.metric?.source, e.metric?.measure].filter(Boolean).join(':') + (e.metric?.page ? ` ${e.metric.page}` : '');
+    const hasOutcome = e.baseline !== undefined || e.result !== undefined;
+    const hasProcess = !!(e.autopilot?.processBaseline || e.autopilot?.processResult);
+    return {
+      kind: 'experiment_closed',
+      id: e.id,
+      title: e.title,
+      status: e.status,
+      closedAt: at,
+      ...(e.hypothesis ? { hypothesis: e.hypothesis } : {}),
+      ...(e.verdict ? { verdict: e.verdict } : {}),
+      ...(e.verdictReason ? { verdictReason: e.verdictReason } : {}),
+      ...(hasOutcome && metric ? { outcome: { metric, baseline: e.baseline?.total ?? null, result: e.result?.total ?? null } } : {}),
+      ...(hasProcess
+        ? {
+            process: {
+              ...(e.autopilot?.processBaseline ? { baseline: e.autopilot.processBaseline } : {}),
+              ...(e.autopilot?.processResult ? { result: e.autopilot.processResult } : {}),
+            },
+          }
+        : {}),
+    };
+  });
+}
+
+/**
+ * The project's OKRs completed on a local day (a mission is `completed`
+ * and was last updated that day — completion is its final write), oldest
+ * first — the retro's goal milestones (#985).
+ *
+ * @param missions - Missions read from the store(s)
+ * @param projectId - Project id
+ * @param day - Reviewed local day
+ * @param localDay - Local day of a timestamp
+ * @returns Milestones
+ */
+export function goalsCompletedOn(missions: Mission[], projectId: string, day: string, localDay: LocalDayOf = localDayOf): RetroMilestone[] {
+  const seen = new Set<string>();
+  const out: RetroMilestone[] = [];
+  for (const m of missions) {
+    if (!m || typeof m !== 'object' || typeof m.objective !== 'string' || seen.has(m.id)) continue;
+    seen.add(m.id);
+    if (m.status !== 'completed' || m.projectId !== projectId || !m.updatedAt || localDay(m.updatedAt) !== day) continue;
+    const criteria = (m.successCriteria ?? []).filter((c): c is string => typeof c === 'string' && c.trim().length > 0).map((c) => c.trim());
+    out.push({ kind: 'goal_completed', id: m.id, title: m.objective.trim(), status: 'completed', closedAt: m.updatedAt, ...(criteria.length ? { criteria } : {}) });
+  }
+  return out.sort((a, b) => a.closedAt.localeCompare(b.closedAt));
+}
+
+/**
+ * The milestones of a project's reviewed day: its experiment cards closed
+ * that day, then its OKRs completed that day (the project's missions
+ * folder and the shared store). Never throws; a missions read failure
+ * leaves the goals out.
+ *
+ * @param project - Project id, name and path
+ * @param day - Reviewed local day
+ * @param experiments - Every experiment card
+ * @param max - Most milestones returned
+ * @returns Milestones, at most `max`
+ */
+export async function readRetroMilestones(
+  project: GoalProject,
+  day: string,
+  experiments: Experiment[],
+  max: number = TICKET_AUTOPILOT_CONSTANTS.RETRO_MAX_MILESTONES,
+): Promise<RetroMilestone[]> {
+  const cards = experimentsClosedOn(experiments, project, day);
+  let goals: RetroMilestone[] = [];
+  try {
+    const dirs = [...new Set([getMissionsDir(project.path), getMissionsDir()])];
+    const missions = (await Promise.all(dirs.map(readMissionsDir))).flat();
+    goals = goalsCompletedOn(missions, project.id, day);
+  } catch {
+    goals = [];
+  }
+  return [...cards, ...goals].slice(0, Math.max(0, max));
 }

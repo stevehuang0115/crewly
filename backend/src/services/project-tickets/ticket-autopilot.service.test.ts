@@ -747,6 +747,72 @@ describe('TicketAutopilotService', () => {
       expect((await svc.getStatus('p-ce', owner)).retroOn).toBe(false);
     });
 
+    it('a milestone day gets its retro even when the retro is off and the autopilot did nothing (#985)', async () => {
+      // Enabled the day before, so the reviewed day (09-30) has no run trace at all.
+      clock = new Date(2026, 8, 29, 10, 0);
+      await enable();
+      const milestone = {
+        kind: 'experiment_closed' as const,
+        id: 'EXP-7',
+        title: 'Feed chips',
+        status: 'done',
+        closedAt: '2026-09-30T15:00:00',
+        verdict: 'worked',
+        verdictReason: 'sessions 120 → 184',
+      };
+      let reads = 0;
+      const deps = (svc as unknown as { deps: Record<string, unknown> }).deps;
+      deps.retroMilestones = async (p: Project, day: string) => {
+        reads += 1;
+        return p.id === 'p-ce' && day === '2026-09-30' ? [milestone] : [];
+      };
+      const retros = () => [...pool.items.values()].filter((w) => w.type === 'autopilot_retro');
+      expect(experimentRunning).toBe(false); // the retro is off: no setting, no running card
+
+      clock = new Date(2026, 9, 1, 9, 5);
+      await svc.tick();
+      expect(retros()).toHaveLength(1);
+      const [r] = retros();
+      expect(r.title).toContain('2026-09-30 (milestone: EXP-7)');
+      expect(r.metadata).toMatchObject({ kind: 'autopilot_retro', projectId: 'p-ce', day: '2026-09-30', milestones: ['EXP-7'] });
+      expect(r.traceId).toBeUndefined(); // no run that day
+      expect(r.briefMarkdown).toContain('## Milestones');
+      expect(r.briefMarkdown).toContain('- EXP-7 "Feed chips" measured (2026-09-30): verdict **worked** — sessions 120 → 184');
+      expect(r.briefMarkdown).toContain('earned its keep');
+      expect(r.briefMarkdown).toContain('- (no traces)');
+      expect(reads).toBe(1);
+
+      // Once per day: the next tick neither schedules again nor reads the milestones again.
+      advance(HOUR);
+      await svc.tick();
+      expect(retros()).toHaveLength(1);
+      expect(reads).toBe(1);
+
+      // Filing the retro repeats the milestones on the wiki page.
+      await svc.submitRetro('p-ce', { day: '2026-09-30', summary: 'EXP-7 worked: the chips stay. Nothing else ran that day.', problems: [] }, lead);
+      const page = wiki.find((w) => w.rel.endsWith('2026-09-30.md'));
+      expect(page?.md).toContain('## Milestones');
+      expect(page?.md).toContain('- EXP-7 "Feed chips" measured (2026-09-30)');
+      expect(page?.md).not.toContain('earned its keep');
+    });
+
+    it('a quiet day without a milestone is read once and then skipped while the retro is off (#985)', async () => {
+      clock = new Date(2026, 8, 29, 10, 0);
+      await enable();
+      let reads = 0;
+      const deps = (svc as unknown as { deps: Record<string, unknown> }).deps;
+      deps.retroMilestones = async () => {
+        reads += 1;
+        return [];
+      };
+      clock = new Date(2026, 9, 1, 9, 5);
+      await svc.tick();
+      advance(HOUR);
+      await svc.tick();
+      expect([...pool.items.values()].filter((w) => w.type === 'autopilot_retro')).toHaveLength(0);
+      expect(reads).toBe(1);
+    });
+
     it('a retro writes the wiki, files deduped and capped harness gaps, and asks ONE card', async () => {
       await enable();
       await (wf['tickets'] as ProjectTicketService).create(crewly.path, 'Crewly', { title: 'Triage brief lists a stopped member as busy' }, 'owner');
