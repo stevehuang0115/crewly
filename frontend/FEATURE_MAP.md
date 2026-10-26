@@ -78,16 +78,16 @@ keep their query string (OAuth returns).
 ### Dashboard (`/`)
 
 - **Reach**: sidebar › Dashboard; the app opens here. Problems (orchestrator down, sign-in needed, runtime out of usage, update) are shown once by the status bar above every page (`src/components/Layout/AppStatusBar.tsx`), not repeated here.
-- **Expected**: a "needs you" list first, then the running work and the crew's state. Empty states say so; nothing spins forever.
-- **Elements**: `dashboard`; the status bar's chips (`SignInNeededChip`, `OrchestratorStatusBanner`, `UpdateAvailableBanner`, `PendingLoginsBanner`).
-- **Backend**: `GET /api/teams`, `GET /api/task-pool/items?status=running`, `GET /api/decisions` (via `src/services/decisions.service.ts`).
-- **Source**: `src/pages/Dashboard.tsx`, `src/components/Dashboard/`, `src/components/Layout/`.
+- **Expected**: "Waiting on you" (decisions and questions for the owner) first, then "Owner pulls" (what the owner asked for lately, by kind and source), then "Crew now" (who is working on what, or idle) with the health bar (agents, security, a Factory button). A getting-started card shows until setup is done. Empty states say so; nothing spins forever.
+- **Elements**: `dashboard`, `crew-now`, `crew-now-list`, `crew-idle`, `health-bar`, `health-stat-agents`, `health-security`, `health-factory-btn`, `owner-pulls`, `owner-pulls-count`, `owner-pulls-kinds`, `owner-pulls-sources`, `relay-device-list`; the status bar's chips (`SignInNeededChip`, `OrchestratorStatusBanner`, `UpdateAvailableBanner`, `PendingLoginsBanner`).
+- **Backend**: `GET /api/teams`, `GET /api/task-pool/items?status=running`, `GET /api/owner-receipt/pulls`, decisions via `src/services/decisions.service.ts`.
+- **Source**: `src/pages/Dashboard.tsx`, `src/components/Dashboard/` (`WaitingOnYouCard`, `OwnerPullsCard`, `CrewNowSection`, `dashboard.utils.ts`), `src/components/Onboarding/GettingStartedCard.tsx`, `src/components/Layout/`.
 
 ### Chat (`/team-chat`)
 
 - **Reach**: sidebar › Chat (unread badge); a team row's "chat" opens the team channel (`?team=<id>`).
 - **Expected**: three panels (conversation list, thread, detail). The orchestrator DM is always present. Messages arrive live over the WebSocket; sending shows a placeholder until the agent answers. Threads open on the right; Slack-bridged conversations are read-only mirrors with a hint.
-- **Elements**: see `src/components/Chat-team/` (`team-chat-*` ids) and `packages/chat-ui/` (shared message list / composer).
+- **Elements**: `chat-back`, `chat-search-hits`, `chat-search-back`, `chat-search-close`, `chat-error-toast`, `channel-add-select`, `channel-add-submit`, `channel-settings-modal`, `channel-rename-submit`, `banner-agent-offline`; the message list and composer come from `packages/chat-ui/`.
 - **Backend**: `GET /api/chat/channels`, `POST /api/chat/channels/dm/ensure`, `POST /api/chat/channels/team/ensure`, `GET/POST /api/chat/channels/:id/messages`, `GET /api/chat/search`, WebSocket `chat:*` events (`src/services/websocket.service.ts`).
 - **Source**: `src/components/Chat-team/`, `packages/chat-ui/`, `src/services/chat.service.ts`, `src/services/channels.service.ts`; backend `backend/src/controllers/chat/`, `backend/src/services/chat-v2/`.
 
@@ -112,7 +112,7 @@ keep their query string (OAuth returns).
 - **Reach**: a Runs row; the request page's run links.
 - **Expected**: the work item's header, metrics strip, timeline, and the acceptance criteria of its ticket with each self-check result.
 - **Elements**: `workitem-detail`, `workitem-detail-header`, `workitem-metrics`, `workitem-timeline`, `timeline-empty`, `workitem-detail-loading|error|not-found`, `workitem-detail-back`, `workitem-detail-refresh`.
-- **Backend**: `GET /api/task-pool/items/:id`, `GET /api/traces/:id`.
+- **Backend**: `GET /api/task-pool/items/:workItemId` (`apiService.getWorkItem`; a bare `/api/task-pool/:id` has no handler), `GET /api/traces/:id`.
 - **Source**: `src/pages/WorkItemDetail.tsx`, `src/components/WorkItemDetail/`.
 
 ### Experiment detail (`/tickets/experiments/:id`, tabs `overview` · `timeline`) and trace detail (`/tickets/traces/:traceId`)
@@ -141,7 +141,7 @@ keep their query string (OAuth returns).
 
 ### Teams hub (`/teams`, tabs `teams` · `goals`)
 
-- **Reach**: sidebar › Teams. "New team" / "New goal" in the header (`?create=1` opens the goal form).
+- **Reach**: sidebar › Teams. "New team" / "New goal" in the header (`?tab=goals&create=true` opens the goal form).
 - **Expected**: Teams = compact rows (name · project · members · last activity · status) with Start / Stop visible and view / edit / chat / wiki / export / pin / delete in "⋯"; a tree view shows parent / sub-teams. Goals = one row per goal nested company → team → project; proposals show Approve / Reject inline.
 - **Elements**: `teams-panel-${tab}`, `teams-new`, `missions-new`; rows in `src/pages/Teams.tsx` and `src/pages/Missions.tsx`.
 - **Backend**: `GET /api/teams`, `POST /api/teams/:id/start|stop`, `GET /api/missions`, `POST /api/missions/:id/approve|reject`, `src/services/team-export.service.ts`.
@@ -176,15 +176,15 @@ keep their query string (OAuth returns).
 - **Reach**: sidebar › Schedules (badge = due soon).
 - **Expected**: scheduled messages and per-team cron tasks grouped by team as compact rows: a human name, the schedule in plain words, who runs it and when it runs next; a row opens its detail. Team and "system tasks" filters sit behind one Filter button; the tab lives in `?tab=`.
 - **Elements**: `schedules-page`, `schedule-row`, `schedule-detail`.
-- **Backend**: `src/hooks/useTriggers.ts`, `src/hooks/useCronTasks.ts` (`/api/triggers`, `/api/cron-tasks`, `/api/scheduled-messages`).
-- **Source**: `src/pages/Triggers.tsx`, `src/components/Triggers/`, `src/constants/schedules.constants.ts`.
+- **Backend**: `GET/POST /api/triggers`, `PUT/DELETE /api/triggers/:id`, `POST /api/triggers/:id/pause|resume`, `GET /api/triggers/status`, `GET/POST/PUT/DELETE /api/cron-tasks` (through `apiService`, used by `src/hooks/useTriggers.ts` and `src/hooks/useCronTasks.ts`).
+- **Source**: `src/pages/Triggers.tsx`, `src/components/Triggers/schedule.utils.ts`, `src/constants/schedules.constants.ts`.
 
 ### Browser (`/browser`)
 
 - **Reach**: sidebar › Browser.
 - **Expected**: every agent that has touched Chrome, most recent first, with a live count; the first session opens by default into a live frame of the page. The owner can take control (tap ripple, zoom reset, owner controls) and hand it back; hints explain who is driving.
 - **Elements**: `browser-page`, `browser-live-count`, `browser-session-card`, `browser-surface`, `frame-stage`, `frame-image`, `tap-ripple`, `reset-zoom`, `browser-owner-controls`, `take-control-hint`, `driving-hint`.
-- **Backend**: `src/services/browser-session.service.ts` (`/api/browser/sessions`, `/api/browser/sessions/:id/frame|input|takeover`).
+- **Backend**: `GET /api/browser/sessions[?active=1]`, `GET /api/browser/sessions/:id/frame?t=`, `POST /api/browser/sessions/:id/input`, `POST /api/browser/sessions/:id/stop`, `POST /api/browser/sessions/:id/pending/:pendingId`, `POST /api/browser/sessions/:id/<action>` (take over / hand back) — all in `src/services/browser-session.service.ts`.
 - **Source**: `src/pages/BrowserView.tsx`, `src/components/Browser/`.
 
 ### Marketplace (`/marketplace`, tabs `browse` · `installed` · `submissions`; detail `/marketplace/:id`)
@@ -214,7 +214,7 @@ keep their query string (OAuth returns).
 ### Settings (`/settings`, tabs `general` · `runtimes` · `roles` · `people` · `api-keys` · `credentials` · `cloud` · `security` · `system` · `activity`)
 
 - **Reach**: sidebar › Settings; `?tab=harness` is an alias of `runtimes`; `/cloud` and `/security` redirect here.
-- **Expected**: one panel per tab. General (appearance, defaults); Runtimes (installed harnesses, sign-in, fallback accounts); Roles; People (who may use which connector); API keys (masked rows per provider, advanced section); Credentials (stored secrets); Cloud (sign-in, paired devices, sync state, upgrade); Security (approvals); System (backup, restart, update); Activity (the audit log with actor filters).
+- **Expected**: one panel per tab. General (appearance, defaults); Runtimes (installed harnesses, sign-in, fallback accounts); Roles; People (who may use which connector); API keys (masked rows per provider, advanced section); Credentials (stored secrets); Cloud (sign-in, paired devices, sync state, upgrade); Security (approvals); System (version, upgrade and restart, agent heartbeat; a pointer to Usage for caps); Activity (the audit log with actor filters).
 - **Elements**: `settings-panel-${tab}`, `api-keys-tab`, `api-key-row-${provider}`, `masked-key-hint-${id}`, `api-keys-advanced`, `credentials-tab`, `cloud-device-list-section`, `sync-state-badge`, `refresh-devices-button`, `token-expired-warning`, `upgrade-btn`, `activity-tab`, `activity-filters`, `activity-filter-actor-type`, `activity-filter-actor-id`.
 - **Backend**: `/api/settings`, `/api/settings/roles`, `/api/people`, `/api/credentials`, `/api/harness`, `/api/security/approvals`, `/api/activity`, `/api/cloud/*` (`src/services/cloud-device-pairing.service.ts`), `/api/system/*` (`src/services/system-control.service.ts`), `src/services/runtime-fallback.service.ts`.
 - **Source**: `src/pages/Settings.tsx`, `src/components/Settings/*Tab.tsx`.
