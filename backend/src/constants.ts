@@ -1893,6 +1893,12 @@ export const WIKI_LOG_CONSTANTS = {
 	COMPILE_MAX_ENTRIES: 150,
 	/** Characters of an entry body quoted in the digest. */
 	COMPILE_ENTRY_MAX_CHARS: 400,
+	/**
+	 * Bytes a digest body may take: under the ingest body cap (64 KiB) with
+	 * headroom. A longer digest keeps its oldest entries and leaves the rest
+	 * for the next run (2026-10-26: five vaults' W44 digests were refused).
+	 */
+	COMPILE_MAX_BODY_BYTES: 56 * 1024,
 	/** Vault-relative folder of digest pages. */
 	COMPILE_DIR: 'llm-curated/digests',
 	/** Vault-root file remembering which entries were compiled (dot-file: walkers skip it). */
