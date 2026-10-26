@@ -8,6 +8,8 @@
     "start": "node dist/cli.js",
     "eval": "node dist/cli.js run --all",
     "eval:task": "node dist/cli.js run --task",
+    "eval:diff": "node dist/cli.js run --all --diff",
+    "diff": "node dist/cli.js diff",
     "test": "vitest run",
     "test:watch": "vitest"
   },
