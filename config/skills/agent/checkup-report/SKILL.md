@@ -106,6 +106,14 @@ and any step still open). A second `--start` on an open step restarts it;
 `--end` with no open entry fails (exit 2) so a forgotten start is noticed.
 `--at <iso>` back-fills a time you know. One `daily` entry per day is fine.
 
+## End — when the 7 days are over
+
+Run `checkup-end --dir . --business "<Business>" --app <appId>`: it deletes
+every file the check-up left on this machine (ingested rows, `breaks.json`,
+the report and daily documents, the intake answers, the time log, the App
+page copy) and writes a receipt. Then `publish-app --app <appId> --delete`
+and send the owner the receipt. See that skill.
+
 ## Report back
 
 Tell the owner in plain words: the App is ready (the card has the link), the

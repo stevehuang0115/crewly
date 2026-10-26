@@ -88,8 +88,8 @@ Children's names, parents' emails and phone numbers are in most of these
 exports. Run with `--hash-names` unless the analysis truly needs the names:
 `name`, `email`, `phone` and every original column that looks personal become
 a short stable hash (`h:3f1a…`), so the same person still counts once across
-files but nobody's name is stored. Report counts, not names, and delete the
-`--out` folder when the check-up ends.
+files but nobody's name is stored. Report counts, not names, and run
+`checkup-end` when the check-up is over so the `--out` folder goes with a receipt.
 
 ## Report back
 
