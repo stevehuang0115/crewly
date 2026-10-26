@@ -10,7 +10,7 @@
 import { Request, Response } from 'express';
 import { ApiResponse } from '../../types/index.js';
 import { getSessionBackendSync, getSessionBackend, createSessionCommandHelper } from '../../services/session/index.js';
-import { TuiInputGuardError } from '../../services/session/tui-input-guard.js';
+import { TuiInputGuardError, TuiPasteHoldError } from '../../services/session/tui-input-guard.js';
 import { LoggerService, ComponentLogger } from '../../services/core/logger.service.js';
 import { TERMINAL_CONTROLLER_CONSTANTS, ORCHESTRATOR_SESSION_NAME, CREWLY_CONSTANTS, EVENT_DELIVERY_CONSTANTS, AGENT_MESSAGE_DELIVERY_CONSTANTS, RuntimeType, RUNTIME_TYPES, SPEND_CAP_CONSTANTS, TEAM_PAUSE_CONSTANTS } from '../../constants.js';
 import {
@@ -813,6 +813,10 @@ export async function writeToSession(this: unknown, req: Request, res: Response)
 					} as ApiResponse);
 					return;
 				}
+				if (guardErr instanceof TuiPasteHoldError) {
+					queuePasteHeldMessage(res, sessionName, dataStr, registration, guardErr.reason);
+					return;
+				}
 				throw guardErr;
 			}
 			noteTurnDelivery(sessionName, dataStr, 'pty');
@@ -1172,6 +1176,50 @@ function mapKeyToSequence(key: string): string {
  * Body: { message: "Hello agent", waitForReady: true }
  * Response: { success: true, verified: true }
  */
+/**
+ * Queue a message whose guarded write was held because an earlier paste of
+ * ours is still settling in the recipient's input box (`TuiPasteHoldError`).
+ *
+ * Before 2026-10-26 the hold fell through to the generic 500 ("Failed to
+ * write to session") and the sender resent by hand (Quinn → Sam 14:21).
+ * The hold is the same condition as a mid-turn hold — the box is not ours
+ * to type into right now — so it answers the same way: 202 with the queue
+ * position, and the busy-hold recheck (or the next idle) delivers it.
+ *
+ * @param res - Response to answer with 202
+ * @param sessionName - Recipient session
+ * @param message - Message text to queue
+ * @param registration - Registration service when the context has one; it
+ *   schedules the recheck. Without it the message goes straight to the
+ *   sub-agent queue and is drained on the recipient's next idle.
+ * @param reason - Why the write was held
+ */
+function queuePasteHeldMessage(
+	res: Response,
+	sessionName: string,
+	message: string,
+	registration: ApiContext['agentRegistrationService'] | undefined,
+	reason: TuiPasteHoldError['reason'],
+): void {
+	let held: { position: number; queueSize: number };
+	if (registration) {
+		held = registration.holdForBusyAgent(sessionName, message);
+	} else {
+		const queue = SubAgentMessageQueue.getInstance();
+		queue.enqueue(sessionName, message);
+		const queueSize = queue.getQueueSize(sessionName);
+		held = { position: queueSize, queueSize };
+	}
+	logger.info('Recipient input box still settling — message queued', { sessionName, reason, ...held });
+	res.status(202).json({
+		success: true,
+		queued: true,
+		position: held.position,
+		queueSize: held.queueSize,
+		message: `[AGENT_BUSY] ${sessionName}'s input box is still settling: message queued at position ${held.position} of ${held.queueSize}; it is delivered once the box is clear`,
+	} as ApiResponse);
+}
+
 export async function deliverMessage(this: ApiContext, req: Request, res: Response): Promise<void> {
 	// Set once the delivery is under way; run in `finally`.
 	let endDelivery: () => void = () => undefined;
@@ -1383,6 +1431,10 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 						code: 'input_not_ours',
 						error: guardErr.message,
 					} as ApiResponse);
+					return;
+				}
+				if (guardErr instanceof TuiPasteHoldError) {
+					queuePasteHeldMessage(res, sessionName, message, this?.agentRegistrationService, guardErr.reason);
 					return;
 				}
 				throw guardErr;
