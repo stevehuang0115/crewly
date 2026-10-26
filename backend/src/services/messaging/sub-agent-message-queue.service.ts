@@ -19,6 +19,7 @@ import { mkdirSync, existsSync } from 'fs';
 import { atomicWriteFileSync, quarantineCorruptFileSync, readJsonStoreSync, CorruptJsonFileError } from '../../utils/file-io.utils.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { AgentPostLog, currentQueueMeta, type QueueMessageMeta } from './queue-priority.js';
+import { canonicalAgentSession } from '../../utils/orchestrator-alias.utils.js';
 
 /**
  * A single queued message destined for a sub-agent.
@@ -250,7 +251,9 @@ export class SubAgentMessageQueue {
 		}
 		if (!stored?.queues) return true;
 		let restored = 0;
-		for (const [sessionName, messages] of Object.entries(stored.queues)) {
+		for (const [storedName, messages] of Object.entries(stored.queues)) {
+			// A queue saved under an alias before 1.20.425 joins the session's own.
+			const sessionName = canonicalAgentSession(storedName);
 			const current = this.pendingMessages.get(sessionName) ?? [];
 			const have = new Set(current.map((m) => `${m.queuedAt}|${m.data}`));
 			const valid = (messages ?? [])
@@ -577,7 +580,10 @@ export class SubAgentMessageQueue {
 	 * @param data - The raw data string to deliver later
 	 * @param meta - `workItemId` when the message hands over a WorkItem; `queueMeta` to override the context
 	 */
-	enqueue(sessionName: string, data: string, meta: { workItemId?: string; queueMeta?: QueueMessageMeta } = {}): void {
+	enqueue(queuedFor: string, data: string, meta: { workItemId?: string; queueMeta?: QueueMessageMeta } = {}): void {
+		// A message held for "Orchestrator" (its display name) would wait for a
+		// session that never goes idle: the queue is keyed by session (D-952).
+		const sessionName = canonicalAgentSession(queuedFor);
 		const queueMeta = meta.queueMeta ?? currentQueueMeta(sessionName, data);
 		let queue = this.pendingMessages.get(sessionName);
 		if (!queue) {

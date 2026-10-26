@@ -19,6 +19,7 @@ import { isAudioOrVideo } from '../../utils/inbound-file-hint.utils.js';
 import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
 import { withQueueMeta, type QueueMessageMeta } from '../messaging/queue-priority.js';
 import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME, ROOM_RESPONDER_CONSTANTS } from '../../constants.js';
+import { isOrchestratorSender } from '../../utils/orchestrator-alias.utils.js';
 import { questionSimilarity } from '../open-items/open-item-card.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { SlackBlock, SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
@@ -2091,7 +2092,7 @@ export class DecisionService {
       else hold();
     }
     // The orchestrator asked on the owner's behalf for a ticket it does not own: tell it too.
-    if (d.requestedBy !== d.asker && d.requestedBy === ORCHESTRATOR_SESSION_NAME) {
+    if (d.requestedBy !== d.asker && isOrchestratorSender(d.requestedBy) && !isOrchestratorSender(d.asker)) {
       await this.deps.deliverToAgent(d.requestedBy, text).catch(() => false);
     }
   }

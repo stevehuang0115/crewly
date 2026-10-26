@@ -187,3 +187,28 @@ The W41 follow-up (2026-10-16 23:14Z) was due 24 h later although Pia had said "
 - **The neighbouring sentence.** A commitment sentence that names no time takes the estimate stated in the sentence right after (or before) it on the same line (`estimateDue`): a duration, or a time framed as an estimate ("预计 / 大约 / 应该 / ETA / about / should …"), in a sentence that is not itself a commitment or a question. "改完后我起全新评审 Agent 跑 2 轮，再发你。预计一小时左右。" is due in an hour.
 - **The next post.** When the same agent, in the same thread, within `ESTIMATE_WINDOW_MS` (10 min) of an undated promise (`dueSource: default`), posts an estimate and promises nothing new in that post, the promise takes that due time (`dueSource: text`) and the follow-up WorkItem's `metadata.dueAt` and `blockedReason` move with it (`updateFollowUpDue` → `TaskPoolService.mergeItemMetadata` + `setBlockedReason`). A later post that makes its own promise, a post by another agent, a promise whose text named its time, and anything outside the window leave it alone.
 - **Live default.** A promise with no time at all made live in the owner's conversation (`onAgentMessage` → `plan(…, { live: true })`, the request has a `chatRef`) is due in `CHAT_PROMISE_DEFAULT_DUE_MS` (4 h): the owner is waiting. The backfill's reading of old history and gate-opened conditional promises keep `DEFAULT_DUE_MS` (24 h).
+
+## Addendum (2026-10-26, D-952): the orchestrator's items name its session
+
+The orchestrator posts its chat rows under a display name: its sender has no
+id, so `senderId` is `"Orchestrator"`. An item lifted from such a row carried
+that name as `agent`, the card inherited it as `asker`, and when the owner
+answered, the decision service looked for a session called "Orchestrator":
+delivery failed, the answer was queued under that name, and no session of
+that name ever went idle to drain it (D-952, skipped 2026-10-26 02:49Z, never
+delivered).
+
+- `withCanonicalSender` (open-items) rewrites an orchestrator alias
+  (`Orchestrator`, `orc`, the session name itself, case-insensitive) to
+  `ORCHESTRATOR_SESSION_NAME` before a row is read for items, live and in the
+  backfill. Items and cards from the orchestrator now name `crewly-orc`.
+- The decision service routes every alias of the orchestrator to the
+  orchestrator's own queue (`sendToOrchestrator`), so a card recorded with the
+  alias before this change still reaches it.
+- `SubAgentMessageQueue` keys messages by session: an alias is canonicalised on
+  `enqueue`, and a queue saved under an alias by an older build joins the
+  session's own queue when restored. Reads are by session name.
+
+Shared helper: `utils/orchestrator-alias.utils.ts` (`isOrchestratorSender`,
+`canonicalAgentSession`); the delivery enforcer re-exports the former.
+
