@@ -334,6 +334,21 @@ describe('trace-metrics', () => {
 			expect(openEnded.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_agent', start: at(5), end: at(200) })]);
 		});
 
+		it('a work item born blocked until a known time (a commitment follow-up) is a planned wait too', () => {
+			const bornBlocked = (m: number, until: number): TraceEvent =>
+				ev(m, 'workitem.created', system, { refs: { workItemId: 'wi-fu', session: 'sam' }, data: { type: 'delegate', status: 'blocked', blockedUntil: at(until) }, outcome: 'queued' });
+			// Held from 0 until 300 for the promised work; a colleague's step at 200 ends the window: no stall, nobody held.
+			const planned = computeTraceMetrics(root(), [bornBlocked(0, 300), skill(200, 'ella')], { now: atMin(200), stallMinutes: 30 });
+			expect(planned.stalls.count).toBe(0);
+			expect(planned.time.waitingAgentMs).toBe(0);
+			// Past its due time and still held: the agent is late on the promise.
+			const overdue = computeTraceMetrics(root(), [bornBlocked(0, 60), skill(200, 'ella')], { now: atMin(200), stallMinutes: 30 });
+			expect(overdue.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_agent', start: at(60), end: at(200), sessions: ['sam'] })]);
+			// Born blocked with no end in sight: held from the start, as before.
+			const openEnded = computeTraceMetrics(root(), [ev(0, 'workitem.created', system, { refs: { workItemId: 'wi-fu', session: 'sam' }, data: { type: 'delegate', status: 'blocked' }, outcome: 'queued' }), skill(200, 'ella')], { now: atMin(200), stallMinutes: 30 });
+			expect(openEnded.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_agent', start: at(0), end: at(200) })]);
+		});
+
 		it('nobody_pushing when nothing is open and nobody works', () => {
 			const m = computeTraceMetrics(root({ kind: 'goal' }), [skill(0, 'ella'), skill(100, 'ella')], { now });
 			expect(m.stalls.items).toEqual([expect.objectContaining({ cause: 'nobody_pushing', ms: 100 * MIN })]);

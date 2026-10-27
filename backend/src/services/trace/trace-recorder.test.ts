@@ -297,6 +297,20 @@ describe('trace-recorder', () => {
 			expect(evs[1]?.data).not.toHaveProperty('blockedUntil');
 		});
 
+		it('a commitment follow-up born blocked carries its due time as the planned wait', async () => {
+			const id = startGoalTrace({ kind: 'goal', summary: 'g' })!;
+			const followUp: WorkItem = { ...workItem({ traceId: id, metadata: { openItemFollowUp: { requestId: 'r1', itemId: 'c-1' }, dueAt: '2026-10-28T01:00:00.000Z' } }), status: 'blocked', blockSource: 'explicit' };
+			traceWorkItemCreated(followUp);
+			const created = (await events(id)).find((e) => e.type === 'workitem.created');
+			expect(created?.data?.blockedUntil).toBe('2026-10-28T01:00:00.000Z');
+			expect(created?.summary).toContain('blocked until 2026-10-28T01:00:00.000Z');
+			// A due time on an item that is not a follow-up, or not blocked, is not a wait.
+			const other = startGoalTrace({ kind: 'goal', summary: 'h' })!;
+			traceWorkItemCreated({ ...workItem({ traceId: other, metadata: { dueAt: '2026-10-28T01:00:00.000Z' } }), status: 'blocked', blockSource: 'explicit' });
+			traceWorkItemCreated(workItem({ traceId: other, metadata: { openItemFollowUp: { requestId: 'r1', itemId: 'c-2' }, dueAt: '2026-10-28T01:00:00.000Z' } }));
+			for (const e of (await events(other)).filter((x) => x.type === 'workitem.created')) expect(e.data).not.toHaveProperty('blockedUntil');
+		});
+
 		it('records creation and status changes, and builds the prompt header', async () => {
 			const id = startGoalTrace({ kind: 'goal', summary: 'g' })!;
 			const wi = workItem({ traceId: id });

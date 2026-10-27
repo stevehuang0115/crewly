@@ -56,3 +56,17 @@ items (only `queued`/`accepted`/`running`/`scheduled` are live), so the
   `waiting_on_agent` from the until time; open-ended block unchanged.
 - `event-to-workitem-bridge.service.test.ts`: no review for a block with
   `until`.
+
+## Addendum (2026-10-27, follow-up WorkItems)
+
+A commitment follow-up (`open-items.wiring.ts` `buildFollowUpWorkItem`) is created
+directly in `blocked` with `metadata.dueAt` and no `blockedUntil`: the open-items
+sweep, not the reconciler, acts at the due time, so the item must not carry a
+`blockedUntil` the reconciler would lift. The trace recorder therefore derives the
+planned end of the wait itself (`plannedWaitUntil`: `blockedUntil`, else `dueAt`
+when the item is a follow-up) and puts it on `workitem.created` and
+`workitem.status` as `blockedUntil`; `trace-metrics` honours it on `workitem.created`
+the way it already did on a status change to blocked. Seen on TKT-700 (Atlas,
+20:04Z → due 01:00Z): five hours that would have been "waiting on an agent".
+A due time moved later by `updateFollowUpDue` is not re-traced; the metrics keep the
+first one (the item then looks late from the original due time — acceptable).
