@@ -6,6 +6,14 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **Settings › Security lists the tools that reach outside, and what holds each one (crewly#894).** Mail, messaging, your connected accounts, browsers and the desktop: every bundled tool whose effect leaves Crewly, labelled Draft only / Your word / Card, Acts as you, or Nothing in the way. The list is one constant with a test that fails when a new send / post / publish skill is added without a classification.
+
+### Fixed
+
+- **The marketplace Gmail skill's `send` saves a draft instead of sending (crewly#894).** It had sent mail directly through a credential from Settings › Credentials, outside the rule that an agent's send is always a draft the owner releases (#999). Output now says `draft: true` with the draft id; nothing changes for list, read, search and labels.
+
+### Added
+
 - **A held reply comes with a Share / Keep private card (crewly#969).** When a reply drawing on someone's private data is moved to your DM with the agent, a card under it asks whether to post it in the room it was held from. Share posts it there as written, once, and logs the share; Keep private (the default after a day) leaves it in your DM. Saying "share it" in the DM still works.
 
 ### Fixed

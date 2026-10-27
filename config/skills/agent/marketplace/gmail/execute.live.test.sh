@@ -219,12 +219,16 @@ assert "STARRED removed" \
 
 # --- 9. send ---------------------------------------------------------------
 echo ""
-echo "Test 9: send returns success:true with id"
+echo "Test 9: send saves a draft (never sends) and returns its ids"
 call '{"action":"send","to":"a@b.com","subject":"Mock test","body":"Hello world"}' OUT EXIT
 assert "exit=0" "$([ "$EXIT" = "0" ] && echo 1)"
 assert "success:true" "$([ "$(jget "$OUT" '.success')" = "true" ] && echo 1)"
-assert "returned id matches mock" "$([ "$(jget "$OUT" '.id')" = "MOCK_SENT_001" ] && echo 1)"
-assert "returned threadId" "$([ "$(jget "$OUT" '.threadId')" = "THREAD_SENT_001" ] && echo 1)"
+assert "draft:true" "$([ "$(jget "$OUT" '.draft')" = "true" ] && echo 1)"
+assert "returned draft id matches mock" "$([ "$(jget "$OUT" '.id')" = "MOCK_DRAFT_001" ] && echo 1)"
+assert "returned messageId" "$([ "$(jget "$OUT" '.messageId')" = "MOCK_DRAFT_MSG_001" ] && echo 1)"
+assert "returned threadId" "$([ "$(jget "$OUT" '.threadId')" = "THREAD_DRAFT_001" ] && echo 1)"
+assert "not the sent-message id" "$([ "$(jget "$OUT" '.id')" != "MOCK_SENT_001" ] && echo 1)"
+assert "says only the owner sends" "$(echo "$OUT" | grep -q 'only the owner sends' && echo 1)"
 
 # --- 10. send (cc + bcc) ---------------------------------------------------
 echo ""

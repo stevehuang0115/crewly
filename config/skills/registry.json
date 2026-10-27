@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-10-18T13:10:51.841Z",
+  "lastUpdated": "2026-10-27T01:11:19.863Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -779,9 +779,9 @@
       "id": "gmail",
       "type": "skill",
       "name": "Gmail",
-      "description": "Multi-action Gmail skill for agents — list/read/search/send messages, manage labels (add/remove/list), and toggle read/unread. Requires a google-oauth credential bound to the 'gmail' slot with gmail.modify scope.",
+      "description": "Multi-action Gmail skill for agents — list/read/search messages, compose one as a draft (never sends; the owner sends it), manage labels (add/remove/list), and toggle read/unread. Requires a google-oauth credential bound to the 'gmail' slot with gmail.modify scope.",
       "author": "Crewly Team",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "category": "communication",
       "tags": [
         "gmail",
@@ -797,12 +797,12 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-04-25T00:15:10.000Z",
-      "updatedAt": "2026-10-03T03:22:34.836Z",
+      "updatedAt": "2026-10-27T01:11:19.863Z",
       "source": "config/skills/agent/marketplace/gmail",
       "assets": {
         "archive": "config/skills/agent/marketplace/gmail",
         "checksum": "",
-        "sizeBytes": 60677
+        "sizeBytes": 63263
       },
       "metadata": {
         "skillType": "claude-skill",
