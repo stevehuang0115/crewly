@@ -1275,41 +1275,40 @@ describe('ReconcilerService', () => {
       expect(result.errors.some(e => e.includes('Connection timeout'))).toBe(true);
     });
 
-    it('should skip Hybrid Wake when active agents >= maxConcurrentAgents', async () => {
-      // Set maxConcurrentAgents to 2
+    it('wakes a named dormant target even when active agents >= maxConcurrentAgents', async () => {
+      // 2026-10-27: 11 agents up on a 10-agent setting; a trigger's WorkItem for a
+      // stopped agent sat queued 20 minutes because this pass used to end at the
+      // cap without a log line. The setting is enforced by nothing else, so the
+      // targeted wake goes through.
       mockGetSettings.mockResolvedValue({
         general: { maxConcurrentAgents: 2 },
       });
 
       const wi = makeWorkItem({
         status: 'queued',
-        createdAt: THREE_MIN_AGO,
+        createdAt: new Date().toISOString(),
         type: 'delegate',
+        target: 'agent-suspended',
       });
 
-      // Two active agents already at capacity
+      // Two active agents already at the configured cap
       const agentMap = new Map<string, AgentHealth>([
-        ['agent-1', {
-          sessionName: 'agent-1',
-          status: 'active',
-          role: 'developer',
-        }],
-        ['agent-2', {
-          sessionName: 'agent-2',
-          status: 'active',
-          role: 'developer',
-        }],
+        ['agent-1', { sessionName: 'agent-1', status: 'active', role: 'developer' } as AgentHealth],
+        ['agent-2', { sessionName: 'agent-2', status: 'active', role: 'developer' } as AgentHealth],
         ['agent-suspended', {
           sessionName: 'agent-suspended',
           status: 'suspended',
           role: 'developer',
-        }],
+          teamId: 'team-1',
+          memberId: 'member-2',
+        } as AgentHealth],
       ]);
 
       const executeWakeAction = jest.fn().mockResolvedValue(true);
 
       provider = createMockProvider({
         getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAvailablePoolItems: jest.fn().mockResolvedValue([wi]),
         getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
         executeWakeAction,
       });
@@ -1317,10 +1316,55 @@ describe('ReconcilerService', () => {
 
       const result = await service.runFast();
 
-      // executeWakeAction should NOT have been called because we are at capacity
-      expect(executeWakeAction).not.toHaveBeenCalled();
-      expect(result.agentsWoken).toBe(0);
-      expect(result.wakeActions).toHaveLength(0);
+      expect(executeWakeAction).toHaveBeenCalledTimes(1);
+      expect(executeWakeAction.mock.calls[0][0]).toMatchObject({
+        agentSessionName: 'agent-suspended',
+        strategy: 'rehydrate',
+        workItemId: wi.id,
+      });
+      expect(result.agentsWoken).toBe(1);
+    });
+
+    it('redelivers to an idle named target when active agents >= maxConcurrentAgents', async () => {
+      // A redeliver creates no session; the cap never applied to it in spirit.
+      mockGetSettings.mockResolvedValue({
+        general: { maxConcurrentAgents: 1 },
+      });
+
+      const TEN_MIN_AGO = new Date(Date.now() - 10 * 60_000).toISOString();
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: TEN_MIN_AGO,
+        type: 'delegate',
+        target: 'agent-1',
+      });
+
+      const agentMap = new Map<string, AgentHealth>([
+        ['agent-1', {
+          sessionName: 'agent-1',
+          status: 'active',
+          role: 'developer',
+          teamId: 'team-1',
+          memberId: 'member-1',
+          activeWorkItemCount: 0,
+        } as AgentHealth],
+      ]);
+
+      const executeWakeAction = jest.fn().mockResolvedValue(true);
+
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAvailablePoolItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+
+      const result = await service.runFast();
+
+      expect(executeWakeAction).toHaveBeenCalledTimes(1);
+      expect(executeWakeAction.mock.calls[0][0]).toMatchObject({ agentSessionName: 'agent-1', strategy: 'redeliver' });
+      expect(result.agentsWoken).toBe(1);
     });
 
     it('should allow Hybrid Wake when active agents < maxConcurrentAgents', async () => {
