@@ -4,6 +4,9 @@ User-visible changes. Newest first.
 
 ## Unreleased
 
+### Changed
+- **Agents are told where to wait.** `report-progress` now says a progress note is not a place to wait: a task that can only proceed at a known time is blocked with `block-task` `until`, not held `running` with "waiting for …" notes. The "went quiet on a running task" review the lead receives says the same, so the lead can point the holder at it.
+
 ### Added
 - **`block-task` takes `until`: work that can only proceed at a known time parks itself and comes back on its own.** An agent whose task needs a data window to close or a deploy to settle had three bad choices — hold the item `running` while waiting (the idle-holder review fires), report it done before it was (the lead rejects it, a retry is spent), or block it and hope someone remembers to unblock it. `block-task … "until":"2026-10-27T08:30:00Z"` releases the claim and, once the time has passed, the reconciler returns the item to `queued` for the same agent (seen on CE-433: a GA4 readout rejected twice for "not delivered yet", two of three retries spent waiting). `POST /api/task-pool/block/:id` takes the same `until`; a time that does not parse or is already past is refused with 400. Blocks without `until` are unchanged.
 

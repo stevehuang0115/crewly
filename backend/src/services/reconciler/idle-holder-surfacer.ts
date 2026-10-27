@@ -54,6 +54,7 @@ export function buildIdleHolderReview(holder: IdleHolder, team: Team | null, now
 			`\`${agentSession}\` claimed WorkItem \`${wi.id}\` and then stopped: no output and no API call long enough for its claim to lapse, while its session is still up.`,
 			'It did not report done, blocked or failed. The item went back to the queue and is offered to it again.',
 			'Check whether it is stuck, waiting for something, or gave up without saying so; then unblock, re-assign or cancel the item.',
+			'If it is waiting for a known time (a data window, a timer, a deploy settling), have it block the item with `block-task` and `until` instead of holding it — the item returns to it when the time has passed.',
 		].join('\n'),
 		status: 'queued',
 		createdAt: now.toISOString(),
