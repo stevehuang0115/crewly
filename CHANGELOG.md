@@ -4,6 +4,10 @@ User-visible changes. Newest first.
 
 ## Unreleased
 
+### Added
+
+- **A held reply comes with a Share / Keep private card (crewly#969).** When a reply drawing on someone's private data is moved to your DM with the agent, a card under it asks whether to post it in the room it was held from. Share posts it there as written, once, and logs the share; Keep private (the default after a day) leaves it in your DM. Saying "share it" in the DM still works.
+
 ### Fixed
 
 - **`spawn-subagent` says when the provider is out of credit (crewly#1317).** Where the fallback service has marked the in-process runtime exhausted (DeepSeek's "Insufficient Balance", for example), the skill now refuses with `provider_exhausted` and the date instead of starting a helper that fails at its first model call with "No output generated"; a helper that does fail carries the worker's last stderr lines in `error`, and its log file (`<parent>__sub-<n>.log`) is written — a slash in the session name had sent it to a directory that does not exist.

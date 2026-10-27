@@ -29,8 +29,11 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  *   specs/2026-10-06-gmail-approve-send-and-reply-wake.md)
  * - `owner_receipt_format`: one real sample of the nightly receipt — turn it on
  *   in this format, or keep the per-ask format (specs/owner-receipt.md, #856)
+ * - `private_share`: a reply the audience check moved to the owner DM because
+ *   it draws on someone's private data — post it in the room it was held
+ *   from, or keep it private (crewly#969, specs/per-person-access.md)
  */
-export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator' | 'app_template' | 'model_tier_change' | 'gmail_send';
+export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator' | 'app_template' | 'model_tier_change' | 'gmail_send' | 'private_share';
 
 /** How a decision came to be: asked live, or carded by the open-items backfill. */
 export type DecisionSource = 'live' | 'backfill';
@@ -185,6 +188,27 @@ export interface GmailSendSubject {
 }
 
 /**
+ * The held reply a `private_share` decision is about (crewly#969). Fixed when
+ * the reply is moved to the owner DM; only the owner's tap posts it.
+ */
+export interface PrivateShareSubject {
+  /** Agent whose reply it is */
+  agentSession: string;
+  /** Display name ("Owen") */
+  agentName: string;
+  /** The reply text as the owner saw it in the DM (without the held-from note) */
+  content: string;
+  /** Where it was going before the check moved it (a resolved reply destination, as JSON) */
+  destination: unknown;
+  /** The shared place in words ("#ce", "the CE-7 ticket thread") */
+  heldFrom: string;
+  /** People (ids) whose data it draws on */
+  people: string[];
+  /** The owner DM conversation the reply went to instead */
+  ownerDm: string;
+}
+
+/**
  * What the owner needs to answer a card without opening the PR or the ticket
  * (crewly#1369 §3). Every field is one short line in the owner's language.
  * Required on a merge card: at least {@link DecisionContext.runtimeChanges}.
@@ -285,6 +309,8 @@ export interface OwnerDecision {
   browser?: BrowserActionSubject;
   /** The held email (kind `gmail_send`) */
   gmail?: GmailSendSubject;
+  /** The held reply (kind `private_share`) */
+  privateShare?: PrivateShareSubject;
   /** What the owner would grant (kind `app_collaborator`) */
   appCollaborator?: AppCollaboratorSubject;
   /** The template the owner would list (kind `app_template`) */

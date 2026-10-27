@@ -37,6 +37,7 @@ import { triggeredByMetadata, triggeredByPhrase, withTriggeredByLine } from './t
 import { stripOwnerTextIds } from '../../utils/owner-text-ids.utils.js';
 import { memberNameFromSession } from '../../utils/member-session-name.utils.js';
 import { checkReplyAudience, recordPrivateShare, type ReplyAudienceDeps } from './reply-audience.js';
+import { getPrivateShareDecisions, type HeldReply, type HeldReplyPost } from './private-share-decisions.js';
 
 /** How long an identical reply from one agent counts as a duplicate send. */
 const REPLY_DUPLICATE_WINDOW_MS = 120_000;
@@ -123,6 +124,12 @@ export interface ReplyDeliveryDeps {
    * place. Omitted: no check.
    */
   audience?: ReplyAudienceDeps;
+  /**
+   * A reply was moved to the owner DM: raise the Share / Keep private card
+   * under it (crewly#969). Called after the DM copy landed; a failure is
+   * logged, the DM copy stands.
+   */
+  privateShareCard?: (held: HeldReply) => Promise<unknown>;
 }
 
 /** What a delivery did. */
@@ -310,6 +317,7 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
   // crewly#969: what the agent read through a person's grant is that person's
   // data; a reply drawing on it does not go where other people read.
   let heldFrom: string | undefined;
+  let held: HeldReply | undefined;
   if (d.audience) {
     const audience = { ...d.audience, ...(d.conversationPlace ? { conversationPlace: d.conversationPlace } : {}) };
     const shared = input.share === true && (await ownerSaidShare(input.session, d)) ? recordPrivateShare(input.session, dest, audience) : [];
@@ -326,6 +334,7 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
       }
       if (verdict.kind === 'redirect') {
         logger.info('Agent reply moved to the owner DM: it draws on private data', { session: input.session, heldFrom: verdict.heldFrom, people: verdict.people });
+        held = { session: input.session, content: input.content, destination: dest, heldFrom: verdict.heldFrom, people: verdict.people, ownerDm: verdict.destination.conversationId };
         dest = verdict.destination;
         heldFrom = verdict.heldFrom;
         input = { ...input, content: `${verdict.note}\n\n${input.content}` };
@@ -333,7 +342,13 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
     }
   }
   let result = await attempt(input, dest, prompt, d);
-  if (result.ok && heldFrom) result = { ...result, heldFrom };
+  if (result.ok && heldFrom) {
+    result = { ...result, heldFrom };
+    if (held && d.privateShareCard) {
+      const card = held;
+      void d.privateShareCard(card).catch((err) => logger.warn('Share card not raised for a held reply', { session: card.session, heldFrom: card.heldFrom, error: err instanceof Error ? err.message : String(err) }));
+    }
+  }
   if (result.ok || ('held' in result && result.held)) return result;
 
   // Work handed over from the owner's DM with another agent (a lead's
@@ -1095,7 +1110,27 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
     currentTrace: (session) => getTraceContext().currentTrace(session),
     conversationPlace: (id) => chatConversationPlace(chatLookup, id),
     audience: await defaultAudienceDeps(resolver, chatLookup),
+    privateShareCard: (held) => getPrivateShareDecisions()?.onHeld(held) ?? Promise.resolve(null),
   };
+}
+
+/**
+ * Post a reply the audience check held, where it was going, as written: the
+ * owner tapped Share on its card (crewly#969). The audience check is not run
+ * again (the owner's tap is the approval); the share itself is logged by the
+ * card handler.
+ *
+ * @param held - The held reply
+ * @param deps - Delivery deps (default: the real ones)
+ * @returns What happened
+ */
+export async function postHeldReply(held: HeldReply, deps?: ReplyDeliveryDeps): Promise<HeldReplyPost> {
+  const d = deps ?? (await defaultReplyDeliveryDeps());
+  const place = (held.destination.kind === 'conversation' ? d.conversationPlace?.(held.destination.conversationId) : null) ?? held.heldFrom;
+  const result = await attempt({ session: held.session, content: held.content }, held.destination, undefined, d);
+  if (!result.ok) return { ok: false, error: result.error };
+  logger.info('Held reply posted where it was going: the owner tapped Share', { session: held.session, place });
+  return { ok: true, place };
 }
 
 /**
@@ -1137,6 +1172,7 @@ async function defaultAudienceDeps(resolver: ReplyResolverDeps, chatLookup: Chat
     },
     slackChannelOf: (id) => resolver.slackChannelOfConversation(id),
     ownerDm: (session) => resolver.ownerDm(session),
+    offersCard: () => getPrivateShareDecisions()?.offersCard() ?? false,
     personName: (id) => {
       try {
         return getPeopleDirectory().get(id)?.name ?? undefined;

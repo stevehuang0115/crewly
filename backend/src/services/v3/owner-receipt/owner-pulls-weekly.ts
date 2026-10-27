@@ -85,6 +85,7 @@ export function classifyAgentPost(facts: AgentPostFacts): PullKind {
 const REVIEW_DECISION_KINDS: ReadonlySet<NonNullable<OwnerDecision['kind']>> = new Set([
   'browser_action',
   'gmail_send',
+  'private_share',
   'app_collaborator',
   'app_template',
   'model_tier_change',
