@@ -21,7 +21,7 @@ import type {
   WakeAction,
   WakeActionResult,
 } from '../../types/v2/index.js';
-import { isExplicitlyBlocked, isWaitingOnHumanBlocked } from '../../types/v2/work-item.types.js';
+import { isExplicitlyBlocked, isWaitingOnHumanBlocked, isBlockedUntilReached } from '../../types/v2/work-item.types.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { computeWorkItemUsage } from '../task-pool/work-item-usage.js';
 import { ClaimService } from '../task-pool/claim.service.js';
@@ -730,13 +730,20 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    *   rule's OWN requeue was also refused, leaving the item blocked
    *   forever while `workItemsRequeued` still counted it as done).
    */
-  async requeueWorkItem(workItemId: string, opts?: { allowWaitingOnHuman?: boolean }): Promise<void> {
+  async requeueWorkItem(
+    workItemId: string,
+    opts?: { allowWaitingOnHuman?: boolean; allowExplicitWhenDue?: boolean },
+  ): Promise<void> {
     try {
       const pool = TaskPoolService.getInstance();
       // Defence in depth: the rules already skip explicit blocks, but the
-      // reconciler must never be the one to undo an agent's /block.
+      // reconciler must never be the one to undo an agent's /block. The one
+      // exception is the agent's own `until`: a block given a time lifts
+      // once that time has passed (block-task `until`), and only the
+      // due-block rule asks for it.
       const current = await pool.findWorkItem(workItemId);
-      if (current && isExplicitlyBlocked(current)) {
+      const dueExplicit = !!current && opts?.allowExplicitWhenDue === true && isBlockedUntilReached(current);
+      if (current && isExplicitlyBlocked(current) && !dueExplicit) {
         this.logger.info('Not re-queuing an explicitly blocked work item (stays blocked until unblocked)', { workItemId });
         return;
       }
@@ -744,8 +751,12 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         this.logger.info('Not re-queuing a waiting_on_human work item (resumed when the prompt is gone)', { workItemId });
         return;
       }
-      await pool.releaseBack(workItemId, 'reconciler_requeue');
-      this.logger.info('Re-queued work item', { workItemId, allowWaitingOnHuman: opts?.allowWaitingOnHuman ?? false });
+      await pool.releaseBack(workItemId, dueExplicit ? 'blocked_until_reached' : 'reconciler_requeue');
+      this.logger.info('Re-queued work item', {
+        workItemId,
+        allowWaitingOnHuman: opts?.allowWaitingOnHuman ?? false,
+        blockedUntilReached: dueExplicit,
+      });
     } catch (error) {
       this.logger.error('Failed to re-queue work item', {
         workItemId,

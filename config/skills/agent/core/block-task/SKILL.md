@@ -1,7 +1,7 @@
 ---
 name: Block Task
-description: Mark a task as blocked with a reason and optional questions for the orchestrator.
-version: 1.0.0
+description: Mark a task as blocked with a reason and optional questions for the orchestrator; with `until`, park it until a known time.
+version: 1.1.0
 category: task-management
 skillType: claude-skill
 assignableRoles:
@@ -39,6 +39,8 @@ execution:
 
 Mark a task as blocked with a reason explaining the blocker. Optionally include questions for the orchestrator and an urgency level.
 
+If the task can only proceed at a known time (a report that needs a data window to close, a check after a deploy settles), block it with `until`: you keep nothing `running` while you wait, and the item comes back to you on its own when the time has passed. Do not report such a task done before it is, and do not hold it `running` while waiting.
+
 ## Parameters
 
 | Parameter | Required | Description |
@@ -48,6 +50,7 @@ Mark a task as blocked with a reason explaining the blocker. Optionally include 
 | `sessionName` | No | Your session name (defaults to `CREWLY_SESSION_NAME`) |
 | `questions` | No | Specific questions for the orchestrator to resolve the blocker |
 | `urgency` | No | Urgency level: `low`, `medium`, `high`, `critical` |
+| `until` | No | ISO 8601 time in UTC (`2026-10-27T08:30:00Z`), in the future. The block lifts on its own once it has passed: the item returns to `queued` for you (within about a minute of the time), and you take it before new work. |
 
 Only a WorkItem you have claimed (`running`) can be blocked.
 
@@ -55,8 +58,10 @@ Only a WorkItem you have claimed (`running`) can be blocked.
 
 - Your claim is released, so your claim slot is free and you can take other work.
   You do **not** need to `release-claim` it yourself to free the slot.
-- The item stays `blocked` until someone unblocks it. It is not re-queued or
-  re-dispatched to you automatically.
+- Without `until`, the item stays `blocked` until someone unblocks it. It is not
+  re-queued or re-dispatched to you automatically.
+- With `until`, the block lifts on its own once that time has passed; the item
+  returns to `queued` for you. Unblocking it earlier works the same as below.
 - To unblock it (when the blocker is resolved), release it back to the pool with
   the `release-claim` skill (`POST /task-pool/release/:workItemId`). It returns to
   `queued` for you, and you take it before new work.
@@ -65,6 +70,12 @@ Only a WorkItem you have claimed (`running`) can be blocked.
 
 ```bash
 bash config/skills/agent/core/block-task/execute.sh '{"workItemId":"abc-123","sessionName":"dev-1","reason":"Missing production database credentials","questions":"Where are the DB credentials stored?","urgency":"high"}'
+```
+
+Work that can only proceed at a known time:
+
+```bash
+bash config/skills/agent/core/block-task/execute.sh '{"workItemId":"abc-123","sessionName":"dev-1","reason":"GA4 readout needs the full 7-day window; the data is complete after 08:30Z","until":"2026-10-27T08:30:00Z"}'
 ```
 
 ## Output

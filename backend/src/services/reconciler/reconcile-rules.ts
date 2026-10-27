@@ -37,6 +37,8 @@ import {
   DISPOSITION_REQUIRED_STATUSES,
   isWorkItemDisposed,
   isExplicitlyBlocked,
+  isBlockedUntilReached,
+  blockedUntilOf,
   isWaitingOnHumanBlocked,
   WORK_ITEM_BLOCK_SOURCES,
 } from '../../types/v2/work-item.types.js';
@@ -1989,4 +1991,53 @@ export function detectDependencyResolvedWorkItems(
   }
 
   return { corrections, unblockedIds };
+}
+
+/**
+ * Lifts explicit blocks whose `until` time has passed (block-task `until`).
+ *
+ * An agent that can only proceed at a known time blocks its item with an
+ * `until`; here the block lifts and the item returns to `queued` for the
+ * same target (`releaseBack` keeps `target`), who takes it before new work.
+ * An explicit block without `until`, a system block and a waiting_on_human
+ * park are not touched — they keep their own rules.
+ *
+ * The correction carries `blockSource: 'explicit'` so the apply path can tell
+ * the data provider that this blocked → queued flip is the one explicit-block
+ * requeue the reconciler may perform.
+ *
+ * @param workItems - All WorkItems
+ * @param now - The current time (epoch ms); defaults to now
+ * @returns Corrections (blocked → queued) and the ids they release
+ *
+ * @example
+ * ```typescript
+ * const due = detectDueBlockedWorkItems(workItems);
+ * result.corrections.push(...due.corrections);
+ * ```
+ */
+export function detectDueBlockedWorkItems(
+  workItems: WorkItem[],
+  now: number = Date.now(),
+): { corrections: ReconcileCorrection[]; releasedIds: string[] } {
+  const corrections: ReconcileCorrection[] = [];
+  const releasedIds: string[] = [];
+
+  for (const wi of workItems) {
+    if (!isBlockedUntilReached(wi, now)) continue;
+    const until = blockedUntilOf(wi);
+    const untilIso = until === null ? 'unknown' : new Date(until).toISOString();
+    corrections.push(createCorrection({
+      entityType: 'work_item',
+      entityId: wi.id,
+      previousState: 'blocked',
+      newState: 'queued',
+      reason: `Block lifted: its until time ${untilIso} has passed, back to queued for ${wi.target ?? 'the pool'}`,
+      evidence: `blockSource=explicit, blockedUntil=${untilIso}, now=${new Date(now).toISOString()}`,
+      blockSource: WORK_ITEM_BLOCK_SOURCES.EXPLICIT,
+    }));
+    releasedIds.push(wi.id);
+  }
+
+  return { corrections, releasedIds };
 }

@@ -1017,6 +1017,32 @@ describe('LiveReconcilerDataProvider', () => {
       expect(mockPool.releaseBack).not.toHaveBeenCalled();
     });
 
+    // block-task `until`: the one explicit-block requeue the reconciler may
+    // perform — the agent asked for it when it set the time.
+    it('lifts an explicit block whose until time has passed when the due-block rule asks', async () => {
+      const past = new Date(Date.now() - 60_000).toISOString();
+      mockPool.findWorkItem.mockResolvedValueOnce({ id: 'wi-1', status: 'blocked', blockSource: 'explicit', metadata: { blockedUntil: past } });
+      await provider.requeueWorkItem('wi-1', { allowExplicitWhenDue: true });
+
+      expect(mockPool.releaseBack).toHaveBeenCalledWith('wi-1', 'blocked_until_reached');
+    });
+
+    it('does not lift a timed explicit block before its time, even when asked', async () => {
+      const future = new Date(Date.now() + 60 * 60_000).toISOString();
+      mockPool.findWorkItem.mockResolvedValueOnce({ id: 'wi-1', status: 'blocked', blockSource: 'explicit', metadata: { blockedUntil: future } });
+      await provider.requeueWorkItem('wi-1', { allowExplicitWhenDue: true });
+
+      expect(mockPool.releaseBack).not.toHaveBeenCalled();
+    });
+
+    it('does not lift a due explicit block for some OTHER rule\'s requeue (no flag)', async () => {
+      const past = new Date(Date.now() - 60_000).toISOString();
+      mockPool.findWorkItem.mockResolvedValueOnce({ id: 'wi-1', status: 'blocked', blockSource: 'explicit', metadata: { blockedUntil: past } });
+      await provider.requeueWorkItem('wi-1');
+
+      expect(mockPool.releaseBack).not.toHaveBeenCalled();
+    });
+
     it('still re-queues a system-blocked WorkItem (agent back online)', async () => {
       mockPool.findWorkItem.mockResolvedValueOnce({ id: 'wi-1', status: 'blocked' });
       await provider.requeueWorkItem('wi-1');
