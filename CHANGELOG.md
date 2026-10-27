@@ -5,6 +5,7 @@ User-visible changes. Newest first.
 ## Unreleased
 
 ### Fixed
+- **Autopilot retro pages now land in the wiki.** The daily retro (project vault `llm-curated/autopilot-retros/<day>.md`) and the weekly cross-team retro (global vault `…/weekly/<week>.md`) were written without a `keep_because`, so the wiki's retention gate refused every page while the retro WorkItem still reported success — no retro page had ever been written (#985). The writers now pass one, and a refused page is logged with the gate's reason.
 - Marketplace auto-update wiped the item it was updating: the staged GitHub-source install wrote its temporary `-update-tmp` path into the installed-items manifest, so the old-version uninstall deleted the staged copy and the final rename failed with ENOENT, leaving the skill uninstalled (seen with `gmail@1.2.0`). The staged install no longer touches the manifest; `installItem` finalizes once the files are in place.
 - **A member whose role is `fullstack-developer` gets the full-stack prompt, not the generalist one.** The prompt directory is `fullstack-dev`; the spelled-out name (and `full-stack-developer`, `fullstack`, `backend-dev`, `frontend-dev`, `customer-support`, `pm`) now resolves to its directory instead of falling back with a "No prompt for this role" warning.
 

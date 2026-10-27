@@ -117,6 +117,13 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	RETRO_MAX_MILESTONES: 5,
 	/** Wiki folder (inside the project vault) the retros are written to */
 	RETRO_WIKI_DIR: 'llm-curated/autopilot-retros',
+	/**
+	 * `keep_because` the retro pages (daily and weekly) are written with. The
+	 * vault's retention gate refuses a page without one, and the retro writers
+	 * used to omit it — so no retro page was ever written (the WorkItem still
+	 * reported success).
+	 */
+	RETRO_WIKI_KEEP_BECAUSE: 'reusable_method',
 	/** Project (by name) harness-gap tickets are filed on */
 	RETRO_HARNESS_PROJECT: 'Crewly',
 	/**
