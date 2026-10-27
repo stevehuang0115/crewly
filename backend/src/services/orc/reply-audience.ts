@@ -28,6 +28,8 @@ export const PRIVATE_REPLY_ACTIONS = {
   HELD: 'connector.private_output.held',
   /** The owner said to share it: posted to the shared place with `--share` */
   SHARED: 'connector.private_output.shared',
+  /** The owner kept a held reply in their DM (the card's Keep private) */
+  KEPT: 'connector.private_output.kept',
 } as const;
 
 /** What the check needs to know. */
@@ -46,6 +48,8 @@ export interface ReplyAudienceDeps {
   conversationPlace?(conversationId: string): string | null;
   /** Activity-log writer (default: the real one) */
   record?(input: ActivityEntryInput): void;
+  /** Whether a Share / Keep private card follows the DM copy (the note then points at it) */
+  offersCard?(): boolean;
 }
 
 /** The check's verdict. */
@@ -146,6 +150,20 @@ export function recordPrivateShare(session: string, dest: Exclude<ReplyDestinati
 }
 
 /**
+ * Whether a share card follows the DM copy (never throws).
+ *
+ * @param deps - Lookups
+ * @returns True when the card is offered
+ */
+function offersCard(deps: ReplyAudienceDeps): boolean {
+  try {
+    return deps.offersCard?.() === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Check whether a reply may go where the resolver sent it.
  *
  * @param session - Agent session
@@ -197,7 +215,9 @@ export async function checkReplyAudience(
       source: 'owner-dm',
       reason: `held from ${heldFrom}: it draws on ${who}'s data`,
     },
-    note: `_Held from ${heldFrom}: this draws on ${who}'s data, which only you and they may see. Say "share it" here and I will post it there._`,
+    note: offersCard(deps)
+      ? `_Held from ${heldFrom}: this draws on ${who}'s data, which only you and they may see. Tap *Share* on the card below, or say "share it" here, and I will post it there._`
+      : `_Held from ${heldFrom}: this draws on ${who}'s data, which only you and they may see. Say "share it" here and I will post it there._`,
     people,
     heldFrom,
   };

@@ -11,6 +11,7 @@ import {
   resetRouteCheckStatsForTesting,
   resolveSlackPlace,
   type ReplyDeliveryDeps,
+  postHeldReply,
 } from './reply-destination.wiring.js';
 import { resetRefusedReplyNoticesForTesting } from './refused-decision-reply-notice.js';
 import { AgentPromptReferenceService } from './agent-prompt-reference.service.js';
@@ -89,6 +90,41 @@ describe('deliverReply', () => {
     const d2 = deps({ audience: { recentPeople: () => [], conversationKind: () => 'shared', ownerDm: async () => 'dm-owen', record } });
     const r2 = await deliverReply({ session: 'quinn', content: 'Her Q3 invoices total 12k', reference: { ticket: 'TKT-187' } }, d2);
     expect(r2.ok && r2.destination).toEqual(expect.objectContaining({ conversationId: 'room-ce' }));
+  });
+
+  it('a held reply raises the Share / Keep private card under the DM copy, and a Share posts it as written (#969)', async () => {
+    const record = jest.fn();
+    const privateShareCard = jest.fn(async (_held: unknown) => null);
+    const audience = {
+      recentPeople: (s: string) => (s === 'owen' ? ['UALICE'] : []),
+      conversationKind: (id: string) => (id === 'dm-owen' ? 'dm' : 'shared') as 'dm' | 'shared',
+      ownerDm: async () => 'dm-owen',
+      personName: () => 'Alice',
+      offersCard: () => true,
+      record,
+    };
+    const d = deps({ audience, privateShareCard, conversationPlace: (id) => (id === 'room-ce' ? '#ce' : null) });
+    const r = await deliverReply({ session: 'owen', content: 'Her Q3 invoices total 12k', reference: { ticket: 'TKT-187' } }, d);
+    expect(r.ok && r.heldFrom).toBe('#ce');
+    // The DM copy points at the card; the card gets the reply as written and where it was going.
+    expect(d.deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'dm-owen', content: expect.stringMatching(/Tap \*Share\* on the card below/) }));
+    expect(privateShareCard).toHaveBeenCalledWith({
+      session: 'owen',
+      content: 'Her Q3 invoices total 12k',
+      destination: expect.objectContaining({ kind: 'conversation', conversationId: 'room-ce' }),
+      heldFrom: '#ce',
+      people: ['UALICE'],
+      ownerDm: 'dm-owen',
+    });
+    // The owner tapped Share: the held reply lands in the room without the audience check running again.
+    const posted = await postHeldReply(privateShareCard.mock.calls[0][0] as never, d);
+    expect(posted).toEqual({ ok: true, place: '#ce' });
+    expect(d.deliver).toHaveBeenLastCalledWith(expect.objectContaining({ conversationId: 'room-ce', content: 'Her Q3 invoices total 12k' }));
+    // No card hook wired (or no Slack): the DM copy keeps the words-only note and nothing else happens.
+    const d2 = deps({ audience: { ...audience, offersCard: () => false }, conversationPlace: (id) => (id === 'room-ce' ? '#ce' : null) });
+    await deliverReply({ session: 'owen', content: 'Her Q4 invoices total 9k', reference: { ticket: 'TKT-187' } }, d2);
+    expect(d2.deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'dm-owen', content: expect.stringMatching(/Say "share it" here and I will post it there\._\n\n/) }));
+    expect(d2.deliver).not.toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringMatching(/Tap \*Share\*/) }));
   });
 
   it('reply --share posts the held reply to the room once the owner said so in the DM, and only then (#969)', async () => {

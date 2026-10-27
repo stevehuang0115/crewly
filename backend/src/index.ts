@@ -3044,6 +3044,36 @@ void (async () => {
 				});
 			}
 
+			// A reply held from a room because it draws on someone's private data:
+			// the owner taps Share / Keep private on a card in the DM (crewly#969).
+			try {
+				const { PrivateShareDecisions, setPrivateShareDecisions } = await import('./services/orc/private-share-decisions.js');
+				const { postHeldReply } = await import('./services/orc/reply-destination.wiring.js');
+				const { DecisionService } = await import('./services/decisions/decision.service.js');
+				const { getSlackTeamChannelService } = await import('./services/slack/slack-team-channel.service.js');
+				const { getPeopleDirectory } = await import('./services/people/people-directory.service.js');
+				const shareCards = new PrivateShareDecisions({
+					decisions: () => DecisionService.getInstance(),
+					canAsk: () => !!DecisionService.getInstance() && getSlackService().isConnected(),
+					post: (held) => postHeldReply(held),
+					slackChannelOf: (conversationId) =>
+						getSlackTeamChannelService()?.findByChatChannelId(conversationId)?.slackChannelId ??
+						getSlackAgentDmService()?.findByChatChannelId(conversationId)?.slackChannelId ??
+						null,
+					agentNameOf: async (sessionName) => {
+						const teams = await this.storageService.getTeams().catch(() => []);
+						return teams.flatMap((t) => t.members ?? []).find((m) => m.sessionName === sessionName)?.name;
+					},
+					personName: (id) => getPeopleDirectory().get(id)?.name ?? undefined,
+				});
+				setPrivateShareDecisions(shareCards);
+				DecisionService.registerKindHandler('private_share', shareCards);
+			} catch (error) {
+				this.logger.warn('Gmail approve-then-send / reply watch not started', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
 			// Start chat-v2 WebSocket gateway + dispatcher (Phase 1 Chat MVP).
 			// The gateway fans `message`/`presence` frames to subscribers of
 			// `/ws/chat?channelId=...`. The dispatcher pushes user-origin

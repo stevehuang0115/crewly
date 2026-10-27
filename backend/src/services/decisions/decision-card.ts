@@ -7,7 +7,7 @@
 
 import { DECISION_CONSTANTS } from '../../constants.js';
 import type { SlackBlock } from '../../types/slack.types.js';
-import type { DecisionAnswerFile, DecisionButtonValue, DecisionChoice, DecisionLanguage, DecisionOption, OwnerDecision } from '../../types/decision.types.js';
+import type { DecisionAnswerFile, DecisionButtonValue, DecisionChoice, DecisionKind, DecisionLanguage, DecisionOption, OwnerDecision } from '../../types/decision.types.js';
 import type { SlackFile } from '../../types/slack.types.js';
 import { isAudioOrVideo } from '../../utils/inbound-file-hint.utils.js';
 import { matchOption } from './decision-contract.js';
@@ -145,7 +145,7 @@ export function pendingContextLine(d: OwnerDecision, now: Date = new Date()): st
   }
   if (d.system?.defaultIsDecline) {
     parts.push(t.declineDefault(when, defaultLabel(d)));
-  } else if (d.kind === 'browser_action' || d.kind === 'gmail_send') {
+  } else if (isHeldAction(d)) {
     parts.push(t.heldDefault(when, defaultLabel(d)));
   } else if (d.sensitive) {
     parts.push(t.sensitive(d.sensitive));
@@ -239,7 +239,25 @@ export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date =
  * @returns True when snoozing is allowed
  */
 export function canRemind(d: Pick<OwnerDecision, 'kind' | 'system'> & Partial<Pick<OwnerDecision, 'tierChange'>>): boolean {
-  return d.kind !== 'browser_action' && d.kind !== 'gmail_send' && !d.system && !isNoticeCard(d);
+  return !isHeldAction(d) && !d.system && !isNoticeCard(d);
+}
+
+/**
+ * Decision kinds that hold one concrete action (a browser click, an email, a
+ * reply into a room) until the owner says yes: their default is the safe
+ * "no", applied unanswered; no snooze or skip, and words that are neither
+ * yes nor no leave them open.
+ */
+export const HELD_ACTION_KINDS: ReadonlySet<DecisionKind> = new Set<DecisionKind>(['browser_action', 'gmail_send', 'private_share']);
+
+/**
+ * Whether a decision holds an action until the owner approves it ({@link HELD_ACTION_KINDS}).
+ *
+ * @param d - Decision
+ * @returns True for a held action
+ */
+export function isHeldAction(d: Pick<OwnerDecision, 'kind'>): boolean {
+  return !!d.kind && HELD_ACTION_KINDS.has(d.kind);
 }
 
 /**
@@ -267,7 +285,7 @@ export function isNoticeCard(d: Partial<Pick<OwnerDecision, 'tierChange'>>): boo
 export function canSkip(d: Pick<OwnerDecision, 'kind' | 'system' | 'sensitive'> & Partial<Pick<OwnerDecision, 'merge' | 'options' | 'tierChange'>>): boolean {
   if (d.merge && d.options && noOption(d.options)) return false;
   if (isNoticeCard(d)) return false;
-  return d.kind !== 'browser_action' && d.kind !== 'gmail_send' && !d.system && !d.sensitive;
+  return !isHeldAction(d) && !d.system && !d.sensitive;
 }
 
 /**
@@ -297,7 +315,7 @@ export function skipChoice(d: Pick<OwnerDecision, 'kind' | 'system' | 'sensitive
  * @returns True when the default is safe to apply unanswered
  */
 export function defaultIsSafe(d: Pick<OwnerDecision, 'kind' | 'system'>): boolean {
-  return d.kind === 'browser_action' || d.kind === 'gmail_send' || d.system?.defaultIsDecline === true;
+  return isHeldAction(d) || d.system?.defaultIsDecline === true;
 }
 
 /**

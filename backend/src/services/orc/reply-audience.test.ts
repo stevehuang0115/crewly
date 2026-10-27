@@ -30,6 +30,17 @@ function deps(over: Partial<ReplyAudienceDeps> = {}): ReplyAudienceDeps & { reco
   return { ...base, ...over, record } as ReplyAudienceDeps & { record: jest.Mock };
 }
 
+describe('the DM note', () => {
+  it('points at the Share card only when one follows the DM copy', async () => {
+    const withCard = await checkReplyAudience('owen', room, deps({ offersCard: () => true }));
+    expect(withCard.kind === 'redirect' && withCard.note).toMatch(/Tap \*Share\* on the card below, or say "share it" here/);
+    const noCard = await checkReplyAudience('owen', room, deps());
+    expect(noCard.kind === 'redirect' && noCard.note).toMatch(/Say "share it" here and I will post it there\._$/);
+    const throwing = await checkReplyAudience('owen', room, deps({ offersCard: () => { throw new Error('x'); } }));
+    expect(throwing.kind === 'redirect' && throwing.note).toMatch(/Say "share it" here/);
+  });
+});
+
 describe('isSharedPlace', () => {
   it('owner DMs, Slack DMs and internal agent messages are private; rooms, channels, ticket threads and unknown conversations are shared', () => {
     const d = deps();
