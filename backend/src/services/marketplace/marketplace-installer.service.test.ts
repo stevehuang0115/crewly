@@ -302,6 +302,58 @@ describe('marketplace-installer.service', () => {
       expect(result.success).toBe(true);
       expect(result.message).toContain('v2.0.0');
     });
+
+    it('keeps the final directory and manifest path after a GitHub-source update (no -update-tmp wipe)', async () => {
+      // Regression: the temp install used to finalize into the manifest, so the
+      // following uninstall removed the temp directory instead of the old one and
+      // rename() failed with ENOENT — leaving the skill uninstalled.
+      const files = ['SKILL.md', 'execute.sh', 'skill.json'];
+      const sourcePath = 'config/skills/agent/marketplace/gh-skill';
+      const makeGitHubItem = (version: string) => makeFakeItem({
+        id: 'gh-skill',
+        name: 'GitHub Skill',
+        version,
+        assets: { archive: sourcePath },
+        metadata: { files },
+      });
+      const fetchFor = (version: string) => jest.fn(async (url: string) => ({
+        ok: true,
+        arrayBuffer: () => Promise.resolve(toArrayBuffer(`${path.basename(url)} ${version}`)),
+      }));
+
+      global.fetch = fetchFor('1.0.0') as unknown as typeof fetch;
+      const first = await installItem(makeGitHubItem('1.0.0'));
+      expect(first.success).toBe(true);
+
+      global.fetch = fetchFor('2.0.0') as unknown as typeof fetch;
+      const result = await updateItem(makeGitHubItem('2.0.0'));
+      expect(result.success).toBe(true);
+
+      const finalPath = path.join(tempDir, 'marketplace', 'skills', 'gh-skill');
+      expect(existsSync(finalPath)).toBe(true);
+      expect(existsSync(`${finalPath}-update-tmp`)).toBe(false);
+      expect(await readFile(path.join(finalPath, 'SKILL.md'), 'utf-8')).toBe('SKILL.md 2.0.0');
+      expect(result.item?.installPath).toBe(finalPath);
+      expect(result.item?.version).toBe('2.0.0');
+    });
+
+    it('keeps the final directory after a tar.gz update', async () => {
+      const item = makeFakeItem({ id: 'tgz-skill', assets: { archive: 'skills/tgz-skill/tgz-skill-1.0.0.tar.gz' } });
+      const v1 = await createTarGz({ 'execute.sh': 'echo v1' });
+      global.fetch = jest.fn().mockResolvedValue({ ok: true, arrayBuffer: () => Promise.resolve(v1.buffer.slice(v1.byteOffset, v1.byteOffset + v1.byteLength)) });
+      expect((await installItem(item)).success).toBe(true);
+
+      const v2 = await createTarGz({ 'execute.sh': 'echo v2' });
+      global.fetch = jest.fn().mockResolvedValue({ ok: true, arrayBuffer: () => Promise.resolve(v2.buffer.slice(v2.byteOffset, v2.byteOffset + v2.byteLength)) });
+      const result = await updateItem(makeFakeItem({ id: 'tgz-skill', version: '2.0.0', assets: { archive: 'skills/tgz-skill/tgz-skill-2.0.0.tar.gz' } }));
+      expect(result.success).toBe(true);
+
+      const finalPath = path.join(tempDir, 'marketplace', 'skills', 'tgz-skill');
+      expect(existsSync(finalPath)).toBe(true);
+      expect(existsSync(`${finalPath}-update-tmp`)).toBe(false);
+      expect(await readFile(path.join(finalPath, 'execute.sh'), 'utf-8')).toBe('echo v2');
+      expect(result.item?.installPath).toBe(finalPath);
+    });
   });
 
   describe('installItem — local asset loading', () => {
