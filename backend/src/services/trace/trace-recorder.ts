@@ -11,7 +11,7 @@
  */
 
 import type { Request } from '../../types/v2/request.types.js';
-import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
+import { blockedUntilOf, type WorkItem, type WorkItemStatus } from '../../types/v2/work-item.types.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import { readProjectTicketLink } from '../../types/project-ticket.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
@@ -512,7 +512,8 @@ const WORK_ENDED_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>
 
 /**
  * A work item changed status (PoolStorage.updateWorkItem). `running` is the
- * claim.
+ * claim. A block with an `until` time carries it as `blockedUntil`, so the
+ * metrics can tell a planned wait from a stall (CREW-893).
  *
  * @param workItem - The item after the change
  * @param previous - Its status before
@@ -523,15 +524,16 @@ export function traceWorkItemStatus(workItem: WorkItem, previous: WorkItemStatus
 		const traceId = known(workItem.traceId);
 		if (!traceId) return;
 		const reason = workItem.error ?? workItem.blockedReason ?? workItem.cancelReason;
+		const untilMs = workItem.status === 'blocked' ? blockedUntilOf(workItem) : null;
 		const ctx = getTraceContext();
 		ctx.record({
 			traceId,
 			type: 'workitem.status',
 			actor: workItem.status === 'running' ? agentActor(workItem.target) : { kind: 'system' },
-			summary: `Work item ${previous} → ${workItem.status}: ${workItem.title}${reason ? ` (${reason})` : ''}`,
+			summary: `Work item ${previous} → ${workItem.status}: ${workItem.title}${reason ? ` (${reason})` : ''}${untilMs !== null ? ` until ${new Date(untilMs).toISOString()}` : ''}`,
 			outcome: STATUS_OUTCOME[workItem.status] ?? 'info',
 			refs: { workItemId: workItem.id, ...(workItem.target ? { session: workItem.target } : {}) },
-			data: { from: previous, to: workItem.status, retryCount: workItem.retryCount },
+			data: { from: previous, to: workItem.status, retryCount: workItem.retryCount, ...(untilMs !== null ? { blockedUntil: new Date(untilMs).toISOString() } : {}) },
 		});
 		// The work is over for its agent: what it does next is not this run.
 		if (WORK_ENDED_STATUSES.has(workItem.status)) ctx.clearIfCurrent(workItem.target, traceId);

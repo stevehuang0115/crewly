@@ -475,6 +475,13 @@ function busyPeriods(timed: ReadonlyArray<Timed>): { intervals: Interval[]; expl
 interface Holds {
 	owner: Hold[];
 	agent: Hold[];
+	/**
+	 * Planned waits: a work item blocked with an `until` time, from the block
+	 * to that time (or to its next status change, whichever comes first). The
+	 * team said "nothing to do before then", so the clock is not a stall and
+	 * the item holds nobody (CREW-893).
+	 */
+	plannedWaits: Interval[];
 	/** Work item id → last status */
 	workItemStatus: Map<string, string>;
 	/** Request id → last status, in order of appearance */
@@ -492,9 +499,10 @@ interface Holds {
 function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 	const owner: Hold[] = [];
 	const agent: Hold[] = [];
+	const plannedWaits: Interval[] = [];
 	const openDecisions = new Map<string, number>();
 	const requestState = new Map<string, { status: string; since: number; waitsOnOwner?: boolean }>();
-	const workItems = new Map<string, { status: string; since: number; target?: string; open: boolean }>();
+	const workItems = new Map<string, { status: string; since: number; target?: string; open: boolean; waitUntil?: number }>();
 	const pendingMessages: Array<{ target: string; from?: string; since: number }> = [];
 
 	const closeRequest = (id: string, t: number, stillOpen = false): void => {
@@ -507,7 +515,18 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 	};
 	const closeWorkItem = (id: string, t: number, stillOpen = false): void => {
 		const wi = workItems.get(id);
-		if (!wi || !wi.open) return;
+		if (!wi) return;
+		if (wi.waitUntil !== undefined) {
+			// The wait ends at its time; blocked past it, the item holds its agent again.
+			const waitEnd = Math.min(wi.waitUntil, t);
+			if (waitEnd > wi.since) plannedWaits.push([wi.since, waitEnd]);
+			if (t > wi.waitUntil) {
+				agent.push({ start: wi.waitUntil, end: t, label: `Work item${wi.target ? ` for ${wi.target}` : ''} is still blocked past its until time`, ...(wi.target ? { session: wi.target } : {}), ...(stillOpen ? { stillOpen } : {}) });
+			}
+			wi.waitUntil = undefined;
+			return;
+		}
+		if (!wi.open) return;
 		agent.push({
 			start: wi.since,
 			end: t,
@@ -575,7 +594,13 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 				wi.status = to;
 				wi.since = t;
 				if (e.refs.session) wi.target = e.refs.session;
-				wi.open = !WORK_ITEM_CLOSED.has(to) && !WORK_ITEM_WAITING_ON_TIME.has(to);
+				const until = to === 'blocked' ? Date.parse(dataStr(e, 'blockedUntil') ?? '') : Number.NaN;
+				if (Number.isFinite(until) && until > t) {
+					wi.waitUntil = until;
+					wi.open = false;
+				} else {
+					wi.open = !WORK_ITEM_CLOSED.has(to) && !WORK_ITEM_WAITING_ON_TIME.has(to);
+				}
 				break;
 			}
 			case 'message.agent': {
@@ -598,7 +623,7 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 	for (const [id, wi] of workItems) workItemStatus.set(id, wi.status);
 	const requestStatus = new Map<string, string>();
 	for (const [id, st] of requestState) requestStatus.set(id, st.status);
-	return { owner, agent, workItemStatus, requestStatus };
+	return { owner, agent, plannedWaits, workItemStatus, requestStatus };
 }
 
 /**
@@ -815,8 +840,8 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 
 	// --- Stalls --------------------------------------------------------------
 	const progress = timed.filter(({ e }) => isProgressEvent(e));
-	// Busy periods and progress instants, in order (overlaps are fine: the cursor only moves forward).
-	const covered: Interval[] = [...active, ...progress.map(({ t }): Interval => [t, t])].sort((x, y) => x[0] - y[0]);
+	// Busy periods, planned waits and progress instants, in order (overlaps are fine: the cursor only moves forward).
+	const covered: Interval[] = [...active, ...clip(holds.plannedWaits, start, end), ...progress.map(({ t }): Interval => [t, t])].sort((x, y) => x[0] - y[0]);
 	const gaps: Interval[] = [];
 	let cursor = start;
 	for (const [a, b] of covered) {

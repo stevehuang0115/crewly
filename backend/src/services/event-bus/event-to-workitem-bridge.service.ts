@@ -71,6 +71,7 @@ import {
   type WorkItemOwner,
   DEFAULT_MAX_RETRIES,
   REVIEW_ESCALATED_TO_OWNER_KEY,
+  blockedUntilOf,
 } from '../../types/v2/work-item.types.js';
 import { isMissionExecutable, type Mission } from '../../types/v2/mission.types.js';
 import { getMissionPath } from '../v3/mission-paths.js';
@@ -730,11 +731,23 @@ export class EventToWorkItemBridge {
    * `task:blocked` → review WI for TL with `reviewReason='task_blocked'`.
    *
    * Idempotency: `${sourceWI.id}:review:blocked` (one review per blocked WI).
+   *
+   * A block with an `until` time is a planned wait, not a problem: the item
+   * returns to its agent when the time passes, so the lead has nothing to
+   * unblock or re-scope and is not woken for it (CREW-893).
    */
   private handleTaskBlocked = async (event: AgentEvent): Promise<void> => {
     const sourceWI = await this.resolveSourceWorkItem(event);
     if (!sourceWI) {
       this.logger.warn('task:blocked missing source WorkItem', { eventId: event.id });
+      return;
+    }
+    const until = blockedUntilOf(sourceWI);
+    if (until !== null) {
+      this.logger.info('Blocked until a known time — no review for the lead', {
+        sourceWorkItemId: sourceWI.id,
+        until: new Date(until).toISOString(),
+      });
       return;
     }
 
