@@ -12,6 +12,7 @@
 
 import type { Request } from '../../types/v2/request.types.js';
 import { blockedUntilOf, type WorkItem, type WorkItemStatus } from '../../types/v2/work-item.types.js';
+import { OPEN_ITEMS_CONSTANTS } from '../../constants.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import { readProjectTicketLink } from '../../types/project-ticket.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
@@ -463,8 +464,30 @@ export function assignWorkItemTrace(workItem: WorkItem, creatorSession?: string)
 }
 
 /**
+ * When a blocked work item's wait is planned to end, as an ISO time: an
+ * explicit block with an `until` (CREW-893), or a commitment follow-up held
+ * until the promise's due time — the open-items sweep, not the reconciler,
+ * acts on that one, so it carries `dueAt` rather than `blockedUntil`. The
+ * metrics treat the time up to it as a planned wait, not a stall on the agent.
+ *
+ * @param workItem - The item
+ * @returns ISO time the wait ends, or null when the block is open-ended or the item is not blocked
+ */
+function plannedWaitUntil(workItem: WorkItem): string | null {
+	if (workItem.status !== 'blocked') return null;
+	const untilMs = blockedUntilOf(workItem);
+	if (untilMs !== null) return new Date(untilMs).toISOString();
+	const meta = (workItem.metadata ?? {}) as Record<string, unknown>;
+	if (meta[OPEN_ITEMS_CONSTANTS.FOLLOW_UP_METADATA_KEY] === undefined) return null;
+	const due = typeof meta.dueAt === 'string' ? Date.parse(meta.dueAt) : Number.NaN;
+	return Number.isFinite(due) ? new Date(due).toISOString() : null;
+}
+
+/**
  * A work item entered the pool (PoolStorage.addWorkItem): fill in its trace if
- * the caller did not, and record `workitem.created`.
+ * the caller did not, and record `workitem.created`. An item born blocked with
+ * a planned end to its wait (a commitment follow-up due at a known time)
+ * carries it as `blockedUntil`, like a status change to blocked does.
  *
  * @param workItem - The stored item (mutated when its trace is filled in)
  */
@@ -477,11 +500,12 @@ export function traceWorkItemCreated(workItem: WorkItem): void {
 		const meta = (workItem.metadata ?? {}) as Record<string, unknown>;
 		const creator = typeof meta.delegatedBy === 'string' ? meta.delegatedBy : undefined;
 		const ticketId = readProjectTicketLink(meta)?.id;
+		const until = plannedWaitUntil(workItem);
 		ctx.record({
 			traceId,
 			type: 'workitem.created',
 			actor: workItem.owner === 'system' || !creator ? { kind: 'system' } : agentActor(creator),
-			summary: `Work item for ${workItem.target ?? 'anyone'}: ${workItem.title}`,
+			summary: `Work item for ${workItem.target ?? 'anyone'}: ${workItem.title}${until ? ` (blocked until ${until})` : ''}`,
 			outcome: 'queued',
 			refs: {
 				workItemId: workItem.id,
@@ -489,7 +513,7 @@ export function traceWorkItemCreated(workItem: WorkItem): void {
 				...(ticketId ? { ticketId } : {}),
 				...(workItem.target ? { session: workItem.target } : {}),
 			},
-			data: { type: workItem.type, status: workItem.status },
+			data: { type: workItem.type, status: workItem.status, ...(until ? { blockedUntil: until } : {}) },
 		});
 	}, undefined);
 }
@@ -524,16 +548,16 @@ export function traceWorkItemStatus(workItem: WorkItem, previous: WorkItemStatus
 		const traceId = known(workItem.traceId);
 		if (!traceId) return;
 		const reason = workItem.error ?? workItem.blockedReason ?? workItem.cancelReason;
-		const untilMs = workItem.status === 'blocked' ? blockedUntilOf(workItem) : null;
+		const until = plannedWaitUntil(workItem);
 		const ctx = getTraceContext();
 		ctx.record({
 			traceId,
 			type: 'workitem.status',
 			actor: workItem.status === 'running' ? agentActor(workItem.target) : { kind: 'system' },
-			summary: `Work item ${previous} → ${workItem.status}: ${workItem.title}${reason ? ` (${reason})` : ''}${untilMs !== null ? ` until ${new Date(untilMs).toISOString()}` : ''}`,
+			summary: `Work item ${previous} → ${workItem.status}: ${workItem.title}${reason ? ` (${reason})` : ''}${until ? ` until ${until}` : ''}`,
 			outcome: STATUS_OUTCOME[workItem.status] ?? 'info',
 			refs: { workItemId: workItem.id, ...(workItem.target ? { session: workItem.target } : {}) },
-			data: { from: previous, to: workItem.status, retryCount: workItem.retryCount, ...(untilMs !== null ? { blockedUntil: new Date(untilMs).toISOString() } : {}) },
+			data: { from: previous, to: workItem.status, retryCount: workItem.retryCount, ...(until ? { blockedUntil: until } : {}) },
 		});
 		// The work is over for its agent: what it does next is not this run.
 		if (WORK_ENDED_STATUSES.has(workItem.status)) ctx.clearIfCurrent(workItem.target, traceId);

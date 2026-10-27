@@ -580,8 +580,12 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 				const id = e.refs.workItemId;
 				if (!id) break;
 				const status = dataStr(e, 'status') ?? 'queued';
-				const open = !WORK_ITEM_CLOSED.has(status) && !WORK_ITEM_WAITING_ON_TIME.has(status);
-				workItems.set(id, { status, since: t, open, ...(e.refs.session ? { target: e.refs.session } : {}) });
+				// Born blocked with a planned end to the wait (a commitment follow-up
+				// due at a known time): the wait is covered, like a block with `until`.
+				const bornUntil = status === 'blocked' ? Date.parse(dataStr(e, 'blockedUntil') ?? '') : Number.NaN;
+				const planned = Number.isFinite(bornUntil) && bornUntil > t;
+				const open = !planned && !WORK_ITEM_CLOSED.has(status) && !WORK_ITEM_WAITING_ON_TIME.has(status);
+				workItems.set(id, { status, since: t, open, ...(planned ? { waitUntil: bornUntil } : {}), ...(e.refs.session ? { target: e.refs.session } : {}) });
 				break;
 			}
 			case 'workitem.status': {
