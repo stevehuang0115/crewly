@@ -313,6 +313,27 @@ describe('trace-metrics', () => {
 			expect(m.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_agent', sessions: ['sam'] })]);
 		});
 
+		it('a block with an until time is a planned wait, not a stall, and holds nobody (CREW-893)', () => {
+			const blockedUntil = (m: number, until: number): TraceEvent =>
+				ev(m, 'workitem.status', system, { refs: { workItemId: 'wi-1', session: 'sam' }, data: { from: 'running', to: 'blocked', retryCount: 0, blockedUntil: at(until) } });
+			// Blocked at 5 until 185; back to queued at 186 and running at 187: the three hours were planned.
+			const planned = computeTraceMetrics(
+				root(),
+				[wiCreated(0, 'wi-1', 'sam'), wiStatus(1, 'wi-1', 'sam', 'queued', 'running'), blockedUntil(5, 185), wiStatus(186, 'wi-1', 'sam', 'blocked', 'queued'), wiStatus(187, 'wi-1', 'sam', 'queued', 'running')],
+				{ now: atMin(188), stallMinutes: 30 },
+			);
+			expect(planned.stalls.count).toBe(0);
+			// Only the minutes around the wait count as the agent's: the wait itself does not.
+			expect(planned.time.waitingAgentMs).toBeLessThan(10 * MIN);
+			// Still blocked long past its until time: that is a stall on the agent again.
+			const overdue = computeTraceMetrics(root(), [wiCreated(0, 'wi-1', 'sam'), wiStatus(1, 'wi-1', 'sam', 'queued', 'running'), blockedUntil(5, 35), wiStatus(200, 'wi-1', 'sam', 'blocked', 'queued')], { now: atMin(200), stallMinutes: 30 });
+			expect(overdue.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_agent', start: at(35), end: at(200), sessions: ['sam'] })]);
+			expect(overdue.stalls.items[0].detail).toContain('past its until time');
+			// A block without an until time holds the agent from the block on, as before.
+			const openEnded = computeTraceMetrics(root(), [wiCreated(0, 'wi-1', 'sam'), wiStatus(1, 'wi-1', 'sam', 'queued', 'running'), wiStatus(5, 'wi-1', 'sam', 'running', 'blocked'), wiStatus(200, 'wi-1', 'sam', 'blocked', 'queued')], { now: atMin(200), stallMinutes: 30 });
+			expect(openEnded.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_agent', start: at(5), end: at(200) })]);
+		});
+
 		it('nobody_pushing when nothing is open and nobody works', () => {
 			const m = computeTraceMetrics(root({ kind: 'goal' }), [skill(0, 'ella'), skill(100, 'ella')], { now });
 			expect(m.stalls.items).toEqual([expect.objectContaining({ cause: 'nobody_pushing', ms: 100 * MIN })]);

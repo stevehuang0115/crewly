@@ -283,6 +283,20 @@ describe('trace-recorder', () => {
 			expect(ctx.currentTrace('dev-2')).toBe(other);
 		});
 
+		it('a block with an until time carries it on the status event (CREW-893)', async () => {
+			const id = startGoalTrace({ kind: 'goal', summary: 'g' })!;
+			const wi = workItem({ traceId: id });
+			traceWorkItemCreated(wi);
+			traceWorkItemStatus({ ...wi, status: 'running' }, 'queued');
+			traceWorkItemStatus({ ...wi, status: 'blocked', blockSource: 'explicit', metadata: { blockedUntil: '2026-10-27T14:05:00.000Z' } }, 'running');
+			traceWorkItemStatus({ ...wi, status: 'blocked', blockSource: 'explicit', metadata: { blockedUntil: 'tomorrow' } }, 'running');
+			const evs = (await events(id)).filter((e) => e.type === 'workitem.status' && e.data?.to === 'blocked');
+			expect(evs[0]?.data?.blockedUntil).toBe('2026-10-27T14:05:00.000Z');
+			expect(evs[0]?.summary).toContain('until 2026-10-27T14:05:00.000Z');
+			// An unparsable until is not a planned wait.
+			expect(evs[1]?.data).not.toHaveProperty('blockedUntil');
+		});
+
 		it('records creation and status changes, and builds the prompt header', async () => {
 			const id = startGoalTrace({ kind: 'goal', summary: 'g' })!;
 			const wi = workItem({ traceId: id });

@@ -653,6 +653,23 @@ describe('EventToWorkItemBridge', () => {
       expect(reviewWI.metadata?.idempotencyKey).toBe(reviewWI.id);
       bridge.stop();
     });
+
+    it('creates no review when the block has an until time — a planned wait (CREW-893)', async () => {
+      const sourceWI = buildWorkItem({
+        status: 'blocked',
+        blockSource: 'explicit',
+        metadata: { teamId: 'team-product', blockedUntil: '2026-10-27T14:05:00.000Z' },
+      });
+      const taskPool = buildFakeTaskPool([sourceWI]);
+      const { bridge, bus } = buildBridge({ taskPool });
+      bridge.start();
+
+      bus.publish(buildEvent({ type: 'task:blocked' }));
+      await bridge.flushPending();
+
+      expect(taskPool.addCalls).toHaveLength(0);
+      bridge.stop();
+    });
   });
 
   // -------------------------------------------------------------------------
