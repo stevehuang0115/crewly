@@ -54,6 +54,10 @@ Report progress on your current task. Includes a completion percentage, what you
 | `etaMinutes` | No | Your ETA for the whole task, in minutes. The first one you give for a WorkItem is compared with how long it actually took when you complete it |
 | `taskKind` | No | The kind of task (`revision`, `new-build`, `new-capability`, `research`, `review`, ...) your ETA is for |
 
+## Waiting for a known time
+
+A progress note is not a place to wait. If the task can only proceed at a known time (a data window that closes at 08:30Z, a deploy that has to settle, a report that runs from a timer), do not hold the item `running` with "waiting for …" notes — your lead gets a "went quiet" review for every hour you hold it, and reporting it done early costs a retry. Block it with the `block-task` skill and its `until` parameter; the item comes back to you when the time has passed.
+
 ## Giving an ETA
 
 Base it on your own median for that kind of task (shown at dispatch as "Your own task times" and in `get-my-context` as `taskTimings`), name the kind, and record it here, e.g. `{"progress":5,"current":"Starting the revision","etaMinutes":25,"taskKind":"revision"}`. Give a longer one only with a stated reason (new footage, a long render, waiting on the owner).
