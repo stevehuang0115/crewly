@@ -26,7 +26,8 @@ import { TicketAutopilotService, type AutopilotRetroDeps, type OwnerNotice } fro
 import { goalChangedAt, openExperimentsOf, readProjectGoal, readRetroMilestones } from '../../services/project-tickets/ticket-autopilot-goal.js';
 import { applyRetroGapDecision } from '../../services/project-tickets/ticket-autopilot-retro.js';
 import { ExperimentService, supervisionOf } from '../../services/experiments/experiment.service.js';
-import { WikiIngestService } from '../../services/wiki/wiki-ingest.service.js';
+import { WikiIngestService, type WikiIngestOutcome } from '../../services/wiki/wiki-ingest.service.js';
+import { LoggerService } from '../../services/core/logger.service.js';
 import { resolveProjectDataDir } from '../../services/core/crewly-home.utils.js';
 import { existsSync } from 'fs';
 import { TokenUsageService } from '../../services/monitoring/token-usage.service.js';
@@ -157,8 +158,32 @@ export function createDefaultTicketAutopilot(
 }
 
 /**
+ * A refused retro page is otherwise invisible: the retro reports `written:
+ * false` and nothing says why. Log the gate's reason.
+ *
+ * @param vaultPath - Vault the page was meant for
+ * @param relativePath - Page path inside the vault
+ * @param outcome - The ingest outcome
+ * @returns Whether the page was written
+ */
+function retroPageWritten(vaultPath: string, relativePath: string, outcome: WikiIngestOutcome): boolean {
+  if (!outcome.ok) {
+    LoggerService.getInstance().createComponentLogger('AutopilotRetro').warn('Retro page refused by the wiki', {
+      vaultPath,
+      relativePath,
+      reason: outcome.reason,
+      message: 'message' in outcome ? outcome.message : undefined,
+    });
+  }
+  return outcome.ok;
+}
+
+/**
  * The retro's side effects from the process singletons: the project wiki,
  * harness-gap tickets on the Crewly project, and the owner's approval card.
+ *
+ * Both wiki writers pass the retention `keep_because` — the vault refuses a
+ * page without one (#985 follow-up: no retro page had ever been written).
  *
  * @returns Retro dependencies
  */
@@ -177,9 +202,10 @@ export function createAutopilotRetroDeps(): AutopilotRetroDeps {
         targetRelativePath: relativePath,
         title: path.basename(relativePath, '.md'),
         summary: 'Daily ticket-autopilot retro: what shipped, where it stalled and why.',
+        keepBecause: TICKET_AUTOPILOT_CONSTANTS.RETRO_WIKI_KEEP_BECAUSE,
         replace: true,
       });
-      return outcome.ok;
+      return retroPageWritten(vaultPath, relativePath, outcome);
     },
     writeGlobalWiki: async (relativePath, markdown, by) => {
       const vaultPath = path.join(getCrewlyHomePath(), 'global-wiki');
@@ -193,9 +219,10 @@ export function createAutopilotRetroDeps(): AutopilotRetroDeps {
         targetRelativePath: relativePath,
         title: path.basename(relativePath, '.md'),
         summary: 'Weekly cross-team autopilot retro: what repeated across projects and what belongs to Crewly.',
+        keepBecause: TICKET_AUTOPILOT_CONSTANTS.RETRO_WIKI_KEEP_BECAUSE,
         replace: true,
       });
-      return outcome.ok;
+      return retroPageWritten(vaultPath, relativePath, outcome);
     },
     retroPagePath: (projectPath, relativePath) => path.join(resolveProjectDataDir(projectPath), 'wiki', relativePath),
     harnessProject: async () => {
