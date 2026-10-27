@@ -1,7 +1,7 @@
 ---
 name: Gmail
-description: "Multi-action Gmail skill for agents — list/read/search/send messages, manage labels (add/remove/list), and toggle read/unread. Requires a google-oauth credential bound to the 'gmail' slot with gmail.modify scope."
-version: 1.1.0
+description: "Multi-action Gmail skill for agents — list/read/search messages, compose one as a draft (never sends; the owner sends it), manage labels (add/remove/list), and toggle read/unread. Requires a google-oauth credential bound to the 'gmail' slot with gmail.modify scope."
+version: 1.2.0
 category: communication
 skillType: claude-skill
 assignableRoles:
@@ -48,7 +48,7 @@ notices:
     message: "Requires a Google account added in Settings → Credentials with the gmail.modify scope (the default Crewly OAuth flow grants it automatically)."
 ---
 
-# Gmail (multi-action, v1.1.0)
+# Gmail (multi-action, v1.2.0)
 
 Multi-action Gmail skill that lets agents manage messages and labels on behalf
 of a connected Google account. The account is selected at execution time via
@@ -145,7 +145,10 @@ The body extraction walks `payload.parts[]` recursively and prefers
 
 #### `send`
 
-Send a new email via the bound Google account.
+Compose a new email in the bound Google account **as a draft**. Nothing is
+sent: the message lands in the account's Drafts folder and only the owner
+sends it (crewly#894 — the same rule as `gmail-send`, #999). Tell the owner
+the draft is there; do not look for a way to send it yourself.
 
 **Input:**
 ```json
@@ -158,8 +161,10 @@ Send a new email via the bound Google account.
 
 **Output:**
 ```json
-{"success": true, "id": "18fa...", "threadId": "..."}
+{"success": true, "draft": true, "id": "r123...", "messageId": "18fa...", "threadId": "...", "note": "Saved as a draft in the account's Drafts folder; only the owner sends it."}
 ```
+
+`id` is the draft id; `messageId` / `threadId` are the draft's message.
 
 ### Label management
 
@@ -223,7 +228,7 @@ Convenience wrappers that toggle the system `UNREAD` label.
 ## Required Env (injected by the skill executor)
 
 - `CREWLY_CRED_GMAIL_ACCESS_TOKEN` — valid OAuth access token with `gmail.modify`
-- `CREWLY_CRED_GMAIL_EMAIL` — account email (used as `From:` in `send`)
+- `CREWLY_CRED_GMAIL_EMAIL` — account email (used as `From:` on the draft `send` saves)
 
 The Crewly skill executor refreshes the access token before spawning this
 script. Token refresh failures and missing-scope errors are surfaced by the
@@ -248,6 +253,7 @@ before being returned to the agent.
 
 ## Changelog
 
+- **1.2.0** — `send` saves a draft (`drafts.create`) instead of sending; output gains `draft: true`, `messageId` and a note. An agent never sends mail on its own (crewly#894).
 - **1.1.0** — added `add-label`, `remove-label`, `list-labels`, `mark-as-read`, `mark-as-unread`. Reduced `requiredScopes` to single `gmail.modify` (functional superset for all 9 actions).
 - **1.0.0** — initial release with `list`, `read`, `search`, `send`.
 

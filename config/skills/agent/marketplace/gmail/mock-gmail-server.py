@@ -204,6 +204,26 @@ class MockHandler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
 
+        # /gmail/v1/users/me/drafts — what the skill's `send` action calls
+        # (it saves a draft; crewly#894). The mock also keeps the old
+        # messages/send route so a direct send stays visible in tests.
+        if path.endswith("/drafts"):
+            import base64
+
+            raw_b64 = (payload.get("message") or {}).get("raw", "")
+            try:
+                pad = "=" * (-len(raw_b64) % 4)
+                base64.urlsafe_b64decode(raw_b64 + pad).decode("utf-8", errors="ignore")
+            except Exception:
+                return _err(self, 400, "Invalid raw MIME — base64 decode failed")
+            return _ok(
+                self,
+                {
+                    "id": "MOCK_DRAFT_001",
+                    "message": {"id": "MOCK_DRAFT_MSG_001", "threadId": "THREAD_DRAFT_001", "labelIds": ["DRAFT"]},
+                },
+            )
+
         # /gmail/v1/users/me/messages/send
         if path.endswith("/messages/send"):
             # Decode the base64url-encoded RFC-2822 payload just enough to

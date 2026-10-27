@@ -152,6 +152,13 @@ describe('ApprovalActivityService', () => {
     expect(r.items[0]).toMatchObject({ id: 'g1', category: 'gmail', outcome: 'waiting', title: 'Email "Hello" to a@b.c' });
   });
 
+  it('carries the outbound tools and their gates for the Security page (#894)', async () => {
+    const r = await new ApprovalActivityService(deps()).query(7);
+    expect(r.outbound.length).toBeGreaterThan(10);
+    expect(r.outbound.find((t) => t.skill === 'gmail-send')).toMatchObject({ surface: 'Gmail', gate: 'draft', reaches: 'people' });
+    expect(r.outbound.find((t) => t.skill === 'remote-browser')?.gate).toBe('owner_card');
+  });
+
   it('survives a failing source', async () => {
     const r = await new ApprovalActivityService(
       deps({ decisions: async () => Promise.reject(new Error('x')), gmailHeld: () => { throw new Error('y'); } }),
