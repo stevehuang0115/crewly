@@ -2735,10 +2735,14 @@ export class TaskPoolService {
         (wi) => {
           wi.blockedReason = undefined;
           wi.blockSource = undefined;
-          wi.metadata = {
+          const metadata: Record<string, unknown> = {
             ...(wi.metadata ?? {}),
             completedWhileBlockedAt: new Date().toISOString(),
           };
+          // A timed block's `until` is spent once the holder finishes the
+          // item; a done item must not carry a wait it no longer has.
+          delete metadata[WORK_ITEM_BLOCKED_UNTIL_KEY];
+          wi.metadata = metadata;
         },
       );
       this.logger.info('Completion from the item\'s claim holder landed while it was blocked — resumed to finish it', {

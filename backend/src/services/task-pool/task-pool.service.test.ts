@@ -4789,6 +4789,20 @@ describe('TaskPoolService', () => {
         expect(typeof done?.metadata?.completedWhileBlockedAt).toBe('string');
       });
 
+      it('finishing a timed block early drops its until (CE-316 kept blockedUntil after verified)', async () => {
+        const { ce19 } = await seed();
+        await service.claimSpecificItem(VERA, ce19);
+        const until = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+        await service.blockItem(ce19, { agentId: VERA, reason: 'readout window', until });
+        expect((await service.findWorkItem(ce19))?.metadata?.blockedUntil).toBe(until);
+
+        await service.completeItem(ce19, { summary: 'readout sent early' }, veraActor);
+        const done = await service.findWorkItem(ce19);
+        expect(done?.status).toBe('done_by_worker');
+        expect(done?.metadata?.blockedUntil).toBeUndefined();
+        expect(typeof done?.metadata?.completedWhileBlockedAt).toBe('string');
+      });
+
       it('a failed wake / dead-looking agent with a live claim lease does not flip the item to blocked', async () => {
         const { ce19 } = await seed();
         await service.claimSpecificItem(VERA, ce19);
