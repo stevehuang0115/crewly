@@ -5523,7 +5523,7 @@ describe('AgentRegistrationService', () => {
 		// custom roles ("executor") do not.
 		beforeEach(() => {
 			(fsPromises.access as jest.Mock).mockImplementation(async (p: string) =>
-				/config\/roles\/(developer|team-leader|ops|generalist|qa)\/prompt\.md$/.test(String(p)) ? undefined : Promise.reject(new Error('ENOENT')),
+				/config\/roles\/(developer|team-leader|ops|generalist|qa|fullstack-dev|backend-developer|frontend-developer|support|product-manager)\/prompt\.md$/.test(String(p)) ? undefined : Promise.reject(new Error('ENOENT')),
 			);
 		});
 
@@ -5595,6 +5595,16 @@ describe('AgentRegistrationService', () => {
 		it('does not alias a role that already matches a directory (no regression)', async () => {
 			const result = await (service as any).getPromptFileForRole('developer');
 			expect(result).toContain('config/roles/developer/prompt.md');
+		});
+
+		it('resolves the spelled-out developer roles to their directories (fullstack-developer ran on generalist, 2026-10-27)', async () => {
+			for (const role of ['fullstack-developer', 'full-stack-developer', 'Fullstack Developer', 'fullstack', 'full-stack']) {
+				expect(await (service as any).getPromptFileForRole(role)).toContain('config/roles/fullstack-dev/prompt.md');
+			}
+			expect(await (service as any).getPromptFileForRole('backend-dev')).toContain('config/roles/backend-developer/prompt.md');
+			expect(await (service as any).getPromptFileForRole('frontend-dev')).toContain('config/roles/frontend-developer/prompt.md');
+			expect(await (service as any).getPromptFileForRole('customer-support')).toContain('config/roles/support/prompt.md');
+			expect(await (service as any).getPromptFileForRole('pm')).toContain('config/roles/product-manager/prompt.md');
 		});
 	});
 
