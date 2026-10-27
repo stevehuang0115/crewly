@@ -38,6 +38,7 @@ import {
   DISPOSITION_REQUIRED_STATUSES,
   getWorkItemDisposition,
   WORK_ITEM_BLOCK_SOURCES,
+  WORK_ITEM_BLOCKED_UNTIL_KEY,
   isExplicitlyBlocked,
   TERMINAL_WORK_ITEM_STATUSES,
 } from '../../types/v2/work-item.types.js';
@@ -1965,6 +1966,13 @@ export class TaskPoolService {
         wi.targetSource = undefined;
       }
       wi.releaseCount = (wi.releaseCount ?? 0) + 1;
+      // A timed block's `until` is spent once the item is back in the queue,
+      // whether the time passed or someone unblocked it earlier.
+      if (wi.metadata && WORK_ITEM_BLOCKED_UNTIL_KEY in wi.metadata) {
+        const metadata: Record<string, unknown> = { ...wi.metadata };
+        delete metadata[WORK_ITEM_BLOCKED_UNTIL_KEY];
+        wi.metadata = metadata;
+      }
     });
 
     await this.storage.flush();
@@ -2041,24 +2049,36 @@ export class TaskPoolService {
    * @param workItemId - The running WorkItem to block
    * @param options.agentId - Who blocked it (recorded in metadata)
    * @param options.reason - Why (persisted on `blockedReason`)
-   * @throws Error if not found, or the item is not `running` (state machine)
+   * @param options.until - ISO 8601 time at which the block lifts on its own:
+   *   the reconciler returns the item to `queued` for the same target once it
+   *   has passed (block-task `until`, for work that can only proceed at a
+   *   known time). Without it the block waits for an explicit unblock.
+   * @throws Error if not found, the item is not `running` (state machine), or `until` does not parse
    */
   async blockItem(
     workItemId: string,
-    options: { agentId: string; reason?: string },
+    options: { agentId: string; reason?: string; until?: string },
   ): Promise<void> {
     const reason = options.reason && options.reason.trim().length > 0 ? options.reason : undefined;
+    const until = options.until && options.until.trim().length > 0 ? options.until : undefined;
+    if (until !== undefined && !Number.isFinite(Date.parse(until))) {
+      throw new Error(`Invalid until for WorkItem ${workItemId}: '${until}' is not an ISO 8601 date-time`);
+    }
     const updated = await this.transitionStatus(
       workItemId,
       'blocked',
       'system',
       (wi) => {
         wi.blockSource = WORK_ITEM_BLOCK_SOURCES.EXPLICIT;
-        wi.metadata = {
+        const metadata: Record<string, unknown> = {
           ...(wi.metadata ?? {}),
           blockedBy: options.agentId,
           blockedAt: new Date().toISOString(),
         };
+        // A block without `until` must not inherit one from an earlier block.
+        if (until) metadata[WORK_ITEM_BLOCKED_UNTIL_KEY] = until;
+        else delete metadata[WORK_ITEM_BLOCKED_UNTIL_KEY];
+        wi.metadata = metadata;
       },
       reason,
     );
@@ -2067,11 +2087,17 @@ export class TaskPoolService {
     }
     await this.releaseClaim(workItemId, reason ? `blocked: ${reason}` : 'blocked');
     await this.storage.flush();
-    this.logger.info('WorkItem explicitly blocked (claim released; stays blocked until unblocked)', {
-      workItemId,
-      agentId: options.agentId,
-      reason,
-    });
+    this.logger.info(
+      until
+        ? 'WorkItem explicitly blocked (claim released; returns to queued when its until time passes)'
+        : 'WorkItem explicitly blocked (claim released; stays blocked until unblocked)',
+      {
+        workItemId,
+        agentId: options.agentId,
+        reason,
+        until,
+      },
+    );
     await this.publishTaskStopped('task:blocked', updated, 'running', reason);
     // The owner thread this work came from hears that it is blocked (work
     // from a ticket or a trigger has its own place and says nothing there).

@@ -1228,8 +1228,13 @@ function recordCompletionTiming(workItem: WorkItem, agent: string, taskKind: unk
  * @returns What the give-up recovery did with the stop
  * @throws When the WorkItem is missing or not `running` (mapped to 404 / 409)
  */
-async function recordBlocked(workItemId: string, agentId: string, reason: string | undefined): Promise<StopOutcome> {
-  const outcome = await getGiveUp().block(workItemId, { agentId, reason });
+async function recordBlocked(
+  workItemId: string,
+  agentId: string,
+  reason: string | undefined,
+  until?: string,
+): Promise<StopOutcome> {
+  const outcome = await getGiveUp().block(workItemId, { agentId, reason, ...(until ? { until } : {}) });
 
   // V3.1: Project task blocked
   const projection = getProjection();
@@ -1251,9 +1256,16 @@ async function recordBlocked(workItemId: string, agentId: string, reason: string
  * is unblocked via `POST /api/task-pool/release/:workItemId`, which puts it
  * back to `queued` for the same target.
  *
+ * With `until` (ISO 8601, in the future) the block lifts on its own: once
+ * that time has passed the reconciler returns the item to `queued` for the
+ * same target, who takes it before new work. For work that can only proceed
+ * at a known time (a report after a data window closes, a check after a
+ * deploy settles) — the alternative was holding the item `running` while
+ * waiting, or reporting it done before it was.
+ *
  * Request body:
  * ```json
- * { "agentId": "crewly-product-leo-member-n", "reason": "waiting for X" }
+ * { "agentId": "crewly-product-leo-member-n", "reason": "waiting for X", "until": "2026-10-27T08:30:00Z" }
  * ```
  *
  * @param req - Express request with workItemId param
@@ -1262,7 +1274,7 @@ async function recordBlocked(workItemId: string, agentId: string, reason: string
 export async function blockItem(req: Request, res: Response): Promise<void> {
   try {
     const { workItemId } = req.params;
-    const { agentId, reason } = req.body as { agentId?: string; reason?: string };
+    const { agentId, reason, until } = req.body as { agentId?: string; reason?: string; until?: unknown };
 
     if (!workItemId) {
       res.status(400).json({ success: false, error: 'workItemId param is required' });
@@ -1272,8 +1284,24 @@ export async function blockItem(req: Request, res: Response): Promise<void> {
       res.status(400).json({ success: false, error: 'agentId is required' });
       return;
     }
+    if (until !== undefined && until !== null && until !== '') {
+      const untilMs = typeof until === 'string' ? Date.parse(until) : NaN;
+      if (!Number.isFinite(untilMs)) {
+        res.status(400).json({ success: false, error: 'until must be an ISO 8601 date-time, e.g. 2026-10-27T08:30:00Z' });
+        return;
+      }
+      if (untilMs <= Date.now()) {
+        res.status(400).json({ success: false, error: `until must be in the future (got ${until}; now is ${new Date().toISOString()})` });
+        return;
+      }
+    }
 
-    const outcome = await recordBlocked(workItemId, agentId, reason);
+    const outcome = await recordBlocked(
+      workItemId,
+      agentId,
+      reason,
+      typeof until === 'string' && until !== '' ? until : undefined,
+    );
 
     res.json({ success: true, message: `WorkItem ${workItemId} blocked`, ...giveUpFields(outcome) });
   } catch (error) {

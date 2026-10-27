@@ -4597,6 +4597,74 @@ describe('TaskPoolService', () => {
       await service.addToPool(wi);
       await expect(service.blockItem(wi.id, { agentId: AGENT })).rejects.toThrow(/Invalid status transition/);
     });
+
+    // block-task `until`: work that can only proceed at a known time parks
+    // itself and comes back on its own — no holding the item `running`
+    // while waiting, no reporting it done before it is.
+    describe('block with `until`', () => {
+      const find = async (id: string) => (await service.getAllItems()).find((w) => w.id === id)!;
+
+      it('records the time; the reconciler lifts the block once it has passed, back to queued for the same agent', async () => {
+        const wi = makeWorkItem({ title: 'GA4 readout after the window closes', target: AGENT });
+        await service.addToPool(wi);
+        await service.claimFromPool(AGENT);
+        const until = new Date(Date.now() - 1_000).toISOString();
+        await service.blockItem(wi.id, { agentId: AGENT, reason: 'needs the full 7-day window', until });
+
+        let after = await find(wi.id);
+        expect(after.status).toBe('blocked');
+        expect(after.blockSource).toBe(WORK_ITEM_BLOCK_SOURCES.EXPLICIT);
+        expect(after.metadata?.blockedUntil).toBe(until);
+        expect((await service.getActiveClaims()).filter((c) => c.workItemId === wi.id)).toHaveLength(0);
+
+        await new ReconcilerService(makeProvider(activeHealth())).runFull();
+        after = await find(wi.id);
+        expect(after.status).toBe('queued');
+        expect(after.target).toBe(AGENT);
+        expect(after.metadata?.blockedUntil).toBeUndefined();
+        expect((await service.claimFromPool(AGENT))?.workItem.id).toBe(wi.id);
+      });
+
+      it('stays blocked on the tick while the time is still ahead', async () => {
+        const wi = makeWorkItem({ title: 'later', target: AGENT });
+        await service.addToPool(wi);
+        await service.claimFromPool(AGENT);
+        const until = new Date(Date.now() + 60 * 60_000).toISOString();
+        await service.blockItem(wi.id, { agentId: AGENT, reason: 'runs at 08:30Z', until });
+
+        await new ReconcilerService(makeProvider(activeHealth())).runFull();
+        const after = await find(wi.id);
+        expect(after.status).toBe('blocked');
+        expect(after.metadata?.blockedUntil).toBe(until);
+        expect(after.releaseCount ?? 0).toBe(0);
+        expect(await service.claimFromPool(AGENT)).toBeNull();
+      });
+
+      it('a later block without `until` does not inherit the earlier time', async () => {
+        const wi = makeWorkItem({ title: 'twice blocked', target: AGENT });
+        await service.addToPool(wi);
+        await service.claimFromPool(AGENT);
+        await service.blockItem(wi.id, { agentId: AGENT, reason: 'first', until: new Date(Date.now() + 60_000).toISOString() });
+        await service.releaseBack(wi.id, 'unblocked early');
+        expect((await find(wi.id)).metadata?.blockedUntil).toBeUndefined();
+
+        await service.claimFromPool(AGENT);
+        await service.blockItem(wi.id, { agentId: AGENT, reason: 'second, open-ended' });
+        const after = await find(wi.id);
+        expect(after.status).toBe('blocked');
+        expect(after.metadata?.blockedUntil).toBeUndefined();
+        await new ReconcilerService(makeProvider(activeHealth())).runFull();
+        expect((await find(wi.id)).status).toBe('blocked');
+      });
+
+      it('an unparsable `until` is refused before anything changes', async () => {
+        const wi = makeWorkItem({ title: 'bad time', target: AGENT });
+        await service.addToPool(wi);
+        await service.claimFromPool(AGENT);
+        await expect(service.blockItem(wi.id, { agentId: AGENT, reason: 'x', until: 'tomorrow 8:30' })).rejects.toThrow(/Invalid until/);
+        expect((await find(wi.id)).status).toBe('running');
+      });
+    });
   });
 
   // -----------------------------------------------------------------------

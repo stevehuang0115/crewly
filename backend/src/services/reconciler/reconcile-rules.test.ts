@@ -23,6 +23,7 @@ import {
   VERIFY_ESCALATED_AT_KEY,
   detectRecoverableWorkItems,
   detectDependencyResolvedWorkItems,
+  detectDueBlockedWorkItems,
   cascadeCancelChildren,
   detectStaleQueuedWorkItems,
   detectUnclaimedTasks,
@@ -2525,6 +2526,45 @@ describe('detectDependencyResolvedWorkItems', () => {
     const { corrections, unblockedIds } = detectDependencyResolvedWorkItems([wi], map);
     expect(unblockedIds).toHaveLength(0);
     expect(corrections).toHaveLength(0);
+  });
+});
+
+describe('detectDueBlockedWorkItems (block-task until)', () => {
+  const NOW = Date.parse('2026-10-27T08:30:00Z');
+
+  it('lifts an explicit block whose until time has passed, marking the correction as the explicit-block requeue', () => {
+    const wi = makeWorkItem({
+      status: 'blocked',
+      blockSource: 'explicit',
+      target: 'ce-vera',
+      metadata: { blockedUntil: '2026-10-27T08:30:00Z' },
+    });
+    const { corrections, releasedIds } = detectDueBlockedWorkItems([wi], NOW);
+    expect(releasedIds).toEqual([wi.id]);
+    expect(corrections).toHaveLength(1);
+    expect(corrections[0]).toMatchObject({
+      entityType: 'work_item',
+      entityId: wi.id,
+      previousState: 'blocked',
+      newState: 'queued',
+      blockSource: 'explicit',
+    });
+    expect(corrections[0].reason).toContain('2026-10-27T08:30:00.000Z');
+    expect(corrections[0].reason).toContain('ce-vera');
+  });
+
+  it('leaves a timed block alone while its time is still ahead', () => {
+    const wi = makeWorkItem({ status: 'blocked', blockSource: 'explicit', metadata: { blockedUntil: '2026-10-27T08:31:00Z' } });
+    expect(detectDueBlockedWorkItems([wi], NOW).releasedIds).toEqual([]);
+  });
+
+  it('never touches an explicit block without a time, a system block, or a waiting_on_human park', () => {
+    const openEnded = makeWorkItem({ status: 'blocked', blockSource: 'explicit' });
+    const systemBlocked = makeWorkItem({ status: 'blocked', metadata: { blockedUntil: '2026-10-27T08:00:00Z' } });
+    const waiting = makeWorkItem({ status: 'blocked', blockSource: 'waiting_on_human', metadata: { blockedUntil: '2026-10-27T08:00:00Z' } });
+    const { corrections, releasedIds } = detectDueBlockedWorkItems([openEnded, systemBlocked, waiting], NOW);
+    expect(releasedIds).toEqual([]);
+    expect(corrections).toEqual([]);
   });
 });
 

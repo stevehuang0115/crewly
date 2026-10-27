@@ -175,10 +175,10 @@ export class GiveUpRecoveryService {
    * A worker blocks an item.
    *
    * @param workItemId - The running item
-   * @param options - Who blocked it and why
+   * @param options - Who blocked it, why, and (optionally) the ISO time at which the block lifts on its own
    * @returns What was done
    */
-  async block(workItemId: string, options: { agentId: string; reason?: string }): Promise<StopOutcome> {
+  async block(workItemId: string, options: { agentId: string; reason?: string; until?: string }): Promise<StopOutcome> {
     const before = await this.pool.findWorkItem(workItemId);
     await this.pool.blockItem(workItemId, options);
     const text = options.reason ?? '';

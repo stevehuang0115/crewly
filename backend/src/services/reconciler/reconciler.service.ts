@@ -41,6 +41,7 @@ import {
   detectRetryableFailedWorkItems,
   detectUndisposedStrandedWorkItems,
   detectDependencyResolvedWorkItems,
+  detectDueBlockedWorkItems,
   detectUnclaimedTasks,
   detectUnverifiedWorkItems,
   detectUnreviewedPastTTL,
@@ -157,7 +158,7 @@ export interface ReconcilerDataProvider {
    * `allowWaitingOnHuman` must be passed true only for the waiting_on_human
    * rule's own requeue (see the call site below and the provider's JSDoc).
    */
-  requeueWorkItem(workItemId: string, opts?: { allowWaitingOnHuman?: boolean }): Promise<void>;
+  requeueWorkItem(workItemId: string, opts?: { allowWaitingOnHuman?: boolean; allowExplicitWhenDue?: boolean }): Promise<void>;
   /** Mark a claim as 'expiring' (lease expired, within grace period) */
   markClaimExpiring(claimId: string): Promise<void>;
   /** Revoke a claim and release its work item back to the pool */
@@ -383,6 +384,14 @@ export class ReconcilerService {
       const unblocked = detectDependencyResolvedWorkItems(workItems, workItemMap);
       result.corrections.push(...unblocked.corrections);
       result.workItemsRequeued += unblocked.unblockedIds.length;
+
+      // 3c-ii. Lift explicit blocks whose `until` time has passed (block-task
+      // `until`): the item returns to `queued` for the same target, who takes
+      // it before new work. The only explicit-block requeue the reconciler
+      // performs — the agent asked for it when it set the time.
+      const dueBlocks = detectDueBlockedWorkItems(workItems);
+      result.corrections.push(...dueBlocks.corrections);
+      result.workItemsRequeued += dueBlocks.releasedIds.length;
 
       // 3d. Verification enforcement (P1): a worker reported done but the TL
       // never verified within the deadline. Escalate to the orchestrator for an
@@ -783,9 +792,16 @@ export class ReconcilerService {
           // provider's waiting_on_human guard. Any other blocked->queued
           // correction on a waiting_on_human item (e.g. agent-back-online
           // recovery matching it too) must still be refused.
-          await this.dataProvider.requeueWorkItem(correction.entityId, {
+          //
+          // Likewise only the due-block rule's own requeue (its correction
+          // carries blockSource 'explicit' — see detectDueBlockedWorkItems)
+          // may lift an explicit block, and the provider still checks that
+          // the block's `until` time has in fact passed.
+          const requeueOptions: { allowWaitingOnHuman: boolean; allowExplicitWhenDue?: boolean } = {
             allowWaitingOnHuman: correction.blockSource === WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN,
-          });
+          };
+          if (correction.blockSource === WORK_ITEM_BLOCK_SOURCES.EXPLICIT) requeueOptions.allowExplicitWhenDue = true;
+          await this.dataProvider.requeueWorkItem(correction.entityId, requeueOptions);
           continue;
         }
 

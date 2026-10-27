@@ -122,6 +122,11 @@ bash config/skills/agent/core/complete-task/execute.sh '{"workItemId":"wi-abc123
 bash config/skills/agent/core/complete-task/execute.sh '{"workItemId":"wi-abc123","sessionName":"dev-1","summary":"Login form done; e2e blocked","evidence":[{"type":"blocked","step":"npx playwright test","reason":"staging auth server returns 503"}]}'
 ```
 
+If the task is not finished because it can only proceed at a known time (a
+data window that has not closed, a deploy that has to settle), do not complete
+it: block it with the `block-task` skill and its `until` parameter. The item
+comes back to you when the time has passed.
+
 ### Letting the skill resolve your running WorkItem
 
 ```bash

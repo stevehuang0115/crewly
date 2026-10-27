@@ -1858,6 +1858,36 @@ describe('TaskPoolController', () => {
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     });
 
+    it('forwards `until` (block-task until) to the pool', async () => {
+      mockService.blockItem.mockResolvedValue(undefined);
+      const until = new Date(Date.now() + 60 * 60_000).toISOString();
+      const req = mockReq({
+        params: { workItemId: 'wi-1' } as Record<string, string>,
+        body: { agentId: 'dev-1', reason: 'needs the full 7-day window', until },
+      });
+      const res = mockRes();
+      await blockItem(req, res);
+
+      expect(mockService.blockItem).toHaveBeenCalledWith('wi-1', { agentId: 'dev-1', reason: 'needs the full 7-day window', until });
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
+    it('refuses an `until` that does not parse or is already past with 400, before touching the pool', async () => {
+      for (const until of ['tomorrow 8:30', new Date(Date.now() - 60_000).toISOString(), 42]) {
+        mockService.blockItem.mockClear();
+        const req = mockReq({
+          params: { workItemId: 'wi-1' } as Record<string, string>,
+          body: { agentId: 'dev-1', reason: 'x', until },
+        });
+        const res = mockRes();
+        await blockItem(req, res);
+
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: false, error: expect.stringContaining('until') }));
+        expect(mockService.blockItem).not.toHaveBeenCalled();
+      }
+    });
+
     it('maps an invalid status transition to 409, not 500', async () => {
       // WORK_ITEM_TRANSITIONS allows `blocked` only from `running`, so
       // blocking a queued item throws. That is a CLIENT error — the caller

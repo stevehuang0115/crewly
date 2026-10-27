@@ -8,7 +8,12 @@
 #
 # Input shape:
 #   { "workItemId": "abc-123", "sessionName": "dev-1", "reason": "missing creds",
-#     "questions"?: "...", "urgency"?: "..." }
+#     "questions"?: "...", "urgency"?: "...", "until"?: "2026-10-27T08:30:00Z" }
+#
+# `until` (ISO 8601, UTC, in the future) makes the block lift on its own: once
+# that time has passed the item returns to `queued` for you. For work that can
+# only proceed at a known time. Without it the block waits for an explicit
+# unblock.
 #
 # `sessionName` is REQUIRED (sent as `agentId`) — the endpoint 400s without it.
 # `questions`/`urgency` are folded into `reason`; the endpoint has no field for
@@ -30,6 +35,7 @@ WORK_ITEM_ID=$(printf '%s' "$INPUT" | jq -r '.workItemId // empty')
 REASON=$(printf '%s' "$INPUT" | jq -r '.reason // empty')
 QUESTIONS=$(printf '%s' "$INPUT" | jq -r '.questions // empty')
 URGENCY=$(printf '%s' "$INPUT" | jq -r '.urgency // empty')
+UNTIL=$(printf '%s' "$INPUT" | jq -r '.until // empty')
 LEGACY_PATH=$(printf '%s' "$INPUT" | jq -r '.absoluteTaskPath // empty')
 
 if [ -z "$WORK_ITEM_ID" ] && [ -n "$LEGACY_PATH" ]; then
@@ -91,9 +97,13 @@ if [ -n "$CURRENT_STATUS" ] && [ "$CURRENT_STATUS" != "running" ]; then
   esac
 fi
 
+# `until` goes through as given; the endpoint answers 400 when it does not
+# parse or is already past (a local time written without its offset is the
+# usual cause — write it in UTC with a trailing Z).
 BODY=$(jq -n \
   --arg agentId "$SESSION_NAME" \
   --arg reason "$REASON" \
-  '{agentId: $agentId, reason: $reason}')
+  --arg until "$UNTIL" \
+  '{agentId: $agentId, reason: $reason} + (if $until == "" then {} else {until: $until} end)')
 
 api_call POST "/task-pool/block/${WORK_ITEM_ID}" "$BODY"

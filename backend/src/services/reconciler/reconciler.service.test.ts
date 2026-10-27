@@ -318,6 +318,50 @@ describe('ReconcilerService', () => {
       expect(provider.requeueWorkItem).toHaveBeenCalled();
     });
 
+    it('lifts an explicit block whose until time has passed, flagging the requeue as the due-block one (block-task until)', async () => {
+      const wi = makeWorkItem({
+        status: 'blocked',
+        blockSource: 'explicit',
+        target: 'agent-1',
+        metadata: { blockedUntil: new Date(Date.now() - 60_000).toISOString() },
+      });
+      const agentMap = new Map<string, AgentHealth>([
+        ['agent-1', { sessionName: 'agent-1', status: 'active', lastSeenAt: new Date().toISOString() }],
+      ]);
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
+      });
+      service = new ReconcilerService(provider);
+
+      const result = await service.runFull();
+      expect(result.workItemsRequeued).toBe(1);
+      expect(provider.requeueWorkItem).toHaveBeenCalledTimes(1);
+      expect(provider.requeueWorkItem).toHaveBeenCalledWith(wi.id, { allowWaitingOnHuman: false, allowExplicitWhenDue: true });
+    });
+
+    it('leaves a timed explicit block alone while its time is ahead, and an open-ended one always', async () => {
+      const timed = makeWorkItem({
+        status: 'blocked',
+        blockSource: 'explicit',
+        target: 'agent-1',
+        metadata: { blockedUntil: new Date(Date.now() + 60 * 60_000).toISOString() },
+      });
+      const openEnded = makeWorkItem({ status: 'blocked', blockSource: 'explicit', target: 'agent-1' });
+      const agentMap = new Map<string, AgentHealth>([
+        ['agent-1', { sessionName: 'agent-1', status: 'active', lastSeenAt: new Date().toISOString() }],
+      ]);
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([timed, openEnded]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
+      });
+      service = new ReconcilerService(provider);
+
+      const result = await service.runFull();
+      expect(result.workItemsRequeued).toBe(0);
+      expect(provider.requeueWorkItem).not.toHaveBeenCalled();
+    });
+
     it('should handle errors gracefully', async () => {
       provider = createMockProvider({
         getActiveWorkItems: jest.fn().mockRejectedValue(new Error('DB connection failed')),
