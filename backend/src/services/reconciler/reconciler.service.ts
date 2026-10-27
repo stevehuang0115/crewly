@@ -1039,8 +1039,18 @@ export class ReconcilerService {
     // Only run if the provider supports wake actions
     if (!this.dataProvider.executeWakeAction) return;
 
-    // Respect maxConcurrentAgents — count currently active agents and skip wake
-    // if we're at capacity. This is the primary control preventing resource exhaustion.
+    // `maxConcurrentAgents` (Settings › General) used to end this pass here
+    // whenever that many agents were active. It was the only place that read
+    // the setting: a DM, a stall recovery, a restore and the start API all
+    // start agents regardless, and under memory pressure the start path has its
+    // own running-agent cap that queues a start and frees a slot (CREW-304).
+    // So the early return only delayed work: 2026-10-27, 11 agents up on a
+    // 10-agent setting, a trigger's WorkItem for the stopped Owen sat queued
+    // for 20 minutes — the fast wake was dropped every pass without a log line
+    // and the stall recovery (which never checked the setting) started him.
+    // Redelivers (a re-push to an agent already running) were dropped too.
+    // Now a wake to a named target goes through; the count is logged so an
+    // exceeded setting is visible.
     let maxConcurrent = 50; // matches ConfigService default (MAX_CONCURRENT_AGENTS)
     try {
       const settings = await getSettingsService().getSettings();
@@ -1055,10 +1065,7 @@ export class ReconcilerService {
         activeAgentCount++;
       }
     }
-
-    if (activeAgentCount >= maxConcurrent) {
-      return;
-    }
+    const overConfiguredMax = activeAgentCount >= maxConcurrent;
 
     // Use pool items if available, otherwise fall back to active work items
     const poolItems = this.dataProvider.getAvailablePoolItems
@@ -1103,6 +1110,15 @@ export class ReconcilerService {
       if (paced && now < paced.nextAt) continue;
       if (this.sessionWakeCapReached(session, now)) continue;
       actedOn.add(session);
+      if (overConfiguredMax && action.strategy !== 'redeliver') {
+        LoggerService.getInstance().createComponentLogger('ReconcilerService').info('Waking the named target although the configured max concurrent agents is reached', {
+          agent: session,
+          workItemId: action.workItemId,
+          strategy: action.strategy,
+          activeAgents: activeAgentCount,
+          maxConcurrentAgents: maxConcurrent,
+        });
+      }
       try {
         const outcome = await this.attemptWake(action);
         this.recordWakeOutcome(action, outcome, result);
