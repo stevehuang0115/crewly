@@ -1395,6 +1395,16 @@ export class AgentRegistrationService {
 		['team-lead', 'team-leader'],
 		['operations', 'ops'],
 		['devops', 'ops'],
+		// The directory is `fullstack-dev`; teams name the role in full
+		// (Evership's Eve ran on the generalist prompt for weeks, 2026-10-27).
+		['fullstack-developer', 'fullstack-dev'],
+		['full-stack-developer', 'fullstack-dev'],
+		['fullstack', 'fullstack-dev'],
+		['full-stack', 'fullstack-dev'],
+		['backend-dev', 'backend-developer'],
+		['frontend-dev', 'frontend-developer'],
+		['customer-support', 'support'],
+		['pm', 'product-manager'],
 	]);
 
 	/**

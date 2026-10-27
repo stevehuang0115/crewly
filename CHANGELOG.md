@@ -4,6 +4,10 @@ User-visible changes. Newest first.
 
 ## Unreleased
 
+### Fixed
+
+- **A member whose role is `fullstack-developer` gets the full-stack prompt, not the generalist one.** The prompt directory is `fullstack-dev`; the spelled-out name (and `full-stack-developer`, `fullstack`, `backend-dev`, `frontend-dev`, `customer-support`, `pm`) now resolves to its directory instead of falling back with a "No prompt for this role" warning.
+
 ### Added
 
 - **Settings › Security lists the tools that reach outside, and what holds each one (crewly#894).** Mail, messaging, your connected accounts, browsers and the desktop: every bundled tool whose effect leaves Crewly, labelled Draft only / Your word / Card, Acts as you, or Nothing in the way. The list is one constant with a test that fails when a new send / post / publish skill is added without a classification.
