@@ -21,6 +21,7 @@ import type { DecisionKindHandler } from '../decisions/decision.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { recordActivity, type ActivityActor, type ActivityEntryInput } from '../activity/activity-log.service.js';
 import { PRIVATE_REPLY_ACTIONS } from './reply-audience.js';
+import { stripTraceMarkers } from '../trace/trace-markers.js';
 import type { ReplyDestination } from './reply-destination-resolver.js';
 
 /** Option keys on the card. */
@@ -157,7 +158,8 @@ export class PrivateShareDecisions implements DecisionKindHandler {
     const agentName = (await this.deps.agentNameOf?.(held.session).catch(() => undefined)) ?? held.session;
     const who = namesOf(held.people, this.deps.personName);
     const slackDm = this.deps.slackChannelOf(held.ownerDm);
-    const preview = held.content.length > PREVIEW_CHARS ? `${held.content.slice(0, PREVIEW_CHARS)}…` : held.content;
+    const shown = stripTraceMarkers(held.content).trim();
+    const preview = shown.length > PREVIEW_CHARS ? `${shown.slice(0, PREVIEW_CHARS)}…` : shown;
     const decision = await decisions.askPrebuilt({
       kind: 'private_share',
       asker: held.session,
