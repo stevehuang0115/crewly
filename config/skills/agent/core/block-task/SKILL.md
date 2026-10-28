@@ -62,6 +62,10 @@ Only a WorkItem you have claimed (`running`) can be blocked.
   re-queued or re-dispatched to you automatically.
 - With `until`, the block lifts on its own once that time has passed; the item
   returns to `queued` for you. Unblocking it earlier works the same as below.
+  That return is your wake: do **not** also create a one-shot trigger for the
+  same time. A trigger that fires first wakes you while the item is still
+  blocked (you can still finish it, but the scheduled return never happens) and
+  spends a wake for nothing.
 - To unblock it (when the blocker is resolved), release it back to the pool with
   the `release-claim` skill (`POST /task-pool/release/:workItemId`). It returns to
   `queued` for you, and you take it before new work.

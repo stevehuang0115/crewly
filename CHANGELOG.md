@@ -5,6 +5,7 @@ User-visible changes. Newest first.
 ## Unreleased
 
 ### Changed
+- `block-task` skill text: the scheduled return of a block with `until` is the agent's wake — do not also set a one-shot trigger for the same time (Vera paired every `until` with a trigger five minutes earlier, so the item was always finished while still blocked and the return never ran).
 - **A block with `until` is a planned wait, not a stall and not a problem for the lead.** Blocking a task until a known time still woke the lead with a "Blocked: …" review (nothing to unblock — the item comes back on its own) and the daily retro counted the whole wait as a stall on the agent (CE-433: 2h58m of "waiting on an agent" that was the GA4 window). The lead is no longer asked; trace metrics treat the time up to `until` like a busy period — no stall, no agent hold — and only a block still in force past its time counts, as "still blocked past its until time". Blocks without `until` are reported as before (CREW-893).
 - **Agents are told where to wait.** `report-progress` now says a progress note is not a place to wait: a task that can only proceed at a known time is blocked with `block-task` `until`, not held `running` with "waiting for …" notes. The "went quiet on a running task" review the lead receives says the same, so the lead can point the holder at it.
 
