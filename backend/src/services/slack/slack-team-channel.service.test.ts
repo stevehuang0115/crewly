@@ -2133,6 +2133,50 @@ describe('the room is whoever\'s bot is in it', () => {
     isLocal = () => false;
   });
 
+  it("links the channel AND invites the @'d agent's bot when the owner @'s it outside a team channel (2026-10-28: Atlas in the private #normandy — its first post got channel_not_found and the owner's question went unanswered)", async () => {
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    slack.invites = [];
+
+    const result = await service.routeInbound(inbound({ channelId: 'C-norm', text: '<@ULEO> smart-home things go here from now on', ts: '630.1', userId: 'UOWNER' }));
+
+    expect(result).not.toBeNull();
+    expect(result!.mapping.teamId).toBe('adhoc:C-norm');
+    expect(slack.invites).toEqual([{ channelId: 'C-norm', userIds: ['ULEO'] }]);
+    expect(identities!.get('crewly-alpha-leo')!.invitedTo).toContain('C-norm');
+
+    // Remembered on the identity: the next message in the room does not invite again.
+    await service.routeInbound(inbound({ channelId: 'C-norm', text: 'and the thermostat?', ts: '630.2', userId: 'UOWNER' }));
+    expect(slack.invites).toHaveLength(1);
+  });
+
+  it('a bot absent from an ad-hoc room it was never invited to is invited when a message arrives (rooms linked before invites existed); a team channel is left alone', async () => {
+    isLocal = (s) => s === 'crewly-alpha-leo';
+    dispatcher = {
+      dispatchMessage: jest.fn().mockResolvedValue({ strategy: 'huddle-broadcast', dispatched: true, huddleOutcomes: [] }),
+      planHuddleTargets: jest.fn().mockResolvedValue(new Map([['crewly-alpha-leo', 'required']])),
+    };
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    slack.invites = [];
+    // Linked through Leo's own app: its bot is in the channel, so no invite.
+    await service.routeInbound(inbound({ channelId: 'C-old', text: 'just a thought', ts: '640.1', receivedVia: 'crewly-alpha-leo' }));
+    expect(slack.invites).toEqual([]);
+
+    slack.reactionNotInChannel.add('xoxb-leo');
+    await service.routeInbound(inbound({ channelId: 'C-old', text: '<@ULEO> still there?', ts: '640.2', userId: 'UOWNER' }));
+    expect(slack.invites).toEqual([{ channelId: 'C-old', userIds: ['ULEO'] }]);
+
+    // A team channel: a bot the owner took out is not put back.
+    slack.invites = [];
+    await service.routeInbound(inbound({ channelId: 'C1', text: 'hello', ts: '640.3' }));
+    expect(slack.invites).toEqual([]);
+    slack.reactionNotInChannel.delete('xoxb-leo');
+    isLocal = () => false;
+  });
+
   it('adds the receiving agent to a room it was never @\'d in', async () => {
     isLocal = (s) => s === 'crewly-alpha-leo' || s === 'crewly-alpha-sam';
     service = makeService();

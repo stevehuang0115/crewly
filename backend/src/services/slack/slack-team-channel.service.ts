@@ -3963,6 +3963,9 @@ export class SlackTeamChannelService {
         slackChannel: mapping.slackChannelName ?? message.channelId,
         agents: absent,
       });
+      // In an ad-hoc room a bot that was never invited is invited now, so
+      // the agent's reply can post. One the owner removed stays out.
+      if (isAdhocMapping(mapping)) await this.inviteUninvitedBots(mapping, absent);
     }
     if (seen > 0) return;
 
@@ -4071,7 +4074,35 @@ export class SlackTeamChannelService {
       huddle: huddle.id,
       agents: sessions,
     });
+    // An @'d agent's bot is usually not in a channel the owner just made.
+    // Private channel: its first post gets `channel_not_found` and the
+    // owner's question goes unanswered (Atlas in #normandy, 2026-10-28). The
+    // team-channel path invites every member's bot; do the same here. The
+    // agent whose own app delivered this copy is a member already.
+    await this.inviteUninvitedBots(
+      mapping,
+      sessions.filter((s) => s !== receiving),
+    );
     return mapping;
+  }
+
+  /**
+   * Invite the installed bots of `sessions` into a room's Slack channel,
+   * skipping any already invited there. A bot the owner later removed is
+   * not re-invited: the invite is remembered on the identity record.
+   *
+   * @param mapping - The room
+   * @param sessions - Agents whose bots should be in the channel
+   */
+  private async inviteUninvitedBots(mapping: SlackTeamChannelMapping, sessions: readonly string[]): Promise<void> {
+    const identities = this.deps.identities;
+    if (!identities || sessions.length === 0) return;
+    for (const session of sessions) {
+      const record = identities.get(session);
+      if (record?.status !== 'installed' || !record.botUserId) continue;
+      if (record.invitedTo.includes(mapping.slackChannelId)) continue;
+      await this.inviteBot(mapping, session, record.botUserId);
+    }
   }
 
   // -------------------------------------------------------------------------
