@@ -333,6 +333,9 @@ const DEFAULT_PRESENCE = () => ({
  */
 const MAX_HUDDLE_MEMBERS = 50;
 
+/** A Slack message ts (`<epoch seconds>.<micros>`), as in a `[SLACK-THREAD:<channel>:<ts>]` tag */
+const SLACK_TS_RE = /^\d{9,11}\.\d{4,8}$/;
+
 /** One hit of a chat search (`GET /api/chat/search`): a compact, owner-visible snippet. */
 export interface ChatSearchHit {
   id: string;
@@ -2321,7 +2324,20 @@ export class ChatV2Service extends EventEmitter {
     const trimmed = raw.trim();
     if (trimmed.length === 0) return undefined;
 
-    const root = this.messages.getById(trimmed);
+    let root = this.messages.getById(trimmed);
+    // A Slack ts (`1793621773.519539`) from a `[SLACK-THREAD:<channel>:<ts>]`
+    // tag names the same thread as the Crewly root message (CREW-957): resolve
+    // it instead of refusing, so a member that copied the tag still posts there.
+    if (!root && SLACK_TS_RE.test(trimmed)) {
+      const bySlack = this.messages.findThreadRootBySlackTs(channelId, trimmed);
+      if (bySlack) return bySlack.id;
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `threadId is a Slack ts, and no thread of this channel carries it. Use the Crewly thread id from your brief (a message id), or run reply --work-item <your WorkItem id> "<message>"`,
+        { threadId: trimmed },
+      );
+    }
     if (!root) {
       throw new ChatError(
         CHAT_ERROR_CODES.VALIDATION,

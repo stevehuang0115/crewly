@@ -284,6 +284,19 @@ describe('owner-thread hand-over (crewly#1083)', () => {
     expect(h?.note).toContain('Atlas does not relay it for you.');
   });
 
+  it('ownerThreadHandover names the Crewly thread id and keeps --work-item on reply only (CREW-957)', () => {
+    const chatOrigin = { ...ownerOrigin, conversationId: '3e4b40f2-conv', chatThreadId: '8b6edf77-thread' };
+    const h = ownerThreadHandover(wi({ id: 'wi-7', target: 'tt-sage', metadata: { origin: chatOrigin } }), 'Ella');
+    expect(h?.note).toContain('reply --work-item wi-7');
+    expect(h?.note).toContain('Crewly thread id is 8b6edf77-thread in conversation 3e4b40f2-conv');
+    expect(h?.note).toContain('never the Slack ts');
+    expect(h?.note).toContain('reply-channel has no --work-item flag');
+    expect(h?.note).not.toMatch(/reply-channel[^.;]*--work-item wi-7/);
+    // No Crewly thread known: still never points --work-item at reply-channel.
+    const bare = ownerThreadHandover(wi({ id: 'wi-8', target: 'tt-sage', metadata: { origin: ownerOrigin } }), 'Ella');
+    expect(bare?.note).toContain('reply-channel does not take it');
+  });
+
   it('ownerThreadHandover: nothing for non-owner work, no Slack thread, or self-targeted work', () => {
     expect(ownerThreadHandover(wi({ metadata: { origin: { kind: 'owner', conversationId: 'chat-1' } } }), 'Atlas')).toBeNull();
     expect(ownerThreadHandover(wi({ metadata: {} }), 'Atlas')).toBeNull();

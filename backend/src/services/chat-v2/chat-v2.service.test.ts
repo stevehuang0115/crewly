@@ -800,6 +800,20 @@ describe('ChatV2Service', () => {
       ).toThrow(/non-existent message/);
     });
 
+    it('CREW-957: a Slack ts as threadId resolves to the Crewly thread root of that channel', () => {
+      const ch = createSam();
+      const root = service.recordTurn({ channelId: ch.id, senderType: 'user', senderId: 'Steve', content: 'question', metadata: { source: 'slack', slackChannelId: 'C1', slackTs: '1793621773.519539', slackThreadTs: '1793621773.519539' } }).message;
+      const reply = service.sendMessage({ channelId: ch.id, principal: owner, content: 'answer', threadId: '1793621773.519539' });
+      expect(reply.threadId).toBe(root.id);
+    });
+
+    it('CREW-957: an unknown Slack ts is refused with a hint naming the right id', () => {
+      const ch = createSam();
+      expect(() =>
+        service.sendMessage({ channelId: ch.id, principal: owner, content: 'x', threadId: '1793621773.519539' }),
+      ).toThrow(/Slack ts.*Crewly thread id from your brief.*reply --work-item/s);
+    });
+
     it('Phase A: rejects threadId that references a message in a different channel', () => {
       // Set up two channels owned by the same user. A reply in channel B
       // pointing at a thread root in channel A must be rejected.
