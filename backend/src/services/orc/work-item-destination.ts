@@ -601,6 +601,13 @@ export function ownerThreadHandover(wi: WorkItem, delegatorName?: string): { key
   const relay = delegatorName ? ` ${delegatorName} does not relay it for you.` : '';
   const note =
     `The owner asked for this in Slack thread ${slackThreadTag(origin.slackChannelId, origin.threadTs)}. ` +
-    `Post your progress and your result there yourself, under your own name: reply --work-item ${wi.id} "<message>".${relay}`;
+    `Post your progress and your result there yourself, under your own name: reply --work-item ${wi.id} "<message>".${relay}` +
+    // CREW-957: the Slack ts is not a Crewly id. A member that copied it into
+    // reply-channel --thread got 404/400 and fell back to a plain reply that
+    // landed in another owner thread. Name the Crewly ids, and the one skill
+    // that takes --work-item.
+    (origin.chatThreadId
+      ? ` The Crewly thread id is ${origin.chatThreadId}${origin.conversationId ? ` in conversation ${origin.conversationId}` : ''}; if you must use reply-channel, pass that id as --thread (never the Slack ts) — reply-channel has no --work-item flag.`
+      : ` --work-item belongs to reply only; reply-channel does not take it.`);
   return { key, note };
 }
