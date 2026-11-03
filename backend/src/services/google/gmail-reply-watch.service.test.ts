@@ -51,6 +51,7 @@ class FakeMailbox implements GmailWatchApi {
 let file: string;
 let box: FakeMailbox;
 let connected: boolean;
+let statusError: Error | null;
 let events: AgentEvent[];
 let nowMs: number;
 
@@ -58,7 +59,10 @@ function make(): GmailReplyWatchService {
 	current = new GmailReplyWatchService({
 		file,
 		gmailFor: () => box,
-		accountConnected: async () => connected,
+		accountConnected: async () => {
+			if (statusError) throw statusError;
+			return connected;
+		},
 		defaultAccount: async () => 'o@x.y',
 		publish: (e) => events.push(e),
 		now: () => nowMs,
@@ -85,6 +89,7 @@ beforeEach(async () => {
 	box = new FakeMailbox();
 	box.add('m1', 't1', ['SENT']);
 	connected = true;
+	statusError = null;
 	events = [];
 });
 afterEach(() => jest.useRealTimers());
@@ -271,6 +276,56 @@ describe('GmailReplyWatchService', () => {
 		await advance(3 * POLL);
 		expect(events).toHaveLength(0);
 		svc.stop();
+	});
+
+	it('survives Crewly Cloud being unreachable: no unhandled rejection, no lost watch, reply still fires after', async () => {
+		const rejections: unknown[] = [];
+		const onRejection = (reason: unknown): void => {
+			rejections.push(reason);
+		};
+		process.on('unhandledRejection', onRejection);
+		try {
+			const svc = make();
+			await svc.start();
+			await svc.watch('t1', 'lyra');
+			statusError = new Error('Crewly Cloud unreachable: The operation was aborted due to timeout');
+			// Longer than the disconnect threshold: an outage must not count as "disconnected".
+			await advance((GOOGLE_WORKSPACE_CONSTANTS.GMAIL_WATCH_DISCONNECT_MISSES + 2) * POLL);
+			await Promise.resolve();
+			expect(rejections).toEqual([]);
+			expect(await svc.list()).toHaveLength(1);
+			expect(box.calls.listHistoryAdded).toBe(0);
+			statusError = null;
+			box.add('m2', 't1');
+			await advance(2 * POLL);
+			expect(events).toHaveLength(1);
+			expect(events[0]).toMatchObject({ threadId: 't1', newValue: 'm2' });
+			svc.stop();
+		} finally {
+			process.off('unhandledRejection', onRejection);
+		}
+	});
+
+	it('a tick that rejects is caught, not left unhandled', async () => {
+		const rejections: unknown[] = [];
+		const onRejection = (reason: unknown): void => {
+			rejections.push(reason);
+		};
+		process.on('unhandledRejection', onRejection);
+		try {
+			const svc = make();
+			await svc.start();
+			await svc.watch('t1', 'lyra');
+			const spy = jest.spyOn(svc, 'poll').mockImplementation(() => Promise.reject(new Error('boom')));
+			await jest.advanceTimersByTimeAsync(2 * POLL);
+			await Promise.resolve();
+			expect(spy).toHaveBeenCalled();
+			expect(rejections).toEqual([]);
+			spy.mockRestore();
+			svc.stop();
+		} finally {
+			process.off('unhandledRejection', onRejection);
+		}
 	});
 
 	it('only the owning agent can remove a watch', async () => {
