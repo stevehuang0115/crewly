@@ -123,7 +123,13 @@ export class GmailReplyWatchService {
 	/** The timer runs only while at least one thread is watched. */
 	private arm(): void {
 		if (!this.running || this.timer || !this.state || this.state.watches.length === 0) return;
-		this.timer = setInterval(() => void this.poll(), GOOGLE_WORKSPACE_CONSTANTS.GMAIL_WATCH_POLL_MS);
+		// A tick must never reject unobserved: an unhandled rejection shuts the
+		// whole backend down (a 15 s Crewly Cloud timeout crashed the Air twice).
+		this.timer = setInterval(() => {
+			this.poll().catch((err) => {
+				this.logger.warn('Gmail reply poll tick failed', { error: err instanceof Error ? err.message : String(err) });
+			});
+		}, GOOGLE_WORKSPACE_CONSTANTS.GMAIL_WATCH_POLL_MS);
 		this.timer.unref?.();
 	}
 
@@ -294,7 +300,19 @@ export class GmailReplyWatchService {
 
 	/** An account that stays disconnected loses its watches (after a few ticks, not one blip). */
 	private async accountStillConnected(account: string, st: WatchFile): Promise<boolean> {
-		if (await this.deps.accountConnected(account)) {
+		let connected: boolean;
+		try {
+			connected = await this.deps.accountConnected(account);
+		} catch (err) {
+			// Could not ask (Crewly Cloud slow or down): skip this account for one
+			// tick. Not knowing is not "disconnected", so it is not a miss either.
+			this.logger.warn('Gmail reply poll skipped: connection status unavailable', {
+				account,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return false;
+		}
+		if (connected) {
 			this.misses.delete(account);
 			return true;
 		}
