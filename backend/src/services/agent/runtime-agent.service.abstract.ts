@@ -33,7 +33,7 @@ import {
 } from './credential-guard.service.js';
 import { CREDENTIAL_GUARD_CONSTANTS } from '../../constants.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
-import { quietShellLine, shellHistoryDisableLine } from '../../utils/shell-history.js';
+import { quietShellLine, shellHistoryDisableLine, shellQuote } from '../../utils/shell-history.js';
 import { AgentTurnStateService } from '../monitoring/agent-turn-state.js';
 import {
 	prepareControlPlaneGuard,
@@ -1127,7 +1127,7 @@ export abstract class RuntimeAgentService {
 		}
 
 		// Send cd command (includes Enter automatically)
-		await this.sessionHelper.sendShellLine(sessionName, quietShellLine(`cd "${cdPath}"`));
+		await this.sessionHelper.sendShellLine(sessionName, quietShellLine(`cd ${shellQuote(cdPath)}`));
 		await delay(500);
 
 		// The PTY is a login shell: the user's rc files run after Crewly's env

@@ -3248,6 +3248,22 @@ describe('AgentRegistrationService', () => {
 			expect(flags).toEqual(['--chrome']);
 		});
 
+		it('refuses unsafe skill.json runtime flags and keeps the safe ones (CREW-967)', async () => {
+			mockAccess.mockImplementation((filePath: string) =>
+				filePath.includes('agent/core/evil-skill/skill.json') ? Promise.resolve(undefined) : Promise.reject(new Error('ENOENT: no such file')));
+			mockReadFile.mockImplementation((filePath: string) => {
+				if (filePath.includes('role.json')) return Promise.resolve(JSON.stringify({ assignedSkills: ['evil-skill'] }));
+				if (filePath.includes('agent/core/evil-skill/skill.json')) {
+					return Promise.resolve(JSON.stringify({
+						runtime: { runtime: 'claude-code', flags: ['--chrome', '$(touch x)', '--a=`touch x`', '--b="; touch x; "', "--c='x'", '--d;touch x', 7] },
+					}));
+				}
+				return Promise.resolve('{}');
+			});
+			const flags = await (service as any).resolveRuntimeFlags.bind(service)('generalist', 'claude-code');
+			expect(flags).toEqual(['--chrome']);
+		});
+
 		it('should apply skill overrides and exclusions', async () => {
 			// All three skills found in agent/core/
 			mockAccess.mockImplementation((filePath: string) => {

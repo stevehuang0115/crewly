@@ -23,6 +23,13 @@ import {
 } from './pr-review.service';
 import crypto from 'crypto';
 
+const mockExecFileSync = jest.fn<any>();
+jest.mock('child_process', () => ({
+  execFileSync: (...args: unknown[]) => mockExecFileSync(...args),
+}));
+import { fetchPrDiff, postReviewComment } from './pr-review.service';
+
+
 describe('PR Review Service', () => {
   describe('PR_REVIEW_ACTIONS', () => {
     it('should contain the supported webhook actions', () => {
@@ -436,5 +443,40 @@ describe('PR Review Service', () => {
       expect(status.reviewCount).toBe(0);
       expect(status.lastReviewAt).toBeNull();
     });
+  });
+});
+
+describe('gh is run without a shell (CREW-967)', () => {
+  beforeEach(() => {
+    mockExecFileSync.mockReset();
+    mockExecFileSync.mockReturnValue('ok\n');
+  });
+
+  it('fetchPrDiff passes repo and number as argv entries to gh', () => {
+    fetchPrDiff('org/repo', 42);
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[]];
+    expect(cmd).toBe('gh');
+    expect(args).toEqual(['pr', 'diff', '42', '--repo', 'org/repo']);
+  });
+
+  it('postReviewComment passes the body as one argv entry, quotes and $() untouched', () => {
+    const body = "it's $(touch x) `id` \"q\"";
+    postReviewComment('org/repo', 7, body);
+    const [cmd, args] = mockExecFileSync.mock.calls[0] as [string, string[]];
+    expect(cmd).toBe('gh');
+    expect(args).toEqual(['pr', 'comment', '7', '--repo', 'org/repo', '--body', body]);
+  });
+
+  it.each(['$(touch x)/r', 'o/r`id`', 'o/r;id', 'o/r"x', "o/r'x", 'o/r --web', 'o'])('fetchPrDiff and postReviewComment refuse repo %j before running anything', (repo) => {
+    expect(() => fetchPrDiff(repo, 1)).toThrow(/Invalid repository/);
+    expect(() => postReviewComment(repo, 1, 'b')).toThrow(/Invalid repository/);
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+  });
+
+  it.each(['1; touch x', '$(touch x)', 0, -3, 1.5, NaN])('refuses prNumber %j before running anything', (n) => {
+    expect(() => fetchPrDiff('o/r', n as any)).toThrow(/Invalid prNumber/);
+    expect(() => postReviewComment('o/r', n as any, 'b')).toThrow(/Invalid prNumber/);
+    expect(mockExecFileSync).not.toHaveBeenCalled();
   });
 });

@@ -28,6 +28,10 @@ describe('PR Review Controller', () => {
   let mockRes: { status: jest.Mock; json: jest.Mock };
   let mockNext: jest.Mock;
 
+  afterEach(() => {
+    delete process.env.GITHUB_WEBHOOK_SECRET;
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockReq = {
@@ -52,6 +56,7 @@ describe('PR Review Controller', () => {
       return {
         headers: {
           'x-github-event': 'pull_request',
+          'x-hub-signature-256': 'sha256=test',
           ...(overrides.headers as Record<string, string> || {}),
         },
         body: {
@@ -99,20 +104,34 @@ describe('PR Review Controller', () => {
       delete process.env.GITHUB_WEBHOOK_SECRET;
     });
 
-    it('should skip signature check when no secret is configured', async () => {
+    it('refuses the webhook with 503 when no secret is configured (CREW-967)', async () => {
       delete process.env.GITHUB_WEBHOOK_SECRET;
-      mockExecutePrReview.mockResolvedValue({ verdict: 'approve' });
       const req = makePrWebhookReq();
 
       await handleWebhook(req as Request, mockRes as any, mockNext as NextFunction);
 
+      expect(mockRes.status).toHaveBeenCalledWith(503);
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
       expect(mockVerifyWebhookSignature).not.toHaveBeenCalled();
-      expect(mockRes.status).toHaveBeenCalledWith(200);
+    });
+
+    it.each(['$(touch x)/r', 'o/r`id`', 'o/r;id', 'o/r"x', "o/r' x"])('refuses a webhook whose repository is %j (CREW-967)', async (full_name) => {
+      process.env.GITHUB_WEBHOOK_SECRET = 'test-secret';
+      mockVerifyWebhookSignature.mockReturnValue(true);
+      const req = makePrWebhookReq({ body: { repository: { full_name } } });
+
+      await handleWebhook(req as Request, mockRes as any, mockNext as NextFunction);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
+      delete process.env.GITHUB_WEBHOOK_SECRET;
     });
 
     it('should return 400 for missing payload fields', async () => {
+      process.env.GITHUB_WEBHOOK_SECRET = 'test-secret';
+      mockVerifyWebhookSignature.mockReturnValue(true);
       const req: Partial<Request> = {
-        headers: { 'x-github-event': 'pull_request' },
+        headers: { 'x-github-event': 'pull_request', 'x-hub-signature-256': 'sha256=test' },
         body: { action: 'opened' },
       };
 
@@ -125,6 +144,8 @@ describe('PR Review Controller', () => {
     });
 
     it('should return 202 for unsupported PR actions', async () => {
+      process.env.GITHUB_WEBHOOK_SECRET = 'test-secret';
+      mockVerifyWebhookSignature.mockReturnValue(true);
       const req = makePrWebhookReq({
         body: { action: 'closed' },
       });
@@ -138,7 +159,8 @@ describe('PR Review Controller', () => {
     });
 
     it('should return 200 and trigger review for opened PRs', async () => {
-      delete process.env.GITHUB_WEBHOOK_SECRET;
+      process.env.GITHUB_WEBHOOK_SECRET = 'test-secret';
+      mockVerifyWebhookSignature.mockReturnValue(true);
       mockExecutePrReview.mockResolvedValue({ verdict: 'approve' });
       const req = makePrWebhookReq();
 
@@ -156,7 +178,8 @@ describe('PR Review Controller', () => {
     });
 
     it('should trigger review for synchronize action', async () => {
-      delete process.env.GITHUB_WEBHOOK_SECRET;
+      process.env.GITHUB_WEBHOOK_SECRET = 'test-secret';
+      mockVerifyWebhookSignature.mockReturnValue(true);
       mockExecutePrReview.mockResolvedValue({ verdict: 'approve' });
       const req = makePrWebhookReq({
         body: { action: 'synchronize' },
@@ -168,7 +191,8 @@ describe('PR Review Controller', () => {
     });
 
     it('should trigger review for reopened action', async () => {
-      delete process.env.GITHUB_WEBHOOK_SECRET;
+      process.env.GITHUB_WEBHOOK_SECRET = 'test-secret';
+      mockVerifyWebhookSignature.mockReturnValue(true);
       mockExecutePrReview.mockResolvedValue({ verdict: 'approve' });
       const req = makePrWebhookReq({
         body: { action: 'reopened' },
@@ -194,7 +218,8 @@ describe('PR Review Controller', () => {
     });
 
     it('should not crash when executePrReview rejects (fire-and-forget)', async () => {
-      delete process.env.GITHUB_WEBHOOK_SECRET;
+      process.env.GITHUB_WEBHOOK_SECRET = 'test-secret';
+      mockVerifyWebhookSignature.mockReturnValue(true);
       mockExecutePrReview.mockRejectedValue(new Error('Review failed'));
       const req = makePrWebhookReq();
 
@@ -225,6 +250,23 @@ describe('PR Review Controller', () => {
       await triggerManualReview(mockReq as Request, mockRes as any, mockNext as NextFunction);
 
       expect(mockRes.status).toHaveBeenCalledWith(400);
+    });
+
+    it.each([
+      ['$(touch x)/r', 5],
+      ['o/r`id`', 5],
+      ['o/r;id', 5],
+      ['org/repo', '5; touch x'],
+      ['org/repo', '$(touch x)'],
+      ['org/repo', -1],
+      ['org/repo', 1.5],
+    ])('refuses repo=%j prNumber=%j with 400 and runs nothing (CREW-967)', async (repo, prNumber) => {
+      mockReq.body = { repo, prNumber };
+
+      await triggerManualReview(mockReq as Request, mockRes as any, mockNext as NextFunction);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
     });
 
     it('should execute review and return result on success', async () => {

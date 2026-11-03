@@ -28,6 +28,23 @@ const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 /** Effort levels are single lowercase words (`low`, `xhigh`, …). */
 const EFFORT_RE = /^[a-z][a-z0-9]{0,15}$/;
 
+/**
+ * A runtime flag that may come from a skill.json: `--flag`, `-f`, or
+ * `--flag=value` with a plain value. Anything else (spaces, `$`, backticks,
+ * quotes, `;`, `|`, `&`) could run a command in the launch line.
+ */
+const SKILL_RUNTIME_FLAG_RE = /^--?[A-Za-z0-9][A-Za-z0-9-]*(=[A-Za-z0-9._:/@-]+)?$/;
+
+/**
+ * Whether a skill-declared runtime flag is safe to put in a launch command.
+ *
+ * @param flag - Raw value of `runtime.flags[]` in a skill.json
+ * @returns True only for a plain `--flag`, `-f` or `--flag=value`
+ */
+export function isSafeSkillRuntimeFlag(flag: unknown): flag is string {
+  return typeof flag === 'string' && SKILL_RUNTIME_FLAG_RE.test(flag);
+}
+
 /** Flags that select a model / effort, per runtime, so an existing copy can be replaced. */
 const MODEL_FLAG_NAMES: Record<string, string[]> = {
   [RUNTIME_TYPES.CLAUDE_CODE]: ['--model', '--effort'],

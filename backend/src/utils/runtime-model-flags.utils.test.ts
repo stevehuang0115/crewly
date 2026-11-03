@@ -98,3 +98,18 @@ describe('runtime-model-flags', () => {
     });
   });
 });
+
+import { isSafeSkillRuntimeFlag } from './runtime-model-flags.utils';
+
+describe('isSafeSkillRuntimeFlag (CREW-967)', () => {
+  it.each(['--chrome', '-m', '--model=gpt-5.6-sol', '--add-dir=/tmp/x', '--a-b-c', '--x=a.b:c/d@e-f'])('accepts %s', (f) => {
+    expect(isSafeSkillRuntimeFlag(f)).toBe(true);
+  });
+
+  it.each([
+    '$(touch x)', '--x=$(touch x)', '--x=`touch x`', '--x="a"', "--x='a'", '--x;touch x', '--x && touch x', '--x | id',
+    '--x y', '--x\ny', 'chrome', '---x', '--', '-', '--x=', '--x=a b', '--x=a;b', '', 5, null, undefined, {}, ['--x'],
+  ])('refuses %j', (f) => {
+    expect(isSafeSkillRuntimeFlag(f)).toBe(false);
+  });
+});

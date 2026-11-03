@@ -113,7 +113,7 @@ describe('RuntimeAgentService (Abstract)', () => {
 			expect(typed[0]).toMatch(/^ unset HISTFILE;/);
 			expect(typed[0]).toContain('setopt HIST_IGNORE_SPACE');
 			expect(typed[0]).toContain('set +o history');
-			expect(typed[1]).toBe(' cd "/proj"');
+			expect(typed[1]).toBe(" cd '/proj'");
 			expect(typed[2]).toMatch(/^ export PATH=/);
 			expect(typed[3]).toBe(' claude --dangerously-skip-permissions');
 			for (const line of typed) {
@@ -127,8 +127,28 @@ describe('RuntimeAgentService (Abstract)', () => {
 			await service['sendShellCommandsToSession']('s1', ['codex'], '/proj');
 
 			const typed = mockSessionHelper.sendShellLine.mock.calls.map((c: unknown[]) => c[1] as string);
-			expect(typed[0]).toBe(' cd "/proj"');
+			expect(typed[0]).toBe(" cd '/proj'");
 			expect(typed[typed.length - 1]).toBe(' codex');
+		});
+	});
+
+	describe('sendShellCommandsToSession — project path is quoted (CREW-967)', () => {
+		it.each([
+			['$(touch x)', "/p/$(touch x)"],
+			['backtick', '/p/`touch x`'],
+			['double quote', '/p/a"; touch x; "'],
+			['single quote', "/p/a'; touch x; '"],
+			['newline', '/p/a\ntouch x'],
+		])('keeps a %s payload inside one single-quoted word', async (_name, evil) => {
+			await service['sendShellCommandsToSession']('s1', ['codex'], evil);
+			const typed = mockSessionHelper.sendShellLine.mock.calls.map((c: unknown[]) => c[1] as string);
+			const cd = typed.find((l: string) => l.startsWith(' cd ')) as string;
+			expect(cd).toBe(` cd '${evil.replace(/'/g, `'\\''`)}'`);
+			// Nothing after the opening quote is outside quotes except the '\'' escapes.
+			const body = cd.slice(' cd '.length).replace(/'\\''/g, '');
+			expect(body.startsWith("'")).toBe(true);
+			expect(body.endsWith("'")).toBe(true);
+			expect(body.slice(1, -1)).not.toContain("'");
 		});
 	});
 

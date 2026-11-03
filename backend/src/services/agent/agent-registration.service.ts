@@ -60,7 +60,7 @@ import { TuiInputGuardError, TuiPasteHoldError, screenShowsTurnInProgress, type 
 import { InputBlockedRetryService } from '../messaging/input-blocked-retry.service.js';
 import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thread-key.js';
 import { delay } from '../../utils/async.utils.js';
-import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
+import { buildRuntimeModelFlags, isSafeSkillRuntimeFlag } from '../../utils/runtime-model-flags.utils.js';
 import { buildRemoteMcpLaunchFlags } from '../connector/remote-mcp-launch.service.js';
 import { effectiveMemberModelId, fallbackRuntimeModelId } from '../../utils/member-default-model.utils.js';
 import { canMemberDelegate, getLeadSubordinates } from '../../utils/team.utils.js';
@@ -888,6 +888,13 @@ export class AgentRegistrationService {
 					const skillConfig = JSON.parse(skillContent);
 					if (skillConfig.runtime?.runtime === runtimeType && Array.isArray(skillConfig.runtime?.flags)) {
 						for (const flag of skillConfig.runtime.flags) {
+							// skill.json is external input (marketplace skills too) and these
+							// flags are typed into the launch line: refuse anything that is not
+							// a plain flag (CREW-967).
+							if (!isSafeSkillRuntimeFlag(flag)) {
+								this.logger.warn('Refused unsafe runtime flag from skill.json', { skillId, flag: String(flag).slice(0, 80) });
+								continue;
+							}
 							flags.add(flag);
 						}
 					}
