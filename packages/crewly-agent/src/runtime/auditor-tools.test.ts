@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi, type Mocked, type MockInstance } from 'vitest';
-import { promises as fs } from 'fs';
+import { promises as fs, mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync } from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { createAuditorTools, getAuditorToolNames } from './auditor-tools.js';
 import { CrewlyApiClient } from './api-client.js';
@@ -269,6 +270,74 @@ describe('Auditor Tools', () => {
       const result = await tools.read_audit_history.execute({ lastN: 10 }) as { totalFindings: number; recentFindings: string };
       expect(result.totalFindings).toBe(0);
       expect(result.recentFindings).toContain('No audit history');
+    });
+  });
+  describe('create_github_issue (CREW-967: no shell)', () => {
+    let binDir: string;
+    let logFile: string;
+    let originalPath: string | undefined;
+
+    /** Splits the fake gh's NUL-separated log into one argv array per call. */
+    function readCalls(): string[][] {
+      const parts = readFileSync(logFile, 'utf8').split('\0');
+      const calls: string[][] = [];
+      for (const part of parts) {
+        if (part === 'CALL') calls.push([]);
+        else if (part !== '' && calls.length > 0) calls[calls.length - 1].push(part);
+      }
+      return calls;
+    }
+
+    beforeEach(() => {
+      binDir = mkdtempSync(path.join(os.tmpdir(), 'fake-gh-'));
+      logFile = path.join(binDir, 'argv.log');
+      writeFileSync(logFile, '');
+      const script = [
+        '#!/bin/bash',
+        'printf "CALL\\0" >> "$GH_ARGV_LOG"',
+        'printf "%s\\0" "$@" >> "$GH_ARGV_LOG"',
+        'if [ "$2" = "list" ]; then echo "[]"; else echo "https://github.com/o/r/issues/1"; fi',
+      ].join('\n');
+      writeFileSync(path.join(binDir, 'gh'), script);
+      chmodSync(path.join(binDir, 'gh'), 0o755);
+      originalPath = process.env.PATH;
+      process.env.PATH = `${binDir}:${originalPath}`;
+      process.env.GH_ARGV_LOG = logFile;
+    });
+
+    afterEach(() => {
+      process.env.PATH = originalPath;
+      delete process.env.GH_ARGV_LOG;
+      rmSync(binDir, { recursive: true, force: true });
+    });
+
+    it('does not evaluate $(...) or backticks and passes each value as one argv entry', async () => {
+      const marker1 = path.join(binDir, 'pwned-subshell');
+      const marker2 = path.join(binDir, 'pwned-backtick');
+      const title = `[High] x $(touch ${marker1}) \`touch ${marker2}\` "q"`;
+      const body = `body $(touch ${marker1}) \`touch ${marker2}\``;
+      const label = `bug$(touch ${marker1})`;
+
+      const result = await tools.create_github_issue.execute({ title, body, labels: [label, 'enhancement'] }) as { success: boolean; created: boolean };
+
+      expect(result.success).toBe(true);
+      expect(result.created).toBe(true);
+      expect(existsSync(marker1)).toBe(false);
+      expect(existsSync(marker2)).toBe(false);
+
+      const calls = readCalls();
+      expect(calls).toHaveLength(2); // dedup search + create
+      const search = calls[0];
+      expect(search.slice(0, 4)).toEqual(['issue', 'list', '--state', 'open']);
+      expect(search[search.indexOf('--search') + 1]).toContain('$(touch');
+
+      const create = calls[1];
+      expect(create[0]).toBe('issue');
+      expect(create[1]).toBe('create');
+      expect(create[create.indexOf('--title') + 1]).toBe(title);
+      expect(create[create.indexOf('--body') + 1]).toBe(body);
+      const labelValues = create.flatMap((a, i) => (a === '--label' ? [create[i + 1]] : []));
+      expect(labelValues).toEqual([label, 'enhancement']);
     });
   });
 });

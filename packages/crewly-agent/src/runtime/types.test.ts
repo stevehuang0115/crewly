@@ -341,6 +341,10 @@ describe('Crewly Agent Types', () => {
       expect(WRITE_TOOLS).toContain('handle_agent_failure');
     });
 
+    it('should contain create_github_issue (files an issue as the owner)', () => {
+      expect(WRITE_TOOLS).toContain('create_github_issue');
+    });
+
     it('should not contain read-only tools', () => {
       expect(WRITE_TOOLS).not.toContain('read_file');
       expect(WRITE_TOOLS).not.toContain('get_team_status');

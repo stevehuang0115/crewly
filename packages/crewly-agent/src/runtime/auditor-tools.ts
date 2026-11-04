@@ -226,15 +226,18 @@ export function createAuditorTools(
       }),
       execute: async (args) => {
         const { title, body, labels } = args as { title: string; body: string; labels: string[] };
-        const { execSync } = await import('child_process');
+        // No shell: every value below reaches gh as one literal argv entry, so
+        // $(...) and backticks in model-supplied text are never evaluated (CREW-967).
+        const { execFileSync } = await import('child_process');
 
         try {
           // Dedup: search for existing open issues with similar title
           const searchQuery = title.replace(/\[.*?\]\s*/, '').slice(0, 50);
           let existingIssues = '';
           try {
-            existingIssues = execSync(
-              `gh issue list --state open --search "${searchQuery.replace(/"/g, '\\"')}" --json number,title --limit 5`,
+            existingIssues = execFileSync(
+              'gh',
+              ['issue', 'list', '--state', 'open', '--search', searchQuery, '--json', 'number,title', '--limit', '5'],
               { encoding: 'utf-8', timeout: 15000 }
             );
           } catch { /* gh not available or no repo */ }
@@ -255,9 +258,10 @@ export function createAuditorTools(
           }
 
           // Create the issue
-          const labelFlag = labels.map(l => `--label "${l}"`).join(' ');
-          const result = execSync(
-            `gh issue create --title "${title.replace(/"/g, '\\"')}" --body "${body.replace(/"/g, '\\"')}" ${labelFlag}`,
+          const labelArgs = labels.flatMap(l => ['--label', l]);
+          const result = execFileSync(
+            'gh',
+            ['issue', 'create', '--title', title, '--body', body, ...labelArgs],
             { encoding: 'utf-8', timeout: 30000 }
           );
 

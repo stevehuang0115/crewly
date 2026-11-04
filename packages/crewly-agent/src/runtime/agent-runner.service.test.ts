@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi, type Mocked, type Mock
 import { AgentRunnerService, AgentRunTimeoutError, ToolCallLoopDetector } from './agent-runner.service.js';
 import { ModelManager } from './model-manager.js';
 import { CrewlyApiClient } from './api-client.js';
-import { CREWLY_AGENT_DEFAULTS, type CrewlyAgentConfig, type SecurityPolicy, type AuditEntry } from './types.js';
+import { CREWLY_AGENT_DEFAULTS, type CrewlyAgentConfig, type SecurityPolicy, type AuditEntry, type ToolSensitivity } from './types.js';
+import { TOOL_SENSITIVITY } from './tool-registry.js';
 
 describe('AgentRunnerService', () => {
   let runner: AgentRunnerService;
@@ -1253,6 +1254,21 @@ describe('AgentRunnerService', () => {
       expect((toolResult as Record<string, unknown>).error).toContain('read-only');
       // Should NOT have called the API
       expect(mockApiClient.post).not.toHaveBeenCalled();
+    });
+
+    it('should block create_github_issue in readOnlyMode and ask for approval when sensitive tools need it', () => {
+      const check = (name: string) =>
+        (runner as unknown as { checkApproval: (n: string, s: ToolSensitivity) => { allowed: boolean; blocked?: boolean } })
+          .checkApproval(name, TOOL_SENSITIVITY[name]);
+
+      runner.updateSecurityPolicy({ readOnlyMode: true });
+      expect(check('create_github_issue')).toMatchObject({ allowed: false, blocked: true });
+
+      runner.updateSecurityPolicy({ readOnlyMode: false, requireApproval: ['sensitive'] });
+      expect(check('create_github_issue')).toMatchObject({ allowed: false, blocked: false });
+
+      runner.updateSecurityPolicy({ readOnlyMode: false, requireApproval: [] });
+      expect(check('create_github_issue')).toEqual({ allowed: true });
     });
 
     it('should allow safe/read-only tools when readOnlyMode is active', async () => {

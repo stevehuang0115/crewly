@@ -392,6 +392,7 @@ export const WRITE_TOOLS: readonly string[] = [
   'report_status',
   'remember',
   'complete_task',
+  'create_github_issue',
 ] as const;
 
 /**
