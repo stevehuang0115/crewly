@@ -1,12 +1,15 @@
-import { spawn, exec } from 'child_process';
+import { spawn, exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { LoggerService } from '../core/logger.service.js';
 import { ConfigService } from '../core/config.service.js';
 import { StorageService } from '../core/storage.service.js';
+import { isValidGitRefName } from '../../utils/git-ref.utils.js';
 
 const execAsync = promisify(exec);
+/** Runs git with an argv array and no shell, for every value that comes from a caller (CREW-967). */
+const execFileAsync = promisify(execFile);
 
 export interface GitStatus {
   branch: string;
@@ -156,8 +159,7 @@ export class GitIntegrationService {
       const commitMessage = await this.generateCommitMessage(projectPath, options);
       
       // Create commit
-      const commitCommand = this.buildCommitCommand(commitMessage, options);
-      const result = await execAsync(commitCommand, { cwd: projectPath });
+      const result = await execFileAsync('git', this.buildCommitArgs(commitMessage, options), { cwd: projectPath });
       
       // Update last commit time
       this.lastCommitTimes.set(projectPath, new Date());
@@ -196,16 +198,20 @@ export class GitIntegrationService {
   }
 
   /**
-   * Build git commit command with options
+   * Build the argv for `git commit`. The message and author travel as argv
+   * entries and never through a shell, so `$(...)`, backticks and quotes in
+   * them stay literal text (CREW-967).
+   *
+   * @param message - Commit message
+   * @param options - Commit options; `author` becomes `--author=<value>`
+   * @returns Arguments to pass to `git`
    */
-  private buildCommitCommand(message: string, options: GitCommitOptions): string {
-    let command = `git commit -m "${message}"`;
-    
+  private buildCommitArgs(message: string, options: GitCommitOptions): string[] {
+    const args = ['commit', '-m', message];
     if (options.author) {
-      command += ` --author="${options.author}"`;
+      args.push(`--author=${options.author}`);
     }
-
-    return command;
+    return args;
   }
 
   /**
@@ -406,13 +412,25 @@ export class GitIntegrationService {
 
   /**
    * Create a new branch
+   *
+   * Both names are validated as git ref names and passed to git as argv, never
+   * through a shell (CREW-967).
+   *
+   * @param branchName - Name of the new branch
+   * @param fromBranch - Optional start point
+   * @throws Error when either name is not a valid git ref name or git fails
    */
   async createBranch(branchName: string, fromBranch?: string): Promise<void> {
     try {
-      const command = fromBranch ? 
-        `git checkout -b ${branchName} ${fromBranch}` : 
-        `git checkout -b ${branchName}`;
-      await execAsync(command, { cwd: this.projectPath });
+      if (!isValidGitRefName(branchName)) {
+        throw new Error('Invalid branch name');
+      }
+      if (fromBranch !== undefined && fromBranch !== '' && !isValidGitRefName(fromBranch)) {
+        throw new Error('Invalid start point');
+      }
+      const args = ['checkout', '-b', branchName];
+      if (fromBranch) args.push(fromBranch);
+      await execFileAsync('git', args, { cwd: this.projectPath });
       this.logger.info(`Created branch ${branchName}`, { projectPath: this.projectPath });
     } catch (error) {
       this.logger.error(`Failed to create branch ${branchName}:`, { error: error instanceof Error ? error.message : String(error), branchName } as Record<string, any>);

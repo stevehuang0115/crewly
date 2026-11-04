@@ -469,4 +469,44 @@ describe('Git Handlers', () => {
       expect(mockGitIntegrationService.getLastCommitInfo).toHaveBeenCalled();
     });
   });
+  describe('createBranch (CREW-967: refuse unsafe ref names)', () => {
+    const call = async (body: Record<string, unknown>) => {
+      mockRequest.params = { projectId: 'project-123' };
+      mockRequest.body = body;
+      await gitHandlers.createBranch.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+    };
+
+    it('creates a branch for a valid name and start point', async () => {
+      (mockGitIntegrationService.createBranch as jest.Mock<any>).mockResolvedValue(undefined);
+      await call({ branchName: 'feature/login', switchTo: 'origin/main' });
+      expect(mockGitIntegrationService.createBranch).toHaveBeenCalledWith('feature/login', 'origin/main');
+      expect(responseMock.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
+    it('creates a branch with no start point', async () => {
+      (mockGitIntegrationService.createBranch as jest.Mock<any>).mockResolvedValue(undefined);
+      await call({ branchName: 'feature/login' });
+      expect(mockGitIntegrationService.createBranch).toHaveBeenCalledWith('feature/login', undefined);
+    });
+
+    const BAD_NAMES = ['-x', '--upload-pack=touch /tmp/p', 'x$(touch /tmp/p)', 'x`touch /tmp/p`', 'a b', 'a..b', 'a;b c', 'a:b', 'a.lock'];
+
+    it.each(BAD_NAMES)('returns 400 for branchName %j and never reaches git', async (bad) => {
+      await call({ branchName: bad });
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+      expect(mockGitIntegrationService.createBranch).not.toHaveBeenCalled();
+    });
+
+    it.each(BAD_NAMES)('returns 400 for start point %j and never reaches git', async (bad) => {
+      await call({ branchName: 'ok', switchTo: bad });
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+      expect(mockGitIntegrationService.createBranch).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when branchName is not a string', async () => {
+      await call({ branchName: { $ne: 1 } });
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+      expect(mockGitIntegrationService.createBranch).not.toHaveBeenCalled();
+    });
+  });
 });
