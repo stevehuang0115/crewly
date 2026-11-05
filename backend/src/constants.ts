@@ -5150,6 +5150,13 @@ export const SLACK_FILE_DOWNLOAD_CONSTANTS = {
 	MAX_FILE_SIZE: SLACK_API_LIMITS.MAX_FILE_SIZE,
 	/** Maximum concurrent file downloads per message */
 	MAX_CONCURRENT_DOWNLOADS: 3,
+	/**
+	 * Free space a download must leave behind (2 GB). Deliberately far below
+	 * the janitor's LOW_DISK_BYTES (15 GB): that mark starts cleanup and warns
+	 * the owner, it is not a reason to drop a 9 MB file. A 77 GB server sat at
+	 * 11 GB free and refused every Slack attachment (2026-11-05).
+	 */
+	MIN_FREE_AFTER_DOWNLOAD_BYTES: 2 * 1024 ** 3,
 	/** Maximum redirect hops to follow during file download */
 	MAX_DOWNLOAD_REDIRECTS: 5,
 	/** Timeout for individual file download requests (ms) */

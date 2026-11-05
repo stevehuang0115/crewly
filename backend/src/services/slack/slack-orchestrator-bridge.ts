@@ -48,7 +48,7 @@ import type { MessageQueueService } from '../messaging/message-queue.service.js'
 import type { SlackThreadStoreService } from './slack-thread-store.service.js';
 import { getOwnerMessageWatchdog } from '../messaging/owner-message-watchdog.service.js';
 import { isOwnerAuthored } from './slack-auto-working.service.js';
-import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_FILE_FETCH_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS, THREAD_STATUS_CONSTANTS, OWNER_EVIDENCE_METADATA, WORKTREE_JANITOR_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_FILE_FETCH_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS, THREAD_STATUS_CONSTANTS, OWNER_EVIDENCE_METADATA } from '../../constants.js';
 import { readFreeBytes } from '../worktree/low-disk-guard.js';
 import { LoggerService } from '../core/logger.service.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
@@ -1727,12 +1727,13 @@ Just type naturally to chat with the orchestrator!`;
             throw new Error(`File too large: ${file.size} bytes (max ${maxMB} MB)`);
           }
 
-          // Never fill the disk: keep the low-disk threshold free after the download.
+          // Never fill the disk: keep a small safety margin free after the download.
           const free = await readFreeBytes(tempDir);
-          if (free !== null && free - file.size < WORKTREE_JANITOR_CONSTANTS.LOW_DISK_BYTES) {
+          const floor = SLACK_FILE_DOWNLOAD_CONSTANTS.MIN_FREE_AFTER_DOWNLOAD_BYTES;
+          if (free !== null && free - file.size < floor) {
             throw new Error(
               `Not enough disk space: ${file.size} bytes needed, ${free} bytes free ` +
-              `(at least ${WORKTREE_JANITOR_CONSTANTS.LOW_DISK_BYTES} bytes must stay free)`,
+              `(at least ${floor} bytes must stay free)`,
             );
           }
 
