@@ -4,6 +4,9 @@ User-visible changes. Newest first.
 
 ## Unreleased
 
+### Fixed
+- **Slack attachments download on servers with less than 15 GB free.** The download check kept the disk janitor's low-disk mark (15 GB) free, so a 77 GB server at 11 GB free refused every Slack file, even a 9 MB .pptx, and the agent fell back to an upload link the person in Slack could not open. A download now only has to leave 2 GB free; the 15 GB mark still starts janitor cleanup and the owner warning.
+
 ### Changed
 - `block-task` skill text: the scheduled return of a block with `until` is the agent's wake — do not also set a one-shot trigger for the same time (Vera paired every `until` with a trigger five minutes earlier, so the item was always finished while still blocked and the return never ran).
 - **A block with `until` is a planned wait, not a stall and not a problem for the lead.** Blocking a task until a known time still woke the lead with a "Blocked: …" review (nothing to unblock — the item comes back on its own) and the daily retro counted the whole wait as a stall on the agent (CE-433: 2h58m of "waiting on an agent" that was the GA4 window). The lead is no longer asked; trace metrics treat the time up to `until` like a busy period — no stall, no agent hold — and only a block still in force past its time counts, as "still blocked past its until time". Blocks without `until` are reported as before (CREW-893).
