@@ -38,6 +38,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CLOUD_DISCONNECT_NOTICE_CONSTANTS } from '../../../../config/constants.js';
 import { LoggerService } from '../core/logger.service.js';
+import { readMacLastSleep, type SleepWindow } from '../../utils/mac-sleep.utils.js';
 import { NetworkStatusService } from '../core/network-status.service.js';
 import { resolveRunningPackageRoot } from '../system/auto-update.utils.js';
 import type { OwnerDirectDm } from '../slack/slack-owner-direct-dm.js';
@@ -99,6 +100,14 @@ export interface CloudDisconnectNoticeDeps {
 	 * Omitted = never offline.
 	 */
 	isOffline?: () => boolean;
+	/**
+	 * The computer's last sleep (default: macOS kernel sleep/wake times).
+	 * Cloud silence that started with a sleep gets a full threshold after the
+	 * wake before it counts: a sleeping Mac answers nobody, and the first check
+	 * after waking would otherwise DM "lost its connection" seconds before the
+	 * relay reconnects (2026-11-06).
+	 */
+	lastSleep?: () => SleepWindow | null;
 	/** Start `crewly cloud login` in a PTY (throws when it cannot) */
 	startLogin: () => CloudLoginHandle;
 	/** After a successful CLI login: make sure CloudSync runs on the new credentials */
@@ -242,6 +251,16 @@ export class CloudDisconnectNoticeService {
 			return;
 		}
 		if (verdict.status !== 'disconnected') return;
+		if (!state && verdict.reason === 'unreachable') {
+			const sleep = (this.deps.lastSleep ?? readMacLastSleep)();
+			if (sleep && sleep.wokeAt > verdict.since && now - sleep.wokeAt < this.thresholdMs) {
+				this.deps.logger.info('Cloud silent since before a sleep; giving it time after the wake before telling the owner', {
+					since: new Date(verdict.since).toISOString(),
+					wokeAt: new Date(sleep.wokeAt).toISOString(),
+				});
+				return;
+			}
+		}
 
 		const current: DisconnectNoticeState = state ?? {
 			episodeStartedAt: new Date(verdict.since).toISOString(),

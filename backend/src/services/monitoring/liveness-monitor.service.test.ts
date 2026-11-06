@@ -21,8 +21,9 @@ describe('LivenessMonitorService', () => {
 	});
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-	function monitor(clock: { t: number; mono?: number }, sent: string[], opts: { pid?: number; delivered?: () => boolean } = {}) {
+	function monitor(clock: { t: number; mono?: number }, sent: string[], opts: { pid?: number; delivered?: () => boolean; lastSleep?: () => { sleptAt: number; wokeAt: number } | null } = {}) {
 		return new LivenessMonitorService({
+			lastSleep: opts.lastSleep ?? (() => null),
 			// Monotonic follows the wall clock unless a test sets it (sleep).
 			monoNow: () => clock.mono ?? clock.t,
 			storePath,
@@ -71,6 +72,37 @@ describe('LivenessMonitorService', () => {
 		await new Promise((r) => setImmediate(r));
 		expect(sent).toEqual([]);
 		expect(m.pendingGap).toBeNull();
+	});
+
+	// 2026-11-06: on macOS Node's monotonic clock runs during sleep, so every
+	// Mac sleep over 10 min was told to the owner as "Crewly was stuck".
+	it('a gap the Mac kernel says it slept through is logged, not told, even though the monotonic clock advanced', async () => {
+		const clock = { t: T0 };
+		const sent: string[] = [];
+		const m = monitor(clock, sent, { lastSleep: () => ({ sleptAt: T0 + C.TICK_MS + 9_000, wokeAt: T0 + C.TICK_MS + 15 * MIN }) });
+		m.start();
+		m.stop();
+		clock.t += C.TICK_MS;
+		m.tick();
+		clock.t += 15 * MIN + 2_000;
+		m.tick();
+		await new Promise((r) => setImmediate(r));
+		expect(sent).toEqual([]);
+		expect(m.pendingGap).toBeNull();
+	});
+
+	it('a stall while awake is still told when the last sleep was earlier', async () => {
+		const clock = { t: T0 };
+		const sent: string[] = [];
+		const m = monitor(clock, sent, { lastSleep: () => ({ sleptAt: T0 - 60 * MIN, wokeAt: T0 - 30 * MIN }) });
+		m.start();
+		m.stop();
+		clock.t += C.TICK_MS;
+		m.tick();
+		clock.t += 15 * MIN;
+		m.tick();
+		await new Promise((r) => setImmediate(r));
+		expect(sent).toHaveLength(1);
 	});
 
 	it('a crash recorded on the way out is told at the next boot, even after a quick restart', async () => {
