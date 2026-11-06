@@ -329,6 +329,60 @@ describe('PR Review Controller', () => {
       expect(mockExecutePrReview).not.toHaveBeenCalled();
     });
 
+    it('rejects the same JSON with different whitespace than what was signed', async () => {
+      const res = await request(makeApp())
+        .post('/hook')
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', sign(RAW))
+        .send(RAW.replace('"action": "opened"', '"action":  "opened"'));
+
+      expect(res.status).toBe(401);
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
+    });
+
+    it('rejects the same JSON with its keys in a different order than what was signed', async () => {
+      const reordered = `{
+  "repository": { "full_name": "org/repo" },
+  "action": "opened",
+  "pull_request": { "number": 7, "title": "caf\\u00e9" }
+}`;
+      expect(JSON.parse(reordered)).toEqual(JSON.parse(RAW));
+
+      const res = await request(makeApp())
+        .post('/hook')
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', sign(RAW))
+        .send(reordered);
+
+      expect(res.status).toBe(401);
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
+    });
+
+    it('rejects a request with no signature header', async () => {
+      const res = await request(makeApp())
+        .post('/hook')
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Event', 'pull_request')
+        .send(RAW);
+
+      expect(res.status).toBe(401);
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
+    });
+
+    it.each(['sha256=deadbeef', 'sha256=', 'not-a-signature'])('rejects the malformed signature %j without throwing', async (bad) => {
+      const res = await request(makeApp())
+        .post('/hook')
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', bad)
+        .send(RAW);
+
+      expect(res.status).toBe(401);
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
+    });
+
     it('rejects a body changed after signing', async () => {
       const res = await request(makeApp())
         .post('/hook')
