@@ -4,6 +4,9 @@ User-visible changes. Newest first.
 
 ## Unreleased
 
+### Fixed
+- **The PR-review webhook checks GitHub's signature over the exact bytes GitHub sent.** It used to re-serialise the parsed body and sign that, so any payload whose spacing, key order or escapes differ from `JSON.stringify` (most of them) failed verification. It now verifies the raw request body and refuses the request when that body was not captured.
+
 ### Added
 - **The portal can tell whether a Chrome is connected to this machine.** `GET /browser/status` (read-only) is now allowed through the Cloud relay, so the portal's Browser page offers "Install Crewly in Chrome" only to someone who has none connected, not to someone whose connected Chrome is just idle.
 

@@ -61,8 +61,12 @@ export async function handleWebhook(
       return;
     }
     const signature = req.headers['x-hub-signature-256'] as string | undefined;
-    const rawBody = JSON.stringify(req.body);
-    if (!signature || !verifyWebhookSignature(rawBody, signature, secret)) {
+    // GitHub signs the exact bytes it sent. Re-serialising the parsed body
+    // gives different bytes (spacing, key order, escapes), so verify over the
+    // raw text the app-wide JSON parser captured. Without it we cannot verify,
+    // so refuse rather than fall back to the re-serialised body (CREW-972).
+    const rawBody = (req as Request & { rawBody?: string }).rawBody;
+    if (!signature || typeof rawBody !== 'string' || !verifyWebhookSignature(rawBody, signature, secret)) {
       res.status(401).json({ success: false, error: 'Invalid webhook signature' });
       return;
     }
