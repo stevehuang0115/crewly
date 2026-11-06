@@ -27,9 +27,12 @@ function session(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** Route the list endpoint to a fixed set of sessions. */
-function routeSessions(sessions: unknown[]) {
+/** Route the list endpoint to a fixed set of sessions; `status` is the /api/browser/status answer (null = it fails). */
+function routeSessions(sessions: unknown[], status: Record<string, unknown> | null = { clientCount: 0, drivable: false }) {
   mockFetch.mockImplementation((url: string) => {
+    if (String(url) === '/api/browser/status') {
+      return status ? Promise.resolve({ ok: true, json: () => Promise.resolve(status) }) : Promise.resolve({ ok: false, json: () => Promise.resolve({}) });
+    }
     if (String(url).startsWith('/api/browser/sessions?') || String(url) === '/api/browser/sessions') {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { sessions } }) });
     }
@@ -62,6 +65,25 @@ describe('BrowserView', () => {
       'noopener,noreferrer',
     );
     open.mockRestore();
+  });
+
+  it.each([
+    ['a direct extension client', { clientCount: 1, drivable: false }],
+    ['a browser through the Cloud relay', { clientCount: 0, drivable: true }],
+  ])('connected (%s) and no sessions: no install button, the empty state stays', async (_label, status) => {
+    routeSessions([], status);
+    render(<BrowserView />);
+
+    await waitFor(() => expect(screen.getByText('No agent is using the browser.')).toBeInTheDocument());
+    expect(screen.queryByTestId('browser-install-extension')).not.toBeInTheDocument();
+  });
+
+  it('status unreadable: does not guess, so no install button', async () => {
+    routeSessions([], null);
+    render(<BrowserView />);
+
+    await waitFor(() => expect(screen.getByText('No agent is using the browser.')).toBeInTheDocument());
+    expect(screen.queryByTestId('browser-install-extension')).not.toBeInTheDocument();
   });
 
   it('does not show the install button once agents have browser sessions', async () => {

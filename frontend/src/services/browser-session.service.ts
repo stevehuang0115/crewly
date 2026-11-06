@@ -71,6 +71,27 @@ export async function fetchBrowserSessions(activeOnly = false): Promise<BrowserS
 }
 
 /**
+ * Whether a Chrome with the Crewly extension is connected right now.
+ *
+ * Uses the same signal as the backend checklist step
+ * (`BrowserBridgeService.isConnected`): a direct local extension client, or a
+ * browser reachable through the Cloud relay.
+ *
+ * @returns true or false, or null when the status could not be read (callers
+ *   should then avoid telling the user to install)
+ */
+export async function fetchBrowserConnected(): Promise<boolean | null> {
+	try {
+		const res = await fetch('/api/browser/status');
+		if (!res.ok) return null;
+		const body = (await res.json()) as { clientCount?: number; drivable?: boolean };
+		return body.drivable === true || (body.clientCount ?? 0) > 0;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * URL for a session's current frame.
  *
  * `frameAt` is folded into the query string as a cache-buster so the browser
