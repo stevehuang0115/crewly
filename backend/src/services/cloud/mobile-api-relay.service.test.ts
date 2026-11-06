@@ -88,6 +88,14 @@ describe('isAllowedMobileApiCall', () => {
     expect(isAllowedMobileApiCall('POST', '/browser/navigate')).toBe(false);
   });
 
+  it('carries the read-only browser connection status, and nothing else under /browser', () => {
+    expect(isAllowedMobileApiCall('GET', '/browser/status')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/browser/status')).toBe(false);
+    expect(isAllowedMobileApiCall('GET', '/browser/status/extra')).toBe(false);
+    expect(isAllowedMobileApiCall('GET', '/browser/instances')).toBe(false);
+    expect(isAllowedMobileApiCall('GET', '/browser/proxy/connect')).toBe(false);
+  });
+
   it('carries project tickets but not the v1 migration', () => {
     expect(isAllowedMobileApiCall('GET', '/project-tickets/p1')).toBe(true);
     expect(isAllowedMobileApiCall('POST', '/project-tickets/p1/APP-1/transition')).toBe(true);
