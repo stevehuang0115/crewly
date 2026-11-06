@@ -21,7 +21,7 @@ const CHECKLIST: OnboardingChecklist = {
 
 describe('onboarding checklist types', () => {
   it('lists the five steps in order', () => {
-    expect(CHECKLIST_STEP_IDS).toEqual(['harness', 'team', 'first_task', 'cloud', 'slack']);
+    expect(CHECKLIST_STEP_IDS).toEqual(['harness', 'team', 'first_task', 'cloud', 'slack', 'chrome']);
   });
 
   it('isChecklistStepId accepts known ids only', () => {

@@ -28,6 +28,11 @@ import {
   type CloudDevice,
 } from '../../hooks/useCloudAccount';
 import { formatRelativeTimeCompact } from '../../utils/time';
+import {
+  CHROME_EXTENSION_INSTALL_LABEL,
+  CHROME_EXTENSION_PLACEMENTS,
+  openChromeExtensionStore,
+} from '../../constants/chrome-extension.constants';
 import { CloudDevicePairingPanel, PAIRING_LABELS_EN } from '../CloudDevicePairingPanel';
 import { getInstanceStatus, type BrowserInstanceStatus } from '../../utils/browser-instance-status';
 
@@ -175,7 +180,17 @@ const ExtensionsSection: React.FC = () => {
       {loading && instances.length === 0 ? (
         <LoadingSpinner size="xs" text="Loading…" centered={false} className="py-3" />
       ) : instances.length === 0 ? (
-        <p className="py-3 text-[13px] text-text-2">No browser extensions connected. Install Crewly in Chrome and sign in to connect.</p>
+        <div className="flex flex-wrap items-center justify-between gap-3 py-3">
+          <p className="text-[13px] text-text-2">No browser extensions connected. Install Crewly in Chrome and sign in to connect.</p>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => openChromeExtensionStore(CHROME_EXTENSION_PLACEMENTS.DEVICES_EMPTY)}
+            data-testid="devices-install-extension"
+          >
+            {CHROME_EXTENSION_INSTALL_LABEL}
+          </Button>
+        </div>
       ) : (
         <ShowAll limit={5} className="border-y border-border-soft" data-testid="browser-instances">
           {instances.map((inst) => {

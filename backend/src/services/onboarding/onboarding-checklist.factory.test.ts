@@ -10,6 +10,7 @@ const storage = { getTeams: jest.fn(async () => []), saveTeam: jest.fn(async () 
 const chatV2 = { getRecentOwnerMessageContents: jest.fn(() => [] as string[]) };
 const cloud = { isConnected: jest.fn(() => false), getTier: jest.fn(() => 'pro') };
 const slack = { isConnected: jest.fn(() => true) };
+const browserBridge = { isConnected: jest.fn(() => false) };
 const sendChat = jest.fn();
 
 jest.mock('../harness/harness.service.js', () => ({ getHarnessService: () => harness }));
@@ -17,6 +18,7 @@ jest.mock('../core/storage.service.js', () => ({ StorageService: { getInstance: 
 jest.mock('../template/template.service.js', () => ({ TemplateService: { getInstance: () => ({ tag: 'templates' }) } }));
 jest.mock('../chat-v2/chat-v2.singleton.js', () => ({ getChatV2Service: () => chatV2 }));
 jest.mock('../cloud/cloud-client.service.js', () => ({ CloudClientService: { getInstance: () => cloud } }));
+jest.mock('../browser/browser-bridge.service.js', () => ({ BrowserBridgeService: { getInstance: () => browserBridge } }));
 jest.mock('../slack/slack.service.js', () => ({ getSlackService: () => slack }));
 jest.mock('../../controllers/chat/chat.controller.js', () => ({ sendChatMessageToOrchestrator: (...args: unknown[]) => sendChat(...args) }));
 
@@ -86,6 +88,9 @@ describe('createDefaultOnboardingDeps', () => {
 		cloud.isConnected.mockReturnValue(true);
 		expect(deps.getCloudState()).toEqual({ connected: true, tier: 'pro' });
 		expect(deps.isSlackConnected()).toBe(true);
+		expect(deps.isBrowserConnected?.()).toBe(false);
+		browserBridge.isConnected.mockReturnValue(true);
+		expect(deps.isBrowserConnected?.()).toBe(true);
 		expect(deps.templates()).toEqual({ tag: 'templates' });
 		await deps.listTeams();
 		expect(storage.getTeams).toHaveBeenCalled();

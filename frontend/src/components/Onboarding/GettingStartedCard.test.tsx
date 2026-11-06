@@ -70,6 +70,48 @@ describe('GettingStartedCard', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it('shows the optional Chrome step after Slack, opens the Web Store in a new tab, and never makes it the Continue target', () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    withChecklist(makeChecklist(['harness', 'team', 'first_task', 'cloud', 'slack'], { allDone: false }));
+    render(<GettingStartedCard />);
+    const rows = screen.getAllByTestId(/^getting-started-step-/).map((el) => el.getAttribute('data-testid'));
+    expect(rows).toEqual([
+      'getting-started-step-harness',
+      'getting-started-step-team',
+      'getting-started-step-first_task',
+      'getting-started-step-cloud',
+      'getting-started-step-slack',
+      'getting-started-step-chrome',
+    ]);
+    expect(screen.getByTestId('getting-started-optional-chrome')).toHaveTextContent('Optional');
+    // Counts are over the required steps only.
+    expect(screen.getByText('5/5 steps done')).toBeInTheDocument();
+    // Continue skips the optional step: it is not the next required step.
+    expect(screen.queryByTestId('getting-started-continue')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('getting-started-step-chrome'));
+    expect(open).toHaveBeenCalledWith(
+      'https://chromewebstore.google.com/detail/crewly-in-chrome/mekcefkcdgefjhadkcbkdpmilcaekhnc?utm_source=crewly-app&utm_medium=checklist&utm_campaign=chrome-ext-usage',
+      '_blank',
+      'noopener,noreferrer',
+    );
+    expect(mockNavigate).not.toHaveBeenCalled();
+    open.mockRestore();
+  });
+
+  it('marks the Chrome step done when a browser is connected', () => {
+    withChecklist(makeChecklist(['harness', 'team', 'chrome']));
+    render(<GettingStartedCard />);
+    expect(screen.getByTestId('getting-started-step-chrome')).toBeDisabled();
+    // Chrome done does not count toward the 5: harness + team = 2/5.
+    expect(screen.getByText('2/5 steps done')).toBeInTheDocument();
+  });
+
+  it('is hidden at 100% of the required steps even though Chrome is not connected', () => {
+    withChecklist(makeChecklist(['harness', 'team', 'first_task', 'cloud', 'slack']));
+    const { container } = render(<GettingStartedCard />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it('sends the harness step to the start of setup', () => {
     expect(stepRoute('harness')).toBe('/setup');
     expect(stepRoute('cloud')).toBe('/setup?step=cloud');

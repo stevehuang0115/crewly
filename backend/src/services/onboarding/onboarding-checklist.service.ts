@@ -36,7 +36,7 @@ import { OnboardingStateStore, type OnboardingState } from './onboarding-state.s
 // =============================================================================
 
 /** Checklist step ids, in display order. */
-export type ChecklistStepId = 'harness' | 'team' | 'first_task' | 'cloud' | 'slack';
+export type ChecklistStepId = 'harness' | 'team' | 'first_task' | 'cloud' | 'slack' | 'chrome';
 
 /** Harness step detail. */
 export interface HarnessStepDetail {
@@ -87,19 +87,30 @@ export interface SlackStepDetail {
 	error?: string;
 }
 
-/** One checklist step. */
+/** Crewly in Chrome step detail (optional step). */
+export interface ChromeStepDetail {
+	/** A Chrome with the Crewly extension is reachable (direct or through the Cloud relay) */
+	connected: boolean;
+	error?: string;
+}
+
+/** One checklist step. `optional` steps are shown but never counted in the totals. */
 export type ChecklistStep =
 	| { id: 'harness'; done: boolean; detail: HarnessStepDetail }
 	| { id: 'team'; done: boolean; detail: TeamStepDetail }
 	| { id: 'first_task'; done: boolean; detail: FirstTaskStepDetail }
 	| { id: 'cloud'; done: boolean; detail: CloudStepDetail }
-	| { id: 'slack'; done: boolean; detail: SlackStepDetail };
+	| { id: 'slack'; done: boolean; detail: SlackStepDetail }
+	| { id: 'chrome'; done: boolean; optional: true; detail: ChromeStepDetail };
 
 /** `GET /api/onboarding/checklist` payload. */
 export interface OnboardingChecklist {
 	steps: ChecklistStep[];
+	/** Required steps done (optional steps are not counted) */
 	doneCount: number;
+	/** Required steps (optional steps are not counted) */
 	total: number;
+	/** Every required step is done; an optional step never blocks this */
 	allDone: boolean;
 	/** The owner hid the dashboard card */
 	dismissed: boolean;
@@ -198,6 +209,8 @@ export interface OnboardingChecklistDeps {
 	hasOwnerMessage(): boolean;
 	getCloudState(): { connected: boolean; tier: string | null };
 	isSlackConnected(): boolean;
+	/** Whether a Chrome with the Crewly extension is reachable (optional; absent reads as not connected) */
+	isBrowserConnected?(): boolean;
 	/** Record the owner's message and hand it to the orchestrator */
 	sendToOrchestrator(content: string, metadata: Record<string, unknown>): Promise<OrchestratorSendResult>;
 	now(): Date;
@@ -339,13 +352,16 @@ export class OnboardingChecklistService {
 			this.firstTaskStep(state),
 			this.cloudStep(),
 			this.slackStep(),
+			this.chromeStep(),
 		]);
-		const doneCount = steps.filter((s) => s.done).length;
+		// Optional steps are listed but never counted, so they cannot block 100%.
+		const required = steps.filter((s) => !('optional' in s && s.optional));
+		const doneCount = required.filter((s) => s.done).length;
 		return {
 			steps,
 			doneCount,
-			total: steps.length,
-			allDone: doneCount === steps.length,
+			total: required.length,
+			allDone: doneCount === required.length,
 			dismissed: state.dismissedAt !== null,
 			dismissedAt: state.dismissedAt,
 		};
@@ -573,6 +589,16 @@ export class OnboardingChecklistService {
 			return { id: 'slack', done: connected, detail: { connected, cloudConnected } };
 		} catch (error) {
 			return { id: 'slack', done: false, detail: { connected: false, cloudConnected, error: errorText(error) } };
+		}
+	}
+
+	/** @returns Crewly in Chrome step (optional) */
+	private async chromeStep(): Promise<ChecklistStep> {
+		try {
+			const connected = this.deps.isBrowserConnected?.() === true;
+			return { id: 'chrome', done: connected, optional: true, detail: { connected } };
+		} catch (error) {
+			return { id: 'chrome', done: false, optional: true, detail: { connected: false, error: errorText(error) } };
 		}
 	}
 }

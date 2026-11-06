@@ -2,7 +2,7 @@
  * GettingStartedCard
  *
  * The dashboard's persistent "Get started" checklist: harness → first team →
- * first task → Crewly Cloud → Slack, each read from the live system
+ * first task → Crewly Cloud → Slack (then the optional Crewly in Chrome), each read from the live system
  * (`GET /api/onboarding/checklist`). Shown until every step is done or the
  * owner hides it (stored on the backend, so the phone and the laptop agree).
  * Each open step links into `/setup?step=<id>`.
@@ -21,7 +21,8 @@ import {
   setupStepPath,
 } from '../../constants/onboarding-checklist.constants';
 import { SETUP_ROUTE } from '../../constants/harness.constants';
-import type { ChecklistStepId } from '../../types/onboarding-checklist.types';
+import { CHROME_EXTENSION_PLACEMENTS, openChromeExtensionStore } from '../../constants/chrome-extension.constants';
+import type { ChecklistStep, ChecklistStepId } from '../../types/onboarding-checklist.types';
 
 /**
  * Where an open step is finished.
@@ -31,6 +32,28 @@ import type { ChecklistStepId } from '../../types/onboarding-checklist.types';
  */
 export function stepRoute(id: ChecklistStepId): string {
   return id === 'harness' ? SETUP_ROUTE : setupStepPath(id);
+}
+
+/**
+ * Open a step: a `/setup` step navigates; the optional Chrome step opens the
+ * Web Store in a new tab.
+ *
+ * @param id - Step id
+ * @param navigate - Router navigate
+ */
+export function openStep(id: ChecklistStepId, navigate: (to: string) => void): void {
+  if (id === 'chrome') openChromeExtensionStore(CHROME_EXTENSION_PLACEMENTS.CHECKLIST);
+  else navigate(stepRoute(id));
+}
+
+/**
+ * Whether a step is optional (shown, never counted, never the "Continue" target).
+ *
+ * @param step - Checklist step
+ * @returns True for optional steps
+ */
+function isOptional(step: ChecklistStep): boolean {
+  return 'optional' in step && step.optional === true;
 }
 
 /**
@@ -44,7 +67,7 @@ export const GettingStartedCard: React.FC = () => {
   const { checklist, setDismissed } = useOnboardingChecklist();
 
   if (!checklist || checklist.allDone || checklist.dismissed) return null;
-  const next = checklist.steps.find((s) => !s.done);
+  const next = checklist.steps.find((s) => !s.done && !isOptional(s));
 
   return (
     <Card padding="none" className="p-4 sm:p-5" data-testid="getting-started-card">
@@ -66,7 +89,7 @@ export const GettingStartedCard: React.FC = () => {
             <button
               type="button"
               disabled={step.done}
-              onClick={() => navigate(stepRoute(step.id))}
+              onClick={() => openStep(step.id, navigate)}
               className="flex w-full items-center gap-3 py-3 text-left disabled:cursor-default"
               data-testid={`getting-started-step-${step.id}`}
             >
@@ -78,6 +101,7 @@ export const GettingStartedCard: React.FC = () => {
               <span className="min-w-0 flex-1">
                 <span className={step.done ? 'block text-sm text-text-secondary-dark line-through' : 'block text-sm font-medium text-text-primary-dark'}>
                   {CHECKLIST_STEP_LABELS[step.id]}
+                  {isOptional(step) && <span className="ml-2 text-xs font-normal text-text-secondary-dark" data-testid={`getting-started-optional-${step.id}`}>Optional</span>}
                 </span>
                 {!step.done && <span className="block text-xs text-text-secondary-dark">{CHECKLIST_STEP_HINTS[step.id]}</span>}
               </span>
@@ -87,7 +111,7 @@ export const GettingStartedCard: React.FC = () => {
         ))}
       </ul>
       {next && (
-        <Button type="button" fullWidth className="mt-3" onClick={() => navigate(stepRoute(next.id))} data-testid="getting-started-continue">
+        <Button type="button" fullWidth className="mt-3" onClick={() => openStep(next.id, navigate)} data-testid="getting-started-continue">
           Continue: {CHECKLIST_STEP_LABELS[next.id]}
         </Button>
       )}

@@ -5,10 +5,33 @@
  */
 
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { fetchBrowserSessions, frameUrl, stopBrowserSession, sendBrowserInput, fetchBrowserFrame, frameToBlob } from './browser-session.service';
+import { fetchBrowserConnected, fetchBrowserSessions, frameUrl, stopBrowserSession, sendBrowserInput, fetchBrowserFrame, frameToBlob } from './browser-session.service';
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
+
+describe('fetchBrowserConnected', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    [{ clientCount: 1, drivable: false }, true],
+    [{ clientCount: 0, drivable: true }, true],
+    [{ clientCount: 0, drivable: false }, false],
+    [{}, false],
+  ])('reads %j as connected=%s', async (body, expected) => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => body });
+    await expect(fetchBrowserConnected()).resolves.toBe(expected);
+    expect(mockFetch).toHaveBeenCalledWith('/api/browser/status');
+  });
+
+  it('is null (unknown) on a backend error or network failure', async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+    await expect(fetchBrowserConnected()).resolves.toBeNull();
+    mockFetch.mockRejectedValue(new Error('offline'));
+    await expect(fetchBrowserConnected()).resolves.toBeNull();
+  });
+});
 
 describe('fetchBrowserSessions', () => {
   beforeEach(() => vi.clearAllMocks());
