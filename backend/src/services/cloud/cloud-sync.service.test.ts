@@ -848,6 +848,29 @@ describe('CloudSyncService', () => {
       expect(await fsp.stat(queueFile).then(() => true, () => false)).toBe(false);
     });
 
+    // The relay also answers 403 for an expired JWT. After a night of sleep
+    // that read as "another account", and the Mac swapped queues on wake
+    // (d5c4ebc2 → 072d309a, 2026-11-06), stranding mail sent to the old one.
+    it('keeps its queue on a 403 for an expired token', async () => {
+      await fsp.mkdir(path.dirname(queueFile), { recursive: true });
+      await fsp.writeFile(queueFile, JSON.stringify({ queueId: 'q-remembered' }), 'utf-8');
+      const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
+      mockFetch.mockImplementation(async (url) =>
+        typeof url === 'string' && url.includes('/queue/register')
+          ? mockResponse({ success: false, error: 'jwt expired' }, 403)
+          : mockResponse({ success: true }),
+      );
+
+      service.start(configWithJwt);
+      await untilRegisterCalls(1);
+      for (let i = 0; i < 10; i++) await flushPromises();
+
+      expect(registerCalls()).toHaveLength(1);
+      expect(claimedId(0)).toBe('q-remembered');
+      expect(service.getQueueError()).toContain('jwt expired');
+      expect(JSON.parse(await fsp.readFile(queueFile, 'utf-8')).queueId).toBe('q-remembered');
+    });
+
     it('takes a fresh id when the remembered queue is refused too (account switched again)', async () => {
       await fsp.mkdir(path.dirname(queueFile), { recursive: true });
       await fsp.writeFile(queueFile, JSON.stringify({ queueId: 'q-old-account' }), 'utf-8');

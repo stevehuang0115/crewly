@@ -6124,6 +6124,13 @@ export const CLOUD_CONSTANTS = {
  * @see docs/cloud-sync-design.md
  */
 export const CLOUD_SYNC_CONSTANTS = {
+	/**
+	 * The relay's error text when a queue id is held by another account. Its
+	 * 403 also covers a failed token check ("jwt expired"), which must not be
+	 * read as a foreign queue — that minted a fresh queue id on every wake
+	 * from sleep and stranded messages sent to the old one (2026-11-06).
+	 */
+	RELAY_FOREIGN_QUEUE_ERROR: 'Not authorized to access this queue',
 	/** Interval between heartbeat uploads (ms) */
 	HEARTBEAT_INTERVAL_MS: 30_000,
 	/**
