@@ -8,6 +8,9 @@
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import type { Request, Response, NextFunction } from 'express';
+import express from 'express';
+import request from 'supertest';
+import * as nodeCrypto from 'crypto';
 
 // Mock the pr-review service
 const mockExecutePrReview = jest.fn<any>();
@@ -53,7 +56,7 @@ describe('PR Review Controller', () => {
      * @returns A mock request configured as a PR webhook
      */
     function makePrWebhookReq(overrides: Record<string, unknown> = {}): Partial<Request> {
-      return {
+      const req = {
         headers: {
           'x-github-event': 'pull_request',
           'x-hub-signature-256': 'sha256=test',
@@ -74,6 +77,8 @@ describe('PR Review Controller', () => {
           ...overrides.body as Record<string, unknown> || {},
         },
       };
+      // The app-wide JSON parser keeps the exact bytes GitHub sent as `rawBody`.
+      return { ...req, rawBody: JSON.stringify(req.body) } as Partial<Request>;
     }
 
     it('should ignore non-pull_request events with 202', async () => {
@@ -102,6 +107,35 @@ describe('PR Review Controller', () => {
         expect.objectContaining({ success: false, error: 'Invalid webhook signature' }),
       );
       delete process.env.GITHUB_WEBHOOK_SECRET;
+    });
+
+    it('verifies the signature over the raw body, not over JSON.stringify(req.body) (CREW-972)', async () => {
+      process.env.GITHUB_WEBHOOK_SECRET = 'test-secret';
+      mockVerifyWebhookSignature.mockReturnValue(true);
+      const req = makePrWebhookReq();
+      // Bytes GitHub sent: pretty-printed, so they differ from a re-serialised body.
+      const raw = JSON.stringify(req.body, null, 2);
+      (req as { rawBody?: string }).rawBody = raw;
+      expect(raw).not.toBe(JSON.stringify(req.body));
+
+      await handleWebhook(req as Request, mockRes as any, mockNext as NextFunction);
+
+      expect(mockVerifyWebhookSignature).toHaveBeenCalledTimes(1);
+      expect(mockVerifyWebhookSignature.mock.calls[0][0]).toBe(raw);
+      expect(mockVerifyWebhookSignature.mock.calls[0][2]).toBe('test-secret');
+    });
+
+    it('refuses with 401 when the raw body was not captured, without falling back to the parsed body (CREW-972)', async () => {
+      process.env.GITHUB_WEBHOOK_SECRET = 'test-secret';
+      mockVerifyWebhookSignature.mockReturnValue(true);
+      const req = makePrWebhookReq();
+      delete (req as { rawBody?: string }).rawBody;
+
+      await handleWebhook(req as Request, mockRes as any, mockNext as NextFunction);
+
+      expect(mockRes.status).toHaveBeenCalledWith(401);
+      expect(mockVerifyWebhookSignature).not.toHaveBeenCalled();
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
     });
 
     it('refuses the webhook with 503 when no secret is configured (CREW-967)', async () => {
@@ -133,7 +167,8 @@ describe('PR Review Controller', () => {
       const req: Partial<Request> = {
         headers: { 'x-github-event': 'pull_request', 'x-hub-signature-256': 'sha256=test' },
         body: { action: 'opened' },
-      };
+        rawBody: JSON.stringify({ action: 'opened' }),
+      } as Partial<Request>;
 
       await handleWebhook(req as Request, mockRes as any, mockNext as NextFunction);
 
@@ -229,6 +264,135 @@ describe('PR Review Controller', () => {
       expect(mockRes.status).toHaveBeenCalledWith(200);
       // Give async fire-and-forget time to settle
       await new Promise((r) => setTimeout(r, 10));
+    });
+  });
+
+  describe('webhook over real HTTP with the real HMAC (CREW-972)', () => {
+    const SECRET = 'hook-secret';
+
+    /** The app-wide JSON parser setup from index.ts: keeps the exact bytes as rawBody. */
+    function makeApp() {
+      const app = express();
+      app.use(
+        express.json({
+          verify: (req, _res, buf) => {
+            (req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
+          },
+        }),
+      );
+      app.post('/hook', (req, res, next) => void handleWebhook(req, res, next));
+      return app;
+    }
+
+    /** Sign exact bytes the way GitHub does. */
+    const sign = (bytes: string) => `sha256=${nodeCrypto.createHmac('sha256', SECRET).update(bytes).digest('hex')}`;
+
+    /** A pretty-printed body with a non-ASCII escape: JSON.stringify(parsed) is different bytes. */
+    const RAW = `{
+  "action": "opened",
+  "pull_request": { "number": 7, "title": "caf\\u00e9" },
+  "repository": { "full_name": "org/repo" }
+}`;
+
+    beforeEach(() => {
+      process.env.GITHUB_WEBHOOK_SECRET = SECRET;
+      mockVerifyWebhookSignature.mockImplementation((...args: unknown[]) =>
+        (jest.requireActual('../../services/pr-review/pr-review.service.js') as { verifyWebhookSignature: (...a: unknown[]) => boolean })
+          .verifyWebhookSignature(...args),
+      );
+      mockExecutePrReview.mockResolvedValue(undefined);
+    });
+
+    it('accepts a body whose signature is over the exact bytes GitHub sent', async () => {
+      expect(JSON.stringify(JSON.parse(RAW))).not.toBe(RAW);
+
+      const res = await request(makeApp())
+        .post('/hook')
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', sign(RAW))
+        .send(RAW);
+
+      expect(res.status).toBe(200);
+      expect(mockExecutePrReview).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a signature computed over the re-serialised body', async () => {
+      const res = await request(makeApp())
+        .post('/hook')
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', sign(JSON.stringify(JSON.parse(RAW))))
+        .send(RAW);
+
+      expect(res.status).toBe(401);
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
+    });
+
+    it('rejects the same JSON with different whitespace than what was signed', async () => {
+      const res = await request(makeApp())
+        .post('/hook')
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', sign(RAW))
+        .send(RAW.replace('"action": "opened"', '"action":  "opened"'));
+
+      expect(res.status).toBe(401);
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
+    });
+
+    it('rejects the same JSON with its keys in a different order than what was signed', async () => {
+      const reordered = `{
+  "repository": { "full_name": "org/repo" },
+  "action": "opened",
+  "pull_request": { "number": 7, "title": "caf\\u00e9" }
+}`;
+      expect(JSON.parse(reordered)).toEqual(JSON.parse(RAW));
+
+      const res = await request(makeApp())
+        .post('/hook')
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', sign(RAW))
+        .send(reordered);
+
+      expect(res.status).toBe(401);
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
+    });
+
+    it('rejects a request with no signature header', async () => {
+      const res = await request(makeApp())
+        .post('/hook')
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Event', 'pull_request')
+        .send(RAW);
+
+      expect(res.status).toBe(401);
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
+    });
+
+    it.each(['sha256=deadbeef', 'sha256=', 'not-a-signature'])('rejects the malformed signature %j without throwing', async (bad) => {
+      const res = await request(makeApp())
+        .post('/hook')
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', bad)
+        .send(RAW);
+
+      expect(res.status).toBe(401);
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
+    });
+
+    it('rejects a body changed after signing', async () => {
+      const res = await request(makeApp())
+        .post('/hook')
+        .set('Content-Type', 'application/json')
+        .set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', sign(RAW))
+        .send(RAW.replace('"number": 7', '"number": 8'));
+
+      expect(res.status).toBe(401);
+      expect(mockExecutePrReview).not.toHaveBeenCalled();
     });
   });
 
