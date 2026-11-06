@@ -5,6 +5,7 @@ User-visible changes. Newest first.
 ## Unreleased
 
 ### Fixed
+- **A Mac waking from sleep keeps its Cloud message queue.** The relay answers 403 both for a queue held by another account and for an expired sign-in token, and Crewly took every 403 as the first: after a night asleep the token had expired, so the Mac swapped to a brand-new queue on wake and messages addressed to the old one went unread. It now takes a fresh queue only when the relay says the queue is someone else's; an expired token is refreshed and the same queue re-registered.
 - **The PR-review webhook checks GitHub's signature over the exact bytes GitHub sent.** It used to re-serialise the parsed body and sign that, so any payload whose spacing, key order or escapes differ from `JSON.stringify` (most of them) failed verification. It now verifies the raw request body and refuses the request when that body was not captured.
 
 ### Added

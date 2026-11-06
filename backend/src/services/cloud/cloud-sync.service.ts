@@ -795,7 +795,16 @@ export class CloudSyncService extends EventEmitter {
 
     if (!response.ok) {
       const failure = await relayFailure(response, 'Queue registration failed');
-      if (response.status === 403) throw new QueueForbiddenError(failure.message);
+      if (response.status === 403) {
+        // The relay answers 403 both for a queue held by another account and
+        // for a token it rejects (an expired JWT after the Mac slept). Only
+        // the first is a reason to take a fresh queue; the second is a token
+        // refresh, then a retry of the same queue.
+        if (failure.message.includes(CLOUD_SYNC_CONSTANTS.RELAY_FOREIGN_QUEUE_ERROR)) {
+          throw new QueueForbiddenError(failure.message);
+        }
+        await this.handleAuthError(response.status);
+      }
       throw failure;
     }
 
