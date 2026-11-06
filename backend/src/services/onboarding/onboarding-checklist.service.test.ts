@@ -69,6 +69,7 @@ describe('OnboardingChecklistService', () => {
 			hasOwnerMessage: jest.fn(() => false),
 			getCloudState: jest.fn(() => ({ connected: false, tier: null })),
 			isSlackConnected: jest.fn(() => false),
+			isBrowserConnected: jest.fn(() => false),
 			sendToOrchestrator: send,
 			now: () => NOW,
 		};
@@ -87,9 +88,9 @@ describe('OnboardingChecklistService', () => {
 	}
 
 	describe('getChecklist', () => {
-		it('lists the five steps in order', async () => {
+		it('lists the five required steps in order, then the optional Chrome step', async () => {
 			const list = await service.getChecklist();
-			expect(list.steps.map((s) => s.id)).toEqual(['harness', 'team', 'first_task', 'cloud', 'slack']);
+			expect(list.steps.map((s) => s.id)).toEqual(['harness', 'team', 'first_task', 'cloud', 'slack', 'chrome']);
 			expect(list.total).toBe(5);
 			expect(list.doneCount).toBe(1);
 			expect(list.allDone).toBe(false);
@@ -137,6 +138,29 @@ describe('OnboardingChecklistService', () => {
 			expect(list.steps.find((s) => s.id === 'slack')).toEqual({ id: 'slack', done: true, detail: { connected: true, cloudConnected: true } });
 		});
 
+		it('chrome: optional, done when a browser is connected', async () => {
+			let list = await service.getChecklist();
+			expect(list.steps.find((s) => s.id === 'chrome')).toEqual({ id: 'chrome', done: false, optional: true, detail: { connected: false } });
+			(deps.isBrowserConnected as jest.Mock).mockReturnValue(true);
+			list = await service.getChecklist();
+			expect(list.steps.find((s) => s.id === 'chrome')).toEqual({ id: 'chrome', done: true, optional: true, detail: { connected: true } });
+		});
+
+		it('chrome: a deps without isBrowserConnected reads as not connected', async () => {
+			const bare = { ...deps, isBrowserConnected: undefined };
+			const list = await new OnboardingChecklistService(bare).getChecklist();
+			expect(list.steps.find((s) => s.id === 'chrome')?.done).toBe(false);
+		});
+
+		it('chrome: a failing probe reads as not done with an error and does not affect the totals', async () => {
+			(deps.isBrowserConnected as jest.Mock).mockImplementation(() => {
+				throw new Error('bridge');
+			});
+			const list = await service.getChecklist();
+			expect(list.steps.find((s) => s.id === 'chrome')).toEqual({ id: 'chrome', done: false, optional: true, detail: { connected: false, error: 'bridge' } });
+			expect(list.total).toBe(5);
+		});
+
 		it('cloud: offers the phone sign-in that ends on the portal token page', async () => {
 			const list = await service.getChecklist();
 			const cloud = list.steps.find((s) => s.id === 'cloud');
@@ -157,7 +181,7 @@ describe('OnboardingChecklistService', () => {
 			});
 			const list = await service.getChecklist();
 			expect(list.steps.every((s) => !s.done)).toBe(true);
-			expect(list.steps.map((s) => s.detail.error)).toEqual(['probe failed', 'disk', 'db', 'cloud', 'slack']);
+			expect(list.steps.map((s) => s.detail.error)).toEqual(['probe failed', 'disk', 'db', 'cloud', 'slack', undefined]);
 		});
 
 		it('all done', async () => {
@@ -168,6 +192,18 @@ describe('OnboardingChecklistService', () => {
 			const list = await service.getChecklist();
 			expect(list.allDone).toBe(true);
 			expect(list.doneCount).toBe(5);
+		});
+
+		it('reaches 100% without the Chrome step, and Chrome done does not change the count', async () => {
+			teams.push(team('t1'));
+			(deps.hasOwnerMessage as jest.Mock).mockReturnValue(true);
+			(deps.getCloudState as jest.Mock).mockReturnValue({ connected: true, tier: 'free' });
+			(deps.isSlackConnected as jest.Mock).mockReturnValue(true);
+			const without = await service.getChecklist();
+			expect(without.steps.find((s) => s.id === 'chrome')?.done).toBe(false);
+			expect(without).toMatchObject({ allDone: true, doneCount: 5, total: 5 });
+			(deps.isBrowserConnected as jest.Mock).mockReturnValue(true);
+			expect(await service.getChecklist()).toMatchObject({ allDone: true, doneCount: 5, total: 5 });
 		});
 	});
 

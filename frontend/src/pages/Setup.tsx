@@ -64,6 +64,8 @@ const STEP_FOR_QUERY: Record<ChecklistStepId, number> = {
   first_task: STEP.TASK,
   cloud: STEP.CLOUD,
   slack: STEP.SLACK,
+  // Optional step with no panel of its own (its row opens the Web Store): land on the last page.
+  chrome: STEP.DONE,
 };
 
 /**

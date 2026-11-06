@@ -7,7 +7,7 @@
  */
 
 /** Checklist step ids, in display order. */
-export type ChecklistStepId = 'harness' | 'team' | 'first_task' | 'cloud' | 'slack';
+export type ChecklistStepId = 'harness' | 'team' | 'first_task' | 'cloud' | 'slack' | 'chrome';
 
 /** Harness step detail. */
 export interface HarnessStepDetail {
@@ -49,13 +49,21 @@ export interface SlackStepDetail {
   error?: string;
 }
 
-/** One checklist step. */
+/** Crewly in Chrome step detail (optional step). */
+export interface ChromeStepDetail {
+  /** A Chrome with the Crewly extension is reachable */
+  connected: boolean;
+  error?: string;
+}
+
+/** One checklist step. `optional` steps are listed but not counted in the totals. */
 export type ChecklistStep =
   | { id: 'harness'; done: boolean; detail: HarnessStepDetail }
   | { id: 'team'; done: boolean; detail: TeamStepDetail }
   | { id: 'first_task'; done: boolean; detail: FirstTaskStepDetail }
   | { id: 'cloud'; done: boolean; detail: CloudStepDetail }
-  | { id: 'slack'; done: boolean; detail: SlackStepDetail };
+  | { id: 'slack'; done: boolean; detail: SlackStepDetail }
+  | { id: 'chrome'; done: boolean; optional: true; detail: ChromeStepDetail };
 
 /** `GET /api/onboarding/checklist` payload. */
 export interface OnboardingChecklist {
@@ -110,7 +118,7 @@ export interface FirstTaskResult {
 }
 
 /** Every step id, in display order. */
-export const CHECKLIST_STEP_IDS: readonly ChecklistStepId[] = ['harness', 'team', 'first_task', 'cloud', 'slack'];
+export const CHECKLIST_STEP_IDS: readonly ChecklistStepId[] = ['harness', 'team', 'first_task', 'cloud', 'slack', 'chrome'];
 
 /**
  * Whether a value is a checklist step id (e.g. from `?step=`).

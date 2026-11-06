@@ -48,6 +48,30 @@ describe('BrowserView', () => {
     await waitFor(() => expect(screen.getByText('No agent is using the browser.')).toBeInTheDocument());
   });
 
+  it('offers a one-click install of Crewly in Chrome in the empty state, in a new tab, tagged browser-empty', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    routeSessions([]);
+    render(<BrowserView />);
+
+    const button = await screen.findByTestId('browser-install-extension');
+    expect(button).toHaveTextContent('Install Crewly in Chrome');
+    fireEvent.click(button);
+    expect(open).toHaveBeenCalledWith(
+      'https://chromewebstore.google.com/detail/crewly-in-chrome/mekcefkcdgefjhadkcbkdpmilcaekhnc?utm_source=crewly-app&utm_medium=browser-empty&utm_campaign=chrome-ext-usage',
+      '_blank',
+      'noopener,noreferrer',
+    );
+    open.mockRestore();
+  });
+
+  it('does not show the install button once agents have browser sessions', async () => {
+    routeSessions([session()]);
+    render(<BrowserView />);
+
+    await waitFor(() => expect(screen.getByText('Pia')).toBeInTheDocument());
+    expect(screen.queryByTestId('browser-install-extension')).not.toBeInTheDocument();
+  });
+
   it('lists the sessions the backend reports', async () => {
     routeSessions([session(), session({ id: 'atlas', agentSession: 'atlas', agentName: 'Atlas' })]);
     render(<BrowserView />);
