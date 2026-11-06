@@ -5,6 +5,9 @@ User-visible changes. Newest first.
 ## Unreleased
 
 ### Fixed
+- **A sleeping Mac is no longer reported as "Crewly was stuck" or "lost its connection to Crewly Cloud".** Node's monotonic clock keeps running while a Mac sleeps, so the stall check took every sleep over 10 minutes for a blocked Crewly and DMed the owner, and the first Cloud check after waking DMed a disconnect seconds before the relay reconnected. Both now read the kernel's last sleep and wake times on macOS: a gap the Mac slept through is only logged, and Cloud silence that began before a sleep gets the full 15 minutes after the wake before it counts.
+
+### Fixed
 - **Slack attachments download on servers with less than 15 GB free.** The download check kept the disk janitor's low-disk mark (15 GB) free, so a 77 GB server at 11 GB free refused every Slack file, even a 9 MB .pptx, and the agent fell back to an upload link the person in Slack could not open. A download now only has to leave 2 GB free; the 15 GB mark still starts janitor cleanup and the owner warning.
 
 ### Changed
