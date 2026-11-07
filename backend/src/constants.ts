@@ -6094,6 +6094,8 @@ export const CLOUD_CONSTANTS = {
 		FETCH_TEMPLATE_DETAIL: 10000,
 		/** Timeout for status/sync requests */
 		STATUS: 5000,
+		/** Timeout for the fire-and-forget install-button click report */
+		CHROME_STORE_CLICK: 5000,
 	},
 	/** Subscription tiers */
 	TIERS: {

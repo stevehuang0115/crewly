@@ -54,11 +54,37 @@ export function chromeExtensionUrl(placement: ChromeExtensionPlacement): string 
   return `${CHROME_EXTENSION_STORE_URL}?${params.toString()}`;
 }
 
+/** Which Cloud usage source each placement counts as (the backend path segment). */
+export const CHROME_EXTENSION_CLICK_SOURCE: Record<ChromeExtensionPlacement, 'onboarding' | 'empty_state'> = {
+  checklist: 'onboarding',
+  'browser-empty': 'empty_state',
+  'devices-empty': 'empty_state',
+};
+
 /**
- * Open the Web Store listing in a new tab (no opener, no referrer).
+ * Count the click in Cloud feature usage. Fire-and-forget: the backend reports
+ * it to Cloud only when this machine is signed in, and every failure is
+ * swallowed so the click is never delayed or broken.
+ *
+ * @param placement - Where the clicked link is shown
+ */
+export function reportChromeExtensionClick(placement: ChromeExtensionPlacement): void {
+  try {
+    void fetch(`/api/cloud/chrome-store-click/${CHROME_EXTENSION_CLICK_SOURCE[placement]}`, {
+      method: 'POST',
+      keepalive: true,
+    }).catch(() => undefined);
+  } catch {
+    // Counting must never affect the click.
+  }
+}
+
+/**
+ * Open the Web Store listing in a new tab (no opener, no referrer), then count the click.
  *
  * @param placement - Where the link is shown
  */
 export function openChromeExtensionStore(placement: ChromeExtensionPlacement): void {
   window.open(chromeExtensionUrl(placement), '_blank', 'noopener,noreferrer');
+  reportChromeExtensionClick(placement);
 }
