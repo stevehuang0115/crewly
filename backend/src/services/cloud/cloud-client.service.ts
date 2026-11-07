@@ -578,6 +578,33 @@ export class CloudClientService {
   }
 
   /**
+   * Count one click on an install-Crewly-in-Chrome button in Cloud feature usage.
+   *
+   * No-op unless this machine is signed in to Cloud with a live token. Never
+   * throws: a failed report is only logged, so it cannot affect the click.
+   *
+   * @param source - Which button was clicked ('onboarding' or 'empty_state')
+   * @returns true when Cloud accepted the report
+   */
+  async recordChromeStoreClick(source: 'onboarding' | 'empty_state'): Promise<boolean> {
+    if (!this.token || !this.cloudUrl || this.isTokenExpired()) return false;
+    try {
+      const response = await fetch(`${this.cloudUrl.replace(/\/$/, '')}/api/cloud/feature-usage/chrome-store-click/${source}`, {
+        method: 'POST',
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(CLOUD_CONSTANTS.TIMEOUTS.CHROME_STORE_CLICK),
+      });
+      if (!response.ok && this.isAuthError(response.status)) {
+        this.handleAuthFailure('recordChromeStoreClick', response.status);
+      }
+      return response.ok;
+    } catch (error) {
+      this.logger.debug('Chrome install click not reported', { error: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  }
+
+  /**
    * Check whether the cloud token has expired (401/403 from cloud API).
    *
    * @returns true if the token has expired

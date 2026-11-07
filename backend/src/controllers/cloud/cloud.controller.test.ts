@@ -5,7 +5,7 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { connectToCloud, disconnectFromCloud, getCloudStatus, getCloudTemplates, validateCloudToken, refreshCloudToken, getDeviceId, verifyLicense, cloudSearch, mobilePair } from './cloud.controller.js';
+import { connectToCloud, disconnectFromCloud, getCloudStatus, getCloudTemplates, validateCloudToken, refreshCloudToken, getDeviceId, verifyLicense, cloudSearch, mobilePair, recordChromeStoreClick } from './cloud.controller.js';
 import { markOwner } from '../../middleware/caller-identity.testing.js';
 import { setCallerIdentity } from '../../middleware/caller-identity.middleware.js';
 
@@ -42,6 +42,7 @@ const mockGetTemplates = jest.fn();
 const mockIsConnected = jest.fn();
 const mockGetTier = jest.fn();
 const mockGetCloudUrl = jest.fn().mockReturnValue(null);
+const mockRecordChromeStoreClick = jest.fn().mockResolvedValue(true);
 
 jest.mock('../../services/cloud/cloud-client.service.js', () => ({
   CloudClientService: {
@@ -56,6 +57,7 @@ jest.mock('../../services/cloud/cloud-client.service.js', () => ({
       getCloudUrl: (...a: unknown[]) => mockGetCloudUrl(...a),
       getToken: jest.fn().mockReturnValue('test-token'),
       setRefreshToken: jest.fn(),
+      recordChromeStoreClick: (...a: unknown[]) => mockRecordChromeStoreClick(...a),
     }),
   },
 }));
@@ -130,6 +132,7 @@ function mockRes(): Response {
   const res = {
     status: jest.fn().mockReturnThis(),
     json: jest.fn().mockReturnThis(),
+    end: jest.fn().mockReturnThis(),
   };
   return res as unknown as Response;
 }
@@ -783,6 +786,34 @@ describe('Cloud Controller', () => {
       const res = mockRes();
       await cloudSearch(markOwner(mockReq({ headers: {}, body: {} } as Partial<Request>)), res);
       expect(res.status).toHaveBeenCalledWith(400);
+    });
+  });
+
+  describe('recordChromeStoreClick() — install-button click counting', () => {
+    beforeEach(() => mockRecordChromeStoreClick.mockClear());
+
+    it.each(['onboarding', 'empty_state'])('reports %s to Cloud and answers 204 without waiting for it', async (source) => {
+      mockRecordChromeStoreClick.mockReturnValueOnce(new Promise(() => undefined)); // never settles
+      const res = mockRes();
+      await recordChromeStoreClick(markOwner(mockReq({ params: { source } } as Partial<Request>)), res);
+      expect(mockRecordChromeStoreClick).toHaveBeenCalledWith(source);
+      expect(res.status).toHaveBeenCalledWith(204);
+    });
+
+    it('rejects a source the app does not report (portal is reported by the portal) and an unknown one', async () => {
+      for (const source of ['portal', 'newsletter', '']) {
+        const res = mockRes();
+        await recordChromeStoreClick(markOwner(mockReq({ params: { source } } as Partial<Request>)), res);
+        expect(res.status).toHaveBeenCalledWith(400);
+      }
+      expect(mockRecordChromeStoreClick).not.toHaveBeenCalled();
+    });
+
+    it('refuses a caller with no credential and reports nothing', async () => {
+      const res = mockRes();
+      await recordChromeStoreClick(mockReq({ headers: {}, params: { source: 'onboarding' } } as Partial<Request>), res);
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(mockRecordChromeStoreClick).not.toHaveBeenCalled();
     });
   });
 

@@ -359,6 +359,40 @@ describe('CloudClientService', () => {
     });
   });
 
+  // ----- recordChromeStoreClick() ------------------------------------------
+
+  describe('recordChromeStoreClick()', () => {
+    it('does nothing and sends nothing when not signed in to Cloud', async () => {
+      expect(await service.recordChromeStoreClick('onboarding')).toBe(false);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    describe('when connected', () => {
+      beforeEach(async () => {
+        mockFetch.mockResolvedValueOnce(mockResponse({ tier: 'pro' }));
+        await service.connect(CLOUD_URL, TOKEN);
+        mockFetch.mockClear();
+      });
+
+      it('POSTs the source with the Cloud token and no body', async () => {
+        mockFetch.mockResolvedValueOnce(mockResponse(null, 204));
+        expect(await service.recordChromeStoreClick('empty_state')).toBe(true);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${CLOUD_URL}/api/cloud/feature-usage/chrome-store-click/empty_state`);
+        expect(init.method).toBe('POST');
+        expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${TOKEN}`);
+        expect(init.body).toBeUndefined();
+      });
+
+      it('never throws: a network error or a 404 (Cloud not updated yet) is just false', async () => {
+        mockFetch.mockRejectedValueOnce(new Error('offline'));
+        await expect(service.recordChromeStoreClick('onboarding')).resolves.toBe(false);
+        mockFetch.mockResolvedValueOnce(mockResponse({}, 404));
+        await expect(service.recordChromeStoreClick('onboarding')).resolves.toBe(false);
+      });
+    });
+  });
+
   // ----- fetchCloudDevices() -----------------------------------------------
 
   describe('fetchCloudDevices()', () => {

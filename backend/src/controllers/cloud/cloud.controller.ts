@@ -795,3 +795,28 @@ export async function cloudSearch(req: Request, res: Response): Promise<void> {
     res.status(502).json({ success: false, error: `Search request failed: ${error instanceof Error ? error.message : String(error)}` });
   }
 }
+
+/** Install-button placements the app reports (the portal reports its own). */
+const CHROME_STORE_CLICK_SOURCES: ReadonlySet<string> = new Set(['onboarding', 'empty_state']);
+
+/**
+ * POST /api/cloud/chrome-store-click/:source — count an install-button click.
+ *
+ * The UI calls this after opening the Web Store. The backend reports it to
+ * Cloud with its own token (the browser never holds one); when this machine is
+ * not signed in to Cloud it does nothing. Always answers 204 for a known
+ * source, so the click is never held up or failed by counting.
+ *
+ * @param req - `:source` is `onboarding` or `empty_state`
+ * @param res - 204, or 400 for an unknown source
+ */
+export async function recordChromeStoreClick(req: Request, res: Response): Promise<void> {
+  if (rejectNonOwner(req, res)) return;
+  const source = String(req.params.source ?? '');
+  if (!CHROME_STORE_CLICK_SOURCES.has(source)) {
+    res.status(400).json({ success: false, error: 'Unknown source' });
+    return;
+  }
+  void CloudClientService.getInstance().recordChromeStoreClick(source as 'onboarding' | 'empty_state');
+  res.status(204).end();
+}
