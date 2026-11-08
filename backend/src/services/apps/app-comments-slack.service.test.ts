@@ -132,6 +132,26 @@ describe('AppCommentsSlackService', () => {
       expect(handled).toContain('D1:100.1');
     });
 
+    // The DM path adds 👀 from the agent's bot; this path consumes the
+    // message first, so the owner saw no sign Ella got "Weee呢？" (2026-11-08).
+    it('marks the consumed reply as seen by the agent who owns the thread', async () => {
+      const seen: string[] = [];
+      const svc = make({ markSeen: async (a, c, t) => { seen.push(`${a}:${c}:${t}`); } });
+      await svc.mirrorOwnerComments('ella', 'app1', 'A', [addChange()]);
+      expect(svc.interceptInbound(msg())).toBe(true);
+      await flush();
+      expect(seen).toEqual(['ella:D1:200.1']);
+    });
+
+    it('still relays the reply when the seen-reaction fails', async () => {
+      const svc = make({ markSeen: async () => { throw new Error('missing_scope'); } });
+      await svc.mirrorOwnerComments('ella', 'app1', 'A', [addChange()]);
+      expect(svc.interceptInbound(msg())).toBe(true);
+      await flush();
+      expect(relayed).toEqual([['app1', 'c1', 'ok, darker', 'UOWNER']]);
+      expect(posts).toHaveLength(1); // no "couldn't add that reply" notice
+    });
+
     it('leaves everything else to normal routing', async () => {
       const svc = make();
       await svc.mirrorOwnerComments('ella', 'app1', 'A', [addChange()]);

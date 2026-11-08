@@ -94,6 +94,8 @@ export interface CommentSlackDeps {
   isOwner: (userId: string) => boolean;
   /** The owner's Slack message in this thread was handled (stops "unanswered" tracking) */
   noteHandled?: (channel: string, threadTs: string) => void;
+  /** React to the owner's message as the agent's bot (the 👀 a DM gets); absent = no reaction */
+  markSeen?: (agentSession: string, channel: string, ts: string) => Promise<void>;
   /** Env override (tests) */
   env?: () => string | undefined;
   log?: (level: 'info' | 'warn', msg: string, meta?: Record<string, unknown>) => void;
@@ -359,6 +361,11 @@ export class AppCommentsSlackService {
       try {
         await this.deps.relayOwnerReply(link.appId, link.commentId, text.slice(0, CREWLY_APPS_CONSTANTS.COMMENTS.MAX_BODY_CHARS), userId);
         this.log('info', 'Slack thread reply added to the app comment', { appId: link.appId, commentId: link.commentId });
+        // Consumed here, so the DM path never adds its 👀: without it the
+        // owner saw no sign the agent got the reply (2026-11-08).
+        await this.deps.markSeen?.(link.agentSession, message.channelId, message.ts).catch((err: unknown) => {
+          this.log('warn', 'Could not mark the Slack thread reply as seen', { agentSession: link.agentSession, error: err instanceof Error ? err.message : String(err) });
+        });
       } catch (err) {
         this.log('warn', 'Slack thread reply could not be added to the app comment', { appId: link.appId, error: err instanceof Error ? err.message : String(err) });
         await this.postIn(link, "⚠️ I couldn't add that reply to the comment in the app. Please reply there instead.");

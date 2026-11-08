@@ -13,7 +13,7 @@ import { AppsRegistryService } from './apps-registry.service.js';
 import { AppsService, type AppCardPoster, type AppsDirectory } from './apps.service.js';
 import type { TeamMemberRole } from '../../types/index.js';
 import { getTeamLeadIds } from '../../utils/team.utils.js';
-import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, SLACK_AGENT_DM_CONSTANTS } from '../../constants.js';
 import { AppWakeService } from './app-wake.service.js';
 import { FileRequestWatchService } from './file-request-watch.service.js';
 import { AppThumbnailService } from './app-thumbnail.service.js';
@@ -144,6 +144,14 @@ export function getAppCommentsSlack(): AppCommentsSlackService {
     },
     noteHandled: (channel, threadTs) => {
       slackSync?.watchdog.getOwnerMessageWatchdog()?.noteSlackAnswer(channel, threadTs, 'app comment reply');
+    },
+    markSeen: async (session, channel, ts) => {
+      // The thread lives in the agent's DM, which only its own bot can see.
+      const { getSlackAgentIdentityService } = await import('../slack/slack-agent-identity.service.js');
+      const installed = getSlackAgentIdentityService()?.getInstalled(session);
+      if (!installed) return;
+      const { getSlackService } = await import('../slack/slack.service.js');
+      await getSlackService().addReaction(channel, ts, SLACK_AGENT_DM_CONSTANTS.INBOUND_REACTION, installed.botToken);
     },
     log: (level, msg, meta) => console[level === 'warn' ? 'warn' : 'log'](`[AppCommentsSlack] ${msg}`, meta ?? ''),
   });
