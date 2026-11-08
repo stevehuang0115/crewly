@@ -75,32 +75,33 @@ describe('WorkItemDispatchSubscriber', () => {
     mockedAxios.post.mockResolvedValue({ status: 200, data: { success: true } });
   });
 
-  describe('a write that times out is retried, and a lost one stays queued and visible (CREW-862)', () => {
-    const timeoutErr = (): Error => Object.assign(new Error('timeout of 5000ms exceeded'), { code: 'ECONNABORTED' });
+  describe('a refused write is retried, a timed-out one is not, and a lost one stays queued and visible (CREW-862)', () => {
+    const timeoutErr = (): Error => Object.assign(new Error('timeout of 45000ms exceeded'), { code: 'ECONNABORTED' });
+    const refusedErr = (): Error => Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8787'), { code: 'ECONNREFUSED' });
 
-    it('dispatch: a write that times out once is delivered on the retry', async () => {
+    it('dispatch: a write refused once is delivered on the retry', async () => {
       const svc = WorkItemDispatchSubscriber.getInstance();
-      mockedAxios.post.mockRejectedValueOnce(timeoutErr());
+      mockedAxios.post.mockRejectedValueOnce(refusedErr());
       const out = await svc.dispatchOutcome(makeWorkItem({ id: 'wi-t1', target: 'ce-owen' }));
       expect(out.status).toBe('delivered');
       expect(mockedAxios.post).toHaveBeenCalledTimes(2);
     });
 
-    it('dispatch: a write that keeps timing out fails after MAX_ATTEMPTS, frees the key, and is flagged', async () => {
+    it('dispatch: a write that keeps being refused fails after MAX_ATTEMPTS, frees the key, and is flagged', async () => {
       const svc = WorkItemDispatchSubscriber.getInstance();
-      for (let i = 0; i < DISPATCH_WRITE_RETRY_CONSTANTS.MAX_ATTEMPTS; i++) mockedAxios.post.mockRejectedValueOnce(timeoutErr());
+      for (let i = 0; i < DISPATCH_WRITE_RETRY_CONSTANTS.MAX_ATTEMPTS; i++) mockedAxios.post.mockRejectedValueOnce(refusedErr());
       const out = await svc.redispatchOutcome(makeWorkItem({ id: 'wi-t2', target: 'ce-owen' }));
       expect(out.status).toBe('failed');
-      expect(out.reason).toContain('timeout');
+      expect(out.reason).toContain('ECONNREFUSED');
       expect(mockedAxios.post).toHaveBeenCalledTimes(DISPATCH_WRITE_RETRY_CONSTANTS.MAX_ATTEMPTS);
       expect(mockTraceHarness).toHaveBeenCalledWith('harness.redelivery', expect.objectContaining({ outcome: 'failed' }));
       // the item was not marked dispatched: the next push goes out
       expect(await svc.dispatchTo(makeWorkItem({ id: 'wi-t2', target: 'ce-owen' }))).toBe(true);
     });
 
-    it('batch: a reminder that keeps timing out is traced as not delivered for every item', async () => {
+    it('batch: a reminder that keeps being refused is traced as not delivered for every item', async () => {
       const svc = WorkItemDispatchSubscriber.getInstance();
-      for (let i = 0; i < DISPATCH_WRITE_RETRY_CONSTANTS.MAX_ATTEMPTS; i++) mockedAxios.post.mockRejectedValueOnce(timeoutErr());
+      for (let i = 0; i < DISPATCH_WRITE_RETRY_CONSTANTS.MAX_ATTEMPTS; i++) mockedAxios.post.mockRejectedValueOnce(refusedErr());
       const wrote = await svc.redispatchMany([
         makeWorkItem({ id: 'wi-b1', target: 'ce-owen' }),
         makeWorkItem({ id: 'wi-b2', target: 'ce-owen' }),
@@ -108,6 +109,24 @@ describe('WorkItemDispatchSubscriber', () => {
       expect(wrote).toBe(false);
       const failed = mockTraceHarness.mock.calls.filter(([type, e]) => type === 'harness.redelivery' && e.outcome === 'failed');
       expect(failed).toHaveLength(2);
+    });
+
+    it('dispatch: a write that TIMES OUT is not retried (it may still be delivering) but the item stays queued and traced', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      mockedAxios.post.mockRejectedValueOnce(timeoutErr());
+      const out = await svc.redispatchOutcome(makeWorkItem({ id: 'wi-t3', target: 'ce-owen' }));
+      expect(out.status).toBe('failed');
+      expect(out.reason).toContain('timeout');
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+      expect(mockTraceHarness).toHaveBeenCalledWith('harness.redelivery', expect.objectContaining({ outcome: 'failed' }));
+      expect(await svc.dispatchTo(makeWorkItem({ id: 'wi-t3', target: 'ce-owen' }))).toBe(true);
+    });
+
+    it('batch: a reminder that TIMES OUT is not retried and is traced as not delivered', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      mockedAxios.post.mockRejectedValueOnce(timeoutErr());
+      expect(await svc.redispatchMany([makeWorkItem({ id: 'wi-b3', target: 'ce-owen' }), makeWorkItem({ id: 'wi-b4', target: 'ce-owen' })])).toBe(false);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     });
 
     it('a refused write (HTTP 404) is not retried', async () => {
@@ -299,7 +318,7 @@ describe('WorkItemDispatchSubscriber', () => {
       const svc = WorkItemDispatchSubscriber.getInstance();
       const wi = makeWorkItem({ id: 'wi-failing' });
 
-      for (let i = 0; i < DISPATCH_WRITE_RETRY_CONSTANTS.MAX_ATTEMPTS; i++) mockedAxios.post.mockRejectedValueOnce(new Error('connection refused'));
+      for (let i = 0; i < DISPATCH_WRITE_RETRY_CONSTANTS.MAX_ATTEMPTS; i++) mockedAxios.post.mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:8787'));
       const first = await svc.dispatchTo(wi);
       expect(first).toBe(false);
 

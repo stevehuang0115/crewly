@@ -9177,10 +9177,11 @@ export const REMOTE_MCP_CONSTANTS = {
 } as const;
 
 /**
- * Retry of a dispatcher write to an agent's terminal that got no answer
- * (timeout, connection reset) or a transient 502/503/504 (CREW-862). The
- * item stays queued either way; this only avoids dropping a brief to one
- * blip. Other HTTP answers (404, 409, ...) are decisions, not blips.
+ * Retry of a dispatcher write to an agent's terminal that never reached the
+ * server (connection refused / reset, DNS) or got a transient 502/503/504
+ * (CREW-862). A timeout is never retried: the guarded paste may still be
+ * landing, so a second write would paste the brief twice. The item stays
+ * queued either way. Other HTTP answers (404, 409, ...) are decisions.
  */
 export const DISPATCH_WRITE_RETRY_CONSTANTS = {
 	/** Total tries per write, the first included */
