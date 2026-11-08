@@ -1761,6 +1761,70 @@ describe('ReconcilerService', () => {
   // -------------------------------------------------------------------------
   // CREW-304: wake storm — outcomes, failure backoff, pending starts
   // -------------------------------------------------------------------------
+  describe('queued work behind an offline machine is reported to the lead (CREW-862)', () => {
+    const MIN = 60_000;
+    const HOUR = 60 * MIN;
+    const stopped = (): Map<string, AgentHealth> =>
+      new Map([['ce-nova', { sessionName: 'ce-nova', status: 'inactive', teamId: 'team-ce', memberId: 'nova', activeWorkItemCount: 0 } as AgentHealth]]);
+    const queuedFor = (ms: number) => makeWorkItem({ id: 'wi-off', status: 'queued', type: 'delegate', target: 'ce-nova', createdAt: new Date(Date.now() - ms).toISOString() });
+    const wire = (ageMs: number, getMachineOffline: jest.Mock) => {
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([queuedFor(ageMs)]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(stopped()),
+        executeWakeAction: jest.fn().mockResolvedValue({ outcome: 'skipped', reason: 'network offline' }),
+        getMachineOffline,
+      });
+      service = new ReconcilerService(provider);
+      const addToPool = jest.fn().mockResolvedValue(undefined);
+      service.setIdleHolderReporting({
+        loadTeams: async () => [{
+          id: 'team-ce', name: 'CE', members: [
+            { id: 'owen', sessionName: 'ce-owen', canDelegate: true, hierarchyLevel: 1 },
+            { id: 'nova', sessionName: 'ce-nova' },
+          ],
+        } as never],
+        addToPool,
+        stamp: jest.fn().mockResolvedValue(undefined),
+        findWorkItem: async () => ({ id: 'wi-off', title: 'verify brief' }) as never,
+      });
+      return addToPool;
+    };
+    const runPasses = async (n: number) => {
+      for (let i = 0; i < n; i++) {
+        await service.runFull();
+        jest.advanceTimersByTime(31 * MIN);
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+
+    beforeEach(() => jest.setSystemTime(new Date('2026-10-25T04:00:00Z')));
+
+    it('puts one notice on the lead once the wait passes the threshold, and not again on later passes', async () => {
+      const addToPool = wire(15 * HOUR, jest.fn().mockReturnValue({ offlineMinutes: 90 }));
+      await runPasses(5);
+      expect(addToPool).toHaveBeenCalledTimes(1);
+      expect(addToPool.mock.calls[0][0]).toMatchObject({
+        type: 'review',
+        target: 'ce-owen',
+        metadata: { reviewReason: 'offline_queue', sourceWorkItemId: 'wi-off' },
+      });
+      expect(addToPool.mock.calls[0][0].description).toContain('1.5 h');
+    });
+
+    it('says nothing before the threshold', async () => {
+      const addToPool = wire(30 * MIN, jest.fn().mockReturnValue({ offlineMinutes: 20 }));
+      await runPasses(1);
+      expect(addToPool).not.toHaveBeenCalled();
+    });
+
+    it('says nothing when the machine is online (a different stall, handled by recovery)', async () => {
+      const addToPool = wire(15 * HOUR, jest.fn().mockReturnValue(null));
+      await runPasses(3);
+      expect(addToPool).not.toHaveBeenCalled();
+    });
+  });
+
   describe('failing redelivery is reported to the lead (CREW-577)', () => {
     const MIN = 60_000;
     const idleTarget = (): Map<string, AgentHealth> =>

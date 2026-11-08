@@ -9177,6 +9177,23 @@ export const REMOTE_MCP_CONSTANTS = {
 } as const;
 
 /**
+ * Retry of a dispatcher write to an agent's terminal that got no answer
+ * (timeout, connection reset) or a transient 502/503/504 (CREW-862). The
+ * item stays queued either way; this only avoids dropping a brief to one
+ * blip. Other HTTP answers (404, 409, ...) are decisions, not blips.
+ */
+export const DISPATCH_WRITE_RETRY_CONSTANTS = {
+	/** Total tries per write, the first included */
+	MAX_ATTEMPTS: 3,
+	/** Wait before the second try; it doubles for each later one (ms) */
+	BASE_DELAY_MS: 2_000,
+	/** Longest wait between two tries (ms) */
+	MAX_DELAY_MS: 15_000,
+	/** HTTP statuses worth another try */
+	RETRYABLE_STATUSES: [502, 503, 504] as readonly number[],
+} as const;
+
+/**
  * Reconciler wake pacing (CREW-304). On 2026-10-06 the reconciler traced
  * 2,295 failed wakes in 6h for two CE sessions — one per 10s fast-loop tick —
  * because a wake that did not work was simply asked again next tick.
@@ -9195,6 +9212,13 @@ export const RECONCILER_WAKE_CONSTANTS = {
 	REDELIVERY_REASON_MAX_CHARS: 200,
 	/** Escalated WorkItem ids remembered per reconciler before the oldest are forgotten */
 	REDELIVERY_ESCALATED_KEPT: 500,
+	/**
+	 * Queued work waiting this long for an agent whose machine is offline tells the agent's lead, once
+	 * (CREW-862: a CE queue sat ~15h behind an offline, restarting machine with nobody told) (ms)
+	 */
+	OFFLINE_QUEUE_NOTICE_AFTER_MS: 60 * 60_000,
+	/** Offline-queue notices remembered per reconciler before the oldest are forgotten */
+	OFFLINE_QUEUE_NOTICED_KEPT: 200,
 	/**
 	 * How long a pass waits on a start before treating it as pending (ms). A
 	 * start queued behind the running-agent cap can wait minutes for a slot;
