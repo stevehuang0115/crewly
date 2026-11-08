@@ -67,6 +67,7 @@ import { noteScheduledTurn } from '../slack/slack-auto-working.service.js';
 import { originOfWorkItem } from '../orc/work-item-destination.js';
 import { internalAgentHeaders } from '../core/owner-auth.service.js';
 import { getTaskTimingService } from '../ai/self-improvement/task-timing.service.js';
+import { writeWithRetry } from './terminal-write-retry.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -605,15 +606,25 @@ export class WorkItemDispatchSubscriber {
     const message = this.buildDispatchMessage(workItem, freshNote, worktreeHint);
 
     try {
-      const res = await axios.post(
-        `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(workItem.target)}/write`,
-        { data: message, mode: 'message' },
-        {
-          headers: internalAgentHeaders(SERVICE_NAME),
-          // Outlives the server's guarded paste (#1431): a 5 s timeout
-          // reported "failed" while the brief was still being delivered.
-          timeout: TUI_INPUT_GUARD.WRITE_CLIENT_TIMEOUT_MS,
-        },
+      const target = workItem.target;
+      const res = await writeWithRetry(
+        () => axios.post(
+          `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(target)}/write`,
+          { data: message, mode: 'message' },
+          {
+            headers: internalAgentHeaders(SERVICE_NAME),
+            // Outlives the server's guarded paste (#1431): a 5 s timeout
+            // reported "failed" while the brief was still being delivered.
+            timeout: TUI_INPUT_GUARD.WRITE_CLIENT_TIMEOUT_MS,
+          },
+        ),
+        (attempt, waitMs, err) => this.logger.warn('Dispatch write got no usable answer — trying again', {
+          workItemId: workItem.id,
+          target,
+          attempt,
+          waitMs,
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
       if (isSpendCappedReply(res?.data)) {
         // The cap fired between the check above and the write: the brief is
@@ -901,15 +912,24 @@ export class WorkItemDispatchSubscriber {
     // can clear — and never while other work is running.)
     const message = this.buildBatchDispatchMessage(batch, target);
     try {
-      const res = await axios.post(
-        `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(target)}/write`,
-        { data: message, mode: 'message' },
-        {
-          headers: internalAgentHeaders(SERVICE_NAME),
-          // Outlives the server's guarded paste (#1431): a 5 s timeout
-          // reported "failed" while the brief was still being delivered.
-          timeout: TUI_INPUT_GUARD.WRITE_CLIENT_TIMEOUT_MS,
-        },
+      const res = await writeWithRetry(
+        () => axios.post(
+          `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(target)}/write`,
+          { data: message, mode: 'message' },
+          {
+            headers: internalAgentHeaders(SERVICE_NAME),
+            // Outlives the server's guarded paste (#1431): a 5 s timeout
+            // reported "failed" while the brief was still being delivered.
+            timeout: TUI_INPUT_GUARD.WRITE_CLIENT_TIMEOUT_MS,
+          },
+        ),
+        (attempt, waitMs, err) => this.logger.warn('Batch dispatch write got no usable answer — trying again', {
+          target,
+          count: batch.length,
+          attempt,
+          waitMs,
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
       if (isSpendCappedReply(res?.data)) {
         this.logger.info('Batch redispatch held by the daily token cap — not delivered', { target, count: batch.length });
@@ -943,12 +963,25 @@ export class WorkItemDispatchSubscriber {
       return true;
     } catch (err) {
       const status = (err as { response?: { status?: number } })?.response?.status;
-      this.logger.debug('Batch dispatch HTTP write failed (non-fatal)', {
+      const errorText = err instanceof Error ? err.message : String(err);
+      // The items stay queued; say so where a person can see it (CREW-862:
+      // this used to be a debug line and no trace, so a lost reminder looked
+      // like no attempt at all).
+      this.logger.warn('Batch dispatch HTTP write failed — the reminder did not reach the agent; items stay queued', {
         target,
         count: batch.length,
         status: status ?? 'no-response',
-        error: err instanceof Error ? err.message : String(err),
+        error: errorText,
       });
+      for (const wi of batch) {
+        traceHarness('harness.redelivery', {
+          workItem: wi,
+          session: target,
+          summary: `Reminder of ${batch.length} queued work items NOT delivered to ${target} (${status ? `write refused (HTTP ${status})` : `write failed (${errorText})`}); still queued: ${wi.title}`,
+          outcome: 'failed',
+          data: { batch: batch.length },
+        });
+      }
       return false;
     }
   }

@@ -1311,6 +1311,22 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   }
 
   /**
+   * Whether this machine is offline, and for how long (CREW-862). While it
+   * is, every wake is held; the reconciler uses this to tell a lead that
+   * queued work is waiting behind the outage.
+   *
+   * @returns The outage length in minutes, or null when online
+   */
+  getMachineOffline(): { offlineMinutes: number } | null {
+    try {
+      const net = NetworkStatusService.getInstance();
+      return net.isOffline() ? { offlineMinutes: net.offlineMinutes() } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Cooldown that applies to the NEXT redelivery of a WorkItem: the base
    * window doubled once per reminder already sent, capped at
    * {@link REDELIVER_MAX_COOLDOWN_MS}.

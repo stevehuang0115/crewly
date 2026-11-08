@@ -54,6 +54,7 @@ import {
 import type { AgentHealth, DecisionHoldLink } from './reconcile-rules.js';
 import { surfaceIdleHolders, type IdleHolderSurfacerDeps } from './idle-holder-surfacer.js';
 import { surfaceRedeliveryMiss } from './redelivery-escalation.js';
+import { surfaceOfflineQueue } from './offline-queue-notice.js';
 import { WORK_ITEM_BLOCK_SOURCES } from '../../types/v2/work-item.types.js';
 import { getSettingsService } from '../settings/index.js';
 import { LoggerService } from '../core/logger.service.js';
@@ -190,6 +191,11 @@ export interface ReconcilerDataProvider {
   parkStalledAgent?(sessionName: string, role: string): Promise<boolean>;
   /** Sessions the claim service reports as hung (optional). */
   getHungAgents?(): string[];
+  /**
+   * Whether this machine is offline, and for how long (minutes); null when
+   * online. While it is offline every wake is held (CREW-862). Optional.
+   */
+  getMachineOffline?(): { offlineMinutes: number } | null;
   /** Backfill token usage data on completed WorkItems that have 0 tokens */
   backfillTokenUsage?(): Promise<number>;
   /**
@@ -253,6 +259,8 @@ export class ReconcilerService {
   private readonly redeliveryMisses = new Map<string, number>();
   /** WorkItems whose failing redelivery was already reported to a lead (once per item, CREW-577) */
   private readonly escalatedRedeliveries = new Set<string>();
+  /** Oldest queued WorkItems whose offline-machine wait was already reported (once per item, CREW-862) */
+  private readonly noticedOfflineQueues = new Set<string>();
   /**
    * Successful wakes per `session + WorkItem`: the next wake of the same pair waits a doubling
    * backoff while the item stays queued (the wake "worked" but the agent did not take the item).
@@ -1322,6 +1330,49 @@ export class ReconcilerService {
   }
 
   /**
+   * Tell the agent's lead, once per oldest item, that its queued work is
+   * waiting behind an offline machine (CREW-862). Best-effort: never throws,
+   * and does nothing when idle-holder reporting is not wired.
+   *
+   * @param agent - The stalled agent with queued work
+   * @param offlineMinutes - How long the machine has been offline
+   */
+  private async noticeOfflineQueue(agent: StalledAgent, offlineMinutes: number): Promise<void> {
+    const id = agent.workItem.id;
+    if (!this.idleHolderDeps || this.noticedOfflineQueues.has(id)) return;
+    this.noticedOfflineQueues.add(id);
+    if (this.noticedOfflineQueues.size > RECONCILER_WAKE_CONSTANTS.OFFLINE_QUEUE_NOTICED_KEPT) {
+      const oldest = this.noticedOfflineQueues.values().next().value;
+      if (oldest !== undefined && oldest !== id) this.noticedOfflineQueues.delete(oldest);
+    }
+    const log = LoggerService.getInstance().createComponentLogger('ReconcilerService');
+    try {
+      const review = await surfaceOfflineQueue(
+        { session: agent.sessionName, workItemId: id, queuedCount: agent.queuedCount, queuedForMs: agent.queuedForMs, offlineMinutes },
+        this.idleHolderDeps,
+      );
+      traceHarness('harness.recover', {
+        workItemId: id,
+        session: agent.sessionName,
+        summary: `Queued work for ${agent.sessionName} is waiting behind an offline machine (${Math.round(agent.queuedForMs / 60_000)} min); its lead was told`,
+        outcome: 'queued',
+        data: { kind: 'offline_queue', queuedCount: agent.queuedCount, offlineMinutes },
+      });
+      log.warn('Queued work is waiting behind an offline machine — reported to the lead', {
+        workItemId: id,
+        session: agent.sessionName,
+        queuedCount: agent.queuedCount,
+        offlineMinutes,
+        lead: review.target,
+        reviewWorkItemId: review.id,
+      });
+    } catch (err) {
+      this.noticedOfflineQueues.delete(id);
+      log.warn('Reporting an offline-machine queue failed (non-fatal)', { workItemId: id, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
    * Recover agents whose queued work has waited past the threshold while
    * their session is stopped, hung or idle (CREW-303), and stopped agents
    * that still hold work (running / blocked by their outage). Once per
@@ -1354,7 +1405,12 @@ export class ReconcilerService {
         idleNoProgressMs: this.wakeTuning.stalledIdleMs,
         hungSessions: hung,
       });
+      const offline = this.dataProvider.getMachineOffline?.() ?? null;
+      if (!offline) this.noticedOfflineQueues.clear();
       for (const agent of stalled) {
+        if (offline && agent.queuedCount > 0 && agent.queuedForMs >= RECONCILER_WAKE_CONSTANTS.OFFLINE_QUEUE_NOTICE_AFTER_MS) {
+          void this.noticeOfflineQueue(agent, offline.offlineMinutes);
+        }
         const last = this.recoveredAt.get(agent.sessionName);
         if (last !== undefined && now - last < this.wakeTuning.recoveryCooldownMs) continue;
         if (this.pendingStarts.has(agent.sessionName)) continue;
