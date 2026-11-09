@@ -3,7 +3,7 @@
  * owner asked for (the `harness-login` skill).
  *
  * The owner asked the orc, in their own words, to log a harness in or switch
- * its account. The orc must not run `claude setup-token` / `codex login` in
+ * its account. The orc must not run `claude auth login` / `codex login` in
  * its bash tool: that process dies with the tool call, so the code the owner
  * pastes back is stale (2026-09-26). This route hands the request to the
  * re-login coordinator instead — the same forced flow 「重新登录 claude」 in

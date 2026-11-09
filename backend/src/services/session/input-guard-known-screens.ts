@@ -203,6 +203,28 @@ const CC289_NO_BOTTOM_RULE: TuiInputView = {
 	cursorRow: 5,
 };
 
+/**
+ * Live crewly-product-team-quinn (Claude Code 2.1.310, 2026-10-26 14:19Z)
+ * mid-turn, input empty: the spinner line, then Claude Code's
+ * "Tip: Use /btw ..." hint (one line at this width), a blank row, the
+ * complete box, the footer. The tip is on the screen but is not in the box,
+ * so the box reads empty (CREW-322: the delivery check reported such agents
+ * as "input box cannot be read").
+ */
+const CC310_BTW_TIP: TuiInputView = {
+	lines: [
+		'',
+		'· Prestidigitating… (1m 41s · ↓ 9.5k tokens)',
+		"  ⎿\u00a0Tip: Use /btw to ask a quick side question without interrupting Claude's current work",
+		'',
+		'─────────────────────────────────────────────────────────────────────────────────────────── crewly-product-team-quinn-47ce967d ─',
+		'❯\u00a0',
+		'────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────',
+		'  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt',
+	],
+	cursorRow: 5,
+};
+
 /** One message another agent sent Milo (head: 3 line breaks; tail as shown). */
 export const MILO_PASTE = '[Message from Ava, edu-game team]\nTo: Milo\nRe: AZ thread status\n'
 	+ 'Steve asked for status in AZ thread 46e7c121-…. Live v32 rename and Averie +1 are done. School scene flow, … tagged you in the thread. '
@@ -359,6 +381,16 @@ export const KNOWN_INPUT_SCREENS: readonly KnownInputScreen[] = [
 		pastes: [],
 		expect: 'unknown',
 		why: 'a box whose bottom rule is not drawn yet is never read as empty (the helper re-reads it once the frame is done)',
+	},
+	{
+		name: 'cc310-btw-tip-mid-turn',
+		runtime: 'claude-code-2.1.310',
+		view: CC310_BTW_TIP,
+		message: SPLIT_BRIEF,
+		stage: 'before-write',
+		pastes: [],
+		expect: 'empty',
+		why: 'the "Tip: Use /btw" hint above a complete empty box is not box text: the box reads empty, never unknown (CREW-322)',
 	},
 	{
 		name: 'cc289-own-marker-plus-tail',

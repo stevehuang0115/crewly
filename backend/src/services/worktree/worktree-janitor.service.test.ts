@@ -92,6 +92,7 @@ function janitor(fx: Fixture, overrides: WorktreeJanitorOptions = {}): WorktreeJ
 	return new WorktreeJanitorService({
 		listRepoPaths: async () => [fx.repo],
 		listBusyCwds: async () => [],
+		listScheduledCwds: async () => [],
 		ghBin: null,
 		now: () => Date.now() + THREE_HOURS,
 		tmpRoots: [],
@@ -288,6 +289,48 @@ describe('WorktreeJanitorService', () => {
 		landOnOrigin(wt);
 		const summary = await janitor(fx, { listBusyCwds: async () => null }).run();
 		expect(verdictFor(summary, wt)).toMatchObject({ decision: 'keep', reason: 'cwd-probe-failed' });
+	});
+
+	describe('scheduled-command cwds', () => {
+		it('keeps a clean, merged worktree that is the cwd of a scheduled command, and reports how many cwds it read', async () => {
+			const wt = addWorktree(fx, agentPath(fx, 'sched'), 'feat/sched');
+			landOnOrigin(wt);
+			const summary = await janitor(fx, { listScheduledCwds: async () => [wt] }).run();
+			expect(verdictFor(summary, wt)).toMatchObject({ decision: 'keep', reason: 'scheduled-command', detail: wt });
+			expect(summary.scheduledCwdsRead).toBe(1);
+			expect(fs.existsSync(wt)).toBe(true);
+		});
+
+		it('keeps a worktree that contains the scheduled cwd', async () => {
+			const wt = addWorktree(fx, agentPath(fx, 'schedsub'), 'feat/schedsub');
+			landOnOrigin(wt);
+			const summary = await janitor(fx, { listScheduledCwds: async () => [path.join(wt, 'scripts')] }).run();
+			expect(verdictFor(summary, wt)).toMatchObject({ decision: 'keep', reason: 'scheduled-command' });
+		});
+
+		it('still removes an unrelated clean merged worktree (nothing is protected when none match)', async () => {
+			const wt = addWorktree(fx, agentPath(fx, 'unrelated'), 'feat/unrelated');
+			landOnOrigin(wt);
+			const summary = await janitor(fx, { listScheduledCwds: async () => [agentPath(fx, 'other')] }).run();
+			expect(verdictFor(summary, wt)).toMatchObject({ removed: true });
+			expect(summary.scheduledCwdsRead).toBe(1);
+		});
+
+		it('removes the same worktree when no scheduled command points at it (read zero, protected nothing)', async () => {
+			const wt = addWorktree(fx, agentPath(fx, 'zero'), 'feat/zero');
+			landOnOrigin(wt);
+			const summary = await janitor(fx, { listScheduledCwds: async () => [] }).run();
+			expect(verdictFor(summary, wt)).toMatchObject({ removed: true });
+			expect(summary.scheduledCwdsRead).toBe(0);
+		});
+
+		it('keeps every clean worktree when the scheduled config cannot be read', async () => {
+			const wt = addWorktree(fx, agentPath(fx, 'schedprobe'), 'feat/schedprobe');
+			landOnOrigin(wt);
+			const summary = await janitor(fx, { listScheduledCwds: async () => null }).run();
+			expect(verdictFor(summary, wt)).toMatchObject({ decision: 'keep', reason: 'scheduled-probe-failed' });
+			expect(summary.scheduledCwdsRead).toBeNull();
+		});
 	});
 
 	it('keeps a worktree whose work is not merged', async () => {
@@ -853,6 +896,25 @@ describe('WorktreeJanitorService', () => {
 			expect(message).toContain('NOT pushed');
 			expect(message).toContain('1.0 GB');
 			expect(message).toContain('merge it to main');
+		});
+
+		it('says the work is on hold (close it) when a held ticket names the branch (crewly#1369)', async () => {
+			addWorktree(fx, agentPath(fx, 'wt-crew257'), 'feat/gmail-approve');
+			const notify = jest.fn().mockResolvedValue(true);
+			const findHold = jest.fn().mockResolvedValue({
+				ticketId: 'CREW-257',
+				title: 'Gmail approve-then-send',
+				hold: { reason: 'HOLD: PR #1138: do not merge, do not ask Steve to merge', source: 'log' },
+				matchedOn: ['worktree wt-crew257'],
+			});
+			const j = make(notify, { resolveLeadSessions: async () => ['tl-session'], findHold });
+			await j.run();
+			expect(findHold).toHaveBeenCalledWith('feat/gmail-approve', expect.stringContaining('wt-crew257'));
+			const [, message] = notify.mock.calls[0];
+			expect(message).toContain('ON HOLD on ticket CREW-257');
+			expect(message).toContain('do not merge, do not ask Steve to merge');
+			expect(message).toContain('close the PR and remove the worktree');
+			expect(message).not.toContain('merge it to main');
 		});
 
 		it('says pushed when the branch is on origin', async () => {

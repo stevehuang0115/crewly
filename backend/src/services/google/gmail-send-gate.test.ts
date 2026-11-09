@@ -6,8 +6,7 @@
 
 import {
   holdGmailSend,
-  consumeSendApproval,
-  grantSendApproval,
+  updateHeldSend,
   listHeldSends,
   getHeldSend,
   clearHeldSend,
@@ -44,23 +43,16 @@ describe('gmail send gate', () => {
     expect(getHeldSend(held.id)!.claim).toBeUndefined();
   });
 
-  it('grants exactly one send per approval', () => {
-    grantSendApproval('ella');
-
-    expect(consumeSendApproval('ella')).toBe(true);
-    // The next attempt is held again — approving one message must not leave
-    // the account open.
-    expect(consumeSendApproval('ella')).toBe(false);
+  it('has no agent-keyed approval: nothing an agent can do marks mail as approved (CREW-257)', async () => {
+    const gate = await import('./gmail-send-gate.js');
+    expect(Object.keys(gate).some((k) => /approval|grant|consume/i.test(k))).toBe(false);
   });
 
-  it('does not let one agent spend another agent\'s approval', () => {
-    grantSendApproval('ella');
-    expect(consumeSendApproval('atlas')).toBe(false);
-    expect(consumeSendApproval('ella')).toBe(true);
-  });
-
-  it('refuses by default, with no approval anywhere', () => {
-    expect(consumeSendApproval('never-approved')).toBe(false);
+  it('records the fingerprint and card id on a hold', () => {
+    const held = holdGmailSend({ agentSession: 'ella', draftId: 'r-1', to: 'a@b.c', subject: 'Hi' });
+    updateHeldSend(held.id, { fingerprint: 'abc', decisionId: 'D-1' });
+    expect(getHeldSend(held.id)).toMatchObject({ fingerprint: 'abc', decisionId: 'D-1' });
+    expect(updateHeldSend('nope', { decisionId: 'D-2' })).toBeUndefined();
   });
 
   it('lists held mail oldest first', () => {

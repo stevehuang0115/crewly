@@ -4,13 +4,14 @@
 
 import { createRequest, type Request } from '../../../types/v2/request.types.js';
 import { createWorkItem, REVIEW_ESCALATED_TO_OWNER_KEY, type WorkItem } from '../../../types/v2/work-item.types.js';
-import { OWNER_RECEIPT_CONSTANTS } from '../../../constants.js';
+import { OWNER_RECEIPT_CONSTANTS, TICKET_CONSTANTS } from '../../../constants.js';
 import {
   askLineOf,
   buildReceiptData,
   fitLine,
   isMisrouted,
   isReceiptEmpty,
+  isSilenceAccepted,
   ownerQuestionOf,
   summarizeOutcome,
   teamLabeller,
@@ -130,8 +131,30 @@ describe('buildReceiptData — every ticket of the window exactly once, by team'
       ticket({ assignee: 'ella', status: 'cancelled' }),
     ];
     const data = buildReceiptData({ requests: tickets, workItems: [], window: WINDOW, teamOf, now: NOW });
-    expect(data.outcomes).toEqual({ done: 1, to_review: 1, in_progress: 1, blocked: 1, unowned: 1, dismissed: 1 });
+    expect(data.outcomes).toEqual({ done: 1, auto_accepted: 0, to_review: 1, in_progress: 1, blocked: 1, unowned: 1, dismissed: 1 });
     expect(Object.values(data.outcomes).reduce((a, b) => a + b, 0)).toBe(data.askCount);
+  });
+
+  it('counts a ticket accepted by silence apart from one the owner confirmed (#1316)', () => {
+    const confirmed = ticket({ assignee: 'atlas', status: 'done', acceptedBy: 'owner' });
+    const silent = ticket({ assignee: 'atlas', status: 'done', acceptedBy: 'silence', tags: ['ticket', TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG] });
+    const data = buildReceiptData({ requests: [confirmed, silent], workItems: [], window: WINDOW, teamOf, now: NOW });
+    expect(data.outcomes.done).toBe(1);
+    expect(data.outcomes.auto_accepted).toBe(1);
+    const asks = data.teams[0].asks;
+    expect(asks.find((a) => a.ticketId === confirmed.id)?.outcome).toBe('done');
+    expect(asks.find((a) => a.ticketId === silent.id)?.outcome).toBe('auto_accepted');
+  });
+
+  it('marks a silence-accepted highlight, and leaves an owner-confirmed one unmarked (#1316)', () => {
+    const answer = (excerpt: string, by: string) => ({ messageId: 'm', by, at: '2026-09-26T16:00:00Z', excerpt });
+    const confirmed = ticket({ assignee: 'atlas', status: 'done', acceptedBy: 'owner', completedAt: '2026-09-26T17:00:00Z', reply: answer('Orca 的调研报告写好了，结论是可以先试用一周。', 'atlas') });
+    const silent = ticket({ assignee: 'ella', status: 'done', acceptedBy: 'silence', completedAt: '2026-09-26T18:00:00Z', reply: answer('签证文章的草稿已经放到网站后台了，周五可以发。', 'ella') });
+    const data = buildReceiptData({ requests: [confirmed, silent], workItems: [], window: WINDOW, teamOf, now: NOW });
+    expect(data.highlights.map((h) => [h.ticketId, h.acceptedBySilence]).sort()).toEqual([
+      [confirmed.id, false],
+      [silent.id, true],
+    ].sort());
   });
 
   it('finds deliverables in WorkItem outputs and the reply, and counts them', () => {
@@ -440,5 +463,23 @@ describe('decisions (Needs your decision)', () => {
   it('an empty receipt: nothing done, nothing blocked', () => {
     const d = buildReceiptData({ requests: [ticket({ status: 'open' })], workItems: [], window: WINDOW, teamOf, now: NOW });
     expect(isReceiptEmpty(d)).toBe(true);
+  });
+});
+
+describe('isSilenceAccepted — any of the three auto-accept marks (#1316)', () => {
+  it('reads acceptedBy, the auto_accepted tag, or the auto-accept note; acceptedBy: owner wins', () => {
+    const note = { at: '2026-09-26T18:00:00Z', author: TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_NOTE_AUTHOR, text: TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_REASON, ref: 'auto-accept-x' };
+    expect(isSilenceAccepted(ticket({ status: 'done', acceptedBy: 'silence' }))).toBe(true);
+    expect(isSilenceAccepted(ticket({ status: 'done', tags: ['ticket', TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG] }))).toBe(true);
+    expect(isSilenceAccepted(ticket({ status: 'done', discussion: [note] }))).toBe(true);
+    expect(isSilenceAccepted(ticket({ status: 'done', acceptedBy: 'owner' }))).toBe(false);
+    expect(isSilenceAccepted(ticket({ status: 'done' }))).toBe(false);
+    // The same words from someone else are not the system's note.
+    expect(isSilenceAccepted(ticket({ status: 'done', discussion: [{ ...note, author: 'atlas' }] }))).toBe(false);
+  });
+
+  it('maps a silence-closed done ticket to auto_accepted in outcomeOf', () => {
+    expect(outcomeOf(ticket({ status: 'done', acceptedBy: 'silence' }), [])).toBe('auto_accepted');
+    expect(outcomeOf(ticket({ status: 'done', acceptedBy: 'owner' }), [])).toBe('done');
   });
 });

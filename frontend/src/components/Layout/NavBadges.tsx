@@ -2,18 +2,16 @@
  * Live counts for the navigation badges, fetched once for the whole layout
  * (sidebar + phone tab bar share them):
  * - waiting: open decisions ("Waiting on you"), shown in the attention colour
- * - unread: Chat conversations with new messages
+ * - unread: unread Chat messages (server-side, synced across devices)
  * - schedules: active recurring schedules
  *
  * @module components/Layout/NavBadges
  */
 import React, { createContext, useContext } from 'react';
 import clsx from 'clsx';
-import { useLocation } from 'react-router-dom';
 import { useScheduleCount } from '../../hooks/useScheduleCount';
 import { useWaitingOnYouCount } from '../../hooks/useWaitingOnYouCount';
 import { useChatUnreadCount } from '../../hooks/useChatUnreadCount';
-import { ROUTES } from '../../constants/routes.constants';
 import type { NavBadgeKind } from './nav-items';
 
 /** Count per badge kind; null = unknown (hidden). */
@@ -30,9 +28,8 @@ const NavBadgesContext = createContext<NavBadgeCounts>(EMPTY);
  * @returns Provider
  */
 export const NavBadgesProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-	const { pathname } = useLocation();
 	const waiting = useWaitingOnYouCount();
-	const unread = useChatUnreadCount(pathname.startsWith(ROUTES.chat));
+	const unread = useChatUnreadCount();
 	const schedules = useScheduleCount();
 	return <NavBadgesContext.Provider value={{ waiting, unread, schedules }}>{children}</NavBadgesContext.Provider>;
 };

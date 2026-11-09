@@ -47,6 +47,8 @@ backend resolves the Slack channel, the thread and your bot identity from it.
 | `--title` | no | Title shown above the file in Slack |
 | `--comment` | no | A line of text posted with the file |
 | `--thread` | no | The thread the file belongs to: the `[SLACK-THREAD:<key>]` key from your prompt, or the id `reply-channel` takes. **Pass it** when you have more than one thread going — without it the file follows the answer you just posted, else the oldest thread still waiting on you. |
+| `--work-item` | no | The work item the file delivers (the id in your `[CREWLY-DISPATCH]`). The file goes into the thread that work came from — use it when the work was delegated to you from a conversation you are not in. No `--channel` needed. |
+| `--ticket` / `--to` | no | The ticket, or the message id from your prompt, the file answers. No `--channel` needed. |
 
 ## When to use it
 
@@ -75,6 +77,11 @@ arrived from the workspace app instead of from you. It still lands; mention
 it to the owner if they ask why the name differs.
 
 ## Failures
+
+`{"success":false,"code":"thread_unresolved","error":"File NOT sent: …"}` —
+Crewly could not tell which thread the file answers. The file is **never**
+posted at the channel's top level instead: run it again with `--work-item <id>`
+(from your `[CREWLY-DISPATCH]`), `--to <message id>` or `--ticket <id>`.
 
 `{"success":false,"error":"not_a_slack_channel"}` — that chat channel is not
 mirrored to Slack. Nothing to attach to; reply with text.

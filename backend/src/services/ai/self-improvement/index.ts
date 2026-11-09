@@ -13,6 +13,12 @@ export {
 	Prediction,
 	PredictionsData,
 } from './prediction-calibration.service.js';
+export {
+	TaskTimingService,
+	TaskTimingRecord,
+	TaskTimingSummary,
+	getTaskTimingService,
+} from './task-timing.service.js';
 export { AttentionService, AttentionData } from './attention.service.js';
 export {
 	MemoryConsolidationService,

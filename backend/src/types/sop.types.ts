@@ -217,6 +217,17 @@ export interface SOPFrontmatter {
   conditions?: SOPCondition[];
   tags: string[];
   relatedSOPs?: string[];
+  /**
+   * Rule metadata (#877). The concrete failure this rule prevents — or
+   * "none recorded …" for a rule that was never tied to one.
+   */
+  prevents?: string;
+  /** The model / harness where that failure was seen (#877) */
+  seenOn?: string;
+  /** YYYY-MM-DD: re-test the rule by this date (switch off, compare, keep or delete) (#877) */
+  reviewBy?: string;
+  /** Where the failure is documented: an issue or PR link (#877) */
+  source?: string;
 }
 
 /**

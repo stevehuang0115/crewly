@@ -32,6 +32,17 @@ describe('createProtectedReason', () => {
 		expect(await reasonFor([], [ticket({ source: 'agent:pia', assignee: 'dex', status: 'review' })])).toMatch(/waiting on ticket T-1/);
 		expect(await reasonFor([], [ticket({ source: 'agent:pia', assignee: 'dex', status: 'done' })])).toBeNull();
 	});
+	it('lets the waiting-on-a-teammate reasons lapse after 30 min idle, not owned work (2026-10-19: Owen and Sam held two slots)', async () => {
+		const sources = {
+			getWorkItems: async () => [wi({ id: 'w9', target: 'dex', status: 'running', metadata: { delegatedBy: 'pia' } })],
+			listTickets: async () => [ticket({ source: 'agent:pia', assignee: 'dex', status: 'backlog' })],
+		};
+		const reason = createProtectedReason(sources);
+		expect(await reason('pia', 29 * 60_000)).toMatch(/waiting on work item w9/);
+		expect(await reason('pia', 31 * 60_000)).toBeNull();
+		const owned = createProtectedReason({ getWorkItems: async () => [], listTickets: async () => [ticket({ assignee: 'pia' })] });
+		expect(await owned('pia', 5 * 60 * 60_000)).toMatch(/owns open ticket/);
+	});
 	it('works without ticket storage', async () => {
 		expect(await reasonFor([], undefined)).toBeNull();
 	});
@@ -62,6 +73,17 @@ describe('createWaitsOn', () => {
 		expect(await waitsOn([], [ticket({ source: 'agent:pia', assignee: 'dex', status: 'in_progress' })])('pia', 'dex')).toBe(true);
 		expect(await waitsOn([], [ticket({ source: 'agent:pia', assignee: 'dex', status: 'done' })])('pia', 'dex')).toBe(false);
 		expect(await waitsOn([], [ticket({ source: 'agent:max', assignee: 'dex', status: 'in_progress' })])('pia', 'dex')).toBe(false);
+	});
+	it('lets the waiting-on-a-teammate reasons lapse after 30 min idle, not owned work (2026-10-19: Owen and Sam held two slots)', async () => {
+		const sources = {
+			getWorkItems: async () => [wi({ id: 'w9', target: 'dex', status: 'running', metadata: { delegatedBy: 'pia' } })],
+			listTickets: async () => [ticket({ source: 'agent:pia', assignee: 'dex', status: 'backlog' })],
+		};
+		const reason = createProtectedReason(sources);
+		expect(await reason('pia', 29 * 60_000)).toMatch(/waiting on work item w9/);
+		expect(await reason('pia', 31 * 60_000)).toBeNull();
+		const owned = createProtectedReason({ getWorkItems: async () => [], listTickets: async () => [ticket({ assignee: 'pia' })] });
+		expect(await owned('pia', 5 * 60 * 60_000)).toMatch(/owns open ticket/);
 	});
 	it('works without ticket storage', async () => {
 		expect(await waitsOn([])('pia', 'dex')).toBe(false);

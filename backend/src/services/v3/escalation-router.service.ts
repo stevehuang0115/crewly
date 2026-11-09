@@ -696,19 +696,25 @@ export class EscalationRouterService {
    *
    * @param wi - The unreviewed WorkItem (only read)
    * @param awaitingMs - How long it has awaited review
+   * @param opts - `reason`: replaces the "waited ~Nh" line when the owner is
+   *   asked for another reason (nobody else can review the work)
    * @returns The escalation id, or null on failure (logged, never thrown)
    */
   async escalateUnreviewedToOwner(
     wi: WorkItemForEscalation,
     awaitingMs: number,
+    opts: { reason?: string } = {},
   ): Promise<string | null> {
     const awaitingH = Math.max(1, Math.round(awaitingMs / 3_600_000));
+    // Why the owner is asked: the review waited past its TTL, or (the bridge,
+    // when the orchestrator did the work itself) there is nobody else to ask.
+    const why = opts.reason ?? `has waited ~${awaitingH}h for review.`;
     try {
       const escalation = await this.createPendingEscalation({
         source: 'tl_verification',
         target: 'human',
         summary:
-          `"${String(wi.title).slice(0, 200)}" has waited ~${awaitingH}h for review. ` +
+          `"${String(wi.title).slice(0, 200)}" ${why} ` +
           'It stays unverified until someone reviews it — nothing passes by timeout.',
         details: {
           workItemId: wi.id,
@@ -717,6 +723,7 @@ export class EscalationRouterService {
           awaitingMs,
           requestId: wi.requestId ?? null,
           stage: 'owner',
+          ...(opts.reason ? { reason: opts.reason } : {}),
         },
         workItemId: wi.id,
         missionId: wi.missionId ?? undefined,

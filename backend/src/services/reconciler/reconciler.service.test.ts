@@ -233,6 +233,32 @@ describe('ReconcilerService', () => {
       expect(result.staleItemsCleaned).toBeGreaterThan(0);
     });
 
+    it('does not TTL-cancel work waiting on an open owner decision card (crewly#1369 §5)', async () => {
+      const now = Date.now();
+      const waiting = makeWorkItem({ id: 'ttl-waiting-card', status: 'running', createdAt: new Date(now - 30 * 3600000).toISOString() });
+      const stale = makeWorkItem({ id: 'ttl-stale', status: 'running', createdAt: new Date(now - 30 * 3600000).toISOString() });
+      const getOpenDecisionHolds = jest.fn().mockResolvedValue([{ workItemId: 'ttl-waiting-card' }]);
+      provider = createMockProvider({ getActiveWorkItems: jest.fn().mockResolvedValue([waiting, stale]), getOpenDecisionHolds });
+      service = new ReconcilerService(provider);
+
+      const result = await service.runFull();
+
+      expect(getOpenDecisionHolds).toHaveBeenCalled();
+      expect(result.corrections.find((c) => c.entityId === 'ttl-waiting-card' && c.newState === 'cancelled')).toBeUndefined();
+      expect(result.corrections.find((c) => c.entityId === 'ttl-stale' && c.newState === 'cancelled')).toBeDefined();
+    });
+
+    it('a failing decision lookup does not stop the TTL pass', async () => {
+      const stale = makeWorkItem({ id: 'ttl-stale-2', status: 'running', createdAt: new Date(Date.now() - 30 * 3600000).toISOString() });
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([stale]),
+        getOpenDecisionHolds: jest.fn().mockRejectedValue(new Error('store down')),
+      });
+      service = new ReconcilerService(provider);
+      const result = await service.runFull();
+      expect(result.corrections.find((c) => c.entityId === 'ttl-stale-2' && c.newState === 'cancelled')).toBeDefined();
+    });
+
     it('counts a TTL-cancelled item in staleItemsCleaned but NOT a TTL auto-verified one', async () => {
       // `staleItemsCleaned` must mean exactly one thing: work that was
       // DISCARDED. The TTL rule produces two opposite outcomes —
@@ -290,6 +316,50 @@ describe('ReconcilerService', () => {
       const result = await service.runFull();
       expect(result.workItemsRequeued).toBe(1);
       expect(provider.requeueWorkItem).toHaveBeenCalled();
+    });
+
+    it('lifts an explicit block whose until time has passed, flagging the requeue as the due-block one (block-task until)', async () => {
+      const wi = makeWorkItem({
+        status: 'blocked',
+        blockSource: 'explicit',
+        target: 'agent-1',
+        metadata: { blockedUntil: new Date(Date.now() - 60_000).toISOString() },
+      });
+      const agentMap = new Map<string, AgentHealth>([
+        ['agent-1', { sessionName: 'agent-1', status: 'active', lastSeenAt: new Date().toISOString() }],
+      ]);
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
+      });
+      service = new ReconcilerService(provider);
+
+      const result = await service.runFull();
+      expect(result.workItemsRequeued).toBe(1);
+      expect(provider.requeueWorkItem).toHaveBeenCalledTimes(1);
+      expect(provider.requeueWorkItem).toHaveBeenCalledWith(wi.id, { allowWaitingOnHuman: false, allowExplicitWhenDue: true });
+    });
+
+    it('leaves a timed explicit block alone while its time is ahead, and an open-ended one always', async () => {
+      const timed = makeWorkItem({
+        status: 'blocked',
+        blockSource: 'explicit',
+        target: 'agent-1',
+        metadata: { blockedUntil: new Date(Date.now() + 60 * 60_000).toISOString() },
+      });
+      const openEnded = makeWorkItem({ status: 'blocked', blockSource: 'explicit', target: 'agent-1' });
+      const agentMap = new Map<string, AgentHealth>([
+        ['agent-1', { sessionName: 'agent-1', status: 'active', lastSeenAt: new Date().toISOString() }],
+      ]);
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([timed, openEnded]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
+      });
+      service = new ReconcilerService(provider);
+
+      const result = await service.runFull();
+      expect(result.workItemsRequeued).toBe(0);
+      expect(provider.requeueWorkItem).not.toHaveBeenCalled();
     });
 
     it('should handle errors gracefully', async () => {
@@ -1249,41 +1319,40 @@ describe('ReconcilerService', () => {
       expect(result.errors.some(e => e.includes('Connection timeout'))).toBe(true);
     });
 
-    it('should skip Hybrid Wake when active agents >= maxConcurrentAgents', async () => {
-      // Set maxConcurrentAgents to 2
+    it('wakes a named dormant target even when active agents >= maxConcurrentAgents', async () => {
+      // 2026-10-27: 11 agents up on a 10-agent setting; a trigger's WorkItem for a
+      // stopped agent sat queued 20 minutes because this pass used to end at the
+      // cap without a log line. The setting is enforced by nothing else, so the
+      // targeted wake goes through.
       mockGetSettings.mockResolvedValue({
         general: { maxConcurrentAgents: 2 },
       });
 
       const wi = makeWorkItem({
         status: 'queued',
-        createdAt: THREE_MIN_AGO,
+        createdAt: new Date().toISOString(),
         type: 'delegate',
+        target: 'agent-suspended',
       });
 
-      // Two active agents already at capacity
+      // Two active agents already at the configured cap
       const agentMap = new Map<string, AgentHealth>([
-        ['agent-1', {
-          sessionName: 'agent-1',
-          status: 'active',
-          role: 'developer',
-        }],
-        ['agent-2', {
-          sessionName: 'agent-2',
-          status: 'active',
-          role: 'developer',
-        }],
+        ['agent-1', { sessionName: 'agent-1', status: 'active', role: 'developer' } as AgentHealth],
+        ['agent-2', { sessionName: 'agent-2', status: 'active', role: 'developer' } as AgentHealth],
         ['agent-suspended', {
           sessionName: 'agent-suspended',
           status: 'suspended',
           role: 'developer',
-        }],
+          teamId: 'team-1',
+          memberId: 'member-2',
+        } as AgentHealth],
       ]);
 
       const executeWakeAction = jest.fn().mockResolvedValue(true);
 
       provider = createMockProvider({
         getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAvailablePoolItems: jest.fn().mockResolvedValue([wi]),
         getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
         executeWakeAction,
       });
@@ -1291,10 +1360,55 @@ describe('ReconcilerService', () => {
 
       const result = await service.runFast();
 
-      // executeWakeAction should NOT have been called because we are at capacity
-      expect(executeWakeAction).not.toHaveBeenCalled();
-      expect(result.agentsWoken).toBe(0);
-      expect(result.wakeActions).toHaveLength(0);
+      expect(executeWakeAction).toHaveBeenCalledTimes(1);
+      expect(executeWakeAction.mock.calls[0][0]).toMatchObject({
+        agentSessionName: 'agent-suspended',
+        strategy: 'rehydrate',
+        workItemId: wi.id,
+      });
+      expect(result.agentsWoken).toBe(1);
+    });
+
+    it('redelivers to an idle named target when active agents >= maxConcurrentAgents', async () => {
+      // A redeliver creates no session; the cap never applied to it in spirit.
+      mockGetSettings.mockResolvedValue({
+        general: { maxConcurrentAgents: 1 },
+      });
+
+      const TEN_MIN_AGO = new Date(Date.now() - 10 * 60_000).toISOString();
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: TEN_MIN_AGO,
+        type: 'delegate',
+        target: 'agent-1',
+      });
+
+      const agentMap = new Map<string, AgentHealth>([
+        ['agent-1', {
+          sessionName: 'agent-1',
+          status: 'active',
+          role: 'developer',
+          teamId: 'team-1',
+          memberId: 'member-1',
+          activeWorkItemCount: 0,
+        } as AgentHealth],
+      ]);
+
+      const executeWakeAction = jest.fn().mockResolvedValue(true);
+
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAvailablePoolItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+
+      const result = await service.runFast();
+
+      expect(executeWakeAction).toHaveBeenCalledTimes(1);
+      expect(executeWakeAction.mock.calls[0][0]).toMatchObject({ agentSessionName: 'agent-1', strategy: 'redeliver' });
+      expect(result.agentsWoken).toBe(1);
     });
 
     it('should allow Hybrid Wake when active agents < maxConcurrentAgents', async () => {
@@ -1647,6 +1761,211 @@ describe('ReconcilerService', () => {
   // -------------------------------------------------------------------------
   // CREW-304: wake storm — outcomes, failure backoff, pending starts
   // -------------------------------------------------------------------------
+  describe('queued work behind an offline machine is reported to the lead (CREW-862)', () => {
+    const MIN = 60_000;
+    const HOUR = 60 * MIN;
+    const stopped = (): Map<string, AgentHealth> =>
+      new Map([['ce-nova', { sessionName: 'ce-nova', status: 'inactive', teamId: 'team-ce', memberId: 'nova', activeWorkItemCount: 0 } as AgentHealth]]);
+    const queuedFor = (ms: number) => makeWorkItem({ id: 'wi-off', status: 'queued', type: 'delegate', target: 'ce-nova', createdAt: new Date(Date.now() - ms).toISOString() });
+    const wire = (ageMs: number, getMachineOffline: jest.Mock) => {
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([queuedFor(ageMs)]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(stopped()),
+        executeWakeAction: jest.fn().mockResolvedValue({ outcome: 'skipped', reason: 'network offline' }),
+        getMachineOffline,
+      });
+      service = new ReconcilerService(provider);
+      const addToPool = jest.fn().mockResolvedValue(undefined);
+      service.setIdleHolderReporting({
+        loadTeams: async () => [{
+          id: 'team-ce', name: 'CE', members: [
+            { id: 'owen', sessionName: 'ce-owen', canDelegate: true, hierarchyLevel: 1 },
+            { id: 'nova', sessionName: 'ce-nova' },
+          ],
+        } as never],
+        addToPool,
+        stamp: jest.fn().mockResolvedValue(undefined),
+        findWorkItem: async () => ({ id: 'wi-off', title: 'verify brief' }) as never,
+      });
+      return addToPool;
+    };
+    const runPasses = async (n: number) => {
+      for (let i = 0; i < n; i++) {
+        await service.runFull();
+        jest.advanceTimersByTime(31 * MIN);
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+
+    beforeEach(() => jest.setSystemTime(new Date('2026-10-25T04:00:00Z')));
+
+    it('puts one notice on the lead once the wait passes the threshold, and not again on later passes', async () => {
+      const addToPool = wire(15 * HOUR, jest.fn().mockReturnValue({ offlineMinutes: 90 }));
+      await runPasses(5);
+      expect(addToPool).toHaveBeenCalledTimes(1);
+      expect(addToPool.mock.calls[0][0]).toMatchObject({
+        type: 'review',
+        target: 'ce-owen',
+        metadata: { reviewReason: 'offline_queue', sourceWorkItemId: 'wi-off' },
+      });
+      expect(addToPool.mock.calls[0][0].description).toContain('1.5 h');
+    });
+
+    it('says nothing before the threshold', async () => {
+      const addToPool = wire(30 * MIN, jest.fn().mockReturnValue({ offlineMinutes: 20 }));
+      await runPasses(1);
+      expect(addToPool).not.toHaveBeenCalled();
+    });
+
+    it('says nothing when the machine is online (a different stall, handled by recovery)', async () => {
+      const addToPool = wire(15 * HOUR, jest.fn().mockReturnValue(null));
+      await runPasses(3);
+      expect(addToPool).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('failing redelivery is reported to the lead (CREW-577)', () => {
+    const MIN = 60_000;
+    const idleTarget = (): Map<string, AgentHealth> =>
+      new Map([['ce-nova', { sessionName: 'ce-nova', status: 'active', activeWorkItemCount: 0, lastSeenAt: new Date().toISOString() } as AgentHealth]]);
+    const queued = () => makeWorkItem({ id: 'wi-282', status: 'queued', type: 'delegate', target: 'ce-nova', createdAt: new Date(Date.now() - 30 * MIN).toISOString() });
+    const wire = (executeWakeAction: jest.Mock) => {
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([queued()]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(idleTarget()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      service.setWakeTuning({ successBackoffBaseMs: 0, successBackoffMaxMs: 0 });
+      const addToPool = jest.fn().mockResolvedValue(undefined);
+      service.setIdleHolderReporting({
+        loadTeams: async () => [{
+          id: 'team-ce', name: 'CE', members: [
+            { id: 'owen', sessionName: 'ce-owen', canDelegate: true, hierarchyLevel: 1 },
+            { id: 'nova', sessionName: 'ce-nova' },
+          ],
+        } as never],
+        addToPool,
+        stamp: jest.fn().mockResolvedValue(undefined),
+        findWorkItem: async () => ({ id: 'wi-282', title: 'CE-282 brief' }) as never,
+      });
+      return addToPool;
+    };
+    const runPasses = async (n: number) => {
+      for (let i = 0; i < n; i++) {
+        await service.runFast();
+        jest.advanceTimersByTime(31 * MIN); // past the failure backoff
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+
+    beforeEach(() => jest.setSystemTime(new Date('2026-10-26T13:10:00Z')));
+
+    it('the third failed redelivery in a row puts one review on the lead, with the reason', async () => {
+      const executeWakeAction = jest.fn().mockResolvedValue({ outcome: 'failed', reason: 'over its daily token cap' });
+      const addToPool = wire(executeWakeAction);
+
+      await runPasses(2);
+      expect(addToPool).not.toHaveBeenCalled();
+      await runPasses(1);
+
+      expect(executeWakeAction).toHaveBeenCalledTimes(3);
+      expect(addToPool).toHaveBeenCalledTimes(1);
+      expect(addToPool.mock.calls[0][0]).toMatchObject({
+        type: 'review',
+        target: 'ce-owen',
+        metadata: { reviewReason: 'redelivery_miss', sourceWorkItemId: 'wi-282' },
+      });
+      expect(addToPool.mock.calls[0][0].description).toContain('over its daily token cap');
+      expect(addToPool.mock.calls[0][0].title).toContain('CE-282 brief');
+    });
+
+    it('is told once however long it keeps failing', async () => {
+      const addToPool = wire(jest.fn().mockResolvedValue({ outcome: 'failed', reason: 'x' }));
+      await runPasses(7);
+      expect(addToPool).toHaveBeenCalledTimes(1);
+    });
+
+    it('a delivered redelivery in between resets the count (no report)', async () => {
+      const executeWakeAction = jest.fn()
+        .mockResolvedValueOnce({ outcome: 'failed', reason: 'x' })
+        .mockResolvedValueOnce({ outcome: 'failed', reason: 'x' })
+        .mockResolvedValueOnce({ outcome: 'ok' })
+        .mockResolvedValueOnce({ outcome: 'failed', reason: 'x' })
+        .mockResolvedValueOnce({ outcome: 'failed', reason: 'x' });
+      const addToPool = wire(executeWakeAction);
+      await runPasses(5);
+      expect(executeWakeAction).toHaveBeenCalledTimes(5);
+      expect(addToPool).not.toHaveBeenCalled();
+    });
+
+    it('another item\'s successful wake on the same agent does not reset the count (CE-282, 2026-10-12)', async () => {
+      const other = makeWorkItem({ id: 'wi-other', status: 'queued', type: 'delegate', target: 'ce-nova', createdAt: new Date(Date.now() - 30 * MIN).toISOString() });
+      const executeWakeAction = jest.fn().mockImplementation(async (action: { workItemId: string }) =>
+        action.workItemId === 'wi-282' ? { outcome: 'failed', reason: 'x' } : { outcome: 'ok' });
+      // Pass 1-2: only CE-282 is queued (fails twice); pass 3: another item's wake succeeds (clears the
+      // session's failure record); pass 4: CE-282 fails a third time.
+      const getActiveWorkItems = jest.fn()
+        .mockResolvedValueOnce([queued()])
+        .mockResolvedValueOnce([queued()])
+        .mockResolvedValueOnce([other])
+        .mockResolvedValue([queued()]);
+      provider = createMockProvider({
+        getActiveWorkItems,
+        getAgentHealthMap: jest.fn().mockResolvedValue(idleTarget()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      service.setWakeTuning({ successBackoffBaseMs: 0, successBackoffMaxMs: 0 });
+      const addToPool = jest.fn().mockResolvedValue(undefined);
+      service.setIdleHolderReporting({ loadTeams: async () => [], addToPool, stamp: jest.fn() });
+      await runPasses(4);
+      expect(executeWakeAction.mock.calls.map((c) => c[0].workItemId)).toEqual(['wi-282', 'wi-282', 'wi-other', 'wi-282']);
+      expect(addToPool).toHaveBeenCalledTimes(1);
+      expect(addToPool.mock.calls[0][0].metadata.sourceWorkItemId).toBe('wi-282');
+    });
+
+    it('pending and skipped redeliveries (waiting on the queue, memory stop, offline) never count', async () => {
+      const addToPool = wire(jest.fn().mockResolvedValue({ outcome: 'pending', reason: "an earlier notice still waits on the agent's queue" }));
+      await runPasses(6);
+      expect(addToPool).not.toHaveBeenCalled();
+      const addToPool2 = wire(jest.fn().mockResolvedValue({ outcome: 'skipped', reason: 'target stopped for memory' }));
+      await runPasses(6);
+      expect(addToPool2).not.toHaveBeenCalled();
+    });
+
+    it('failures of a start (not a redelivery) are not reported by this path', async () => {
+      const wi = makeWorkItem({ id: 'wi-s', status: 'queued', target: 'ce-nova', createdAt: new Date(Date.now() - 30 * MIN).toISOString() });
+      const executeWakeAction = jest.fn().mockResolvedValue({ outcome: 'failed', reason: 'x' });
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(new Map([['ce-nova', { sessionName: 'ce-nova', status: 'inactive', teamId: 't1', memberId: 'm1', activeWorkItemCount: 0 } as AgentHealth]])),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      const addToPool = jest.fn().mockResolvedValue(undefined);
+      service.setIdleHolderReporting({ loadTeams: async () => [], addToPool, stamp: jest.fn() });
+      await runPasses(5);
+      expect(executeWakeAction.mock.calls.every((c) => c[0].strategy !== 'redeliver')).toBe(true);
+      expect(addToPool).not.toHaveBeenCalled();
+    });
+
+    it('without reporting wired, failing redeliveries only back off (no throw)', async () => {
+      const executeWakeAction = jest.fn().mockResolvedValue({ outcome: 'failed', reason: 'x' });
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([queued()]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(idleTarget()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      service.setWakeTuning({ successBackoffBaseMs: 0, successBackoffMaxMs: 0 });
+      await expect(runPasses(4)).resolves.toBeUndefined();
+      expect(executeWakeAction).toHaveBeenCalledTimes(4);
+    });
+  });
+
   describe('wake pacing (CREW-304)', () => {
     const MIN = 60_000;
     const stoppedAgent = (session = 'ce-vera'): Map<string, AgentHealth> =>

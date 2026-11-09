@@ -8,12 +8,13 @@
  * upstream, anthropics/claude-code#94195):
  *
  * - config dir: `<CREWLY_HOME>/claude-accounts/<name>/`, passed to Claude as
- *   `CLAUDE_CONFIG_DIR` (its own history, settings and `.claude.json`);
- * - login: the long-lived `claude setup-token` token, stored in
- *   `harness-credentials.json` (`claudeAccounts.<name>`) and passed as
- *   `CLAUDE_CODE_OAUTH_TOKEN` to sessions on that account only. A login
- *   done by hand (`CLAUDE_CONFIG_DIR=… claude /login`) also counts when it
- *   left a credentials file there.
+ *   `CLAUDE_CONFIG_DIR` (its own history, settings and `.claude.json`) — the
+ *   only thing that selects the account;
+ * - login: Claude Code's own (`claude auth login` with that config dir, which
+ *   Crewly relays but never reads). Claude Code keeps it in the config dir
+ *   or the keychain; Crewly stores no Claude.ai credential. Accounts signed
+ *   in by an older Crewly keep working on the token it saved until they are
+ *   signed in natively (claude-token-migration.service.ts).
  *
  * In a fallback chain an account is the entry `claude-code@<name>`; plain
  * `claude-code` is the machine's default login.
@@ -29,6 +30,7 @@ import * as path from 'path';
 import { HARNESS_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { prepareClaudeConfigForCrewlyLogin } from './claude-config.utils.js';
+import { cachedClaudeNativeLogin } from './claude-native-login.js';
 import { getHarnessCredentialsStore, type HarnessCredentialsStore } from './harness-credentials.store.js';
 
 const ACC = HARNESS_CONSTANTS.CLAUDE.ACCOUNTS;
@@ -55,7 +57,7 @@ export interface ClaudeAccountInfo {
 /** Where accounts live (injectable for tests). */
 export interface ClaudeAccountsLocation {
 	crewlyHome?: string;
-	credentials?: Pick<HarnessCredentialsStore, 'getClaudeAccountToken' | 'listClaudeAccountsWithToken'>;
+	credentials?: Pick<HarnessCredentialsStore, 'getClaudeAccountToken' | 'listClaudeAccountsWithToken' | 'legacyClaudeTokenEnv'>;
 }
 
 /** An invalid account name. */
@@ -210,20 +212,25 @@ export function listClaudeAccounts(location: ClaudeAccountsLocation = {}): strin
 }
 
 /**
- * Whether an account has a login: a stored token, or a credentials file in
- * its config dir (a login done by hand).
+ * Whether an account has a login. Claude Code's own state decides: its
+ * credentials file in the account's config dir, or what `claude auth status`
+ * last said for that config dir (it also sees a keychain login, which leaves
+ * no file; the answer is refreshed by `refreshClaudeNativeLogins`). A token
+ * an older Crewly saved still counts until the migration deletes it, because
+ * it still works.
  *
  * @param account - Account name
  * @param location - CREWLY_HOME / credentials overrides
  * @returns True when signed in
  */
 export function isClaudeAccountSignedIn(account: string, location: ClaudeAccountsLocation = {}): boolean {
+	if (fs.existsSync(path.join(claudeAccountConfigDir(account, location.crewlyHome), HARNESS_CONSTANTS.CLAUDE.CREDENTIALS_FILE))) return true;
+	if (cachedClaudeNativeLogin(account) === true) return true;
 	try {
-		if ((location.credentials ?? getHarnessCredentialsStore()).getClaudeAccountToken(account)) return true;
+		return (location.credentials ?? getHarnessCredentialsStore()).getClaudeAccountToken(account) !== null;
 	} catch {
-		// fall through to the file check
+		return false;
 	}
-	return fs.existsSync(path.join(claudeAccountConfigDir(account, location.crewlyHome), HARNESS_CONSTANTS.CLAUDE.CREDENTIALS_FILE));
 }
 
 /**
@@ -242,9 +249,14 @@ export function describeClaudeAccounts(location: ClaudeAccountsLocation = {}): C
 }
 
 /**
- * Env that runs Claude Code on an account: its config dir and its token.
- * The default login's credentials are blanked so they cannot win over the
- * account's (an empty value counts as unset for Claude Code).
+ * Env that runs Claude Code on an account: its config dir, which is what
+ * selects the account (the login is Claude Code's own, in that dir or the
+ * keychain). The default login's credentials are blanked so they cannot win
+ * over the account's (an empty value counts as unset for Claude Code).
+ *
+ * Transition only: an account signed in by an older Crewly still has its
+ * saved token handed over (store.legacyClaudeTokenEnv) until its native login
+ * is verified and the token deleted; after that the env carries no token.
  *
  * @param account - Account name
  * @param location - CREWLY_HOME / credentials overrides
@@ -252,20 +264,21 @@ export function describeClaudeAccounts(location: ClaudeAccountsLocation = {}): C
  *
  * @example
  * ```ts
- * claudeAccountEnv('work'); // { CLAUDE_CONFIG_DIR: '~/.crewly/claude-accounts/work', CLAUDE_CODE_OAUTH_TOKEN: '…', ANTHROPIC_API_KEY: '' }
+ * claudeAccountEnv('work'); // { CLAUDE_CONFIG_DIR: '~/.crewly/claude-accounts/work', CLAUDE_CODE_OAUTH_TOKEN: '', ANTHROPIC_API_KEY: '' }
  * ```
  */
 export function claudeAccountEnv(account: string, location: ClaudeAccountsLocation = {}): Record<string, string> {
-	let token: string | null = null;
+	let legacy: Record<string, string> = {};
 	try {
-		token = (location.credentials ?? getHarnessCredentialsStore()).getClaudeAccountToken(account);
+		legacy = (location.credentials ?? getHarnessCredentialsStore()).legacyClaudeTokenEnv(account);
 	} catch {
-		token = null;
+		legacy = {};
 	}
 	return {
 		[HARNESS_CONSTANTS.CLAUDE.CONFIG_DIR_ENV]: claudeAccountConfigDir(account, location.crewlyHome),
-		[HARNESS_CONSTANTS.CLAUDE.OAUTH_TOKEN_ENV]: token ?? '',
+		[HARNESS_CONSTANTS.CLAUDE.OAUTH_TOKEN_ENV]: '',
 		[HARNESS_CONSTANTS.CLAUDE.API_KEY_ENV]: '',
+		...legacy,
 	};
 }
 
@@ -329,7 +342,7 @@ export function prepareClaudeAccountAfterLogin(account: string, crewlyHome?: str
 }
 
 /**
- * Remove an account: its stored token and its config dir.
+ * Remove an account: its legacy stored token (if any) and its config dir.
  *
  * @param account - Account name (valid)
  * @param location - CREWLY_HOME / credentials store

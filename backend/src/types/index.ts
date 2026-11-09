@@ -300,6 +300,13 @@ export interface Team {
    * approves every change. Default off.
    */
   optimizeUsage?: boolean;
+  /**
+   * Who changes tiers while "Optimize usage" is on (owner-only setting):
+   * `approve` (default) — the lead proposes, the owner approves each change
+   * on a card; `auto` — the lead's changes apply at once and the owner gets a
+   * notice with Undo.
+   */
+  tierChangeMode?: TierChangeMode;
   /** Per-team tier → model overrides, per runtime (wins over the global map) */
   tierModels?: TeamTierModels;
   /** Owner-approved task routing rules ("polling / formatting -> Ella"), shown to the lead */
@@ -308,6 +315,9 @@ export interface Team {
 
 /** Model tiers, strongest first (crewly#1173). */
 export type ModelTier = 'strong' | 'mid' | 'weak';
+
+/** Who changes a team's model tiers (crewly#1173 phase 2): the owner approves, or the lead decides and tells the owner. */
+export type TierChangeMode = 'approve' | 'auto';
 
 /** Tier → model per runtime (`{ 'claude-code': { weak: 'haiku' } }`). */
 export type TeamTierModels = Partial<Record<string, Partial<Record<ModelTier, string>>>>;

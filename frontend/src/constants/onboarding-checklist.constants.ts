@@ -49,6 +49,7 @@ export const CHECKLIST_STEP_LABELS: Record<ChecklistStepId, string> = {
   first_task: 'Give it a first task',
   cloud: 'Connect Crewly Cloud',
   slack: 'Connect Slack',
+  chrome: 'Connect Crewly in Chrome',
 };
 
 /** One-line hint per checklist step (shown until the step is done). */
@@ -58,6 +59,7 @@ export const CHECKLIST_STEP_HINTS: Record<ChecklistStepId, string> = {
   first_task: 'Tell the team what to do in one sentence.',
   cloud: 'Manage from your phone, automatic backups, and needed for Slack.',
   slack: 'Talk to your team right from Slack.',
+  chrome: 'Optional. Let your agents browse the web with your own logins.',
 };
 
 /** Short labels of the whole `/setup` flow (harness steps + checklist steps). */

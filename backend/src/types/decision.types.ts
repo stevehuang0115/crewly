@@ -25,10 +25,15 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  *   into a card on its behalf (specs/2026-10-01-reply-open-items.md)
  * - `spend_cap`: an agent / team / all agents hit a daily token cap — boost it
  *   for today (+X or unlimited) or keep it stopped (specs/2026-10-02-spend-cap.md)
+ * - `gmail_send`: a drafted email an agent wants sent (CREW-257,
+ *   specs/2026-10-06-gmail-approve-send-and-reply-wake.md)
  * - `owner_receipt_format`: one real sample of the nightly receipt — turn it on
  *   in this format, or keep the per-ask format (specs/owner-receipt.md, #856)
+ * - `private_share`: a reply the audience check moved to the owner DM because
+ *   it draws on someone's private data — post it in the room it was held
+ *   from, or keep it private (crewly#969, specs/per-person-access.md)
  */
-export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator' | 'app_template' | 'model_tier_change';
+export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator' | 'app_template' | 'model_tier_change' | 'gmail_send' | 'private_share';
 
 /** How a decision came to be: asked live, or carded by the open-items backfill. */
 export type DecisionSource = 'live' | 'backfill';
@@ -128,11 +133,26 @@ export interface TierChangeSubject {
   teamName: string;
   /** Review id (`review` cards) or guard id (`revert` cards) */
   reviewId: string;
-  /** `review`: the lead's proposals; `revert`: the quality guard asks to move a member back */
-  kind: 'review' | 'revert';
+  /**
+   * What applying does. `review`: the lead's proposals (watched by the
+   * quality guard); `revert`: move a member back after the guard found worse
+   * work; `undo`: the owner's tap on an auto-mode notice — puts back exactly
+   * the changes the notice is about (not watched).
+   */
+  kind: 'review' | 'revert' | 'undo';
+  /**
+   * Set on auto-mode notices (the change already happened; the one action
+   * undoes it): `applied` — the lead's changes went in; `reverted` — the
+   * quality guard moved a member back.
+   */
+  notice?: 'applied' | 'reverted';
+  /** Id of the applied batch an `undo` reverses (its applied entries are marked `undone`) */
+  undoOf?: string;
   changes: TierChangeEntry[];
   /** Task routing rules the lead proposed */
   routing: string[];
+  /** Routing rules an `undo` removes again (the ones the undone batch added) */
+  removeRouting?: string[];
   askerSession: string;
   askerName: string;
 }
@@ -152,6 +172,60 @@ export interface BrowserActionSubject {
   /** Why it was held ("submitting") */
   matched: string;
 }
+
+/** The held email a `gmail_send` decision is about. */
+export interface GmailSendSubject {
+  /** Agent that drafted it */
+  agentSession: string;
+  /** Display name ("Lyra") */
+  agentName: string;
+  /** Hold id (`agent:draftId`) in the Gmail send gate */
+  holdId: string;
+  /** Gmail draft the owner is approving */
+  draftId: string;
+  to: string;
+  subject: string;
+}
+
+/**
+ * The held reply a `private_share` decision is about (crewly#969). Fixed when
+ * the reply is moved to the owner DM; only the owner's tap posts it.
+ */
+export interface PrivateShareSubject {
+  /** Agent whose reply it is */
+  agentSession: string;
+  /** Display name ("Owen") */
+  agentName: string;
+  /** The reply text as the owner saw it in the DM (without the held-from note) */
+  content: string;
+  /** Where it was going before the check moved it (a resolved reply destination, as JSON) */
+  destination: unknown;
+  /** The shared place in words ("#ce", "the CE-7 ticket thread") */
+  heldFrom: string;
+  /** People (ids) whose data it draws on */
+  people: string[];
+  /** The owner DM conversation the reply went to instead */
+  ownerDm: string;
+}
+
+/**
+ * What the owner needs to answer a card without opening the PR or the ticket
+ * (crewly#1369 §3). Every field is one short line in the owner's language.
+ * Required on a merge card: at least {@link DecisionContext.runtimeChanges}.
+ */
+export interface DecisionContext {
+  /** Who asked for the work, and when ("Ella, Oct 6") */
+  requestedBy?: string;
+  /** What the owner said last about it, when known (quoted) */
+  ownerLastSaid?: string;
+  /** What changes at runtime once this is done / merged (new background jobs, scopes, polling) */
+  runtimeChanges?: string;
+  /** The PR / doc link, shown in the card's short details line */
+  link?: string;
+}
+
+/** Languages the harness writes a card's own text in (buttons, context line, reminders). */
+export type DecisionLanguage = 'en' | 'zh';
 
 /** One answer the owner can pick. */
 export interface DecisionOption {
@@ -233,6 +307,10 @@ export interface OwnerDecision {
   kind?: DecisionKind;
   /** The held browser action (kind `browser_action`) */
   browser?: BrowserActionSubject;
+  /** The held email (kind `gmail_send`) */
+  gmail?: GmailSendSubject;
+  /** The held reply (kind `private_share`) */
+  privateShare?: PrivateShareSubject;
   /** What the owner would grant (kind `app_collaborator`) */
   appCollaborator?: AppCollaboratorSubject;
   /** The template the owner would list (kind `app_template`) */
@@ -268,6 +346,17 @@ export interface OwnerDecision {
   title?: string;
   /** Extra mrkdwn sections shown under the question (system decisions) */
   body?: string[];
+  /** Context the asker gave (who asked, what the owner said, what changes) — crewly#1369 §3 */
+  context?: DecisionContext;
+  /**
+   * Internal references taken out of the question at creation (PR numbers,
+   * links): shown only in the card's short details line (crewly#1367).
+   */
+  details?: string[];
+  /** The card asks the owner to merge a PR */
+  merge?: boolean;
+  /** The owner's language when the card was asked: the harness's own card text uses it (absent = English) */
+  ownerLanguage?: DecisionLanguage;
   status: DecisionStatus;
   card?: DecisionCardRef;
   /** Why the card could not be posted (shown in the dashboard; retried on the next tick) */
@@ -326,6 +415,8 @@ export interface AskOwnerInput {
   /** Ticket id (with `project`) */
   ticket?: unknown;
   project?: unknown;
+  /** `{requestedBy?, ownerLastSaid?, runtimeChanges?, link?}` ({@link DecisionContext}) */
+  context?: unknown;
 }
 
 /** A validated ask. */
@@ -337,6 +428,11 @@ export interface ValidatedAsk {
   sensitive?: DecisionSensitiveKind;
   ticketId?: string;
   project?: string;
+  context?: DecisionContext;
+  /** Internal references stripped from the question (PR numbers, links) */
+  details?: string[];
+  /** The ask is about merging a PR */
+  merge?: boolean;
 }
 
 /** Button `value` JSON (also read by Cloud: only `i`). */

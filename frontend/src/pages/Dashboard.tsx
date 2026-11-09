@@ -29,6 +29,7 @@ import type { Team } from '@/types';
 import { apiService } from '@/services/api.service';
 import { GettingStartedCard } from '@/components/Onboarding/GettingStartedCard';
 import { WaitingOnYouCard } from '@/components/Dashboard/WaitingOnYouCard';
+import { OwnerPullsCard } from '@/components/Dashboard/OwnerPullsCard';
 import { CrewNowSection } from '@/components/Dashboard/CrewNowSection';
 import { buildAgentDirectory, buildCrewSnapshot, type RunningItem } from '@/components/Dashboard/dashboard.utils';
 import { ROUTES } from '@/constants/routes.constants';
@@ -123,6 +124,8 @@ export const Dashboard: React.FC = () => {
       </div>
 
       <WaitingOnYouCard directory={directory} showEmpty />
+
+      <OwnerPullsCard />
 
       {error ? (
         <p className="text-[13px] text-text-2 md:px-4" role="alert">

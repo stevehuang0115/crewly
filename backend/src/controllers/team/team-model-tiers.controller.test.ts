@@ -72,8 +72,8 @@ describe('team model-tier controller', () => {
   it('PUT is owner-only and passes the toggle through', async () => {
     service.updateSettings.mockResolvedValue({ optimizeUsage: true });
     const r = res();
-    await updateTeamModelTiers(req('owner', { body: { optimizeUsage: true, memberTiers: { 'm-ella': 'weak' } } }), r);
-    expect(service.updateSettings).toHaveBeenCalledWith('t1', { optimizeUsage: true, tierModels: undefined, memberTiers: { 'm-ella': 'weak' } });
+    await updateTeamModelTiers(req('owner', { body: { optimizeUsage: true, tierChangeMode: 'auto', memberTiers: { 'm-ella': 'weak' } } }), r);
+    expect(service.updateSettings).toHaveBeenCalledWith('t1', { optimizeUsage: true, tierChangeMode: 'auto', tierModels: undefined, memberTiers: { 'm-ella': 'weak' } });
     expect(r.statusCode).toBe(200);
 
     const agent = res();

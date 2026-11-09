@@ -5,7 +5,7 @@
  */
 
 import { OWNER_RECEIPT_CONSTANTS } from '../../../constants.js';
-import { escapeMrkdwn, renderReceiptSlack } from './owner-receipt.renderer.js';
+import { escapeMrkdwn, renderReceiptSlack, SILENCE_ACCEPTED_MARK } from './owner-receipt.renderer.js';
 import type { ReceiptData, ReceiptDecision, ReceiptHighlight } from './owner-receipt.types.js';
 
 /**
@@ -16,7 +16,7 @@ import type { ReceiptData, ReceiptDecision, ReceiptHighlight } from './owner-rec
  * @returns ReceiptHighlight
  */
 function highlight(n: number, over: Partial<ReceiptHighlight> = {}): ReceiptHighlight {
-  return { ticketId: `h${n}`, team: 'Think Tank', summary: `第 ${n} 件做完了`, deliverableCount: 0, completedAt: '2026-09-26T15:00:00Z', ...over };
+  return { ticketId: `h${n}`, team: 'Think Tank', summary: `第 ${n} 件做完了`, deliverableCount: 0, acceptedBySilence: false, completedAt: '2026-09-26T15:00:00Z', ...over };
 }
 
 /**
@@ -62,7 +62,7 @@ function data(over: Partial<ReceiptData> = {}): ReceiptData {
         ],
       },
     ],
-    outcomes: { done: 1, to_review: 0, in_progress: 0, blocked: 0, unowned: 0, dismissed: 0 },
+    outcomes: { done: 1, auto_accepted: 0, to_review: 0, in_progress: 0, blocked: 0, unowned: 0, dismissed: 0 },
     deliverables: { pr: 0, issue: 0, file: 0, link: 0 },
     waiting: [{ source: 'ticket_review', id: 'w1', tkt: 'TKT-036', text: 'Orca 博客', question: null, team: 'Crewly Marketing', since: null }],
     askCount: 1,
@@ -115,6 +115,17 @@ describe('renderReceiptSlack — the redesigned receipt', () => {
     expect(text.split('\n')).toHaveLength(10);
     expect(text.split('\n').at(-1)).toBe('14 more on the board');
     expect(OWNER_RECEIPT_CONSTANTS.MAX_HIGHLIGHTS + OWNER_RECEIPT_CONSTANTS.MAX_DECISIONS + 4).toBeLessThanOrEqual(10);
+  });
+
+  it('says in plain words when a done line closed without the owner\'s check (#1316)', () => {
+    const text = renderReceiptSlack(
+      data({ highlights: [highlight(1, { team: 'CE' }), highlight(2, { team: 'Think Tank', summary: '签证文章草稿已上线。', acceptedBySilence: true })] }),
+    );
+    expect(SILENCE_ACCEPTED_MARK).toBe('closed without your check');
+    expect(text).toContain('• CE: 第 1 件做完了\n');
+    expect(text).toContain('• Think Tank: 签证文章草稿已上线 — closed without your check');
+    expect(text.split('\n').filter((l) => l.includes(SILENCE_ACCEPTED_MARK))).toHaveLength(1);
+    expect(text).not.toMatch(/TKT-|auto_accepted|ticket/i);
   });
 
   it('leaves the name off a line when nobody is known', () => {

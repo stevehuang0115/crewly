@@ -250,7 +250,8 @@ describe('TokenUsageService', () => {
     it('getSessionUsageSince uses it, so a Claude agent\'s cached context is counted', () => {
       const since = new Date(Date.now() - 60_000);
       service.recordUsage('ella', 'ella', 10, 100, 'claude-opus-5-5', undefined, { cachedInput: 600_000 });
-      expect(service.getSessionUsageSince('ella', since).cost).toBeGreaterThan(0.85);
+      // 600K cache reads at Opus 5.5's $0.20/M; uncounted they would cost ~0.
+      expect(service.getSessionUsageSince('ella', since).cost).toBeGreaterThan(0.11);
     });
   });
 

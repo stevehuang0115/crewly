@@ -75,6 +75,53 @@ export interface SlackAgentPostServiceDeps {
    * workspace bot is not a member of.
    */
   findMappedChannelByName?: (name: string) => { id: string; name: string } | null;
+  /**
+   * Whether the agent still owes a person an answer in this DM (the owner
+   * message watchdog). With no placeholder left either, a top-level DM post
+   * is one the agent started (#1387).
+   */
+  owesAnswerIn?: (agentSession: string, slackChannelId: string) => boolean;
+}
+
+/** A top-level DM post the agent started, not an answer (#1387). */
+export interface AgentStartedDmPost {
+  agent: string;
+  /** The DM; absent when the post did not go through this service (the orchestrator's own post) */
+  slackChannelId?: string;
+  text: string;
+}
+
+const startedDmPostListeners = new Set<(post: AgentStartedDmPost) => void>();
+
+/**
+ * Listen to top-level DM posts agents start (not answers to something they
+ * were asked): the weekly owner-pulls line counts them.
+ *
+ * @param listener - Called once per post; errors are swallowed
+ * @returns Unsubscribe
+ */
+export function onAgentStartedDmPost(listener: (post: AgentStartedDmPost) => void): () => void {
+  startedDmPostListeners.add(listener);
+  return () => {
+    startedDmPostListeners.delete(listener);
+  };
+}
+
+/**
+ * Report a top-level DM post an agent started, from a path that does not go
+ * through {@link SlackAgentPostService} (the orchestrator's own owner-DM
+ * post). Same listeners, same once-per-post rule; errors are swallowed.
+ *
+ * @param post - The post (the text is read for its last sentence only)
+ */
+export function reportAgentStartedDmPost(post: AgentStartedDmPost): void {
+  for (const listener of startedDmPostListeners) {
+    try {
+      listener(post);
+    } catch {
+      /* best-effort */
+    }
+  }
 }
 
 /** One post request. */
@@ -118,7 +165,7 @@ export interface SlackAgentPostResult {
 export type SlackMentionLinker = (text: string, channelId: string) => Promise<string>;
 
 /** Reasons a post can be refused, for HTTP mapping. */
-export type SlackAgentPostErrorCode = 'validation' | 'not_connected' | 'target_not_found' | 'slack_error' | 'thread_mismatch';
+export type SlackAgentPostErrorCode = 'validation' | 'not_connected' | 'target_not_found' | 'slack_error' | 'thread_mismatch' | 'thread_required';
 
 /** Structured failure. */
 export class SlackAgentPostError extends Error {
@@ -169,6 +216,24 @@ export class SlackAgentPostService {
   }
 
   /**
+   * Whether a top-level DM post is one the agent started: it owes no answer
+   * there (no reply placeholder of any age, nothing the watchdog tracks). A
+   * late answer the agent posts top-level is still an answer.
+   *
+   * @param agentSession - The agent
+   * @param channelId - The DM
+   * @returns True when nothing in this DM waits on the agent
+   */
+  private isStartedByAgent(agentSession: string, channelId: string): boolean {
+    try {
+      if (this.deps.typing?.findOwed(agentSession, channelId)) return false;
+      return !(this.deps.owesAnswerIn?.(agentSession, channelId) ?? true);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Send one agent-initiated message.
    *
    * @param req - Who is posting, where, and what
@@ -215,22 +280,35 @@ export class SlackAgentPostService {
     // agent naming a colleague here never notified them (2026-09-25).
     const text = await this.linkMentions(rawText, channelId);
 
-    // An agent that owes an answer here (a "working on it…" placeholder is up,
-    // or timed out) and posts without naming a thread is answering: put it in
-    // that thread and take the placeholder down. Ella answered the owner's
-    // in-thread question with this skill and it landed top-level, next to a
-    // "⏱ still working" that never went away (2026-09-25).
+    // A post that names no thread is never put into a thread by guess, and
+    // never lands at a channel's top level unasked (R7, 2026-10-18 audit).
+    // It used to go into the agent's oldest open "working on it…" thread of
+    // the channel (Ella, 2026-09-25), else top level — Ella's "@Rex …" for a
+    // #crewly-marketing ask landed at the top of #awesome-videos. Now: an
+    // owed thread is named back to the agent, and a channel post needs
+    // --thread or --new-topic. A DM may still start a new message.
+    if (!req.threadTs && !req.newTopLevel) {
+      const owedHere = this.deps.typing?.findOwed(agentSession, channelId, {
+        maxAgeMs: SLACK_TYPING_CONSTANTS.UNTHREADED_ANSWER_MAX_AGE_MS,
+      }) ?? null;
+      if (owedHere?.threadTs) {
+        throw new SlackAgentPostError(
+          'thread_required',
+          `Not posted: you owe an answer in thread ${channelId}:${owedHere.threadTs}. Pass --thread ${channelId}:${owedHere.threadTs} to answer it there, or --new-topic for a new top-level message.`,
+        );
+      }
+      if (!channelId.startsWith('D')) {
+        throw new SlackAgentPostError(
+          'thread_required',
+          `Not posted: name the thread this answers (--thread <[SLACK-THREAD:<key>] from your prompt>), or pass --new-topic for a deliberate new top-level message in ${channelId}. A post with neither is never placed by guess.`,
+        );
+      }
+    }
     // A post that names its thread, where a placeholder is up, is that
-    // thread's answer too: it replaces the placeholder rather than landing
+    // thread's answer: it replaces the placeholder rather than landing
     // beside it (2026-09-28).
     const namedKey = req.threadTs ? { agentSession, slackChannelId: channelId, threadTs: req.threadTs } : null;
-    const owed = namedKey
-      ? (this.deps.typing?.owes?.(namedKey) ? namedKey : null)
-      : req.newTopLevel
-        ? null
-        : this.deps.typing?.findOwed(agentSession, channelId, {
-          maxAgeMs: SLACK_TYPING_CONSTANTS.UNTHREADED_ANSWER_MAX_AGE_MS,
-        }) ?? null;
+    const owed = namedKey && this.deps.typing?.owes?.(namedKey) ? namedKey : null;
     if (owed) {
       // The caller gets the ts of the message that carries its text, as for
       // any other post: an empty ts made scheduled runs treat a successful
@@ -281,6 +359,9 @@ export class SlackAgentPostService {
 
     if (req.threadTs) this.deps.typing?.noteAnswerPosted?.(channelId, req.threadTs);
     reportOwnerThreadAgentPost({ agent: agentSession, slackChannelId: channelId, ...(req.threadTs ? { threadTs: req.threadTs } : {}), text: rawText });
+    if (kind === 'dm' && !req.threadTs && this.isStartedByAgent(agentSession, channelId)) {
+      reportAgentStartedDmPost({ agent: agentSession, slackChannelId: channelId, text: rawText });
+    }
     this.logger.info('Agent posted to Slack', {
       agentSession,
       channelId,

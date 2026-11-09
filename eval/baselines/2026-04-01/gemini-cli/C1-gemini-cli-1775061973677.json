@@ -1,0 +1,47 @@
+{
+  "taskId": "C1",
+  "runtime": "gemini-cli",
+  "startedAt": "2026-04-01T16:44:54.874Z",
+  "completedAt": "2026-04-01T16:46:13.677Z",
+  "durationSeconds": 78.803,
+  "completionType": "agent_done",
+  "verificationResults": [
+    {
+      "name": "typescript",
+      "passed": true,
+      "output": "",
+      "exitCode": 0
+    },
+    {
+      "name": "tests",
+      "passed": true,
+      "output": "> c1-extract-constants-fixture@1.0.0 test\n> vitest run\n\n\n RUN  v3.2.4 eval/runs/C1-gemini-cli-1775061881982\n\n ✓ src/config/constants.test.ts (5 tests) 11ms\n ✓ src/services/connection.service.test.ts (6 tests) 12ms\n\n Test Files  2 passed (2)\n      Tests  11 passed (11)\n   Start at  12:46:11\n   Duration  1.64s (transform 495ms, setup 0ms, collect 502ms, tests 23ms, environment 0ms, prepare 413ms)",
+      "exitCode": 0
+    },
+    {
+      "name": "no_hardcoded_ports",
+      "passed": true,
+      "output": "0",
+      "exitCode": 1
+    },
+    {
+      "name": "constants_exist",
+      "passed": true,
+      "output": "exists",
+      "exitCode": 0
+    }
+  ],
+  "scores": {
+    "d1Correctness": 100,
+    "d2CodeQuality": 85,
+    "d3Reasoning": 60,
+    "d4Autonomy": 100,
+    "d5ContextMgmt": 100,
+    "d6Collaboration": 0,
+    "d7CostEfficiency": 100
+  },
+  "overallScore": 85,
+  "toolCallCount": 10,
+  "estimatedCostUsd": 0.0083382,
+  "logPath": "eval/results/gemini-cli-v2/logs/C1-gemini-cli-1775061966794.log"
+}

@@ -42,6 +42,6 @@ describe('owner receipt settings', () => {
 
   it('lists every outcome once', () => {
     expect(new Set(RECEIPT_OUTCOMES).size).toBe(RECEIPT_OUTCOMES.length);
-    expect(RECEIPT_OUTCOMES).toHaveLength(6);
+    expect(RECEIPT_OUTCOMES).toHaveLength(7);
   });
 });

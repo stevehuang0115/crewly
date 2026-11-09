@@ -186,6 +186,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_channel_seq
 CREATE INDEX IF NOT EXISTS ix_messages_channel_created
   ON chat_messages(channel_id, created_at DESC);
 
+-- Owner messages across channels by time (owner active minutes, #1387)
+CREATE INDEX IF NOT EXISTS ix_messages_sender_created
+  ON chat_messages(sender_type, created_at);
+
 -- Phase 1: partial unique index for clientMessageId-based idempotency (spec §4.4)
 CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_client_id
   ON chat_messages(channel_id, json_extract(metadata, '$.clientMessageId'))
@@ -588,6 +592,46 @@ export interface OpenChatDatabaseOptions {
 }
 
 /**
+ * Create `chat_read_state` (the owner's per-channel read marker, #1400) and,
+ * the first time only, seed one row per existing channel at its current max
+ * `seq` so an upgrade does not flood every old conversation as unread.
+ *
+ * "First time" is detected by the table not existing yet: re-seeding on every
+ * boot would silently mark genuinely unread channels as read after a restart.
+ * A channel without a row has `last_read_seq` 0.
+ *
+ * @param db - The chat database handle
+ * @returns Whether the table was created and how many rows were seeded
+ */
+export function applyReadStateUpgrade(db: ChatDatabase): { created: boolean; seeded: number } {
+  const exists = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'chat_read_state'`)
+    .get() as { name: string } | undefined;
+  if (exists) return { created: false, seeded: 0 };
+
+  const run = db.transaction((): number => {
+    db.exec(`
+      CREATE TABLE chat_read_state (
+        channel_id    TEXT PRIMARY KEY,
+        last_read_seq INTEGER NOT NULL,
+        updated_at    TEXT NOT NULL
+      );
+    `);
+    const result = db
+      .prepare(
+        `INSERT INTO chat_read_state (channel_id, last_read_seq, updated_at)
+         SELECT c.id, COALESCE(MAX(m.seq), 0), ?
+         FROM chat_channels c
+         LEFT JOIN chat_messages m ON m.channel_id = c.id
+         GROUP BY c.id`,
+      )
+      .run(new Date().toISOString());
+    return Number(result.changes);
+  });
+  return { created: true, seeded: run() };
+}
+
+/**
  * Open (or create) the chat database, apply PRAGMAs, run the Phase 1
  * migration idempotently, and run a boot-time integrity check.
  *
@@ -648,6 +692,12 @@ export function openChatDatabase(options: OpenChatDatabaseOptions): ChatDatabase
   const unifiedReport = applyUnifiedLogUpgrades(db);
   if (unifiedReport.columnsAdded.length > 0 || unifiedReport.rowsBackfilled > 0) {
     logger.info('Chat DB unified-log upgrade applied', unifiedReport);
+  }
+
+  // Owner read markers (#1400). Runs last so the seed sees every channel.
+  const readStateReport = applyReadStateUpgrade(db);
+  if (readStateReport.created) {
+    logger.info('Chat DB read-state table created', readStateReport);
   }
 
   if (!options.skipIntegrityCheck) {

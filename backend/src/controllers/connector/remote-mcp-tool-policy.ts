@@ -68,6 +68,16 @@ export function isToolsList(msg: RpcMessage): boolean {
 }
 
 /**
+ * Is this message a `tools/call` request (any tool)?
+ *
+ * @param msg - One JSON-RPC message
+ * @returns True for a tool call
+ */
+export function isToolCall(msg: RpcMessage): boolean {
+  return norm(msg.method) === 'tools/call';
+}
+
+/**
  * Remove denied tools from a tools/list JSON-RPC response (single or batch).
  *
  * @param payload - Parsed response

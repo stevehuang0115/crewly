@@ -38,6 +38,7 @@ import {
   DISPOSITION_REQUIRED_STATUSES,
   getWorkItemDisposition,
   WORK_ITEM_BLOCK_SOURCES,
+  WORK_ITEM_BLOCKED_UNTIL_KEY,
   isExplicitlyBlocked,
   TERMINAL_WORK_ITEM_STATUSES,
 } from '../../types/v2/work-item.types.js';
@@ -68,9 +69,12 @@ import {
   type WorkItemOrigin,
 } from '../orc/work-item-destination.js';
 import { reportOwnerThreadBlocking } from '../messaging/owner-thread-sentinel.service.js';
+import { getThreadAnswerLog, type ThreadPost } from '../messaging/thread-answer-log.js';
 import { getOwnerRequestContext, type OwnerRequestContext } from '../orc/owner-request-context.js';
+import { leadReportOf, orchestratorNote, type LeadReport } from '../orc/team-lead-report.js';
+import { resolveLeadReport } from '../orc/team-lead-report.wiring.js';
 import { formatSlackThreadKey, parseSlackThreadKey } from '../slack/slack-thread-key.js';
-import { OPEN_ITEMS_CONSTANTS, TEAM_PAUSE_CONSTANTS, TL_DELEGATION_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
+import { OPEN_ITEMS_CONSTANTS, TEAM_LEAD_REPORT_CONSTANTS, TEAM_PAUSE_CONSTANTS, TL_DELEGATION_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
 import { assignWorkItemTrace } from '../trace/trace-recorder.js';
 
 /**
@@ -237,6 +241,15 @@ export interface AddToPoolOptions {
    * owner's request (the ticket's own link already says which ticket it is).
    */
   ownerOriginOnly?: boolean;
+  /**
+   * Whether an item the creator assigns to ITSELF inherits the creator's
+   * current owner turn, owner context or current work's origin (default
+   * true for harness-made items). An agent's own `create-task` passes false:
+   * its item gets an owner place only when it names one
+   * (`--thread` / `--conversation`), never the creator's last owner thread
+   * (message-routing audit 2026-10-18).
+   */
+  inheritCreatorTurn?: boolean;
 }
 
 /**
@@ -417,6 +430,14 @@ export class TaskPoolService {
   private ownerAskedAtLookup: ((origin: Extract<WorkItemOrigin, { kind: 'owner' }>) => Promise<number | null>) | null = defaultOwnerAskedAt;
 
   /**
+   * Who reports a new owner-origin delegation to the owner, and where
+   * (crewly#1371: the team lead, in the team channel). null disables the
+   * stamp. Default: the real teams and Slack team channels.
+   */
+  private leadReportResolver: ((input: { workItem: WorkItem; creator?: string; items: readonly WorkItem[] }) => Promise<LeadReport | null>) | null = (input) =>
+    resolveLeadReport(input);
+
+  /**
    * Serializes claim operations to prevent the race where two concurrent
    * claimFromPool / claimSpecificItem calls both select the same queued
    * WorkItem between their read and write phases. In-process only — does
@@ -578,6 +599,15 @@ export class TaskPoolService {
    */
   setOwnerContextLookup(lookup: ((sessionName: string) => Promise<OwnerRequestContext | null>) | null): void {
     this.ownerContextLookup = lookup;
+  }
+
+  /**
+   * Replace (or disable with `null`) the lead-report resolver (crewly#1371).
+   *
+   * @param resolver - New item + creator + pool → its lead report, or null
+   */
+  setLeadReportResolver(resolver: ((input: { workItem: WorkItem; creator?: string; items: readonly WorkItem[] }) => Promise<LeadReport | null>) | null): void {
+    this.leadReportResolver = resolver;
   }
 
   /**
@@ -821,7 +851,7 @@ export class TaskPoolService {
 
     // An owner-origin-only add (a ticket assignment) keeps its own links.
     if (!options.ownerOriginOnly) this.inferRequestIdFromTurn(workItem, options.creatorSession);
-    await this.inheritOrigin(workItem, options.creatorSession, options.ownerOriginOnly === true);
+    await this.inheritOrigin(workItem, options.creatorSession, options.ownerOriginOnly === true, options.inheritCreatorTurn !== false);
     await this.routeUntargeted(workItem, options.creatorSession);
     assignWorkItemTrace(workItem, options.creatorSession);
 
@@ -878,7 +908,60 @@ export class TaskPoolService {
    * @param creatorSession - The agent creating it, when known
    * @param ownerOnly - Stamp only an owner origin
    */
-  private async inheritOrigin(workItem: WorkItem, creatorSession?: string, ownerOnly = false): Promise<void> {
+  private async inheritOrigin(workItem: WorkItem, creatorSession?: string, ownerOnly = false, inheritCreatorTurn = true): Promise<void> {
+    await this.inheritOriginOnly(workItem, creatorSession, ownerOnly, inheritCreatorTurn);
+    await this.stampLeadReport(workItem, creatorSession);
+  }
+
+  /**
+   * Stamp `metadata.leadReport` (crewly#1371): team work the orchestrator
+   * delegated on the owner's behalf is reported to the owner by the team's
+   * lead, in the team channel. A verify / retry / subtask item takes its
+   * parent's stamp; a new owner-origin delegation asks the resolver. Mutates
+   * the item before it is stored; failures are logged and ignored.
+   *
+   * @param workItem - The item about to be stored (origin already stamped)
+   * @param creatorSession - The agent creating it, when known
+   */
+  private async stampLeadReport(workItem: WorkItem, creatorSession?: string): Promise<void> {
+    try {
+      if (leadReportOf(workItem)) return;
+      const meta = (workItem.metadata ?? {}) as Record<string, unknown>;
+      const parentId = [workItem.parentWorkItemId, meta.verifyOf, meta.sourceWorkItemId].find(
+        (v): v is string => typeof v === 'string' && v.length > 0,
+      );
+      const parent = parentId ? await this.storage.findWorkItem(parentId) : null;
+      let stamp = parent ? leadReportOf(parent) : null;
+      if (!stamp) {
+        if (parent || !this.leadReportResolver || originOfWorkItem(workItem)?.kind !== 'owner') return;
+        const creator = creatorSession ?? (typeof meta.delegatedBy === 'string' ? meta.delegatedBy : undefined);
+        stamp = await this.leadReportResolver({ workItem, ...(creator ? { creator } : {}), items: await this.storage.getWorkItems() });
+      }
+      if (!stamp) return;
+      workItem.metadata = { ...meta, [TEAM_LEAD_REPORT_CONSTANTS.METADATA_KEY]: stamp };
+      this.logger.info('WorkItem is reported to the owner by its team lead, in the team channel', {
+        workItemId: workItem.id,
+        lead: stamp.lead,
+        teamId: stamp.teamId,
+        from: parent ? `parent ${parent.id}` : 'delegation',
+      });
+    } catch (err) {
+      this.logger.warn('Lead report stamp failed — WorkItem keeps the default report path', {
+        workItemId: workItem.id,
+        error: formatError(err),
+      });
+    }
+  }
+
+  /**
+   * The origin half of {@link inheritOrigin}.
+   *
+   * @param workItem - The item about to be stored
+   * @param creatorSession - The agent creating it, when known
+   * @param ownerOnly - Stamp only an owner origin
+   * @param inheritCreatorTurn - A self-assigned item may take the creator's turn / context / current work origin
+   */
+  private async inheritOriginOnly(workItem: WorkItem, creatorSession?: string, ownerOnly = false, inheritCreatorTurn = true): Promise<void> {
     try {
       const meta = (workItem.metadata ?? {}) as Record<string, unknown>;
       const parentId = [workItem.parentWorkItemId, meta.verifyOf, meta.sourceWorkItemId].find(
@@ -896,6 +979,12 @@ export class TaskPoolService {
         ? (await this.explicitOwnerOrigin(meta[TL_DELEGATION_CONSTANTS.OWNER_THREAD_FIELD], creator)) ??
           this.explicitOwnerConversation(meta[TL_DELEGATION_CONSTANTS.OWNER_CONVERSATION_FIELD], creator)
         : null;
+      if (!explicit && meta[TL_DELEGATION_CONSTANTS.OWNER_THREAD_FIELD] !== undefined && !isWorkItemOrigin(meta[WORK_ITEM_DESTINATION_CONSTANTS.METADATA_KEY])) {
+        this.logger.warn('WorkItem names an owner thread Crewly cannot read — it gets no owner origin from it', {
+          workItemId: workItem.id,
+          ownerThread: meta[TL_DELEGATION_CONSTANTS.OWNER_THREAD_FIELD],
+        });
+      }
       if (explicit?.kind === 'owner') {
         const askedAt = await this.ownerAskedAt(explicit, creator, now);
         if (isOwnerRequestTooOld(askedAt, now)) {
@@ -914,6 +1003,10 @@ export class TaskPoolService {
       let creatorWorkItem: WorkItem | null = null;
       let creatorDestination = null;
       let creatorOwnerContext: OwnerRequestContext | null = null;
+      if (!parent && creator && !delegation && !inheritCreatorTurn) {
+        this.logger.info('Self-assigned WorkItem names no owner place — it inherits none from its creator', { workItemId: workItem.id, creator });
+        return;
+      }
       if (!parent && creator && !delegation) {
         creatorWorkItem = currentWorkItemOf(await this.storage.getWorkItems(), creator);
         creatorDestination = planWorkDestination({
@@ -953,6 +1046,45 @@ export class TaskPoolService {
   }
 
   /**
+   * Whether a delegation names an owner thread (`delegate-task --thread`)
+   * Crewly cannot read. Such a delegation is refused rather than created
+   * without the owner's place: Atlas's `<conversation>:<thread>` was dropped
+   * silently, and Kai's PDF went to the channel top level (2026-10-18).
+   *
+   * @param rawKey - `metadata.ownerThread`
+   * @param creator - The delegating agent, when known
+   * @returns True when a thread is named and unreadable
+   */
+  async isOwnerThreadUnreadable(rawKey: unknown, creator?: string): Promise<boolean> {
+    if (rawKey === undefined || rawKey === null || (typeof rawKey === 'string' && !rawKey.trim())) return false;
+    return !(await this.explicitOwnerOrigin(rawKey, creator).catch(() => null));
+  }
+
+  /**
+   * Agent posts in an explicitly named Slack thread that are newer than the
+   * owner's last message there, by anyone but the delegator and the target
+   * (the answerer's own follow-up is not a second answer). A delegation
+   * into such a thread would get the owner a second answer (CREW-878).
+   * Unknown history (no log yet, the owner's message time unknown, an unreadable
+   * key) gives none: only a certain answer blocks a delegation.
+   *
+   * @param rawKey - `metadata.ownerThread`
+   * @param creator - The delegating agent, when known
+   * @param target - The agent delegated to
+   * @returns Posts oldest first; empty when none or unknown
+   */
+  async agentAnswersInOwnerThread(rawKey: unknown, creator?: string, target?: string): Promise<ThreadPost[]> {
+    const log = getThreadAnswerLog();
+    const key = parseSlackThreadKey(rawKey);
+    if (!log || !key) return [];
+    const origin = await this.explicitOwnerOrigin(rawKey, creator).catch(() => null);
+    if (!origin || origin.kind !== 'owner') return [];
+    const ownerAt = await this.ownerAskedAt(origin, creator, Date.now()).catch(() => null);
+    if (ownerAt === null) return [];
+    return log.answersSince(formatSlackThreadKey(key.slackChannelId, key.threadTs), ownerAt, creator, target);
+  }
+
+  /**
    * The owner origin of an explicitly named Slack thread: the creator's own
    * turn origin when it is that thread (it knows the conversation), else the
    * conversation the Slack channel maps to.
@@ -964,7 +1096,14 @@ export class TaskPoolService {
   private async explicitOwnerOrigin(rawKey: unknown, creator?: string): Promise<ReturnType<typeof ownerOriginFromThreadKey>> {
     const key = parseSlackThreadKey(rawKey);
     if (!key) {
-      if (typeof rawKey !== 'string' || !CHAT_MESSAGE_ID_RE.test(rawKey.trim()) || !this.chatMessageThreadLookup) return null;
+      if (typeof rawKey !== 'string') return null;
+      // `<conversation id>:<thread id>` — the `[CHAT:<id>]` conversation and
+      // the `--thread` id from a delegator's own reply command. Atlas passed
+      // exactly this (2026-10-18, #daily-info); it was not read, the work got
+      // no owner origin, and Kai's PDF went to the channel top level.
+      const pair = CHAT_CONVERSATION_THREAD_RE.exec(rawKey.trim());
+      if (pair) return this.chatThreadOwnerOrigin(pair[1], pair[2]);
+      if (!CHAT_MESSAGE_ID_RE.test(rawKey.trim()) || !this.chatMessageThreadLookup) return null;
       const found = await this.chatMessageThreadLookup(rawKey.trim()).catch(() => null);
       return found ? ownerOriginFromThreadKey(formatSlackThreadKey(found.slackChannelId, found.threadTs), found.conversationId) : null;
     }
@@ -976,6 +1115,27 @@ export class TaskPoolService {
       conversationId = await this.slackThreadConversationLookup(key.slackChannelId, key.threadTs).catch(() => null);
     }
     return ownerOriginFromThreadKey(keyText, conversationId);
+  }
+
+  /**
+   * The owner origin of a chat conversation + thread pair. The thread's Slack
+   * place comes along when the chat message has one; a thread of another
+   * conversation contradicts the pair and gives nothing.
+   *
+   * @param conversationId - chat-v2 conversation id
+   * @param threadId - chat-v2 thread root message id in it
+   * @returns The origin, or null when the pair contradicts itself
+   */
+  private async chatThreadOwnerOrigin(conversationId: string, threadId: string): Promise<WorkItemOrigin | null> {
+    const found = this.chatMessageThreadLookup ? await this.chatMessageThreadLookup(threadId).catch(() => null) : null;
+    if (found && found.conversationId !== conversationId) {
+      this.logger.warn('Delegation named a thread of another conversation — not used', { conversationId, threadId, threadConversation: found.conversationId });
+      return null;
+    }
+    if (found) {
+      return { kind: 'owner', conversationId, slackChannelId: found.slackChannelId, threadTs: found.threadTs, chatThreadId: threadId };
+    }
+    return ownerOriginFromConversation(conversationId, threadId);
   }
 
   /**
@@ -1289,6 +1449,7 @@ export class TaskPoolService {
       });
       return;
     }
+    const leadReport = leadReportOf(workItem);
     try {
       this.eventBus.publish({
         id: `${type}:${workItem.id}`,
@@ -1311,6 +1472,8 @@ export class TaskPoolService {
         // `target` is never used for subscription matching.
         ...(workItem.target ? { target: workItem.target } : {}),
         workItemTitle: workItem.title,
+        // crewly#1371: the team lead reports this to the owner; the orchestrator's notice is informational.
+        ...(leadReport ? { orchestratorNote: orchestratorNote(leadReport) } : {}),
       });
     } catch (err) {
       this.logger.warn(`${type} publish threw`, {
@@ -1803,6 +1966,13 @@ export class TaskPoolService {
         wi.targetSource = undefined;
       }
       wi.releaseCount = (wi.releaseCount ?? 0) + 1;
+      // A timed block's `until` is spent once the item is back in the queue,
+      // whether the time passed or someone unblocked it earlier.
+      if (wi.metadata && WORK_ITEM_BLOCKED_UNTIL_KEY in wi.metadata) {
+        const metadata: Record<string, unknown> = { ...wi.metadata };
+        delete metadata[WORK_ITEM_BLOCKED_UNTIL_KEY];
+        wi.metadata = metadata;
+      }
     });
 
     await this.storage.flush();
@@ -1879,24 +2049,36 @@ export class TaskPoolService {
    * @param workItemId - The running WorkItem to block
    * @param options.agentId - Who blocked it (recorded in metadata)
    * @param options.reason - Why (persisted on `blockedReason`)
-   * @throws Error if not found, or the item is not `running` (state machine)
+   * @param options.until - ISO 8601 time at which the block lifts on its own:
+   *   the reconciler returns the item to `queued` for the same target once it
+   *   has passed (block-task `until`, for work that can only proceed at a
+   *   known time). Without it the block waits for an explicit unblock.
+   * @throws Error if not found, the item is not `running` (state machine), or `until` does not parse
    */
   async blockItem(
     workItemId: string,
-    options: { agentId: string; reason?: string },
+    options: { agentId: string; reason?: string; until?: string },
   ): Promise<void> {
     const reason = options.reason && options.reason.trim().length > 0 ? options.reason : undefined;
+    const until = options.until && options.until.trim().length > 0 ? options.until : undefined;
+    if (until !== undefined && !Number.isFinite(Date.parse(until))) {
+      throw new Error(`Invalid until for WorkItem ${workItemId}: '${until}' is not an ISO 8601 date-time`);
+    }
     const updated = await this.transitionStatus(
       workItemId,
       'blocked',
       'system',
       (wi) => {
         wi.blockSource = WORK_ITEM_BLOCK_SOURCES.EXPLICIT;
-        wi.metadata = {
+        const metadata: Record<string, unknown> = {
           ...(wi.metadata ?? {}),
           blockedBy: options.agentId,
           blockedAt: new Date().toISOString(),
         };
+        // A block without `until` must not inherit one from an earlier block.
+        if (until) metadata[WORK_ITEM_BLOCKED_UNTIL_KEY] = until;
+        else delete metadata[WORK_ITEM_BLOCKED_UNTIL_KEY];
+        wi.metadata = metadata;
       },
       reason,
     );
@@ -1905,11 +2087,17 @@ export class TaskPoolService {
     }
     await this.releaseClaim(workItemId, reason ? `blocked: ${reason}` : 'blocked');
     await this.storage.flush();
-    this.logger.info('WorkItem explicitly blocked (claim released; stays blocked until unblocked)', {
-      workItemId,
-      agentId: options.agentId,
-      reason,
-    });
+    this.logger.info(
+      until
+        ? 'WorkItem explicitly blocked (claim released; returns to queued when its until time passes)'
+        : 'WorkItem explicitly blocked (claim released; stays blocked until unblocked)',
+      {
+        workItemId,
+        agentId: options.agentId,
+        reason,
+        until,
+      },
+    );
     await this.publishTaskStopped('task:blocked', updated, 'running', reason);
     // The owner thread this work came from hears that it is blocked (work
     // from a ticket or a trigger has its own place and says nothing there).
@@ -2547,10 +2735,14 @@ export class TaskPoolService {
         (wi) => {
           wi.blockedReason = undefined;
           wi.blockSource = undefined;
-          wi.metadata = {
+          const metadata: Record<string, unknown> = {
             ...(wi.metadata ?? {}),
             completedWhileBlockedAt: new Date().toISOString(),
           };
+          // A timed block's `until` is spent once the holder finishes the
+          // item; a done item must not carry a wait it no longer has.
+          delete metadata[WORK_ITEM_BLOCKED_UNTIL_KEY];
+          wi.metadata = metadata;
         },
       );
       this.logger.info('Completion from the item\'s claim holder landed while it was blocked — resumed to finish it', {
@@ -3983,6 +4175,8 @@ function matchesFilters(wi: WorkItem, filters?: PoolFilters): boolean {
  */
 /** A chat-v2 message id (UUID). */
 const CHAT_MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** `<chat conversation id>:<chat thread id>` — both UUIDs. */
+const CHAT_CONVERSATION_THREAD_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 /**
  * Default {@link TaskPoolService.chatMessageThreadLookup}: the Slack thread a

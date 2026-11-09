@@ -181,6 +181,8 @@ export class ClaudeTranscriptSyncService {
 	/** Config dir of one of the owner's other Claude Code accounts (issue #942) */
 	private readonly accountConfigDir: (account: string) => string;
 	private cursors: Map<string, TranscriptCursor> = new Map();
+	/** Most bytes one pass reads from a transcript (tests lower it) */
+	readChunkBytes: number = CLAUDE_TRANSCRIPT_SYNC_CONSTANTS.MAX_READ_BYTES_PER_PASS;
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private observers: ContextObserver[] = [];
 	private loaded = false;
@@ -532,10 +534,19 @@ export class ClaudeTranscriptSyncService {
 		if (size < cursor.offset) cursor.offset = 0;
 		if (size === cursor.offset) return none;
 
-		const tail = await this.readFrom(filePath, cursor.offset, size);
+		// A bounded slice per pass: a huge transcript is caught up over several passes, never read whole.
+		const end = Math.min(size, cursor.offset + this.readChunkBytes);
+		const tail = await this.readFrom(filePath, cursor.offset, end);
 		// Only advance past whole lines; a partial trailing line is re-read next pass.
 		const lastNewline = tail.lastIndexOf('\n');
-		if (lastNewline < 0) return none;
+		if (lastNewline < 0) {
+			// One line longer than a whole chunk (a giant tool result): nothing in it can be a turn we need; skip it.
+			if (end < size) {
+				this.logger.warn('Transcript line longer than a read chunk — skipped', { sessionName, filePath, offset: cursor.offset });
+				cursor.offset = end;
+			}
+			return none;
+		}
 		const complete = tail.slice(0, lastNewline);
 		const consumedBytes = Buffer.byteLength(complete, 'utf-8') + 1;
 

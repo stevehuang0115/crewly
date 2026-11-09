@@ -25,6 +25,7 @@ import * as path from 'path';
 import { ActingForService, setActingForForTesting } from '../people/acting-for.service.js';
 import { PeopleDirectoryService } from '../people/people-directory.service.js';
 import { currentQueueMeta } from '../messaging/queue-priority.js';
+import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
 
 function makeChannel(overrides: Partial<ChatChannelDTO> = {}): ChatChannelDTO {
   return {
@@ -36,6 +37,7 @@ function makeChannel(overrides: Partial<ChatChannelDTO> = {}): ChatChannelDTO {
     // Phase A — `type` is required on the wire from A1 onward; default
     // legacy DM channels in fixtures.
     type: 'dm',
+    lastReadSeq: 0, unreadCount: 0,
     ...overrides,
   };
 }
@@ -86,8 +88,14 @@ describe('renderChatContext', () => {
   });
 
   it('lists who said what, with the time', () => {
-    const out = renderChatContext([turn()]);
+    const out = renderChatContext([turn()], 'UTC');
     expect(out).toContain('14:05 Atlas: I already looked at the permit');
+  });
+
+  it("shows times in the owner's local zone and says which (#1427)", () => {
+    const out = renderChatContext([turn()], 'America/New_York');
+    expect(out).toContain('10:05 Atlas:');
+    expect(out).toContain("times are the owner's local time, America/New_York");
   });
 
   it('never shows an agent a signed Crewly Apps link from the conversation (apps P3)', () => {
@@ -831,6 +839,8 @@ describe('ChatV2DispatcherService', () => {
       // Multi-agent threads must converge (owner, 2026-09-19): two rounds
       // each, the team leader writes the conclusion, then silence.
       expect(prompt).toContain('speaks at most two rounds');
+      // R6 (message-routing audit 2026-10-18): no agent-to-agent talk in an owner thread.
+      expect(prompt).toContain('agents do not talk to each other');
       expect(prompt).toContain('"Conclusion"');
     });
 
@@ -1574,6 +1584,7 @@ describe('ChatV2DispatcherService', () => {
           lastMessageAt: null,
           agentPresence: { status: 'online', lastSeenAt: null },
           type: 'huddle',
+          lastReadSeq: 0, unreadCount: 0,
           ...overrides,
         };
       }
@@ -1991,6 +2002,7 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
     lastMessageAt: null,
     agentPresence: { status: 'online', lastSeenAt: null },
     type: 'huddle',
+    lastReadSeq: 0, unreadCount: 0,
   };
   const members = ['think-tank-atlas', 'crewly-marketing-ella', 'ops-noah'];
   const names: Record<string, string> = { 'think-tank-atlas': 'Atlas', 'crewly-marketing-ella': 'Ella', 'ops-noah': 'Noah' };
@@ -2189,5 +2201,203 @@ describe('owner messages carry queue priority (2026-10-05, D-270)', () => {
       ref: 'chat:room:m-1',
       where: { chatChannelId: 'room', chatThreadId: 'root-1' },
     });
+  });
+});
+
+describe('activate-on-send holds the message before the start (steamfun-ops 2026-10-21)', () => {
+  let storePath: string;
+  let queue: SubAgentMessageQueue;
+
+  beforeEach(() => {
+    SubAgentMessageQueue.resetInstance();
+    storePath = path.join(os.tmpdir(), `dispatch-hold-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+    queue = SubAgentMessageQueue.getInstance(storePath);
+  });
+
+  afterEach(() => {
+    SubAgentMessageQueue.resetInstance();
+    fs.rmSync(storePath, { force: true });
+  });
+
+  /** The two hooks as index.ts wires them, on the test queue. */
+  const queueHooks = () => ({
+    holdDuringActivation: (session: string, prompt: string) => SubAgentMessageQueue.getInstance(storePath).enqueue(session, prompt),
+    releaseHeld: (session: string, prompt: string) => SubAgentMessageQueue.getInstance(storePath).remove(session, prompt, 'test'),
+  });
+
+  /** A team room. */
+  const huddle = (): ChatChannelDTO => ({
+    id: 'huddle-1',
+    agentSession: '',
+    name: 'Team room',
+    createdAt: 1,
+    agentPresence: { status: 'online', lastSeenAt: null },
+    type: 'huddle',
+    lastReadSeq: 0, unreadCount: 0,
+  });
+
+  it('a restart while the agent is starting does not lose the message: it is restored and delivered at register', async () => {
+    const session = 'crewly-product-sam-dd2b46f7';
+    const { sink } = makeSink({ success: false, error: `Session '${session}' does not exist` });
+    let activationStarted!: () => void;
+    const started = new Promise<void>((resolve) => { activationStarted = resolve; });
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: sink,
+      ...queueHooks(),
+      // The start never returns: the process "exits" while it runs.
+      activateAgent: () => { activationStarted(); return new Promise<boolean>(() => undefined); },
+      activateRetryDelayMs: 0,
+    });
+    void dispatcher.dispatchToAgent(makeChannel(), makeMessage({ content: 'please check the invoice' }));
+    await started;
+    expect(queue.hasPending(session)).toBe(true);
+
+    // Restart: the in-memory call is gone; a new process reads the queue from disk.
+    SubAgentMessageQueue.resetInstance();
+    const restored = SubAgentMessageQueue.getInstance(storePath);
+    expect(restored.sessionsWithPending()).toEqual([session]);
+
+    // The restored agent registers; register-self flushes its queue once.
+    const delivered: string[] = [];
+    const outcome = await restored.flush(session, async (data) => { delivered.push(data); return { success: true }; });
+    expect(outcome.delivered).toBe(1);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain('please check the invoice');
+    expect(restored.hasPending(session)).toBe(false);
+  });
+
+  it('a start that came up in time: sent directly once, the held copy taken back', async () => {
+    let up = false;
+    const calls: string[] = [];
+    const sink: AgentMessageSink = {
+      async sendMessageToAgent(_s, message) {
+        calls.push(message);
+        return up ? { success: true } : { success: false, error: 'Session does not exist' };
+      },
+    };
+    let heldDuringStart = false;
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: sink,
+      ...queueHooks(),
+      activateAgent: async (s) => {
+        heldDuringStart = queue.hasPending(s);
+        up = true;
+        return true;
+      },
+      activateRetryDelayMs: 0,
+    });
+    expect(await dispatcher.dispatchToAgent(makeChannel(), makeMessage())).toEqual({ dispatched: true });
+    expect(heldDuringStart).toBe(true);
+    expect(calls).toHaveLength(2); // the failed first try + the one delivery
+    expect(queue.hasPending('crewly-product-sam-dd2b46f7')).toBe(false);
+  });
+
+  it('the agent registered during the start and its flush took the message: not sent a second time', async () => {
+    const session = 'crewly-product-sam-dd2b46f7';
+    const { sink, calls } = makeSink({ success: false, error: 'Session does not exist' });
+    const flushed: string[] = [];
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: sink,
+      ...queueHooks(),
+      activateAgent: async (s) => {
+        await queue.flush(s, async (data) => { flushed.push(data); return { success: true }; });
+        return true;
+      },
+      activateRetryDelayMs: 0,
+    });
+    expect(await dispatcher.dispatchToAgent(makeChannel(), makeMessage())).toEqual({ dispatched: true, deferred: true });
+    expect(flushed).toHaveLength(1);
+    expect(calls).toHaveLength(1); // only the first, failed try
+    expect(queue.hasPending(session)).toBe(false);
+  });
+
+  it('started but not registered yet: one copy waits on the queue', async () => {
+    const session = 'crewly-product-sam-dd2b46f7';
+    const { sink } = makeSink({ success: false, error: 'Session does not exist' });
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: sink,
+      ...queueHooks(),
+      holdForStart: (s, p) => SubAgentMessageQueue.getInstance(storePath).enqueue(s, p),
+      activateAgent: async () => true,
+      activateRetryDelayMs: 0,
+    });
+    expect(await dispatcher.dispatchToAgent(makeChannel(), makeMessage())).toEqual({ dispatched: true, deferred: true });
+    expect(queue.getQueueSize(session)).toBe(1);
+  });
+
+  it('a deferred start keeps exactly one queued copy and still schedules the start retry', async () => {
+    const holdForStart = jest.fn((s: string, p: string) => SubAgentMessageQueue.getInstance(storePath).enqueue(s, p));
+    const { sink } = makeSink({ success: false, error: 'Session does not exist' });
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: sink,
+      ...queueHooks(),
+      holdForStart,
+      activateAgent: async () => 'deferred',
+      activateRetryDelayMs: 0,
+    });
+    expect(await dispatcher.dispatchToAgent(makeChannel(), makeMessage())).toEqual({ dispatched: true, deferred: true });
+    expect(holdForStart).toHaveBeenCalledTimes(1);
+    expect(queue.getQueueSize('crewly-product-sam-dd2b46f7')).toBe(1);
+  });
+
+  it('a start that fails is reported as before and leaves nothing queued', async () => {
+    const { sink } = makeSink({ success: false, error: 'Session does not exist' });
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: sink,
+      ...queueHooks(),
+      activateAgent: async () => false,
+      activateRetryDelayMs: 0,
+    });
+    expect(await dispatcher.dispatchToAgent(makeChannel(), makeMessage())).toEqual({ dispatched: false, error: 'Session does not exist' });
+    expect(queue.hasPending('crewly-product-sam-dd2b46f7')).toBe(false);
+  });
+
+  it('huddle: held during the start, sent once when the agent is up', async () => {
+    const up = new Set<string>();
+    const calls: string[] = [];
+    const sink: AgentMessageSink = {
+      async sendMessageToAgent(s) {
+        calls.push(s);
+        return up.has(s) ? { success: true } : { success: false, error: 'Session does not exist' };
+      },
+    };
+    let heldDuringStart = false;
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: sink,
+      ...queueHooks(),
+      huddleMembersFor: () => ['ella'],
+      activateAgent: async (s) => {
+        heldDuringStart = queue.hasPending(s);
+        up.add(s);
+        return true;
+      },
+      activateRetryDelayMs: 0,
+    });
+    const r = await dispatcher.dispatchMessage(huddle(), makeMessage({ mentions: ['ella'] }));
+    expect(heldDuringStart).toBe(true);
+    expect(r.huddleOutcomes).toEqual([{ sessionName: 'ella', responseMode: 'required', dispatched: true }]);
+    expect(calls).toEqual(['ella', 'ella']);
+    expect(queue.hasPending('ella')).toBe(false);
+  });
+
+  it('huddle: the flush took it during the start, so it is not sent again', async () => {
+    const calls: string[] = [];
+    const sink: AgentMessageSink = {
+      async sendMessageToAgent(s) { calls.push(s); return { success: false, error: 'Session does not exist' }; },
+    };
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: sink,
+      ...queueHooks(),
+      huddleMembersFor: () => ['ella'],
+      activateAgent: async (s) => {
+        await queue.flush(s, async () => ({ success: true }));
+        return true;
+      },
+      activateRetryDelayMs: 0,
+    });
+    const r = await dispatcher.dispatchMessage(huddle(), makeMessage({ mentions: ['ella'] }));
+    expect(r.huddleOutcomes).toEqual([{ sessionName: 'ella', responseMode: 'required', dispatched: true, queued: true, deferred: true }]);
+    expect(calls).toEqual(['ella']);
+    expect(queue.hasPending('ella')).toBe(false);
   });
 });

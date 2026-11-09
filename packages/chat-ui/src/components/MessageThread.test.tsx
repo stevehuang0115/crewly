@@ -357,6 +357,88 @@ describe('formatDayLabel', () => {
   });
 });
 
+/** Controlled-feed message fixture. */
+function fixtureMessage(seq: number, extra: Partial<Message> = {}): Message {
+  return {
+    id: `m${seq}`,
+    channelId: 'c1',
+    seq,
+    author: { role: 'agent', id: 'sam', name: 'Sam' },
+    content: `message ${seq}`,
+    createdAt: '2026-10-21T10:00:00.000Z',
+    ...extra,
+  };
+}
+
+describe('MessageThread read state (#1400)', () => {
+  beforeEach(() => {
+    Element.prototype.scrollIntoView = function () {
+      /* no-op */
+    };
+  });
+
+  const renderFeed = (messages: Message[], props: Partial<React.ComponentProps<typeof MessageThread>> = {}) =>
+    render(
+      <ChatAPIProvider mode="mock">
+        <MessageThread channelId="c1" layout="flat" variant="quiet" messages={messages} {...props} />
+      </ChatAPIProvider>,
+    );
+
+  /** Position of the divider relative to the rendered messages. */
+  const dividerBefore = (): string | null => {
+    const divider = screen.queryByTestId('unread-divider');
+    return (divider?.nextElementSibling as HTMLElement | null)?.getAttribute('data-testid') ?? null;
+  };
+
+  it('puts the divider between the read and unread message', () => {
+    renderFeed([fixtureMessage(1), fixtureMessage(2), fixtureMessage(3)], { unreadAfterSeq: 1, unreadDividerLabel: 'Unread' });
+    expect(screen.getByTestId('unread-divider')).toHaveTextContent('Unread');
+    expect(dividerBefore()).toBe('msg-m2');
+  });
+
+  it('finds the boundary when the marker is a hidden thread reply', () => {
+    // seq 2 is a reply (hidden from the main timeline) and is the marker.
+    renderFeed([fixtureMessage(1), fixtureMessage(2, { threadId: 'm1' }), fixtureMessage(3)], {
+      unreadAfterSeq: 2,
+      hideReplies: true,
+    });
+    expect(dividerBefore()).toBe('msg-m3');
+  });
+
+  it('puts the divider above the first message when nothing has been read (marker 0)', () => {
+    renderFeed([fixtureMessage(1), fixtureMessage(2)], { unreadAfterSeq: 0 });
+    expect(dividerBefore()).toBe('msg-m1');
+  });
+
+  it('draws no divider when unreadAfterSeq is null', () => {
+    renderFeed([fixtureMessage(1), fixtureMessage(2)], { unreadAfterSeq: null });
+    expect(screen.queryByTestId('unread-divider')).not.toBeInTheDocument();
+  });
+
+  it('offers "Mark unread" in the message menu and calls back with the message', () => {
+    const onMarkUnread = vi.fn();
+    const msgs = [fixtureMessage(1), fixtureMessage(2)];
+    renderFeed(msgs, { onMarkUnread });
+    fireEvent.click(screen.getByTestId('msg-more-m2'));
+    fireEvent.click(screen.getByTestId('msg-menu-unread-m2'));
+    expect(onMarkUnread).toHaveBeenCalledWith(msgs[1]);
+  });
+
+  it('hides "Mark unread" without a handler and for unsent messages', () => {
+    const pending = fixtureMessage(-1, { id: 'p1', deliveryStatus: 'pending' });
+    renderFeed([fixtureMessage(1), pending]);
+    fireEvent.click(screen.getByTestId('msg-more-m1'));
+    expect(screen.queryByTestId('msg-menu-unread-m1')).not.toBeInTheDocument();
+  });
+
+  it('does not offer "Mark unread" on an unsent message even with a handler', () => {
+    const pending = fixtureMessage(-1, { id: 'p1', deliveryStatus: 'pending' });
+    renderFeed([pending], { onMarkUnread: vi.fn() });
+    fireEvent.click(screen.getByTestId('msg-more-p1'));
+    expect(screen.queryByTestId('msg-menu-unread-p1')).not.toBeInTheDocument();
+  });
+});
+
 describe('isNewDay', () => {
   it('returns true for the first message (no previous)', () => {
     expect(isNewDay(null, '2026-05-29T10:00:00.000Z')).toBe(true);

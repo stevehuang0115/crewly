@@ -12,6 +12,7 @@
  * @module services/project-tickets/ticket-autopilot-stats
  */
 
+import { TRACE_CONSTANTS } from '../../constants.js';
 import { computeTraceMetrics, STALL_CAUSES, usageOfEvent, type StallCause, type TraceMetrics } from '../trace/trace-metrics.js';
 import type { TraceEvent, TraceIndexEntry } from '../trace/trace.types.js';
 import { localDateKey } from './ticket-autopilot-decision.js';
@@ -70,6 +71,8 @@ export interface OwnerTouchCounts {
   approved: number;
   sentBack: number;
   corrected: number;
+  /** Owner messages that neither answer an agent nor correct the work (new asks, 「好的」) */
+  other: number;
   total: number;
 }
 
@@ -208,7 +211,7 @@ function newAcc(): Acc {
     stalled: new Set(),
     toDone: [],
     toVerified: [],
-    ownerTouches: { answered: 0, approved: 0, sentBack: 0, corrected: 0, total: 0 },
+    ownerTouches: { answered: 0, approved: 0, sentBack: 0, corrected: 0, other: 0, total: 0 },
     stalls: { count: 0, totalMs: 0, byCause: emptyByCause() },
     interventions: { nudges: 0, redeliveries: 0, wakes: 0, corrections: 0, guardBlocks: 0, misroutes: 0, total: 0 },
     tokens: 0,
@@ -461,6 +464,8 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
     total.ledgerCostUsd += l.costUsd;
   }
 
+  /** Owner message text → when it was last counted (dedupe across traces) */
+  const seenOwnerMessages = new Map<string, number>();
   for (const trace of input.traces) {
     const run = isRun(trace);
     const tagDay = trace.entry.tags?.autopilot?.day;
@@ -607,6 +612,13 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
     for (const touch of m.ownerTouchEvents ?? []) {
       const t = Date.parse(touch.at);
       if (!(t >= workStart)) continue;
+      // One owner message delivered to several sessions lands in each of their
+      // traces: it is one touch for the project (crewly#1389).
+      if (touch.text !== undefined) {
+        const last = seenOwnerMessages.get(touch.text);
+        if (last !== undefined && Math.abs(t - last) <= TRACE_CONSTANTS.OWNER_MESSAGE_DEDUPE_MS) continue;
+        seenOwnerMessages.set(touch.text, t);
+      }
       const tAcc = at(dayOf(t));
       if (!tAcc) continue;
       for (const a of [tAcc, total]) {

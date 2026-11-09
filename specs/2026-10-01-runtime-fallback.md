@@ -147,9 +147,12 @@ extra account is a fallback target of its own: `claude-code@<name>`.
 - **One config dir and one login per account** — no switching inside one
   login (in-place account switching is unreliable upstream,
   anthropics/claude-code#94195). The config dir is
-  `<CREWLY_HOME>/claude-accounts/<name>/`; the login is the long-lived
-  `claude setup-token` token, stored in `harness-credentials.json`
-  (`claudeAccounts.<name>`, mode 0600). A credentials file left in the dir by
+  `<CREWLY_HOME>/claude-accounts/<name>/`; the login is Claude Code's own
+  (`claude auth login` with `CLAUDE_CONFIG_DIR` set to that dir); Claude Code
+  keeps the credential itself and Crewly stores no token. Accounts signed in
+  by an older Crewly keep a legacy `claudeAccounts.<name>` token in
+  `harness-credentials.json` (mode 0600) until they are signed in again
+  (see the 2026-10-17 no-token sign-in section of onboarding-harness-login.md). A credentials file left in the dir by
   a manual `CLAUDE_CONFIG_DIR=… claude /login` counts too. A new dir starts
   with the default login's `settings.json` and its first-run answers
   (`hasCompletedOnboarding`, `bypassPermissionsModeAccepted`, `theme`), never
@@ -191,9 +194,9 @@ extra account is a fallback target of its own: `claude-code@<name>`.
   in the owner DM (the bare `login claude work` only for an account that
   already exists, so "login claude please" is never an account), the orchestrator's `harness-login --account work`, or Settings →
   Runtimes → Advanced → "More Claude Code accounts" (the link goes to the
-  owner's Slack DM). The broker runs `claude setup-token` with the account's
+  owner's Slack DM). The broker runs `claude auth login` with the account's
   `CLAUDE_CONFIG_DIR` and none of the default credentials; the code the owner
-  pastes back is typed in; the token is stored for that account only. No
+  pastes back is typed in; Claude Code stores the login in that account's dir. No
   agent is restarted; the fallback is told (`onAccountLogin`).
 - **Opt-in, off by default.** Signing an account in does **not** add it to any
   order and does not move agents to it (`onAccountLogin` only clears a

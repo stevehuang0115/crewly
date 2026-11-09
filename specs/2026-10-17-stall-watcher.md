@@ -91,7 +91,15 @@ On an agent post in an owner thread (a tracked request's thread, or a thread
 with an owner message), `detectTeammateClaims` finds "<Name> 在做 / 已经是
 <Name> 在做 / 交给 <Name> / 让 <Name> 去做 / <Name> is (already) doing | on |
 making | working on / handed it to <Name>" where Name is a member of the
-speaker's team (never the speaker; questions and negations skipped). The
+speaker's team (never the speaker; questions and negations skipped). A
+planned hand-off is not a claim either (crewly#1427 item 5, 2026-10-23: four
+false nudges in one day, each answered with a correction in the owner's
+thread): when the text *before* the hand-off carries a future or conditional
+marker — `CLAIM_PLAN_ZH` (再 / 才 / 会 / 将 / 然后 / 最后 / 还差 / 下一次 /
+如果 / 等你 / 你说 / 你看过 / 说可以 …) or `CLAIM_PLAN_EN` (will / 'll /
+once / if / then / going to …) — the sentence is skipped ("你看过说可以，我再
+交给 Dex", "会随这次一起交给 Dex"). Words after the hand-off do not count, so
+"交给 Pia 了，你点一下看看" stays a claim. The
 claim waits `CLAIM_CHECK_WINDOW_MS` (10 min), then `assignmentBackedBy` looks
 for a WorkItem targeting that member created within ±10 min by the speaker
 (`metadata.delegatedBy` / `createdBy`), by the harness (`owner: 'system'`,
@@ -100,7 +108,9 @@ created within the window by the speaker (`source: agent:<speaker>`), the
 harness or with no source. Nothing → the speaker gets one line:
 
 > [CLAIM-CHECK] You told the owner Pia is doing it ("…"); nothing is assigned
-> to Pia (…). Delegate it now, or correct the thread.
+> to Pia (…). Delegate it now, or fix the wording in your next reply if you
+> misspoke. If it was only a plan for later, do nothing — and never post about
+> this note in the owner's thread.
 
 Logged, recorded on the trace (`harness.nudge`, `reason: claim_check`). The
 owner is never told.

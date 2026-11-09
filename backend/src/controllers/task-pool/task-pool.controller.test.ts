@@ -25,6 +25,7 @@ import {
   setGiveUpRecoveryService,
   setClaimTargetWaker,
   handoffItem,
+  appendItemNote,
 } from './task-pool.controller.js';
 import { actingForOfCreator } from './task-pool.controller.js';
 import { ActingForService, setActingForForTesting } from '../../services/people/acting-for.service.js';
@@ -40,6 +41,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { markOwner, ownerAuthHeaders } from '../../middleware/caller-identity.testing.js';
 import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../../services/team/team-pause.registry.js';
+import * as replyWiring from '../../services/orc/reply-destination.wiring.js';
 // Express types used for mock helpers below
 
 // ---------------------------------------------------------------------------
@@ -64,6 +66,13 @@ jest.mock('../../services/core/storage.service.js', () => ({
   StorageService: { getInstance: jest.fn() },
 }));
 
+// Task timing writes under $HOME; keep tests off the real store.
+const mockRecordCompletion = jest.fn().mockReturnValue(null);
+jest.mock('../../services/ai/self-improvement/task-timing.service.js', () => {
+  const actual = jest.requireActual('../../services/ai/self-improvement/task-timing.service.js');
+  return { ...actual, getTaskTimingService: () => ({ recordCompletion: (...args: unknown[]) => mockRecordCompletion(...args) }) };
+});
+
 const mockService = {
   getAvailableItems: jest.fn(),
   claimFromPool: jest.fn(),
@@ -78,7 +87,11 @@ const mockService = {
   completeItem: jest.fn(),
   findWorkItem: jest.fn(),
   setOutput: jest.fn(),
+  appendNote: jest.fn(),
+  patchMetadata: jest.fn(),
   addToPool: jest.fn(),
+  isOwnerThreadUnreadable: jest.fn().mockResolvedValue(false),
+  agentAnswersInOwnerThread: jest.fn().mockResolvedValue([]),
   getAllItems: jest.fn().mockResolvedValue([]),
   cancelQueued: jest.fn(),
   updateItemStatus: jest.fn(),
@@ -922,6 +935,56 @@ describe('TaskPoolController', () => {
   // succeed, and the broken-shape rejection messages must be specific
   // enough to point a human caller at the fix.
   // ---------------------------------------------------------------------
+  describe('task timing', () => {
+    beforeEach(() => {
+      mockService.setOutput.mockResolvedValue(undefined);
+      mockService.completeItem.mockResolvedValue(undefined);
+      mockRecordCompletion.mockReset();
+    });
+
+    it('records the completion and returns the timing line', async () => {
+      const wi = { id: 'wi-t1', title: 'Revise EP03 subtitles', type: 'decision', startedAt: '2026-10-18T10:00:00.000Z', output: null };
+      mockService.findWorkItem.mockResolvedValue(wi);
+      mockRecordCompletion.mockReturnValue("This was a 'revision'. It took 18 min.");
+      const res = mockRes();
+      await completeItem(mockReq({ params: { workItemId: 'wi-t1' }, body: { agentId: 'dex', result: { summary: 'done', taskKind: 'revision' } } }), res);
+
+      expect(mockRecordCompletion).toHaveBeenCalledWith(expect.objectContaining({ agent: 'dex', workItem: wi, taskKind: 'revision' }));
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, timing: "This was a 'revision'. It took 18 min." }));
+    });
+
+    it('completes normally when timing recording throws', async () => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-t2', title: 'x', type: 'decision', startedAt: '2026-10-18T10:00:00.000Z' });
+      mockRecordCompletion.mockImplementation(() => { throw new Error('disk full'); });
+      const res = mockRes();
+      await completeItem(mockReq({ params: { workItemId: 'wi-t2' }, body: { agentId: 'dex', result: { summary: 'done' } } }), res);
+
+      const body = res.json.mock.calls[0][0];
+      expect(body.success).toBe(true);
+      expect(body.timing).toBeUndefined();
+    });
+
+    it('stores the first ETA and the named kind from a progress note', async () => {
+      mockService.appendNote.mockResolvedValue({ id: 'wi-t3', metadata: {} });
+      mockService.patchMetadata.mockResolvedValue({ id: 'wi-t3', metadata: { etaMinutes: 20, taskKind: 'revision' } });
+      const res = mockRes();
+      await appendItemNote(mockReq({ params: { workItemId: 'wi-t3' }, body: { author: 'dex', note: 'starting', etaMinutes: 20, taskKind: 'Revision' } }), res);
+
+      expect(mockService.patchMetadata).toHaveBeenCalledWith('wi-t3', 'etaMinutes', 20);
+      expect(mockService.patchMetadata).toHaveBeenCalledWith('wi-t3', 'taskKind', 'revision');
+    });
+
+    it('keeps an ETA already stated (the first one is measured)', async () => {
+      mockService.patchMetadata.mockReset();
+      mockService.appendNote.mockResolvedValue({ id: 'wi-t4', metadata: { etaMinutes: 20 } });
+      const res = mockRes();
+      await appendItemNote(mockReq({ params: { workItemId: 'wi-t4' }, body: { author: 'dex', note: 'later', etaMinutes: 90 } }), res);
+
+      expect(mockService.patchMetadata).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+  });
+
   describe('completeItem (Hygiene #4 strict-shape lock)', () => {
     beforeEach(() => {
       mockService.findWorkItem.mockResolvedValue({ id: 'wi-h4', output: null });
@@ -1341,6 +1404,66 @@ describe('TaskPoolController', () => {
       expect(body.data.status).toBe('queued');
     });
 
+    it('refuses a delegation whose --thread Crewly cannot read, instead of dropping the owner place (2026-10-18)', async () => {
+      mockService.isOwnerThreadUnreadable.mockResolvedValueOnce(true);
+      const req = mockReq({
+        body: { type: 'delegate', owner: 'team_lead', target: 'crewly-product-leo', title: 'Assess', metadata: { delegatedBy: 'atlas', ownerThread: 'room:not-a-thread' } },
+      });
+      const res = mockRes();
+
+      await addItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json.mock.calls[0][0]).toEqual(expect.objectContaining({ success: false, code: 'owner_thread_unreadable' }));
+      expect(mockService.isOwnerThreadUnreadable).toHaveBeenCalledWith('room:not-a-thread', expect.anything());
+      expect(mockService.addToPool).not.toHaveBeenCalled();
+    });
+
+    describe('thread already answered by another agent (CREW-878)', () => {
+      const THREAD = 'C0MKT:1792400000.000100';
+      const body = (metadata: Record<string, unknown> = {}) => ({
+        type: 'delegate', owner: 'team_lead', target: 'crewly-product-leo', title: 'Assess',
+        metadata: { delegatedBy: 'ella', ownerThread: THREAD, ...metadata },
+      });
+
+      it('refuses with 409 and lists the post when an agent answered after the owner', async () => {
+        mockService.agentAnswersInOwnerThread.mockResolvedValueOnce([{ agent: 'luna', at: 1, preview: 'Here is the answer' }]);
+        const res = mockRes();
+        await addItem(mockReq({ body: body() }), res);
+        expect(res.status).toHaveBeenCalledWith(409);
+        const sent = res.json.mock.calls[0][0];
+        expect(sent).toEqual(expect.objectContaining({ success: false, code: 'thread_already_answered' }));
+        expect(sent.error).toContain('luna');
+        expect(sent.error).toContain('Here is the answer');
+        expect(sent.error).toContain('--force-after-answer');
+        expect(mockService.agentAnswersInOwnerThread).toHaveBeenCalledWith(THREAD, expect.anything(), 'crewly-product-leo');
+        expect(mockService.addToPool).not.toHaveBeenCalled();
+      });
+
+      it('delegates normally when nobody answered', async () => {
+        const res = mockRes();
+        await addItem(mockReq({ body: body() }), res);
+        expect(res.status).not.toHaveBeenCalledWith(409);
+        expect(mockService.addToPool).toHaveBeenCalledTimes(1);
+      });
+
+      it('--force-after-answer delegates anyway and does not even look', async () => {
+        mockService.agentAnswersInOwnerThread.mockResolvedValue([{ agent: 'luna', at: 1, preview: 'x' }]);
+        const res = mockRes();
+        await addItem(mockReq({ body: body({ forceAfterAnswer: true }) }), res);
+        expect(res.status).not.toHaveBeenCalledWith(409);
+        expect(mockService.agentAnswersInOwnerThread).not.toHaveBeenCalled();
+        expect(mockService.addToPool).toHaveBeenCalledTimes(1);
+        mockService.agentAnswersInOwnerThread.mockResolvedValue([]);
+      });
+
+      it('a delegation without --thread is never checked', async () => {
+        const res = mockRes();
+        await addItem(mockReq({ body: { type: 'delegate', owner: 'team_lead', target: 'crewly-product-leo', title: 'Assess', metadata: { delegatedBy: 'ella' } } }), res);
+        expect(mockService.agentAnswersInOwnerThread).not.toHaveBeenCalled();
+      });
+    });
+
     describe('project tickets (delegation through tickets)', () => {
       const routeDelegation = jest.fn();
       beforeEach(() => {
@@ -1440,6 +1563,49 @@ describe('TaskPoolController', () => {
 
     describe('ticket loop', () => {
       afterEach(() => setTicketIntakeService(null));
+
+      describe('routes (message-routing audit 2026-10-18)', () => {
+        const route = { kind: 'owner' as const, conversationId: 'room-brief', thread: 'C0BRIEF01:1790856242.596149' };
+        let spy: jest.SpyInstance;
+        beforeEach(() => {
+          spy = jest.spyOn(replyWiring, 'currentRouteOf').mockResolvedValue(route);
+        });
+        afterEach(() => spy.mockRestore());
+
+        it("a delegation carries the delegator's current route as metadata.parentRoute", async () => {
+          const req = mockReq({
+            headers: { 'x-agent-session': 'think-tank-atlas-b4e166f6' },
+            body: { type: 'delegate', owner: 'team_lead', target: 'crewly-product-leo', title: 'Starship note' },
+          });
+          await addItem(req, mockRes());
+          expect(spy).toHaveBeenCalledWith('think-tank-atlas-b4e166f6');
+          expect(mockService.addToPool.mock.calls[0][0].metadata.parentRoute).toEqual(route);
+          expect(mockService.addToPool.mock.calls[0][1]).toEqual({ creatorSession: 'think-tank-atlas-b4e166f6' });
+        });
+
+        it("a self-assigned item gets no parent route and does not inherit the creator's turn", async () => {
+          const req = mockReq({
+            headers: { 'x-agent-session': 'crewly-product-leo' },
+            body: { type: 'delegate', owner: 'team_lead', target: 'crewly-product-leo', title: 'My own follow-up' },
+          });
+          await addItem(req, mockRes());
+          expect(spy).not.toHaveBeenCalled();
+          expect(mockService.addToPool.mock.calls[0][0].metadata?.parentRoute).toBeUndefined();
+          expect(mockService.addToPool.mock.calls[0][1]).toEqual({ creatorSession: 'crewly-product-leo', inheritCreatorTurn: false });
+        });
+
+        it('a route lookup failure never blocks the delegation', async () => {
+          spy.mockRejectedValueOnce(new Error('boom'));
+          const req = mockReq({
+            headers: { 'x-agent-session': 'think-tank-atlas-b4e166f6' },
+            body: { type: 'delegate', owner: 'team_lead', target: 'crewly-product-leo', title: 'Starship note' },
+          });
+          const res = mockRes();
+          await addItem(req, res);
+          expect(res.status).toHaveBeenCalledWith(201);
+          expect(mockService.addToPool.mock.calls[0][0].metadata?.parentRoute).toBeUndefined();
+        });
+      });
 
       it('passes the calling agent to addToPool so it can link the turn’s ticket', async () => {
         const req = mockReq({
@@ -1690,6 +1856,36 @@ describe('TaskPoolController', () => {
       expect(mockService.blockItem).toHaveBeenCalledWith('wi-1', { agentId: 'dev-1', reason: 'waiting on Steve' });
       expect(mockService.updateItemStatus).not.toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
+    it('forwards `until` (block-task until) to the pool', async () => {
+      mockService.blockItem.mockResolvedValue(undefined);
+      const until = new Date(Date.now() + 60 * 60_000).toISOString();
+      const req = mockReq({
+        params: { workItemId: 'wi-1' } as Record<string, string>,
+        body: { agentId: 'dev-1', reason: 'needs the full 7-day window', until },
+      });
+      const res = mockRes();
+      await blockItem(req, res);
+
+      expect(mockService.blockItem).toHaveBeenCalledWith('wi-1', { agentId: 'dev-1', reason: 'needs the full 7-day window', until });
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
+    it('refuses an `until` that does not parse or is already past with 400, before touching the pool', async () => {
+      for (const until of ['tomorrow 8:30', new Date(Date.now() - 60_000).toISOString(), 42]) {
+        mockService.blockItem.mockClear();
+        const req = mockReq({
+          params: { workItemId: 'wi-1' } as Record<string, string>,
+          body: { agentId: 'dev-1', reason: 'x', until },
+        });
+        const res = mockRes();
+        await blockItem(req, res);
+
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: false, error: expect.stringContaining('until') }));
+        expect(mockService.blockItem).not.toHaveBeenCalled();
+      }
     });
 
     it('maps an invalid status transition to 409, not 500', async () => {

@@ -238,7 +238,12 @@ export class InProcessLogBuffer extends EventEmitter {
    * @returns Absolute path to the log file
    */
   private getLogPath(sessionName: string): string {
-    return path.join(this.sessionLogsDir, `${sessionName}.log`);
+    // A sub-agent is named `<parent>/sub-<n>` (#1317); a slash would put its
+    // log in a directory that does not exist and the stream would fail
+    // silently, losing the worker's stderr — the one place the provider's
+    // real error is printed.
+    const fileName = sessionName.replace(/[\\/]/g, '__');
+    return path.join(this.sessionLogsDir, `${fileName}.log`);
   }
 
   /**

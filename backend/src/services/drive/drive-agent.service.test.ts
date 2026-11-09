@@ -101,6 +101,8 @@ describe('pushes', () => {
     expect(String(h.delivered[0].text)).toContain(`reply --drive ${SID}`);
     expect(String(h.delivered[0].text)).toContain('把周报发了吗？');
     expect(String(h.delivered[0].text)).toContain('Not in Slack');
+    // The chat shows the owner's words only; the note is for the agent (2026-10-22 audit).
+    expect(h.delivered[0].ownerText).toBe('把周报发了吗？');
   });
 
   it('ignores Talk payloads, other machines and malformed pushes', async () => {
@@ -200,6 +202,18 @@ describe('end and recap', () => {
     await expect(h.service.agentReply('ella', SID, { text: 'more', interim: false, recap: false })).rejects.toMatchObject({ status: 404, message: expect.stringContaining('closed at') });
   });
 
+  it('two --recap calls racing each other post one recap (2026-10-22 audit)', async () => {
+    const h = harness();
+    await h.service.deliverFetched(delivery() as never);
+    const text = 'Drive mode recap — you asked about the report; next: nothing pending.';
+    const outs = await Promise.all([
+      h.service.agentReply('ella', SID, { text, interim: false, recap: true }),
+      h.service.agentReply('ella', SID, { text, interim: false, recap: true }),
+    ]);
+    expect(outs.map((o) => o.closed)).toEqual([true, true]);
+    expect(h.recaps).toHaveLength(1);
+  });
+
   it('a recap naming a next step keeps it tracked (nextStep true)', async () => {
     const h = harness();
     await h.service.deliverFetched(delivery() as never);
@@ -245,6 +259,24 @@ describe('v3: keep-warm', () => {
     // The reminder: nothing new to start.
     await h.service.handle(push({ v: 1, kind: 'drive', op: 'warm', sessionId: SID, instanceId: 'mac' }));
     expect(prestarted).toEqual(['ella', 'owen']);
+  });
+
+  it('one recap per agent: an agent that answered for itself and for its team gets one request covering both (2026-10-22: Owen posted two recaps)', async () => {
+    const h = harness({
+      '/machine/deliveries/d1': delivery(),
+      '/machine/deliveries/d2': delivery({ id: 'd2', conversationId: 'c2', text: '律所广告怎么样？', target: { kind: 'team', name: 'CE', agentSession: 'ella' } }),
+      '/machine/state': { ended: true, conversations: [{ conversationId: 'c1', agentSession: 'ella' }, { conversationId: 'c2', agentSession: 'ella' }] },
+    });
+    await h.service.handle(push({ v: 1, kind: 'drive', op: 'deliver', sessionId: SID, id: 'd1', instanceId: 'mac' }));
+    await h.service.handle(push({ v: 1, kind: 'drive', op: 'deliver', sessionId: SID, id: 'd2', instanceId: 'mac' }));
+    await h.service.handle(push({ v: 1, kind: 'drive', op: 'end', sessionId: SID, instanceId: 'mac' }));
+    expect(h.notes).toHaveLength(1);
+    expect(h.notes[0].text).toContain('2 conversations');
+    expect(h.notes[0].text).toContain('ONE recap covers them all');
+    expect(h.notes[0].text).toContain('把周报发了吗？');
+    expect(h.notes[0].text).toContain('律所广告怎么样？');
+    await h.service.handle(push({ v: 1, kind: 'drive', op: 'end', sessionId: SID, instanceId: 'mac' }));
+    expect(h.notes).toHaveLength(1);
   });
 
   it('a warm push after the session ended (or the end itself) drops the list', async () => {
@@ -306,5 +338,70 @@ describe('session log copy (op:log)', () => {
     expect(save).toHaveBeenCalledWith('2026-10-11-drv_abcdefghijkl', '# log', '{}\n');
     const bad = harness({ '/machine/log': { id: SID } }, { logStore: { save } as unknown as DriveAgentDeps['logStore'] });
     expect(await bad.service.handle(push({ v: 1, kind: 'drive', op: 'log', sessionId: SID, instanceId: 'mac' }))).toBe('failed');
+  });
+});
+
+describe('meetings (P2b)', () => {
+  const meetingDep = () => {
+    const calls: Array<[string, unknown]> = [];
+    const meeting = {
+      buildPack: jest.fn(async (req: unknown) => {
+        calls.push(['pack', req]);
+        return { v: 1, agent: { name: 'Ella', session: 'ella' }, agenda: [], estTokens: 10 } as never;
+      }),
+      searchWiki: jest.fn(async (req: unknown) => {
+        calls.push(['wiki', req]);
+        return { hits: [{ title: 'Brand voice', where: 'Marketing/brand.md', text: 'Short and warm.' }], ms: 12 };
+      }),
+      writeBack: jest.fn(async (input: unknown) => {
+        calls.push(['write', input]);
+        return { threadRef: 'slack:D0ELLA:1760950000.000100', via: 'slack' as const };
+      }),
+    };
+    return { meeting, calls };
+  };
+
+  it('advertises meeting_pack only with a pack builder', () => {
+    const plain = harness();
+    plain.service.start();
+    expect(driveCapabilities()).toEqual(['drive_message']);
+    plain.service.stop();
+    const m = harness({}, { meeting: meetingDep().meeting });
+    m.service.start();
+    expect(driveCapabilities()).toEqual(['drive_message', 'meeting_pack']);
+    m.service.stop();
+    expect(driveCapabilities()).toEqual([]);
+  });
+
+  it('meeting_pack: fetches the request, builds the pack, posts it back', async () => {
+    const { meeting, calls } = meetingDep();
+    const h = harness({ [`/machine/packs/${SID}`]: { agentSession: 'ella', name: 'Ella', language: 'en' } }, { meeting });
+    expect(await h.service.handle(push({ v: 1, kind: 'drive', op: 'meeting_pack', sessionId: SID, id: SID, instanceId: 'mac' }))).toBe('done');
+    expect(calls[0]).toEqual(['pack', { agentSession: 'ella', name: 'Ella', language: 'en' }]);
+    expect(h.calls[1]).toMatchObject({ method: 'POST', url: `https://api.crewlyai.com/api/cloud/talk/session/${SID}/machine/packs/${SID}`, body: { instanceId: 'mac', pack: { agent: { name: 'Ella' } } } });
+  });
+
+  it('a pack for an agent not on this machine fails', async () => {
+    const { meeting } = meetingDep();
+    const h = harness({ [`/machine/packs/${SID}`]: { agentSession: 'ghost', name: 'Ghost', language: 'en' } }, { meeting, agentExists: async (s) => s === 'ella' });
+    expect(await h.service.handle(push({ v: 1, kind: 'drive', op: 'meeting_pack', sessionId: SID, id: SID, instanceId: 'mac' }))).toBe('failed');
+    expect(meeting.buildPack).not.toHaveBeenCalled();
+  });
+
+  it('wiki_search: answers with hits and the time it took', async () => {
+    const { meeting } = meetingDep();
+    const h = harness({ '/machine/wiki/w1': { agentSession: 'ella', query: 'brand voice' } }, { meeting });
+    expect(await h.service.handle(push({ v: 1, kind: 'drive', op: 'wiki_search', sessionId: SID, id: 'w1', instanceId: 'mac' }))).toBe('done');
+    expect(h.calls[1]).toMatchObject({ method: 'POST', body: { instanceId: 'mac', ms: 12, hits: [{ title: 'Brand voice' }] } });
+  });
+
+  it('a write-back delivery goes into its thread (no Drive conversation) and is reported written', async () => {
+    const { meeting, calls } = meetingDep();
+    const wb = { kind: 'decision', topic: 'Launch headline', threadRef: 'slack:D0ELLA:1760950000.000100' };
+    const h = harness({ '/machine/deliveries/d1/written': { written: true }, '/machine/deliveries/d1': delivery({ text: 'Use headline B', writeBack: wb }) }, { meeting });
+    expect(await h.service.handle(push({ v: 1, kind: 'drive', op: 'deliver', sessionId: SID, id: 'd1', instanceId: 'mac' }))).toBe('done');
+    expect(h.delivered).toHaveLength(0);
+    expect(calls[0]).toEqual(['write', { sessionId: SID, agentSession: 'ella', text: 'Use headline B', writeBack: wb }]);
+    expect(h.calls[1]).toMatchObject({ method: 'POST', url: expect.stringContaining('/machine/deliveries/d1/written'), body: { instanceId: 'mac', threadRef: 'slack:D0ELLA:1760950000.000100' } });
   });
 });

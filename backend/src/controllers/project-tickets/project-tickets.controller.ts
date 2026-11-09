@@ -23,10 +23,11 @@ import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { isProjectTicketStatus } from '../../types/project-ticket.types.js';
 import { TicketAutopilotService, type AutopilotRetroDeps, type OwnerNotice } from '../../services/project-tickets/ticket-autopilot.service.js';
-import { goalChangedAt, openExperimentsOf, readProjectGoal } from '../../services/project-tickets/ticket-autopilot-goal.js';
+import { goalChangedAt, openExperimentsOf, readProjectGoal, readRetroMilestones } from '../../services/project-tickets/ticket-autopilot-goal.js';
 import { applyRetroGapDecision } from '../../services/project-tickets/ticket-autopilot-retro.js';
-import { ExperimentService } from '../../services/experiments/experiment.service.js';
-import { WikiIngestService } from '../../services/wiki/wiki-ingest.service.js';
+import { ExperimentService, supervisionOf } from '../../services/experiments/experiment.service.js';
+import { WikiIngestService, type WikiIngestOutcome } from '../../services/wiki/wiki-ingest.service.js';
+import { LoggerService } from '../../services/core/logger.service.js';
 import { resolveProjectDataDir } from '../../services/core/crewly-home.utils.js';
 import { existsSync } from 'fs';
 import { TokenUsageService } from '../../services/monitoring/token-usage.service.js';
@@ -39,6 +40,7 @@ import { DecisionError, DecisionService } from '../../services/decisions/decisio
 import { getTicketThreadStore, slackArchiveLink } from '../../services/decisions/ticket-thread-store.js';
 import { defaultLeadShareDigest } from '../../services/tl-delegation/lead-share.wiring.js';
 import * as path from 'path';
+import { TriggerEngine } from '../../services/v3/trigger-engine.service.js';
 
 /**
  * The wired workflow service; builds the default one from the process
@@ -55,6 +57,8 @@ export function projectTicketWorkflow(): ProjectTicketWorkflowService {
       directory: StorageService.getInstance(),
       // A stopped assignee is started through the normal member-start path.
       wakeAssignee: createHttpAssigneeWaker(),
+      // The routine nudge (#1034) skips a ticket a schedule already names.
+      listTriggers: () => TriggerEngine.getInstance().list(),
     });
     ProjectTicketWorkflowService.setInstance(wf);
   }
@@ -96,6 +100,13 @@ export function createDefaultTicketAutopilot(
     ledger: TokenUsageService.getInstance(),
     // The same usage boosts the token caps use (team / everyone boosts).
     boosts: (teamIds) => getSpendCapService()?.boostForTeams(teamIds) ?? { extra: 0, unlimited: false },
+    // True when any cap (total, default-agent, or one on these teams / their agents) is set.
+    teamsCapped: (teamIds) => {
+      const cfg = getSpendCapService()?.getConfig();
+      if (!cfg) return true; // no cap service: unknown, so no warning
+      const isCap = (v: unknown): boolean => typeof v === 'number' && v > 0;
+      return isCap(cfg.totalCapTokens) || isCap(cfg.defaultAgentCapTokens) || teamIds.some((id) => isCap(cfg.teamCapsTokens[id])) || Object.values(cfg.agentCapsTokens).some(isCap);
+    },
     notifyOwner,
     stateFile: path.join(getCrewlyHomePath(), TICKET_AUTOPILOT_CONSTANTS.STATE_FILENAME),
     roleDescription: async (role) => (await getRoleService().getRoleByName(role))?.description ?? null,
@@ -108,7 +119,13 @@ export function createDefaultTicketAutopilot(
     // (specs/2026-10-03-autopilot-experiments.md §4).
     runningExperiment: async (projectId) =>
       ((await ExperimentService.getInstance()?.list({ status: 'running' })) ?? []).some((e) => e.autopilot?.projectId === projectId),
+    // An experiment's supervisor and creator read its project's stats, runs
+    // and traces while the card is planned or running (#1026).
+    supervisionOf: async (session, projectId) => supervisionOf((await ExperimentService.getInstance()?.list()) ?? [], session, projectId),
     retro: createAutopilotRetroDeps(),
+    // Milestones the daily retro reviews (#985): the project's experiment
+    // cards closed and OKRs completed on the reviewed day.
+    retroMilestones: async (project, day) => readRetroMilestones(project, day, (await ExperimentService.getInstance()?.list()) ?? []),
     // Goal replan (specs/2026-10-04-autopilot-goal-replan.md): the project's
     // goals log + active project OKRs, and its open experiment cards.
     goalOf: (project, now) => readProjectGoal(project, now),
@@ -116,6 +133,11 @@ export function createDefaultTicketAutopilot(
     openExperiments: async (project) => openExperimentsOf((await ExperimentService.getInstance()?.list()) ?? [], project),
     // Lead share of team tokens in the evening digest (crewly#1083).
     leadShareDigest: (now) => defaultLeadShareDigest(now),
+    // Today's verified-work spot check, one line (crewly#1315).
+    spotCheckDigest: async (now) => {
+      const { VerifiedSpotCheckService } = await import('../../services/task-pool/verified-spot-check.service.js');
+      return (await VerifiedSpotCheckService.getInstance()?.digestLine(now)) ?? null;
+    },
     // Stalled work: re-push the brief to the idle assignee, and let idle
     // members take ready tickets on the tick (not only on an idle event).
     redeliverWork: async (workItem) => {
@@ -136,8 +158,32 @@ export function createDefaultTicketAutopilot(
 }
 
 /**
+ * A refused retro page is otherwise invisible: the retro reports `written:
+ * false` and nothing says why. Log the gate's reason.
+ *
+ * @param vaultPath - Vault the page was meant for
+ * @param relativePath - Page path inside the vault
+ * @param outcome - The ingest outcome
+ * @returns Whether the page was written
+ */
+function retroPageWritten(vaultPath: string, relativePath: string, outcome: WikiIngestOutcome): boolean {
+  if (!outcome.ok) {
+    LoggerService.getInstance().createComponentLogger('AutopilotRetro').warn('Retro page refused by the wiki', {
+      vaultPath,
+      relativePath,
+      reason: outcome.reason,
+      message: 'message' in outcome ? outcome.message : undefined,
+    });
+  }
+  return outcome.ok;
+}
+
+/**
  * The retro's side effects from the process singletons: the project wiki,
  * harness-gap tickets on the Crewly project, and the owner's approval card.
+ *
+ * Both wiki writers pass the retention `keep_because` — the vault refuses a
+ * page without one (#985 follow-up: no retro page had ever been written).
  *
  * @returns Retro dependencies
  */
@@ -156,10 +202,29 @@ export function createAutopilotRetroDeps(): AutopilotRetroDeps {
         targetRelativePath: relativePath,
         title: path.basename(relativePath, '.md'),
         summary: 'Daily ticket-autopilot retro: what shipped, where it stalled and why.',
+        keepBecause: TICKET_AUTOPILOT_CONSTANTS.RETRO_WIKI_KEEP_BECAUSE,
         replace: true,
       });
-      return outcome.ok;
+      return retroPageWritten(vaultPath, relativePath, outcome);
     },
+    writeGlobalWiki: async (relativePath, markdown, by) => {
+      const vaultPath = path.join(getCrewlyHomePath(), 'global-wiki');
+      if (!existsSync(path.join(vaultPath, 'SCHEMA.md'))) return false;
+      const outcome = await WikiIngestService.getInstance().ingest({
+        vaultPath,
+        sourceType: 'autopilot_retro',
+        sourceRef: relativePath,
+        sourceBody: markdown,
+        callerSession: by,
+        targetRelativePath: relativePath,
+        title: path.basename(relativePath, '.md'),
+        summary: 'Weekly cross-team autopilot retro: what repeated across projects and what belongs to Crewly.',
+        keepBecause: TICKET_AUTOPILOT_CONSTANTS.RETRO_WIKI_KEEP_BECAUSE,
+        replace: true,
+      });
+      return retroPageWritten(vaultPath, relativePath, outcome);
+    },
+    retroPagePath: (projectPath, relativePath) => path.join(resolveProjectDataDir(projectPath), 'wiki', relativePath),
     harnessProject: async () => {
       const wanted = TICKET_AUTOPILOT_CONSTANTS.RETRO_HARNESS_PROJECT.toLowerCase();
       return (await StorageService.getInstance().getProjects()).find((p) => p.name.toLowerCase() === wanted) ?? null;
@@ -345,7 +410,7 @@ export async function createProjectTicket(req: Request, res: Response): Promise<
 /**
  * POST /api/project-tickets/:project/:id/update — fields, sections, optional status.
  *
- * @param req - Body: title, priority, labels, team, ownerReview, requestId, deferUntil, description, acceptance, status, note
+ * @param req - Body: title, priority, labels, team, ownerReview, requestId, deferUntil, hold (reason; null lifts it), description, acceptance, status, note
  * @param res - `{ success, data: ticket }`
  */
 export async function updateProjectTicket(req: Request, res: Response): Promise<void> {
@@ -363,6 +428,7 @@ export async function updateProjectTicket(req: Request, res: Response): Promise<
         ...(typeof b.ownerReview === 'boolean' ? { ownerReview: b.ownerReview } : {}),
         ...(b.requestId !== undefined ? { requestId: typeof b.requestId === 'string' ? b.requestId : null } : {}),
         ...(b.deferUntil !== undefined ? { deferUntil: typeof b.deferUntil === 'string' ? b.deferUntil : null } : {}),
+        ...(b.hold !== undefined ? { hold: typeof b.hold === 'string' ? b.hold : null } : {}),
         ...(typeof b.description === 'string' ? { description: b.description } : {}),
         ...(Array.isArray(b.acceptance) ? { acceptance: b.acceptance as Array<string> } : {}),
         ...(status ? { status } : {}),
@@ -594,6 +660,17 @@ export async function getTicketAutopilotRuns(req: Request, res: Response): Promi
  */
 export async function submitTicketAutopilotRetro(req: Request, res: Response): Promise<void> {
   await respond(res, () => ticketAutopilot().submitRetro(req.params.project, req.body ?? {}, callerOf(req)));
+}
+
+/**
+ * POST /api/project-ticket-autopilot/weekly-retro — the orchestrator's weekly
+ * cross-team retro `{ week, summary, problems }` (#985). Owner / orchestrator only.
+ *
+ * @param req - Request
+ * @param res - `{ success, data: WeeklyRetroResult }`
+ */
+export async function submitTicketAutopilotWeeklyRetro(req: Request, res: Response): Promise<void> {
+  await respond(res, () => ticketAutopilot().submitWeeklyRetro(req.body ?? {}, callerOf(req)));
 }
 
 /**

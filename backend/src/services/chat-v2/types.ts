@@ -210,6 +210,31 @@ export interface ChatChannelDTO {
    * for `'dm'` and `'channel'` rows.
    */
   members?: ChatHuddleMember[];
+  /**
+   * The owner's read marker (#1400): messages with `seq <= lastReadSeq` are
+   * read. 0 when the channel has never been read.
+   */
+  lastReadSeq: number;
+  /**
+   * Unread messages in this channel (not the owner's own, not system notes,
+   * thread replies included) past `lastReadSeq`.
+   */
+  unreadCount: number;
+}
+
+/** Wire/read-state payload shared by REST, the WS `read_state` frame and the relay. */
+export interface ChatReadStateDTO {
+  channelId: string;
+  lastReadSeq: number;
+  unreadCount: number;
+}
+
+/** Response of `GET /api/chat/unread` and the `getUnread` relay RPC. */
+export interface ChatUnreadSummaryDTO {
+  /** Sum of `unreadCount` over `channels`. */
+  total: number;
+  /** Only channels with `unreadCount > 0`. */
+  channels: ChatReadStateDTO[];
 }
 
 /**

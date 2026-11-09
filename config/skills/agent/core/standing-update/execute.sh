@@ -17,7 +17,9 @@ Usage:
   execute.sh --page open-gotchas --project /path --heading "Shell" --body ""   # remove the section
 
 Options:
-  --page     | -P   Page id: decisions-in-force, open-gotchas, owner-preferences, unfinished-work (required)
+  --page     | -P   Page id: decisions-in-force, open-gotchas, owner-preferences, unfinished-work,
+                    or a custom question id from the project's standing-questions.json (required).
+                    owner-rules is the owner's page: agents cannot write it.
   --project  | -p   Project path for project pages (default: $CREWLY_PROJECT_PATH)
   --session  | -s   Session name for the unfinished-work page (default: $CREWLY_SESSION_NAME)
   --heading  | -H   Section heading, one line (required)
@@ -82,7 +84,7 @@ fi
 require_param "page (--page)" "$PAGE"
 require_param "heading (--heading)" "$HEADING"
 [ "$BODY_SET" = "true" ] || error_exit "body is required (--body, --body-file, or --body \"\" to remove the section)"
-[[ "$PAGE" =~ ^[a-z][a-z-]*$ ]] || error_exit "Invalid page id: $PAGE"
+[[ "$PAGE" =~ ^[a-z][a-z0-9-]*$ ]] || error_exit "Invalid page id: $PAGE"
 
 # The agent page is keyed by session; every other page by project.
 if [ "$PAGE" = "$AGENT_PAGE_ID" ]; then

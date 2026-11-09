@@ -11,7 +11,11 @@
  * @module services/harness/harness.service
  */
 
+import { HARNESS_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
+import { claudeAccountConfigDir } from './claude-accounts.js';
+import { probeClaudeNativeLogin } from './claude-native-login.js';
+import { getClaudeTokenMigrationService } from './claude-token-migration.service.js';
 import { HarnessApiKeyService } from './harness-api-key.service.js';
 import { HarnessInstallService } from './harness-install.service.js';
 import { getHarnessDefinition } from './harness-registry.js';
@@ -220,7 +224,12 @@ export function createHarnessService(options: CreateHarnessServiceOptions = {}):
 	const broker = new LoginBrokerService({
 		logger,
 		env,
-		verify: async (harnessId) => {
+		afterClaudeLogin: (account) => getClaudeTokenMigrationService().afterLogin(account),
+		verify: async (harnessId, account) => {
+			if (harnessId === HARNESS_CONSTANTS.IDS.CLAUDE_CODE) {
+				// A real Claude turn on Claude Code's own login, with no token or key in the env.
+				return (await probeClaudeNativeLogin(account ? claudeAccountConfigDir(account) : null, { env })) === 'logged_in';
+			}
 			const def = getHarnessDefinition(harnessId);
 			if (!def) return false;
 			const installed = await status.getInstalledInfo(def);

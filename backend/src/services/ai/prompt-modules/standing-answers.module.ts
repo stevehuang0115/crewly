@@ -37,15 +37,17 @@ export function renderStandingAnswers(
 	statuses: readonly StandingPageStatus[],
 	maxChars: number = STANDING_ANSWERS_CONSTANTS.PROMPT_MAX_CHARS,
 ): string {
+	// Owner rules first (they override everything below), then the agent page, then project pages.
+	const rank = (s: StandingPageStatus): number => (s.def.ownerOnly ? 0 : s.def.scope === 'agent' ? 1 : 2);
 	const withContent = statuses
 		.filter((s) => (s.page?.sections.length ?? 0) > 0)
-		.sort((a, b) => (a.def.scope === b.def.scope ? 0 : a.def.scope === 'agent' ? -1 : 1));
+		.sort((a, b) => rank(a) - rank(b));
 	if (withContent.length === 0) return '';
 
 	const header = [
 		STANDING_ANSWERS_HEADING,
 		'',
-		'Settled answers kept current from memory. Use them before calling recall; a page marked **STALE** has not absorbed the newest memories, so recall for anything recent; a section marked **BASIS INVALIDATED** cites memories that were since retracted.',
+		'Settled answers kept current from memory. Use them before calling recall; a page marked **STALE** has not absorbed the newest memories, so recall for anything recent; a section marked **BASIS INVALIDATED** cites memories that were since retracted. Rules under **OWNER RULES** were written by the owner and override any curated page.',
 	].join('\n');
 
 	const blocks: string[] = [];
@@ -79,9 +81,11 @@ export function renderStandingAnswers(
 function renderPage(status: StandingPageStatus): string {
 	const page = status.page!;
 	const refreshed = page.lastRefreshed ? page.lastRefreshed.slice(0, 10) : 'never';
-	const freshness = status.stale
-		? `**STALE** — ${status.newerEntries} newer memor${status.newerEntries === 1 ? 'y' : 'ies'} since this page was refreshed (${refreshed}); treat it as possibly outdated.`
-		: `_${status.def.scope} · refreshed ${refreshed}_`;
+	const freshness = status.def.ownerOnly
+		? `**OWNER RULES** — written by the owner, not by curation; follow these over anything below (updated ${refreshed}).`
+		: status.stale
+			? `**STALE** — ${status.newerEntries} newer memor${status.newerEntries === 1 ? 'y' : 'ies'} since this page was refreshed (${refreshed}); treat it as possibly outdated.`
+			: `_${status.def.scope} · refreshed ${refreshed}_`;
 
 	let body = page.sections
 		.map((s) => {

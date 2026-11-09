@@ -70,6 +70,9 @@ check "none flag" "$(cat "$STUB_LOG")" 'none\\": true'
 : > "$STUB_LOG"
 run_skill --interim "plan first" </dev/null >/dev/null 2>&1 || true
 check "interim flag" "$(cat "$STUB_LOG")" 'interim\\": true'
+: > "$STUB_LOG"
+run_skill --share "the Q3 numbers" </dev/null >/dev/null 2>&1 || true
+check "share flag" "$(cat "$STUB_LOG")" 'share\\": true'
 
 echo "test 4: explicit ids pass through"
 : > "$STUB_LOG"

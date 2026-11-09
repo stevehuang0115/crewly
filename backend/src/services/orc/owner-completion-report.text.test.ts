@@ -1,5 +1,5 @@
 import { OWNER_COMPLETION_REPORT_CONSTANTS as C } from '../../constants.js';
-import { detectOwnerLanguage, fallbackLine, joinDeliverables, plainDeliverable, plainDeliverables } from './owner-completion-report.text.js';
+import { detectOwnerLanguage, fallbackLine, joinDeliverables, leadFallbackLine, plainDeliverable, plainDeliverables, plainDeliverablesIn } from './owner-completion-report.text.js';
 
 describe('detectOwnerLanguage', () => {
   it('Chinese when enough of the letters are CJK; English otherwise; empty is English', () => {
@@ -65,9 +65,9 @@ describe('fallbackLine', () => {
       deliverables: ['排期里 5 张卡的文案（见 ops/marketing/cards.md）', '教程页的录屏 — https://github.com/x/y/pull/12 (h264, 42 MB)'],
       language: 'zh',
     });
-    expect(zh).toBe('Ella 做完了排期里 5 张卡的文案和教程页的录屏，细节稍后补在这里。\n— 由 Crewly 代发');
+    expect(zh).toBe('Ella 做完了排期里 5 张卡的文案和教程页的录屏。\n— 由 Crewly 代发');
     const en = fallbackLine({ agentName: 'Ella', deliverables: ['Card copy for the 5 schedule cards', 'Screen recording of the tutorial page (1080p)'], language: 'en' });
-    expect(en).toBe('Ella finished Card copy for the 5 schedule cards and Screen recording of the tutorial page; the details will follow here.\n— sent by Crewly');
+    expect(en).toBe('Ella finished Card copy for the 5 schedule cards and Screen recording of the tutorial page.\n— sent by Crewly');
     for (const line of [zh, en]) {
       expect(line).not.toMatch(/https?:|\.md|\.mp4|MB|h264|Results:|[0-9a-f]{8}-/);
       expect(line.split('\n')).toHaveLength(2);
@@ -75,7 +75,43 @@ describe('fallbackLine', () => {
   });
 
   it('nothing nameable → a generic sentence', () => {
-    expect(fallbackLine({ agentName: 'Lyra', deliverables: ['https://x.test/only-a-link'], language: 'en' })).toBe('Lyra finished what you asked for; the details will follow here.\n— sent by Crewly');
-    expect(fallbackLine({ agentName: 'Lyra', deliverables: [], language: 'zh' })).toBe('Lyra 把你要的事做完了，细节稍后补在这里。\n— 由 Crewly 代发');
+    expect(fallbackLine({ agentName: 'Lyra', deliverables: ['https://x.test/only-a-link'], language: 'en' })).toBe('Lyra finished what you asked for.\n— sent by Crewly');
+    expect(fallbackLine({ agentName: 'Lyra', deliverables: [], language: 'zh' })).toBe('Lyra 把你要的事做完了。\n— 由 Crewly 代发');
+  });
+});
+
+describe('owner-language deliverables (crewly#1376)', () => {
+  it('a zh line never embeds an English WorkItem title, and promises nothing', () => {
+    const line = fallbackLine({ agentName: 'Atlas', deliverables: ['Website-plan PDF built and posted in Steve thread with summary'], language: 'zh' });
+    expect(line).toBe('Atlas 把你要的事做完了。\n— 由 Crewly 代发');
+    expect(line).not.toMatch(/Website|细节稍后/);
+  });
+
+  it('keeps phrases in the owner\'s language (a zh phrase with a Latin word stays), drops the others', () => {
+    expect(plainDeliverablesIn(['网站方案 PDF', 'Website plan'], 'zh')).toEqual(['网站方案 PDF']);
+    expect(plainDeliverablesIn(['网站方案', 'Website plan'], 'en')).toEqual(['Website plan']);
+    expect(leadFallbackLine({ workerName: 'Sage', deliverables: ['Website plan'], language: 'zh' })).toBe('Sage 把你批准的事做完了。\n— 由 Crewly 代发');
+  });
+
+  it('the English line promises nothing either', () => {
+    expect(fallbackLine({ agentName: 'Atlas', deliverables: ['Website plan'], language: 'en' })).toBe('Atlas finished Website plan.\n— sent by Crewly');
+  });
+});
+
+describe('leadFallbackLine (crewly#1371)', () => {
+  const link = 'https://slack.com/archives/D0ORC/p1792000000000100';
+
+  it('names the worker, the deliverable and the approval thread, in the owner\'s language', () => {
+    expect(leadFallbackLine({ workerName: 'Luna', deliverables: ['教程改写'], language: 'zh', approvalLink: link })).toBe(
+      `Luna 做完了你批准的教程改写。\n批准的对话：${link}\n— 由 Crewly 代发`,
+    );
+    expect(leadFallbackLine({ workerName: 'Luna', deliverables: ['the tutorial rewrite'], language: 'en', approvalLink: link })).toBe(
+      `Luna finished the tutorial rewrite, which you approved.\nWhere you approved it: ${link}\n— sent by Crewly`,
+    );
+  });
+
+  it('no deliverable, no link → a plain sentence and the marker only', () => {
+    expect(leadFallbackLine({ workerName: 'Luna', deliverables: [], language: 'zh' })).toBe('Luna 把你批准的事做完了。\n— 由 Crewly 代发');
+    expect(leadFallbackLine({ workerName: 'Luna', deliverables: [], language: 'en', approvalLink: '  ' })).toBe('Luna finished what you approved.\n— sent by Crewly');
   });
 });

@@ -1,8 +1,8 @@
 ---
 id: dev-debugging
-version: 1
+version: 2
 createdAt: 2026-10-13T00:00:00Z
-updatedAt: 2026-10-13T00:00:00Z
+updatedAt: 2026-10-26T00:00:00Z
 createdBy: system
 type: sop
 role: developer
@@ -22,6 +22,11 @@ tags:
   - debugging
   - testing
   - quality
+# Rule metadata (#877): what this rule prevents, where seen, when to re-test
+prevents: "none recorded as an incident — no debugging SOP existed; added with a pre-commit scan for leftover [DEBUG- markers, borrowed from mattpocock/skills"
+seenOn: "unknown (2026-10)"
+reviewBy: 2027-01-31
+source: https://github.com/stevehuang0115/crewly/pull/1277
 ---
 
 # Debugging
@@ -33,6 +38,8 @@ Long form: mattpocock/skills `diagnosing-bugs`. Redact secrets in every command 
 Name **one command** you have already run at least once that shows the user's exact symptom (red-capable), is deterministic, fast and runnable by you. If you are reading code to build a theory before this command exists, stop and build the command.
 
 ## 2. Reproduce and minimise
+
+For a dashboard (UI) report, run the `reproduce-ui` skill on the feature first. A screenshot and a sentence is enough: read the screenshot, then `bash config/skills/agent/core/reproduce-ui/execute.sh --report "<the sentence> <headings, tab names and labels you see>"` matches it to a `frontend/FEATURE_MAP.md` entry and opens it (exit 3 = ambiguous: it lists the candidate routes, run again with `--route`; `--feature <word>` and `--route "/tickets?tab=runs"` work when you already know the page). Read its `console.json` and `requests.json` before the screenshot — a failed `/api/...` call explains most blank or stale pages. Put its `ticketLine` (from the JSON it prints, also in `report.md`) in the ticket; after the fix run it again and add the second line as proof.
 
 Cut inputs one at a time. Done when every remaining element is load-bearing.
 

@@ -35,7 +35,7 @@ SUMMARY=$(printf '%s' "$INPUT" | jq -r '.summary // empty')
 # ignoring a field is the worst disposition: the caller believes it did
 # something, and nothing ever fails. So every field this skill does not use
 # fails loudly, with its name, before any request is sent.
-ALLOWED_FIELDS='["workItemId","absoluteTaskPath","sessionName","summary","output","evidence","verdict","feedback","checks","taskId","artifacts","testResults","structured"]'
+ALLOWED_FIELDS='["workItemId","absoluteTaskPath","sessionName","summary","output","evidence","verdict","feedback","checks","taskId","artifacts","testResults","structured","taskKind","decisions","notTaken","assumptions"]'
 SKIP_GATES=$(printf '%s' "$INPUT" | jq -r 'has("skipGates")')
 if [ "$SKIP_GATES" = "true" ]; then
   error_exit "skipGates is not supported by complete-task and never was — it was accepted and silently discarded. POST /task-pool/complete runs no quality gates, so there is nothing here to skip. Quality gates live behind the 'check-quality-gates' skill (POST /quality-gates/check); run or skip them there. Remove skipGates from this call."
@@ -45,6 +45,9 @@ if [ -n "$UNKNOWN_FIELDS" ]; then
   error_exit "complete-task does not accept: ${UNKNOWN_FIELDS}. Nothing was completed. Remove the field(s) and call again. Accepted fields: $(printf '%s' "$ALLOWED_FIELDS" | jq -r 'join(", ")'). Put structured results inside \"output\" and proof inside \"evidence\"."
 fi
 OUTPUT_JSON=$(printf '%s' "$INPUT" | jq -c '.output // empty')
+# Task timing: the kind of task this was (revision, new-build, ...). Optional:
+# the server falls back to the kind named in report-progress, then to the title.
+TASK_KIND=$(printf '%s' "$INPUT" | jq -r '.taskKind // empty')
 # Evidence contract (#873): "done" needs evidence. Each entry is one of
 #   {"type":"artifact","path":"<existing file, relative to the project/worktree, or https URL>"}
 #   {"type":"command","command":"<cmd>","exitCode":0,"outputTail":"<last lines>"}
@@ -55,6 +58,18 @@ OUTPUT_JSON=$(printf '%s' "$INPUT" | jq -c '.output // empty')
 EVIDENCE_JSON=$(printf '%s' "$INPUT" | jq -c '.evidence // empty')
 if [ -n "$EVIDENCE_JSON" ] && [ "$(printf '%s' "$EVIDENCE_JSON" | jq -r 'type')" != "array" ]; then
   error_exit "evidence must be a JSON array of entries, e.g. [{\"type\":\"artifact\",\"path\":\"/abs/file\"},{\"type\":\"command\",\"command\":\"npm test\",\"exitCode\":0}] — or [{\"type\":\"blocked\",\"step\":\"...\",\"reason\":\"...\"}] if you could not finish"
+fi
+# Decision record (#875): the key decisions made, the options considered and
+# not taken (with the reason), the assumptions relied on. Each is optional, a
+# JSON array of short strings (a lone string is accepted as one entry). The
+# reviewer reads them beside the evidence in the Verify item.
+DECISIONS_JSON=$(printf '%s' "$INPUT" | jq -c '
+  def list(k): if has(k) then (if (.[k] | type) == "string" then [.[k]] elif (.[k] | type) == "array" then .[k] else "bad" end) else null end;
+  {decisions: list("decisions"), notTaken: list("notTaken"), assumptions: list("assumptions")}
+  | with_entries(select(.value != null))')
+BAD_DECISION_FIELD=$(printf '%s' "$DECISIONS_JSON" | jq -r 'to_entries[] | select(.value == "bad" or (.value | type) == "array" and ([.value[] | select(type != "string")] | length) > 0) | .key' | head -1)
+if [ -n "$BAD_DECISION_FIELD" ]; then
+  error_exit "${BAD_DECISION_FIELD} must be a JSON array of strings, e.g. \"${BAD_DECISION_FIELD}\":[\"Kept the v1 schema; a new table needs a migration\"]. Nothing was completed."
 fi
 # Reviewing someone's work (a "Verify: …" item): `verdict: "rejected"` plus
 # `feedback` sends it back — the worker gets a retry carrying the feedback.
@@ -138,9 +153,17 @@ fi
 if [ -z "$WORK_ITEM_ID" ] && [ -n "$TASK_ID" ]; then
   error_exit "Nothing was completed: you passed taskId '${TASK_ID}' but no 'workItemId', and this skill does not guess which WorkItem you meant. Pass 'workItemId' (find it with GET /api/task-pool/items?target=${SESSION_NAME}) and call again."
 fi
+# The pool lookup only stands in for an explicit id when exactly ONE WorkItem
+# is running: with several, picking the first closed the wrong one and sent
+# its result to the wrong place (message-routing audit 2026-10-18).
 if [ -z "$WORK_ITEM_ID" ]; then
   POOL_RESP=$(api_call_full GET "/task-pool/items?status=running&target=${SESSION_NAME}" 2>/dev/null || echo '{}')
-  WORK_ITEM_ID=$(echo "$POOL_RESP" | jq -r '.workItems[0].id // .data[0].id // empty' 2>/dev/null || true)
+  RUNNING_IDS=$(echo "$POOL_RESP" | jq -r '(.workItems // .data // [])[]?.id // empty' 2>/dev/null || true)
+  RUNNING_COUNT=$(printf '%s\n' "$RUNNING_IDS" | grep -c . || true)
+  if [ "${RUNNING_COUNT:-0}" -gt 1 ]; then
+    error_exit "Nothing was completed: ${RUNNING_COUNT} WorkItems are running for '${SESSION_NAME}' ($(printf '%s' "$RUNNING_IDS" | tr '\n' ' ' | sed 's/ *$//')) and this skill does not guess which one you finished. Pass 'workItemId' with one of them and call again."
+  fi
+  WORK_ITEM_ID=$(printf '%s\n' "$RUNNING_IDS" | head -n1)
 fi
 
 # Neither an explicit `workItemId` nor the pool lookup produced a target.
@@ -175,6 +198,8 @@ BODY=$(jq -n \
   --arg feedback "$FEEDBACK" \
   --argjson evidence "${EVIDENCE_JSON:-null}" \
   --argjson checks "${CHECKS_JSON:-null}" \
+  --arg taskKind "$TASK_KIND" \
+  --argjson decisions "${DECISIONS_JSON:-{\}}" \
   '{
     agentId: $agentId,
     result: ({summary: $summary}
@@ -184,7 +209,9 @@ BODY=$(jq -n \
               + (if $verdict != "" then {verdict: $verdict} else {} end)
               + (if $feedback != "" then {feedback: $feedback} else {} end)
               + (if $evidence != null then {evidence: $evidence} else {} end)
-              + (if $checks != null then {checks: $checks} else {} end))
+              + (if $checks != null then {checks: $checks} else {} end)
+              + (if $taskKind != "" then {taskKind: $taskKind} else {} end)
+              + $decisions)
   }')
 
 COMPLETE_RESPONSE=$(api_call POST "/task-pool/complete/${WORK_ITEM_ID}" "$BODY")

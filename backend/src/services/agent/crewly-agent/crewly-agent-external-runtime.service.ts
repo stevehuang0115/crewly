@@ -180,16 +180,22 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
     this.currentMemberId = config?.memberId;
     this.currentRoleName = roleName || 'orchestrator';
 
-    const systemPrompt = await this.buildEnhancedSystemPrompt(this.currentRoleName);
+    // A caller that brings its own prompt (a sub-agent, #1317) does not need
+    // the role prompt assembled: that reads memory and team state for nothing.
+    const systemPrompt = config?.systemPrompt || await this.buildEnhancedSystemPrompt(this.currentRoleName);
     const fullConfig: CrewlyAgentConfig = {
       model: config?.model || CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL,
       maxSteps: config?.maxSteps || CREWLY_AGENT_DEFAULTS.MAX_STEPS,
       sessionName,
+      ...(config?.role ? { role: config.role } : {}),
       apiBaseUrl: config?.apiBaseUrl || getLocalApiBaseUrl(),
-      systemPrompt: config?.systemPrompt || systemPrompt,
+      systemPrompt,
       maxHistoryMessages: config?.maxHistoryMessages || CREWLY_AGENT_DEFAULTS.MAX_HISTORY_MESSAGES,
       compactionThreshold: config?.compactionThreshold || CREWLY_AGENT_DEFAULTS.COMPACTION_THRESHOLD,
       projectPath: config?.projectPath,
+      // The worker reads this to restrict its tools; without it a helper
+      // would get the full tool set and `spawn_subagent` of its own.
+      ...(config?.subagent ? { subagent: config.subagent } : {}),
     };
     this.storedConfig = fullConfig;
     this.currentModelString = `${fullConfig.model.provider}/${fullConfig.model.modelId}`;

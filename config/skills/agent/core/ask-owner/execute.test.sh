@@ -58,6 +58,14 @@ check "ask: agent header" "$(last .agent)" "dev-ann"
 check "ask: body" "$(last '.body | tostring')" '{"question":"Send the partner email on Monday?","options":["Send Monday — after review","Hold"],"default":"Hold","sensitive":"email","ticket":"APP-12","project":"p1"}'
 check "ask: output" "$(printf '%s' "$OUT" | jq -c '.decision')" '{"id":"D-7","asker":"dev-ann","status":"open","deadline":"x","posted":true,"postError":null,"reused":false}'
 
+run --question "Merge the Gmail approve card?" --option "Merge" --option "Not now" --default wait \
+  --requested-by "Ella, Oct 6" --owner-last-said "I want the video" --runtime-changes "Starts a Gmail poller" --link https://x.test/pull/1 >/dev/null
+check "ask: context flags" "$(last '.body.context | tostring')" '{"requestedBy":"Ella, Oct 6","ownerLastSaid":"I want the video","runtimeChanges":"Starts a Gmail poller","link":"https://x.test/pull/1"}'
+run --question "Ship it today?" --option A --option B --default A >/dev/null
+check "ask: no context → no context field" "$(last '.body | has("context")')" "false"
+run '{"question":"Merge it?","options":["Merge","Not now"],"default":"wait","context":{"runtimeChanges":"none"}}' >/dev/null
+check "ask json: context" "$(last '.body.context.runtimeChanges')" "none"
+
 run '{"question":"Blue or green for the logo?","options":["Blue","Green"],"default":"wait"}' >/dev/null
 check "ask json: body" "$(last '.body | tostring')" '{"question":"Blue or green for the logo?","options":["Blue","Green"],"default":"wait"}'
 

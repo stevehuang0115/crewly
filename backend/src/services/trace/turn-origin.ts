@@ -26,8 +26,14 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getTraceContext } from './trace-context.service.js';
 import type { TraceOutcome } from './trace.types.js';
 
-/** Harness writes not yet consumed by a submitted prompt, per session */
-const pendingWrites = new Map<string, number>();
+/** Harness writes (their times) not yet consumed by a submitted prompt, per session */
+const pendingWrites = new Map<string, number[]>();
+/**
+ * A harness write older than this no longer vouches for a submit: a paste
+ * whose Enter was lost and never taken must not mask a later prompt typed
+ * by someone else.
+ */
+export const PENDING_WRITE_TTL_MS = 20 * 60 * 1000;
 /** Last trace each session was seen working in */
 const lastSeenTrace = new Map<string, string>();
 /** Bound on tracked sessions (oldest dropped first) */
@@ -110,8 +116,9 @@ function traceFor(session: string, summary: string): string | null {
  *
  * @param session - Agent session
  */
-export function noteHarnessWrite(session: string): void {
-	boundedSet(pendingWrites, session, (pendingWrites.get(session) ?? 0) + 1);
+export function noteHarnessWrite(session: string, now: number = Date.now()): void {
+	const fresh = (pendingWrites.get(session) ?? []).filter((at) => now - at < PENDING_WRITE_TTL_MS);
+	boundedSet(pendingWrites, session, [...fresh, now]);
 	rememberCurrent(session);
 }
 
@@ -120,18 +127,27 @@ export function noteHarnessWrite(session: string): void {
  * When the harness typed nothing since the last submitted prompt, the turn
  * was not started by a harness delivery: record `turn.unsolicited`.
  *
- * Claude Code may submit several queued harness messages as one prompt, so
- * one submit consumes every pending write.
+ * One submit consumes ONE pending write, oldest first. It used to consume
+ * every pending write: Claude Code queues each harness paste that lands
+ * mid-turn as its own prompt and submits them one by one when the turn ends,
+ * so the second and later ones were flagged unsolicited (21 times on
+ * 2026-10-22, Pia alone 12; crewly#1431). Writes expire after
+ * {@link PENDING_WRITE_TTL_MS} so a lost paste never vouches for a prompt
+ * typed much later by someone else.
  *
  * @param session - Agent session
+ * @param now - Clock (tests)
  * @returns True when the turn was unsolicited (and recorded)
  */
-export function notePromptSubmitted(session: string): boolean {
-	const pending = pendingWrites.get(session) ?? 0;
-	if (pending > 0) {
-		pendingWrites.delete(session);
+export function notePromptSubmitted(session: string, now: number = Date.now()): boolean {
+	const fresh = (pendingWrites.get(session) ?? []).filter((at) => now - at < PENDING_WRITE_TTL_MS);
+	if (fresh.length > 0) {
+		const left = fresh.slice(1);
+		if (left.length > 0) boundedSet(pendingWrites, session, left);
+		else pendingWrites.delete(session);
 		return false;
 	}
+	pendingWrites.delete(session);
 	const summary = 'Turn not started by a harness delivery (text was already in the input or typed in the terminal)';
 	log().warn('Unsolicited turn: a prompt was submitted that the harness did not type', { session });
 	const traceId = traceFor(session, summary);

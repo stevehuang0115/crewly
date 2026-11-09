@@ -2,7 +2,7 @@
  * Agent-free re-login, end to end inside the backend (the Air, 2026-09-30):
  * every agent and the orchestrator run Claude Code, its login expired, no
  * agent can do anything. The real login broker (with a fake PTY standing in
- * for `claude setup-token`), the real coordinator, the real Slack DM adapter
+ * for `claude auth login`), the real coordinator, the real Slack DM adapter
  * and inbound interceptor, and the real owner-message watchdog are wired
  * together; only Slack, the PTY, the probe and the agent restarts are fakes.
  * Credentials go to a temp file — never the real ~/.claude.
@@ -28,7 +28,7 @@ jest.mock('../core/logger.service.js', () => ({
 	},
 }));
 
-/** Fake PTY standing in for `claude setup-token`. */
+/** Fake PTY standing in for `claude auth login`. */
 class FakePty implements BrokerPty {
 	written: string[] = [];
 	killed = false;
@@ -59,8 +59,9 @@ const CLAUDE_URL =
 const PROMPT = '\x1b[2GPaste\x1b[8Gcode\x1b[13Ghere\x1b[18Gif\x1b[21Gprompted\x1b[30G>';
 const CLAUDE_SCREEN = ["Browser didn't open? Use the url below to sign in (c to copy)", CLAUDE_URL, '', PROMPT, ''].join('\r\n');
 const INVALID_CODE_SCREEN = ['', 'Invalid code. Please make sure the full code was copied', PROMPT, ''].join('\r\n');
+/** A token-shaped value that must never reach Slack or the credential file. */
 const TOKEN = `sk-ant-oat01-${'Zq9'.repeat(30)}-AA`;
-const TOKEN_SCREEN = ['Your OAuth token (valid for 1 year):', TOKEN, "Store this token securely. You won't be able to see it again.", ''].join('\r\n');
+const LOGIN_DONE_SCREEN = ['Login successful.', ''].join('\r\n');
 const AUTH_CODE = 'Kq3xZ8vN2mP7rT4wY1bC6dF9gH0jL5nQ#9f8e7d6c5b4a';
 const OWNER = 'UOWNER';
 /** The owner's DM with the Air's own "Crewly Orc (iriss-air.lan)" bot. */
@@ -125,7 +126,6 @@ describe('agent-free re-login from the phone (Claude Code, zero agents able to r
 			resolveCommand: (cmd) => `/fake/bin/${cmd}`,
 			env: { PATH: '/usr/bin', HOME: dir, CLAUDE_CONFIG_DIR: path.join(dir, '.claude') },
 			homeDir: dir,
-			credentials,
 			prepareClaudeConfig: () => undefined,
 			verify: async () => true,
 			idFactory: () => `login-${++n}`,
@@ -225,16 +225,17 @@ describe('agent-free re-login from the phone (Claude Code, zero agents able to r
 		await flush();
 		expect(posts[posts.length - 1].text).toMatch(/^That code didn't work \(Invalid code/);
 
-		// 4. The right code; the harness prints the token; the probe confirms.
+		// 4. The right code; Claude Code stores its own login; the real probe confirms.
 		expect(ownerSays(AUTH_CODE)).toBe(true);
 		expect(ptys[0].written.join('')).toContain(`${AUTH_CODE}\r`);
 		probeState = 'logged_in';
-		ptys[0].emit(TOKEN_SCREEN);
+		ptys[0].emit(LOGIN_DONE_SCREEN);
 		ptys[0].exit(0);
 		await flush();
 		await flush();
 
-		expect(credentials.getClaudeCredentialKind()).toBe('oauth_token');
+		// Crewly stored nothing: Claude Code kept its own login.
+		expect(credentials.read()).toEqual({});
 		expect(resumed).toEqual([]); // nothing was running
 		expect(nudged).toEqual(['ella-1']);
 		const done = posts[posts.length - 1];

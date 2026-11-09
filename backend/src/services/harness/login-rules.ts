@@ -19,9 +19,14 @@
  * Values are only accepted once they are complete — followed by more output —
  * so a URL that arrives split across two PTY chunks is never exposed half-way.
  *
- * Rule sets are built from real output captured on 2026-09-25 (Claude Code
- * 2.1.282 `claude setup-token`, codex-cli 0.156.1 `codex login --device-auth`);
- * see login-rules.test.ts.
+ * Rule sets are built from real output: Claude Code 2.1.302 `claude auth login`
+ * (captured 2026-10-17, up to the "Paste code here if prompted" prompt) and
+ * codex-cli 0.156.1 `codex login --device-auth` (2026-09-25); see
+ * login-rules.test.ts.
+ *
+ * Crewly never reads a credential off the screen: each harness's own login
+ * command stores its login itself (Claude Code in its config dir or the
+ * keychain), and Crewly only relays the sign-in link and the one-time code.
  *
  * @module services/harness/login-rules
  */
@@ -55,10 +60,6 @@ export interface LoginRuleSet {
 	successPattern?: RegExp;
 	/** Any match fails the login; the matched line becomes the message */
 	failurePatterns: readonly RegExp[];
-	/** A credential the harness prints on success (group 0), e.g. Claude's long-lived token */
-	secretPattern?: RegExp;
-	/** Success needs the secret: the harness does not store it itself (Claude setup-token) */
-	successRequiresSecret: boolean;
 	/** Exit code 0 counts as success (Codex writes its own credentials) */
 	successOnExitZero: boolean;
 	/** Confirm success with the harness's own status command before reporting it */
@@ -73,8 +74,6 @@ export interface LoginRuleMatch {
 	succeeded: boolean;
 	/** Line that matched a failure pattern */
 	failureMessage: string | null;
-	/** Captured credential — never log or expose it */
-	secret: string | null;
 }
 
 /** Characters a URL may contain (RFC 3986 unreserved + reserved + `%`). */
@@ -85,9 +84,6 @@ const URL_CONTINUATION = new RegExp(`^[${URL_CHAR_CLASS}]+$`);
 
 /** A run of URL characters starting with http(s)://. */
 const URL_RUN = new RegExp(`https?://[${URL_CHAR_CLASS}]+`, 'g');
-
-/** Characters of a token-like secret. */
-const TOKEN_CONTINUATION = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Patterns that look like credentials. Screen text exposed to front ends has
@@ -304,20 +300,9 @@ export function evaluateLoginRules(
 		userCode = found?.[1] ?? null;
 	}
 
-	let secret: string | null = null;
-	if (rules.secretPattern) {
-		// Tokens are far shorter than the broker's PTY width, so they are never
-		// wrapped; joining is disabled to avoid gluing a following word on.
-		const tokenRuns = extractWrappedRuns(screen.text, rules.secretPattern, TOKEN_CONTINUATION, {
-			minWrappedLineLength: Number.POSITIVE_INFINITY,
-			final,
-		});
-		secret = tokenRuns.length > 0 ? tokenRuns[tokenRuns.length - 1] : null;
-	}
-
 	const needsInput = rules.inputPromptPattern ? matchLine(rules.inputPromptPattern, promptScreen) !== null : false;
 	const successText = rules.successPattern ? matchLine(rules.successPattern, screen) !== null : false;
-	const succeeded = rules.successRequiresSecret ? secret !== null : successText || secret !== null;
+	const succeeded = successText;
 
 	// Failures are read from the output since the user's last input, so a
 	// rejected code that the user then corrects does not fail the session.
@@ -330,7 +315,7 @@ export function evaluateLoginRules(
 		}
 	}
 
-	return { url, userCode, needsInput, succeeded, failureMessage, secret };
+	return { url, userCode, needsInput, succeeded, failureMessage };
 }
 
 /**
@@ -364,8 +349,15 @@ export function redactSecrets(text: string, knownSecrets: readonly string[] = []
 	return result;
 }
 
-/** Claude Code `claude setup-token` (subscription login). */
-export const CLAUDE_SETUP_TOKEN_RULES: LoginRuleSet = {
+/**
+ * Claude Code `claude auth login` (subscription login), Anthropic's own flow.
+ *
+ * It prints the sign-in link and "Paste code here if prompted >"; Claude Code
+ * itself stores the login in its config dir (or the keychain). The login is
+ * counted as done when the command exits 0 and a real Claude turn then works
+ * (`verifyAfterSuccess`); Crewly does not need to know the success wording.
+ */
+export const CLAUDE_AUTH_LOGIN_RULES: LoginRuleSet = {
 	harnessId: HARNESS_CONSTANTS.IDS.CLAUDE_CODE,
 	method: 'subscription',
 	urlPattern: /^https:\/\/(?:[a-z0-9-]+\.)*(?:claude\.com|claude\.ai|anthropic\.com)\/\S*oauth\/authorize\?\S+/,
@@ -376,10 +368,8 @@ export const CLAUDE_SETUP_TOKEN_RULES: LoginRuleSet = {
 		/login\s*failed/i,
 		/authentication\s*failed/i,
 	],
-	secretPattern: /sk-ant-oat01-[A-Za-z0-9_-]{20,}/g,
-	successRequiresSecret: true,
-	successOnExitZero: false,
-	verifyAfterSuccess: false,
+	successOnExitZero: true,
+	verifyAfterSuccess: true,
 };
 
 /** Codex `codex login --device-auth` (ChatGPT device-code login). */
@@ -399,13 +389,12 @@ export const CODEX_DEVICE_AUTH_RULES: LoginRuleSet = {
 		// codex-cli 0.159: "Error logging in with device code: <reason>" before exit 1
 		/error\s*logging\s*in/i,
 	],
-	successRequiresSecret: false,
 	successOnExitZero: true,
 	verifyAfterSuccess: true,
 };
 
 /** Every rule set, by harness and method. */
-const RULE_SETS: readonly LoginRuleSet[] = [CLAUDE_SETUP_TOKEN_RULES, CODEX_DEVICE_AUTH_RULES];
+const RULE_SETS: readonly LoginRuleSet[] = [CLAUDE_AUTH_LOGIN_RULES, CODEX_DEVICE_AUTH_RULES];
 
 /**
  * The rule set for a harness login method.

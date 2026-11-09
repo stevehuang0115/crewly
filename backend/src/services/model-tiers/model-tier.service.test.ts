@@ -42,6 +42,7 @@ describe('ModelTierService', () => {
   let asks: PrebuiltAsk[];
   let decisions: Map<string, OwnerDecision>;
   let delivered: Array<{ session: string; text: string }>;
+  let restarted: string[];
   let service: ModelTierService;
   const events: Array<[string, TokenUsageEvent]> = [];
 
@@ -53,6 +54,7 @@ describe('ModelTierService', () => {
     asks = [];
     decisions = new Map();
     delivered = [];
+    restarted = [];
     events.length = 0;
     events.push(['mkt-ella', { timestamp: '2026-10-07T00:00:00Z', agentId: 'x', model: 'claude-sonnet-5', input: 1000, cachedInput: 99_000, output: 2000 }]);
     service = new ModelTierService({
@@ -80,6 +82,10 @@ describe('ModelTierService', () => {
       },
       teamChannelOf: async () => 'C-MKT',
       tlSkillsPath: '/skills/team-leader',
+      restartIfIdle: async (session) => {
+        restarted.push(session);
+        return 'restarted';
+      },
       now: () => now,
     });
   });
@@ -187,6 +193,9 @@ describe('ModelTierService', () => {
       decisions.set('D-1', settled);
       const note = await service.onSettled(settled);
       expect(note).toContain('[MODEL TIERS] The owner approved D-1: Ella → weak (haiku), Sam → mid (sonnet)');
+      expect(note).toContain('Idle members restart now on their new model');
+      await service.restartsSettled();
+      expect(restarted).toEqual(['mkt-ella', 'mkt-sam']);
       expect(note).toContain('Routing rules now in force');
       expect(member('m-ella').tier).toBe('weak');
       expect(member('m-sam').tier).toBe('mid');
@@ -289,6 +298,206 @@ describe('ModelTierService', () => {
       for (let i = 0; i < 5; i++) items.push(settledItem(`a${i}`, 'verified', now));
       expect((await service.tick()).reverts).toEqual([]);
       expect((await service.settings('t1')).review.recent[0].guard).toBe('ok');
+    });
+  });
+
+  describe('auto mode (the lead decides, tells the owner)', () => {
+    beforeEach(() => {
+      teams[0] = { ...team(), tierChangeMode: 'auto' };
+    });
+
+    it('the owner sets the change mode; default approve; bad values refused', async () => {
+      teams[0] = { ...team(), tierChangeMode: undefined };
+      expect((await service.settings('t1')).tierChangeMode).toBe('approve');
+      await service.updateSettings('t1', { tierChangeMode: 'auto' });
+      expect(team().tierChangeMode).toBe('auto');
+      expect((await service.settings('t1')).tierChangeMode).toBe('auto');
+      await expect(service.updateSettings('t1', { tierChangeMode: 'silent' })).rejects.toMatchObject({ status: 400 });
+    });
+
+    it('the review tells the lead its changes apply at once', async () => {
+      await service.startReview('t1', 'on_demand');
+      expect(delivered[0].text).toContain('you decide: your changes apply as soon as you submit');
+      expect(delivered[0].text).toContain('the owner gets one notice with Undo');
+    });
+
+    it('applies a submitted proposal at once and posts ONE notice with Undo instead of a card', async () => {
+      await service.propose('mkt-owen', { member: 'Ella', tier: 'weak', reason: 'polls the inbox' });
+      await service.propose('mkt-owen', { member: 'Sam', tier: 'mid', reason: 'writes posts from briefs' });
+      await service.propose('mkt-owen', { routing: 'polling -> Ella' });
+      const r = await service.propose('mkt-owen', { submit: true });
+      expect(r).toMatchObject({ submitted: true, applied: true, changes: 2, routing: 1, noticeId: 'D-1' });
+      // applied now, by the same path as the owner's Apply
+      expect(member('m-ella').tier).toBe('weak');
+      expect(member('m-sam').tier).toBe('mid');
+      expect(member('m-sam').modelId).toBeUndefined();
+      expect(team().tierRoutingRules).toEqual(['polling -> Ella']);
+      await service.restartsSettled();
+      expect(restarted).toEqual(['mkt-ella', 'mkt-sam']);
+
+      expect(asks).toHaveLength(1);
+      const ask = asks[0];
+      expect(ask.kind).toBe('model_tier_change');
+      expect(ask.place).toEqual({ slackChannelId: 'C-MKT' });
+      expect(ask.title).toBe('Model tiers — Marketing');
+      expect(ask.question).toBe('Owen changed model tiers for Marketing: Ella → weak, Sam → mid.');
+      expect(ask.options.map((o) => o.label)).toEqual(['Undo', 'Keep']);
+      expect(ask.defaultKey).toBe('b');
+      expect(ask.yesKey).toBe('b');
+      const body = ask.body!.join('\n');
+      expect(body).toContain('*Ella*: no tier (sonnet) → weak (haiku) — polls the inbox');
+      expect(body).toContain("(its fixed model `opus` was cleared)");
+      expect(body).toContain('New work routing: "polling -> Ella"');
+      expect(body).not.toMatch(/D-\d|TR-/);
+      expect(ask.tierChange).toMatchObject({ kind: 'undo', notice: 'applied', removeRouting: ['polling -> Ella'] });
+      // a notice does not hold up the next review
+      const view = await service.settings('t1');
+      expect(view.review.openDecisionId).toBeNull();
+      expect(view.review.drafting).toBe(false);
+    });
+
+    it('Undo reverts exactly those changes, and only for members still on them', async () => {
+      teams[0].tierRoutingRules = ['older rule'];
+      await service.propose('mkt-owen', { member: 'Ella', tier: 'weak', reason: 'polls' });
+      await service.propose('mkt-owen', { member: 'Sam', tier: 'mid', reason: 'briefs' });
+      await service.propose('mkt-owen', { routing: 'polling -> Ella' });
+      await service.propose('mkt-owen', { submit: true });
+      // The owner moved Sam by hand since: Undo leaves Sam alone.
+      await service.updateSettings('t1', { memberTiers: { 'm-sam': 'strong' } });
+      await service.restartsSettled();
+      restarted.length = 0;
+      const note = await service.onSettled({ ...decisions.get('D-1')!, status: 'resolved', chosenKey: 'a' } as OwnerDecision);
+      expect(note).toContain('[MODEL TIERS] The owner undid your tier changes: Ella → no tier (sonnet)');
+      expect(note).toContain('1 member(s) were left as they are');
+      expect(member('m-ella').tier).toBeUndefined();
+      expect(member('m-sam').tier).toBe('strong');
+      expect(team().tierRoutingRules).toEqual(['older rule']);
+      await service.restartsSettled();
+      expect(restarted).toEqual(['mkt-ella']);
+      const recent = (await service.settings('t1')).review.recent;
+      expect(recent.find((x) => x.memberName === 'Ella' && x.to === 'weak')!.guard).toBe('undone');
+    });
+
+    it('Undo restores a cleared fixed model', async () => {
+      await service.propose('mkt-owen', { member: 'Sam', tier: 'mid', reason: 'briefs' });
+      await service.propose('mkt-owen', { submit: true });
+      await service.onSettled({ ...decisions.get('D-1')!, status: 'resolved', chosenKey: 'a' } as OwnerDecision);
+      expect(member('m-sam').tier).toBeUndefined();
+      expect(member('m-sam').modelId).toBe('opus');
+    });
+
+    it('Undo puts back what the member had when the change applied, not when it was proposed', async () => {
+      await service.propose('mkt-owen', { member: 'Ella', tier: 'weak', reason: 'polls' });
+      // The owner moved Ella by hand while the draft waited.
+      await service.updateSettings('t1', { memberTiers: { 'm-ella': 'strong' } });
+      await service.propose('mkt-owen', { submit: true });
+      expect(member('m-ella').tier).toBe('weak');
+      await service.onSettled({ ...decisions.get('D-1')!, status: 'resolved', chosenKey: 'a' } as OwnerDecision);
+      expect(member('m-ella').tier).toBe('strong');
+    });
+
+    it('Undo of an older batch leaves a member a later batch changed again', async () => {
+      await service.propose('mkt-owen', { member: 'Ella', tier: 'weak', reason: 'polls' });
+      await service.propose('mkt-owen', { submit: true });
+      await service.propose('mkt-owen', { member: 'Ella', tier: 'mid', reason: 'more work' });
+      await service.propose('mkt-owen', { submit: true });
+      await service.propose('mkt-owen', { member: 'Ella', tier: 'weak', reason: 'quiet again' });
+      await service.propose('mkt-owen', { submit: true });
+      await service.onSettled({ ...decisions.get('D-1')!, status: 'resolved', chosenKey: 'a' } as OwnerDecision);
+      expect(member('m-ella').tier).toBe('weak');
+    });
+
+    it('Undo puts back routing rules the batch pushed out', async () => {
+      const old = Array.from({ length: 20 }, (_, i) => `rule ${i}`);
+      teams[0].tierRoutingRules = [...old];
+      await service.propose('mkt-owen', { routing: 'polling -> Ella' });
+      await service.propose('mkt-owen', { submit: true });
+      expect(team().tierRoutingRules).toEqual([...old.slice(1), 'polling -> Ella']);
+      await service.onSettled({ ...decisions.get('D-1')!, status: 'resolved', chosenKey: 'a' } as OwnerDecision);
+      expect([...team().tierRoutingRules!].sort()).toEqual([...old].sort());
+    });
+
+    it('two submits at the same time apply once', async () => {
+      await service.propose('mkt-owen', { member: 'Ella', tier: 'weak', reason: 'polls' });
+      const both = await Promise.allSettled([service.propose('mkt-owen', { submit: true }), service.propose('mkt-owen', { submit: true })]);
+      expect(both.filter((r) => r.status === 'fulfilled' && (r.value as { applied?: boolean }).applied)).toHaveLength(1);
+      expect(asks).toHaveLength(1);
+    });
+
+    it('Keep, the deadline or a skip change nothing and tell the lead nothing', async () => {
+      await service.propose('mkt-owen', { member: 'Ella', tier: 'weak', reason: 'polls' });
+      await service.propose('mkt-owen', { submit: true });
+      for (const d of [
+        { status: 'resolved', chosenKey: 'b' },
+        { status: 'defaulted', chosenKey: 'b' },
+        { status: 'skipped' },
+      ]) {
+        expect(await service.onSettled({ ...decisions.get('D-1')!, ...d } as OwnerDecision)).toBeNull();
+        expect(member('m-ella').tier).toBe('weak');
+      }
+    });
+
+    it('keeps the phase 1 limits: the lead stays at mid or above, the orchestrator takes no tier', async () => {
+      await expect(service.propose('mkt-owen', { member: 'Owen', tier: 'weak', reason: 'x' })).rejects.toMatchObject({ status: 400 });
+      teams[0].members.push({ id: 'm-orc', name: 'Orc', sessionName: 'crewly-orc', role: 'orchestrator' } as never);
+      await expect(service.propose('mkt-owen', { member: 'Orc', tier: 'weak', reason: 'x' })).rejects.toMatchObject({ status: 400 });
+    });
+
+    it('refuses to apply when owner notices cannot be posted', async () => {
+      const blind = new ModelTierService({
+        store: ModelTierStore.inHome(dir),
+        getTeams: async () => teams,
+        saveTeam: async () => undefined,
+        forEachEvent: () => undefined,
+        workItems: async () => [],
+        decisions: () => null,
+        deliverToAgent: async () => true,
+        tlSkillsPath: '/skills/team-leader',
+        now: () => now,
+      });
+      await blind.propose('mkt-owen', { member: 'Ella', tier: 'weak', reason: 'polls' });
+      await expect(blind.propose('mkt-owen', { submit: true })).rejects.toMatchObject({ status: 503 });
+      expect(member('m-ella').tier).toBeUndefined();
+    });
+  });
+
+  describe('quality guard in auto mode', () => {
+    const settledItem = (id: string, status: string, at: Date): WorkItem =>
+      ({ id, target: 'mkt-ella', title: id, type: 'delegate', status, createdAt: at.toISOString(), completedAt: at.toISOString(), statusChangedAt: at.toISOString(), retryCount: 0 } as unknown as WorkItem);
+
+    it('moves the member back at once, tells the lead and the owner, and "Keep the lower tier" undoes the move', async () => {
+      teams[0] = { ...team(), tierChangeMode: 'auto' };
+      for (let i = 0; i < 10; i++) items.push(settledItem(`b${i}`, i === 0 ? 'rejected' : 'verified', new Date(now.getTime() - (20 - i) * HOUR)));
+      await service.propose('mkt-owen', { member: 'Ella', tier: 'weak', reason: 'polls only' });
+      await service.propose('mkt-owen', { submit: true });
+      expect(member('m-ella').tier).toBe('weak');
+      now = new Date(now.getTime() + HOUR);
+      items.push(settledItem('a1', 'rejected', now), settledItem('a2', 'rejected', now), settledItem('a3', 'rejected', now), settledItem('a4', 'verified', now), settledItem('a5', 'verified', now));
+      await service.restartsSettled();
+      restarted.length = 0;
+      const r = await service.tick();
+      expect(r.reverts).toEqual(['D-2']);
+      // moved back without asking
+      expect(member('m-ella').tier).toBeUndefined();
+      await service.restartsSettled();
+      expect(restarted).toEqual(['mkt-ella']);
+      const ask = asks[1];
+      expect(ask.title).toBe('Model tiers — quality check, Marketing');
+      expect(ask.question).toBe("Ella's work was sent back more often on the weak tier, so it was moved back to no tier (sonnet).");
+      expect(ask.body!.join('\n')).toContain('Since moving to weak: 3 of 5 sent back; before: 1 of 10 sent back.');
+      expect(ask.options.map((o) => o.label)).toEqual(['Keep the lower tier', 'OK']);
+      expect(ask.defaultKey).toBe('b');
+      expect(ask.tierChange).toMatchObject({ kind: 'undo', notice: 'reverted' });
+      expect(delivered.some((d) => d.session === 'mkt-owen' && d.text.startsWith("[MODEL TIERS] Quality check: Ella's work was sent back more often on weak"))).toBe(true);
+      expect((await service.settings('t1')).review.recent.find((x) => x.to === 'weak')!.guard).toBe('auto_reverted');
+      expect((await service.tick()).reverts).toEqual([]);
+
+      const note = await service.onSettled({ ...decisions.get('D-2')!, status: 'resolved', chosenKey: 'a' } as OwnerDecision);
+      expect(note).toContain('The owner chose to keep the lower tier');
+      expect(member('m-ella').tier).toBe('weak');
+      // the owner's choice is not watched again
+      expect((await service.settings('t1')).review.recent[0].guard).toBe('not_watched');
+      expect((await service.tick()).reverts).toEqual([]);
     });
   });
 

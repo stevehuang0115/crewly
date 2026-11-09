@@ -28,6 +28,7 @@ import {
   isAssistantRoom,
   isDirectRequest,
   roomWatcherInstance,
+  threadOwnerMachineHasIt,
   roomTakeoverInstance,
   roomOwnerInstance,
   setSlackTeamChannelService,
@@ -262,6 +263,8 @@ class FakeChat extends EventEmitter {
       lastMessageAt: null,
       agentPresence: { status: 'online', lastSeenAt: null },
       type: 'huddle',
+      lastReadSeq: 0,
+      unreadCount: 0,
     };
     this.channels.set(id, dto);
     this.members.set(id, new Set(args.memberSessions));
@@ -437,7 +440,9 @@ beforeEach(async () => {
 afterEach(async () => {
   service.stop();
   setSlackTeamChannelService(null);
-  await fs.rm(tmpDir, { recursive: true, force: true });
+  // A save the service still had in flight can land while the directory is
+  // being removed (CI: ENOTEMPTY on rmdir, 2026-10-22/23): retry briefly.
+  await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 // ---------------------------------------------------------------------------
@@ -618,6 +623,27 @@ describe('the owner is put into every channel Crewly created', () => {
     // Once in, never again — a channel the owner chose to leave stays left.
     await service.inviteOwnerWhereMissing();
     expect(slack.invites).toHaveLength(1);
+  });
+
+  it('an archived channel is remembered from the invite too, quietly', async () => {
+    ownerUserId = null;
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    ownerUserId = 'UOWNER';
+    const warnings: string[] = [];
+    (service as unknown as { logger: { warn: unknown } }).logger.warn = (msg: string) => warnings.push(msg);
+    slack.inviteToChannel = async () => {
+      throw Object.assign(new Error('An API error occurred: is_archived'), { data: { error: 'is_archived' } });
+    };
+    await service.inviteOwnerWhereMissing();
+    expect(service.findBySlackChannelId('C1')?.slackArchived).toBe(true);
+    expect(service.findBySlackChannelId('C1')?.ownerInvited).toBeUndefined();
+    expect(warnings).toEqual([]);
+    // Known now: not even tried again.
+    slack.inviteToChannel = async () => {
+      throw new Error('should not be called');
+    };
+    await service.inviteOwnerWhereMissing();
   });
 
   it('counts "already in the channel" as done', async () => {
@@ -922,6 +948,71 @@ describe('team lifecycle sync', () => {
     expect(warnings).toContainEqual(expect.objectContaining({ error: 'channel_not_found' }));
   });
 
+  // #pro-acme-studio-chat was archived in Slack while its team stayed; every
+  // restart then logged four warnings (rejoin + three owner invites) for a
+  // channel nobody could do anything about (2026-10-25).
+  it('start() remembers an archived channel, says so once, skips the owner invite, and forgets it once it is live again', async () => {
+    ownerUserId = null;
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    ownerUserId = 'UOWNER';
+    const logs: Array<{ level: string; msg: string; ctx: Record<string, unknown> }> = [];
+    const logger = (service as unknown as { logger: Record<string, unknown> }).logger;
+    logger.warn = (msg: string, ctx: Record<string, unknown>) => logs.push({ level: 'warn', msg, ctx });
+    logger.info = (msg: string, ctx: Record<string, unknown>) => logs.push({ level: 'info', msg, ctx });
+    slack.joinChannel = async () => {
+      throw Object.assign(new Error('An API error occurred: is_archived'), { data: { error: 'is_archived' } });
+    };
+
+    // The rejoin runs in the background and saves the store; wait for the
+    // save to land so no write is in flight when the temp dir goes.
+    const storeOnDisk = async (): Promise<string> =>
+      fs.readFile(path.join(tmpDir, 'slack-team-channels.json'), 'utf8').catch(() => '');
+    const untilStore = async (test: (text: string) => boolean): Promise<void> => {
+      for (let i = 0; i < 200; i += 1) {
+        if (test(await storeOnDisk())) return;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      throw new Error('store never reached the expected state');
+    };
+    // Background saves (reconcile, rejoin) may still be landing: wait until
+    // the file has been quiet for a moment before the test's temp dir goes.
+    const untilQuiet = async (): Promise<void> => {
+      let last = await storeOnDisk();
+      for (let quiet = 0; quiet < 6; ) {
+        await new Promise((r) => setTimeout(r, 10));
+        const now = await storeOnDisk();
+        quiet = now === last ? quiet + 1 : 0;
+        last = now;
+      }
+    };
+
+    await service.start();
+    await untilStore((text) => /"slackArchived":\s*true/.test(text));
+    expect(service.findBySlackChannelId('C1')?.slackArchived).toBe(true);
+    expect(slack.invites).toEqual([]);
+    expect(logs.filter((l) => l.level === 'warn')).toEqual([]);
+    expect(logs.filter((l) => /archived in Slack/.test(l.msg))).toHaveLength(1);
+
+    // Second boot: nothing new to say.
+    logs.length = 0;
+    service.stop();
+    await service.start();
+    await untilQuiet();
+    expect(logs.filter((l) => /archived/.test(l.msg) || l.level === 'warn')).toEqual([]);
+
+    // Unarchived: the join succeeds, the flag goes, the owner gets invited.
+    slack.joinChannel = async (id: string) => {
+      slack.joined.push(id);
+    };
+    service.stop();
+    await service.start();
+    await untilStore((text) => /"ownerInvited":\s*true/.test(text));
+    expect(service.findBySlackChannelId('C1')?.slackArchived).toBeUndefined();
+    expect(slack.invites).toEqual([{ channelId: 'C1', userIds: ['UOWNER'] }]);
+    await untilQuiet();
+  });
+
   it('does nothing on a new team when autoCreate is off', async () => {
     await service.updateSettings({ autoCreate: false });
     await service.start();
@@ -1057,6 +1148,21 @@ describe('routeInbound', () => {
 
   it('returns null for an unmapped channel', async () => {
     expect(await service.routeInbound(inbound({ channelId: 'C-other' }))).toBeNull();
+  });
+
+  // 2026-10-23, crewly#1430: the Lead on the Air has no Slack app, so its
+  // machine never got #ce-x-wang-law and dropped every reply routed to it.
+  it("an unmapped channel message that Cloud routed here naming a local app-less agent (by name or as a room member) links the room with that agent", async () => {
+    const byName = await service.routeInbound(inbound({ channelId: 'C-wang', ts: '300.1', text: '@Sam 看一下', mentionedAgentSessions: ['crewly-alpha-sam'] }));
+    expect(byName).not.toBeNull();
+    expect(byName!.mapping).toMatchObject({ teamId: 'adhoc:C-wang', slackChannelId: 'C-wang', members: ['crewly-alpha-sam'] });
+    const asMember = await service.routeInbound(
+      inbound({ channelId: 'C-law', ts: '300.2', text: '可以把那些加上吗？', room: { members: [{ agentSession: 'crewly-alpha-sam', displayName: 'Sam', instanceId: 'mac', deviceName: 'Mac', awake: false, verified: true }] } }),
+    );
+    expect(asMember).not.toBeNull();
+    expect(asMember!.mapping).toMatchObject({ teamId: 'adhoc:C-law', members: ['crewly-alpha-sam'] });
+    // A member Cloud lists on ANOTHER machine, or an unknown session, links nothing here.
+    expect(await service.routeInbound(inbound({ channelId: 'C-else', ts: '300.3', room: { members: [{ agentSession: 'air-rex', displayName: 'Rex', instanceId: 'air', deviceName: 'Air', awake: true }] }, mentionedAgentSessions: ['air-rex'] }))).toBeNull();
   });
 
   it("a dedicated agent @'d by someone else declines politely and gets nothing; its person is served (issue #968)", async () => {
@@ -1839,6 +1945,39 @@ describe('one pair of eyes per agent that receives it', () => {
     typing = null;
   });
 
+  // 2026-10-23, #air-edu-game: the owner's four messages sat on Milo's queue
+  // (mid-turn) for ten minutes and the thread showed nothing meanwhile.
+  it("an owner message held on the queue of its only recipient (mid-turn) gets a 'will pick this up' placeholder even when that recipient was optional", async () => {
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn(), setPhase: jest.fn().mockResolvedValue(undefined), fail: jest.fn().mockResolvedValue(undefined) };
+    planning([['crewly-alpha-sam', 'optional']]);
+    dispatcher!.dispatchMessage.mockResolvedValue({
+      strategy: 'huddle-broadcast',
+      dispatched: true,
+      huddleOutcomes: [{ sessionName: 'crewly-alpha-sam', responseMode: 'optional', dispatched: true, queued: true, silentByDefault: true }],
+    });
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    await service.routeInbound(inbound({ text: '以后不需要我说好', ts: '509.1', threadTs: '505.1', userId: 'UOWNER' }));
+    expect(typing.begin).toHaveBeenCalledWith({ agentSession: 'crewly-alpha-sam', slackChannelId: 'C1', threadTs: '505.1' }, expect.anything(), 'queued', '509.1');
+
+    // Two optional listeners both holding it: no line per listener; a teammate's message: nothing.
+    typing.begin.mockClear();
+    planning([['crewly-alpha-sam', 'optional'], ['crewly-alpha-leo', 'optional']]);
+    dispatcher!.dispatchMessage.mockResolvedValue({
+      strategy: 'huddle-broadcast',
+      dispatched: true,
+      huddleOutcomes: [
+        { sessionName: 'crewly-alpha-sam', responseMode: 'optional', dispatched: true, queued: true },
+        { sessionName: 'crewly-alpha-leo', responseMode: 'optional', dispatched: true, queued: true },
+      ],
+    });
+    service = makeService();
+    await service.routeInbound(inbound({ text: 'all of you', ts: '509.2', userId: 'UOWNER' }));
+    expect(typing.begin).not.toHaveBeenCalled();
+    typing = null;
+  });
+
   it('shows a placeholder only for agents that owe a reply', async () => {
     // A placeholder is a promise of an answer; an agent only passed the
     // message to judge announces itself if it takes it on.
@@ -1991,6 +2130,50 @@ describe('the room is whoever\'s bot is in it', () => {
     expect(result).not.toBeNull();
     expect(result!.mapping.teamId).toBe('adhoc:C-new');
     expect(result!.mapping.members).toEqual(['crewly-alpha-leo']);
+    isLocal = () => false;
+  });
+
+  it("links the channel AND invites the @'d agent's bot when the owner @'s it outside a team channel (2026-10-28: Atlas in the private #normandy — its first post got channel_not_found and the owner's question went unanswered)", async () => {
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    slack.invites = [];
+
+    const result = await service.routeInbound(inbound({ channelId: 'C-norm', text: '<@ULEO> smart-home things go here from now on', ts: '630.1', userId: 'UOWNER' }));
+
+    expect(result).not.toBeNull();
+    expect(result!.mapping.teamId).toBe('adhoc:C-norm');
+    expect(slack.invites).toEqual([{ channelId: 'C-norm', userIds: ['ULEO'] }]);
+    expect(identities!.get('crewly-alpha-leo')!.invitedTo).toContain('C-norm');
+
+    // Remembered on the identity: the next message in the room does not invite again.
+    await service.routeInbound(inbound({ channelId: 'C-norm', text: 'and the thermostat?', ts: '630.2', userId: 'UOWNER' }));
+    expect(slack.invites).toHaveLength(1);
+  });
+
+  it('a bot absent from an ad-hoc room it was never invited to is invited when a message arrives (rooms linked before invites existed); a team channel is left alone', async () => {
+    isLocal = (s) => s === 'crewly-alpha-leo';
+    dispatcher = {
+      dispatchMessage: jest.fn().mockResolvedValue({ strategy: 'huddle-broadcast', dispatched: true, huddleOutcomes: [] }),
+      planHuddleTargets: jest.fn().mockResolvedValue(new Map([['crewly-alpha-leo', 'required']])),
+    };
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    slack.invites = [];
+    // Linked through Leo's own app: its bot is in the channel, so no invite.
+    await service.routeInbound(inbound({ channelId: 'C-old', text: 'just a thought', ts: '640.1', receivedVia: 'crewly-alpha-leo' }));
+    expect(slack.invites).toEqual([]);
+
+    slack.reactionNotInChannel.add('xoxb-leo');
+    await service.routeInbound(inbound({ channelId: 'C-old', text: '<@ULEO> still there?', ts: '640.2', userId: 'UOWNER' }));
+    expect(slack.invites).toEqual([{ channelId: 'C-old', userIds: ['ULEO'] }]);
+
+    // A team channel: a bot the owner took out is not put back.
+    slack.invites = [];
+    await service.routeInbound(inbound({ channelId: 'C1', text: 'hello', ts: '640.3' }));
+    expect(slack.invites).toEqual([]);
+    slack.reactionNotInChannel.delete('xoxb-leo');
     isLocal = () => false;
   });
 
@@ -3391,6 +3574,17 @@ describe('agent identities', () => {
     expect(chat.messages.filter((m) => m.metadata?.slackTs === '200.1')).toHaveLength(1);
   });
 
+  it('two copies of one Slack message arriving at the same time are recorded once (2026-10-22 audit)', async () => {
+    await service.ensureTeamChannel(team());
+    const [a, b] = await Promise.all([
+      service.routeInbound(inbound({ text: '@sam 看一下', ts: '201.1' })),
+      service.routeInbound(inbound({ text: '@sam 看一下', ts: '201.1' })),
+    ]);
+    expect([a!.duplicate, b!.duplicate].filter(Boolean)).toHaveLength(1);
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(chat.messages.filter((m) => m.metadata?.slackTs === '201.1')).toHaveLength(1);
+  });
+
   it('tries another agent bot when the first one is not in the private channel', async () => {
     // The huddle roster grows as agents are @'d there and never shrinks, and
     // a bot can be removed from a private channel afterwards — so "a huddle
@@ -4518,6 +4712,11 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
     // Before this change Ella — the thread's last local speaker — was told it as `required`.
     expect(prompts).toEqual([]);
     expect(result!.dispatch?.contextOnly).toEqual([ELLA]);
+    // Atlas has the answer via the decision path: not "reached nobody" (a WARN
+    // that read as a lost message in the 2026-10-26 log audit).
+    const log = (service as unknown as { logger: { warn: jest.Mock; info: jest.Mock } }).logger;
+    expect(log.warn).not.toHaveBeenCalledWith('Slack room message reached nobody on this machine', expect.anything());
+    expect(log.info).toHaveBeenCalledWith('Slack room message was a decision answer; its asker has it', expect.objectContaining({ asker: ATLAS }));
     // The asker already has it; it is not also queued for it as context.
     expect(real.contextBacklog.peek(ATLAS, roomId).map((e) => e.messageId)).not.toContain(result!.message.id);
     expect(real.contextBacklog.peek(ELLA, roomId)).toEqual([
@@ -4738,6 +4937,63 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
       // Recorded for the reply gate: Aria answers this one.
       expect(chat.messages.find((m) => m.id === result!.message.id)?.metadata?.roomResponders).toEqual(['pa-aria']);
       service.stop();
+    });
+
+    describe('crewly#1376: an asleep thread owner whose machine has the message keeps the thread', () => {
+      const delivered = (owner: string) => ({ owner, targets: ['mac', 'air'], rule: 'thread' as const, reason: 'test' });
+      /** Atlas (this machine, no own bot) spoke last in the thread. */
+      const atlasThread = (): Promise<SlackThreadContext> =>
+        Promise.resolve({
+          kind: 'thread',
+          channelId: 'C1',
+          threadTs: '1001.0',
+          totalBefore: 2,
+          messages: [
+            { ts: '1001.0', text: '@Atlas 网站方案做个 PDF', isBot: false, authorName: 'Steve', userId: 'UOWNER' },
+            { ts: '1004.0', text: 'PDF 在这里', isBot: true, authorName: 'Atlas', usernameOverride: true, userId: 'UMASTER' },
+          ],
+        });
+
+      it('another machine\'s thread owner is asleep but has it: nobody here answers by the room rules; the watch here only notes', async () => {
+        service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+        await setUpThread(service);
+        const result = await service.routeInbound(ownerReply({ text: '你再发一次', threadContext: ariaThread(), room: { ...sharedRoom({ aria: false }), delivery: delivered('mac') } }));
+        // Before: Ella (the room rules here) answered — the Air's Rex in the incident.
+        expect(prompts).toEqual([]);
+        expect(result!.dispatch?.contextOnly).toEqual([ATLAS, ELLA]);
+        expect([...unansweredOf(service).values()]).toEqual([expect.objectContaining({ noteOnly: true })]);
+        expect(chat.messages.find((m) => m.id === result!.message.id)?.metadata?.roomResponders).toEqual(['pa-aria']);
+        service.stop();
+      });
+
+      it('this machine\'s thread owner is asleep: it is woken here even when Cloud named another machine', async () => {
+        service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+        await setUpThread(service);
+        await service.routeInbound(ownerReply({ text: '你再发一次', threadContext: atlasThread(), room: { ...sharedRoom({ atlas: false }), delivery: delivered('air') } }));
+        expect(prompts.map((p) => p.session)).toEqual([ATLAS]);
+        service.stop();
+      });
+
+      it('negative: without Cloud\'s delivery facts the owner\'s machine is not proven to have it — the room rules still apply', async () => {
+        service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+        await setUpThread(service);
+        await service.routeInbound(ownerReply({ threadContext: ariaThread(), room: sharedRoom({ aria: false }) }));
+        expect(prompts.map((p) => p.session)).toEqual([ELLA]);
+        service.stop();
+      });
+
+      it('negative: the owner\'s machine was not pushed the message (or is unproven) — the room rules still apply', async () => {
+        service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+        await setUpThread(service);
+        await service.routeInbound(
+          ownerReply({ threadContext: ariaThread(), room: { ...sharedRoom({ aria: false }), delivery: { owner: 'mac', targets: ['mac'], rule: 'thread' as const, reason: 'test' } } }),
+        );
+        expect(prompts.map((p) => p.session)).toEqual([ELLA]);
+        expect(threadOwnerMachineHasIt({ delivery: { targets: ['mac', 'air'] } }, { instanceId: 'air', verified: false })).toBe(false);
+        expect(threadOwnerMachineHasIt({ delivery: { targets: ['mac', 'air'] } }, { instanceId: 'air' })).toBe(true);
+        expect(threadOwnerMachineHasIt({}, { instanceId: 'air' })).toBe(false);
+        service.stop();
+      });
     });
 
     it('a decision asker that is not in this room, with the card still open, does not leave the message with nobody', async () => {
@@ -5026,6 +5282,20 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
       expect(held).toMatchObject({ by: 'Atlas', excerpt: 'Got it — keeping both versions.' });
       expect(await service.heldReplyFor({ conversationId: roomId, thread: root, agentSession: ATLAS })).toBeNull();
       expect(await service.heldReplyFor({ conversationId: 'not-a-room', thread: root, agentSession: ELLA })).toBeNull();
+      service.stop();
+    });
+
+    it('staleOwnerThread: a thread the owner last wrote in days ago is stale; a fresh one, an unknown room or thread is not', async () => {
+      service = buildService(async () => null);
+      const roomId = await setUpThread(service);
+      const reply = await service.routeInbound(ownerReply());
+      const root = reply!.message.threadId!;
+      const ownerAt = Math.max(...chat.listThreadForBridge!(roomId, root).filter((m) => m.senderType === 'user').map((m) => m.createdAt));
+      const day = 24 * 60 * 60 * 1000;
+      expect(await service.staleOwnerThread({ conversationId: roomId, thread: root }, ownerAt + day)).toBeNull();
+      expect(await service.staleOwnerThread({ conversationId: roomId, thread: root }, ownerAt + 4 * day)).toEqual({ lastOwnerAt: ownerAt });
+      expect(await service.staleOwnerThread({ conversationId: 'not-a-room', thread: root }, ownerAt + 4 * day)).toBeNull();
+      expect(await service.staleOwnerThread({ conversationId: roomId, thread: 'no-such-message' }, ownerAt + 4 * day)).toBeNull();
       service.stop();
     });
 

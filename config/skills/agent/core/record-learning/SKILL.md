@@ -49,6 +49,14 @@ Record a learning or insight gained during task execution. These learnings are s
 | `--project` / `-p` | `projectPath` | Yes | Absolute path to the project |
 | `--learning` / `-l` | `learning` | Yes | The learning or insight (or pipe via stdin) |
 | `--learning-file` | — | No | Read learning from a file path |
+| `--class` | `correctionClass` | No | Correction class slug (e.g. `git-add-all`) when this learning records a **correction** — see below |
+| `--task` | `relatedTask` | No | Ticket / WorkItem the learning came from |
+
+## Corrections: give them a class
+
+When the learning is a correction — someone told you (or you found out) that a way of working was wrong — add `--class <slug>`: a short, stable name for the *kind* of mistake, not this instance of it (`git-add-all`, `skip-tests-before-pr`, `owner-thread-status-lines`). Reuse the same slug every time the same kind comes back; check with `GET /api/memory/corrections?projectPath=…` if unsure.
+
+Why: prose is read every turn and still lets the same mistake back in. The second time a class is recorded in a project, the team lead gets one WorkItem asking whether it can be made impossible (structural change), caught before merge (lint/test/CI), caught when it happens (hook), or must stay prose — and records the choice. Without a class, a correction is just another line in memory.
 
 ---
 
@@ -90,6 +98,9 @@ echo "Don't use git add -A — it catches .env files" | bash execute.sh --agent 
 
 # Learning from file
 bash execute.sh --agent dev-1 --role developer --project /projects/app --learning-file /tmp/insight.txt
+
+# A correction, classed so a repeat reaches the team lead
+bash execute.sh --agent dev-1 --role developer --project /projects/app --class git-add-all --task CREW-42 --learning "[[git]] Never git add -A in this repo: it stages .env. Caught in CREW-42 review."
 ```
 
 ## Examples — Legacy JSON (backward compatible)
@@ -100,4 +111,4 @@ bash execute.sh '{"agentId":"dev-1","agentRole":"developer","projectPath":"/proj
 
 ## Output
 
-JSON confirmation that the learning was recorded.
+JSON confirmation that the learning was recorded. With `--class`, also `correction: { class, count, raised }` — `raised: true` means this occurrence sent the team lead the ladder WorkItem.

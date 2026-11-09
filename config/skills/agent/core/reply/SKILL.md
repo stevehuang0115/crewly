@@ -44,6 +44,9 @@ bash config/skills/agent/core/reply/execute.sh "EFT 表改好了，附件是新�
 ```
 
 **Answer where you were asked; a new topic goes in a new thread.**
+A new post the owner made in a channel is already its own thread: answer
+under it (a plain `reply`), never with `--new-thread`; if you do pass
+`--new-thread` then, the harness still puts the answer under the owner's post.
 
 The harness knows what you are working on and sends your answer where that
 work came from:
@@ -51,6 +54,7 @@ work came from:
 | Your current work | Where the answer goes |
 |---|---|
 | a message from the owner | that conversation / Slack thread (DM, channel thread, Crewly chat / portal) |
+| a message from another agent (`[MESSAGE from <name> … send-message --to <session>]`) | back to that agent, agent-to-agent — never the owner's thread |
 | a project ticket | the ticket's thread in your team channel (started on the first post) |
 | a scheduled / triggered task | the trigger's destination, else a NEW top-level post in your team channel |
 | nothing in particular | a new top-level post in your team channel |
@@ -79,8 +83,15 @@ bash config/skills/agent/core/reply/execute.sh --decision D-12 "Going with optio
 Order the harness uses: the message you name → the ticket's thread (request
 ticket `TKT-…` or project ticket like `CE-7`) → the work item's origin → ids
 you passed (only if they name a conversation you are in, and a thread key's
-channel matches) → what the harness last prompted you about → where your
-current turn came from → your DM with the owner.
+channel matches) → the agent whose message is the latest thing you got →
+what the harness last prompted you about → where your current turn came
+from → your DM with the owner.
+
+When a bare reply could mean two places — another agent's message came in
+but you also owe the owner an answer, or a dispatch arrived after the
+owner's message — nothing is sent: you get `success: false` and both
+commands (`send-message --to <agent> …` or `reply --conversation <id> …`).
+Run the one you mean.
 
 To start a new topic yourself:
 
@@ -104,6 +115,7 @@ argument -- a stray `"` splits the text and nothing is sent. Check for
 | `--interim` | a short note before the real answer (what you understood, how long); "working on it" stays up |
 | `--none` | nothing to answer (you answered elsewhere, or the message was not for you) |
 | `--adds-new` | post even though the agent chosen to answer the owner here already replied. Without it such a reply is held and you see that answer. Use it when you have something new, or when you were asked (an @ in the owner's message or in that answer is never held) |
+| `--share` | the owner said in your DM to share a reply that was held from a room: a reply that draws on someone's private data (read through their connection in the last 20 minutes) goes to your DM with the owner instead of a room, channel thread or ticket thread, and the result tells you `heldFrom`. When the owner answers there that it may be shared, run the same reply again with `--share` — it works only while the owner's message in that DM is recent |
 | `--new-thread "<title>"` | a new topic: a new top-level post in your team channel, opened with the title |
 | `--ticket <id>` | the ticket you answer about (`TKT-187`, `CE-7`) — goes to that ticket's thread |
 | `--to <messageId>` | the message you answer (from your prompt) — goes to its conversation and thread |

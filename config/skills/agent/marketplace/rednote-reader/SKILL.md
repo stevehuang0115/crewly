@@ -1,7 +1,7 @@
 ---
 name: RedNote (小红书) Reader
 description: "Read content from \u5c0f\u7ea2\u4e66 (RedNote) iPad app on macOS via Accessibility API + screencapture. Actions: feed (read posts), scroll-feed, nav, screenshot (capture window), search (type keyword), tap (click coordinates), read-detail (screenshot + text), goto-profile (navigate to user profile by username). Zero network requests \u2014 cannot trigger account bans."
-version: 3.0.0
+version: 3.1.0
 category: automation
 skillType: claude-skill
 assignableRoles:
@@ -41,6 +41,35 @@ Pure iPad App mode using macOS Accessibility API, screencapture, and simulated i
 - Accessibility permission granted to terminal (System Settings > Privacy & Security > Accessibility).
 - App must be on the **current Space/Desktop** for screenshot and tap actions (Accessibility API text reading works across Spaces).
 - **Auto-Recovery:** If the app is running but has no visible window (a known macOS iPad app bug), the skill will automatically attempt to recover it by activating it, using the top menu `Window -> rednote`, or gracefully restarting it.
+
+## SAFETY (read before any action) — added 2026-10-18 after an incident
+
+On 2026-10-18 `search` was run while the app sat on a DM chat. The old code took the
+first text box it found (the chat box) as the search box, pasted the keyword and
+pressed Enter, so the keyword was **sent as a DM**. The account is read-only: never
+send, comment, like, follow or DM. Since then:
+
+- `search` checks the page first with `page-state` and only types into the **top search
+  field** of a real search page (top text field + a "Search" button, no other text box).
+- If a composer is open (Send / Say something… / 说点什么 / Online), it backs out using the
+  page's own Back button only (never the window close button, never a guessed coordinate).
+- On a tab page other than Home (Messages has a search icon AND a "+ new chat" icon) it
+  taps the Home tab first; it never guesses between icons.
+- Right before Enter it re-checks the page and that the keyword is really in the search
+  field. If not, it clears the text and stops with `SAFE STOP`, without pressing Enter.
+- Any `SAFE STOP` error means nothing was typed or sent. Get the app to Home by hand
+  (screenshot first) and retry.
+- Clicks are move → pause → click. Do not hold the press: on video pages a hold
+  switches playback to 2x.
+- `search` is slow (up to ~2 min) because every check walks the Accessibility tree.
+
+### page-state — where is the app right now?
+
+```bash
+bash execute.sh '{"action":"page-state"}'
+# data.page: search | compose | home | other ; data.reason explains compose/other
+```
+Run it (or take a screenshot) before any `tap` near a text box, Send, Follow or comment icon.
 
 ## Actions
 

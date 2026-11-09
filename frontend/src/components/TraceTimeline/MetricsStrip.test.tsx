@@ -17,7 +17,7 @@ describe('MetricsStrip', () => {
 		expect(owner).toHaveTextContent('1h');
 		expect(owner).toHaveTextContent('40% of the time');
 		expect(owner.className).toContain('bg-attention-soft');
-		expect(screen.getByTestId('trace-metric-touches')).toHaveAttribute('title', 'Answered 1, approved 1, sent back 1, corrected 0');
+		expect(screen.getByTestId('trace-metric-touches')).toHaveAttribute('title', 'Answered 1, approved 1, sent back 1, corrected 0, other 0');
 		expect(screen.getByTestId('trace-metric-stalls')).toHaveTextContent('1');
 		expect(screen.getByTestId('trace-metric-cost')).toHaveTextContent('$1.23');
 		expect(screen.getByTestId('trace-metric-cost')).toHaveTextContent('34k tokens');

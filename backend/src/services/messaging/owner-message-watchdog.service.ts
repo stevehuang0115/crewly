@@ -110,8 +110,13 @@ export interface OwnerMessageEntry {
   extendedLogged?: boolean;
 }
 
-/** Why a nudge could not reach the agent. */
-export type NudgeBlockReason = 'asleep' | 'login' | 'error' | 'spend_cap';
+/**
+ * Why a nudge could not reach the agent. `slot_wait`: its start waits for a
+ * running-agent slot — the message is queued and goes in when it starts, so
+ * the owner gets no note (2026-10-19: "Still waiting on Dex — … resource
+ * pressure …" in the owner's thread, which the owner could do nothing about).
+ */
+export type NudgeBlockReason = 'asleep' | 'login' | 'error' | 'spend_cap' | 'slot_wait';
 
 /** Outcome of one nudge. */
 export type NudgeOutcome =
@@ -646,7 +651,17 @@ export class OwnerMessageWatchdogService {
     }
     entry.stage = 'nudged';
     entry.nudgedAt = this.now();
-    entry.nudgeQueued = outcome.outcome === 'sent' && outcome.queued === true;
+    entry.nudgeQueued = (outcome.outcome === 'sent' && outcome.queued === true) || (outcome.outcome === 'blocked' && outcome.reason === 'slot_wait');
+    if (outcome.outcome === 'blocked' && outcome.reason === 'slot_wait') {
+      // The owner thread is not a log: an agent waiting for a slot is not news.
+      this.logger.info('Owner message unanswered; its agent waits for a running-agent slot — no note, the message stays queued', {
+        key: entry.key,
+        responsible: entry.responsible,
+        waitedMinutes: waited,
+      });
+      this.finish(entry, 'waiting for a slot (no note)');
+      return;
+    }
     entry.busyAfterNudge = false;
     entry.turnDoneAfterNudge = false;
     if (outcome.outcome === 'blocked') {

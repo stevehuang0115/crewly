@@ -7,6 +7,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { createRequest, type Request } from '../../../types/v2/request.types.js';
+import { rollupPulls } from './owner-pulls-weekly.js';
 import { OwnerReceiptService, getOwnerReceiptService, setOwnerReceiptService } from './owner-receipt.service.js';
 
 /** 2026-09-26 21:00 EDT */
@@ -237,11 +238,118 @@ describe('OwnerReceiptService', () => {
     expect(again.sent).toHaveLength(1);
   });
 
+  it('adds the weekly pulls line on the report weekday, once, and sends it alone when nothing else is to say (#1387)', async () => {
+    // Sunday 9/27 21:00 EDT
+    const clock = { now: new Date('2026-09-28T01:00:00Z') };
+    const sent: string[] = [];
+    const rollup = rollupPulls([{ at: '2026-09-25T15:00:00Z', kind: 'decision', team: 'CE', outcome: 'answered' }], clock.now);
+    const svc = new OwnerReceiptService({
+      listRequests: async () => [],
+      listWorkItems: async () => [],
+      loadTeamIndex: async () => new Map(),
+      loadPullsWeekly: async () => rollup,
+      sender: async (t) => (sent.push(t), true),
+      statePath: null,
+      now: () => clock.now,
+    });
+    expect(await svc.tick()).toMatchObject({ sent: true });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain('*Pulled you in 1 time this week*');
+    expect((await svc.getState()).lastPullsLocalDate).toBe('2026-09-27');
+    // Same day again, and the next weekday: no second line.
+    expect(await svc.tick()).toBeNull();
+    clock.now = new Date('2026-09-29T01:00:00Z');
+    expect(await svc.tick()).toMatchObject({ sent: false, reason: 'nothing_to_say' });
+    expect(sent).toHaveLength(1);
+    expect((await svc.pullsWeekly())?.thisWeek.total).toBe(1);
+  });
+
+  it('a failing weekly loader leaves the line out without failing the receipt', async () => {
+    const clock = { now: new Date('2026-09-28T01:00:00Z') };
+    const svc = new OwnerReceiptService({
+      listRequests: async () => [],
+      listWorkItems: async () => [],
+      loadTeamIndex: async () => new Map(),
+      loadPullsWeekly: async () => {
+        throw new Error('boom');
+      },
+      sender: async () => true,
+      statePath: null,
+      now: () => clock.now,
+    });
+    expect(await svc.tick()).toMatchObject({ sent: false, reason: 'nothing_to_say' });
+  });
+
   it('singleton accessors', () => {
     const { svc } = build({ requests: [], clock: { now: NINE_PM } });
     setOwnerReceiptService(svc);
     expect(getOwnerReceiptService()).toBe(svc);
     setOwnerReceiptService(null);
     expect(getOwnerReceiptService()).toBeNull();
+  });
+});
+
+describe('OwnerReceiptService spot-check line (#1315)', () => {
+  type Spot = { workItemId: string; team: string; artifactPath: string };
+  const spot = (discrepancies: Spot[], sampled = 2) => ({
+    at: NINE_PM.toISOString(),
+    eligible: sampled,
+    sampled,
+    artifactsChecked: sampled,
+    skipped: 0,
+    worktreeCleaned: 0,
+    discrepancies,
+  });
+  const make = (loadSpotCheck: (() => Promise<ReturnType<typeof spot> | null>) | undefined, withTicket: boolean) => {
+    const sent: string[] = [];
+    const svc = new OwnerReceiptService({
+      listRequests: async () => (withTicket ? [ticket(1, '2026-09-26T20:00:00Z')] : []),
+      listWorkItems: async () => [],
+      loadTeamIndex: async () => new Map([['atlas', 'Think Tank']]),
+      ...(loadSpotCheck ? { loadSpotCheck } : {}),
+      sender: async (t) => {
+        sent.push(t);
+        return true;
+      },
+      statePath: null,
+      now: () => NINE_PM,
+    });
+    return { svc, sent };
+  };
+
+  it('adds the line, with zero said out loud, to a receipt that goes out', async () => {
+    const { svc, sent } = make(async () => spot([]), true);
+    await svc.send();
+    expect(sent[0]).toContain('2 sampled, 0 discrepancies');
+  });
+
+  it('shows the team and path of a discrepancy and no WorkItem id', async () => {
+    const { svc, sent } = make(async () => spot([{ workItemId: 'wi-secret-id', team: 'CE', artifactPath: '/x/report.md' }]), true);
+    await svc.send();
+    expect(sent[0]).toContain('2 sampled, 1 discrepancy');
+    expect(sent[0]).toContain('CE');
+    expect(sent[0]).toContain('/x/report.md');
+    expect(sent[0]).not.toContain('wi-secret-id');
+  });
+
+  it('does not send a receipt just to say zero, but does for a discrepancy', async () => {
+    const quiet = make(async () => spot([]), false);
+    expect((await quiet.svc.send()).sent).toBe(false);
+    expect(quiet.sent).toHaveLength(0);
+    const loud = make(async () => spot([{ workItemId: 'w', team: 'CE', artifactPath: '/x/a.md' }]), false);
+    expect((await loud.svc.send()).sent).toBe(true);
+  });
+
+  it('leaves the line out when the spot-check fails, and the receipt still goes', async () => {
+    const { svc, sent } = make(async () => {
+      throw new Error('boom');
+    }, true);
+    await svc.send();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toContain('Spot-check');
+  });
+
+  it('spotCheck() is null when not wired', async () => {
+    expect(await make(undefined, false).svc.spotCheck()).toBeNull();
   });
 });

@@ -10,6 +10,8 @@ check() {
 
 PORT=18854
 STUB_LOG="$(mktemp)"; export STUB_LOG; export STUB_PORT="$PORT"
+STUB_RUNNING="$(mktemp)"; export STUB_RUNNING
+echo 'wi-running' > "$STUB_RUNNING"
 : > "$STUB_LOG"
 python3 -u <<'PY' >/dev/null 2>&1 &
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -23,7 +25,8 @@ class H(BaseHTTPRequestHandler):
         open(LOG, 'a').write(self.command + ' ' + self.path + '\n')
     def do_GET(self):
         self.note()
-        return self.reply(200, {'workItems': [{'id': 'wi-running'}]})
+        ids = [l.strip() for l in open(os.environ['STUB_RUNNING']) if l.strip()]
+        return self.reply(200, {'workItems': [{'id': i} for i in ids]})
     def do_POST(self):
         n = int(self.headers.get('content-length', '0')); self.rfile.read(n)
         self.note()
@@ -33,7 +36,7 @@ HTTPServer(('127.0.0.1', PORT), H).serve_forever()
 PY
 STUB_PID=$!
 disown "$STUB_PID" 2>/dev/null || true
-trap 'kill "$STUB_PID" >/dev/null 2>&1; rm -f "$STUB_LOG"' EXIT
+trap 'kill "$STUB_PID" >/dev/null 2>&1; rm -f "$STUB_LOG" "$STUB_RUNNING"' EXIT
 for i in $(seq 1 30); do curl -s -o /dev/null -m 0.2 "http://127.0.0.1:${PORT}/" 2>/dev/null && break; sleep 0.1; done
 
 run() { CREWLY_SESSION_NAME=dev-1 CREWLY_API_URL="http://127.0.0.1:${PORT}" bash "$EXEC" "$1" 2>&1; echo "exit=$?"; }
@@ -51,6 +54,14 @@ check "explicit workItemId: completes exactly that one" "$(grep -v heartbeat "$S
 : > "$STUB_LOG"
 run '{"sessionName":"dev-1","summary":"done"}' >/dev/null
 check "no id at all: running-item lookup still works" "$(tail -1 "$STUB_LOG")" "POST /api/task-pool/complete/wi-running"
+
+# Several running items: no `[0]` pick (message-routing audit 2026-10-18).
+printf 'wi-a\nwi-b\n' > "$STUB_RUNNING"
+: > "$STUB_LOG"
+OUT=$(run '{"sessionName":"dev-1","summary":"done"}')
+check "two running, no id: refused" "$(printf '%s' "$OUT" | grep -c 'exit=1')" "1"
+check "two running, no id: lists both ids" "$(printf '%s' "$OUT" | grep -c 'wi-a wi-b')" "1"
+check "two running, no id: nothing completed" "$(grep -c 'POST /api/task-pool/complete' "$STUB_LOG")" "0"
 
 echo "complete-task: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

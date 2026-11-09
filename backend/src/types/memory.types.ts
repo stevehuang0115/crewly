@@ -360,6 +360,11 @@ export interface PatternEntry {
   sourceOutcome?: 'success' | 'failed' | 'partial';
   /** ISO timestamp when this pattern was last verified */
   lastVerifiedAt?: string;
+  /**
+   * People allowed to read this entry (#969). Set when the writer had read a
+   * person's connector grant shortly before; absent means everyone.
+   */
+  visibleToPeople?: string[];
 }
 
 /**
@@ -406,6 +411,11 @@ export interface DecisionEntry {
   learnings?: string;
   /** ISO timestamp when the outcome was recorded */
   outcomeRecordedAt?: string;
+  /**
+   * People allowed to read this entry (#969). Set when the writer had read a
+   * person's connector grant shortly before; absent means everyone.
+   */
+  visibleToPeople?: string[];
 }
 
 /**
@@ -459,6 +469,11 @@ export interface GotchaEntry {
   sourceOutcome?: 'success' | 'failed' | 'partial';
   /** ISO timestamp when this gotcha was last verified */
   lastVerifiedAt?: string;
+  /**
+   * People allowed to read this entry (#969). Set when the writer had read a
+   * person's connector grant shortly before; absent means everyone.
+   */
+  visibleToPeople?: string[];
 }
 
 /**

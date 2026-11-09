@@ -185,9 +185,11 @@ if [ -n "$IMAGE_PATH" ]; then
     --arg filePath "$IMAGE_PATH" \
     --arg initialComment "${TEXT:-}" \
     --arg threadTs "${THREAD_TS:-}" \
+    --argjson allowNewThread "$ALLOW_NEW_THREAD" \
     '{channelId: $channelId, filePath: $filePath} +
      (if $initialComment != "" then {initialComment: $initialComment} else {} end) +
-     (if $threadTs != "" then {threadTs: $threadTs} else {} end)')
+     (if $threadTs != "" then {threadTs: $threadTs} else {} end) +
+     (if $allowNewThread then {allowNewThread: true} else {} end)')
 
   api_call POST "/slack/upload-image" "$BODY"
 elif [ -n "$FILE_PATH" ]; then
@@ -197,9 +199,11 @@ elif [ -n "$FILE_PATH" ]; then
     --arg filePath "$FILE_PATH" \
     --arg initialComment "${TEXT:-}" \
     --arg threadTs "${THREAD_TS:-}" \
+    --argjson allowNewThread "$ALLOW_NEW_THREAD" \
     '{channelId: $channelId, filePath: $filePath} +
      (if $initialComment != "" then {initialComment: $initialComment} else {} end) +
-     (if $threadTs != "" then {threadTs: $threadTs} else {} end)')
+     (if $threadTs != "" then {threadTs: $threadTs} else {} end) +
+     (if $allowNewThread then {allowNewThread: true} else {} end)')
 
   api_call POST "/slack/upload-file" "$BODY"
 else

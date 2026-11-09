@@ -13,6 +13,7 @@
  */
 
 import * as fs from 'fs';
+import { createHash } from 'crypto';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { OWNER_AUTH_CONSTANTS } from '../../constants.js';
 
@@ -29,6 +30,43 @@ export function parseDashboardEntry(html: string): string | null {
     if (src && src.includes('/assets/')) return src;
   }
   return null;
+}
+
+/**
+ * CSP hash sources of the inline scripts of a built `index.html`.
+ *
+ * The page themes itself before first paint with an inline script
+ * (`THEME_INIT_SCRIPT`); the Content-Security-Policy is `script-src 'self'`,
+ * which blocks inline scripts unless their hash is listed. The hash is of
+ * the script body exactly as served, so it is computed from the file
+ * rather than written down (a changed script would silently stop running).
+ *
+ * @param html - index.html content
+ * @returns e.g. `["'sha256-…'"]` — one per inline script, in order
+ */
+export function inlineScriptHashes(html: string): string[] {
+  const out: string[] = [];
+  const re = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    if (/\bsrc=/i.test(m[1]) || m[2].trim() === '') continue;
+    out.push(`'sha256-${createHash('sha256').update(m[2], 'utf8').digest('base64')}'`);
+  }
+  return out;
+}
+
+/**
+ * Read the inline-script CSP hashes of the dashboard this backend serves.
+ *
+ * @param indexHtmlPath - Path of `frontend/dist/index.html`
+ * @returns The hash sources, [] when there is no built dashboard
+ */
+export function loadInlineScriptHashes(indexHtmlPath: string): string[] {
+  try {
+    return inlineScriptHashes(fs.readFileSync(indexHtmlPath, 'utf8'));
+  } catch {
+    return [];
+  }
 }
 
 /**

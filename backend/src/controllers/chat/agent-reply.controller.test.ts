@@ -17,6 +17,22 @@ import { deliverReply, resetReplyDeliveryGuardForTesting, type ReplyDeliveryDeps
 import { AgentPromptReferenceService } from '../../services/orc/agent-prompt-reference.service.js';
 import { setOwnerCompletionReport } from '../../services/orc/owner-completion-report.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
+import type { LatestInput } from '../../services/orc/reply-destination-resolver.js';
+
+/**
+ * The agent's latest input, as the turn-trigger tracker would report it.
+ * Default (undefined): the owner message noted on OrcReplyRouteService, so
+ * an answer with no ids goes where that message came from. A test sets it
+ * to say the agent is answering something else (message-routing audit
+ * 2026-10-18: the resolver no longer guesses "the newest owner turn").
+ */
+let latestOverride: LatestInput | null | undefined;
+
+function latestFromNotedOwnerMessage(session: string): LatestInput | null {
+  const o = OrcReplyRouteService.getInstance().getLastOrigin(session);
+  if (!o) return null;
+  return { kind: 'owner', at: o.receivedAt, conversationId: o.conversationId, ...(o.slackThreadKey ? { thread: o.slackThreadKey } : {}) };
+}
 
 /** In-memory work-destination collaborators (spec 2026-10-01 §6). */
 function makeWorkDeps(over: Partial<WorkDestinationDeps> & { items?: WorkItem[]; teamChannel?: { slackChannelId: string; teamId: string } | null } = {}) {
@@ -79,6 +95,7 @@ function replyDeliveryFor(deps: AgentReplyDeps): ReplyDeliveryDeps {
       workItem: async (id) => (await (await wdP).poolItems()).find((w) => w.id === id) ?? null,
       poolItems: async () => (await wdP).poolItems(),
       turnOrigin: (s) => OrcReplyRouteService.getInstance().getLastOrigin(s),
+      latestInput: (s) => (latestOverride === undefined ? latestFromNotedOwnerMessage(s) : latestOverride),
       promptReference: () => undefined,
       owesOwner: () => false,
       lastDelivered: () => undefined,
@@ -113,6 +130,7 @@ const next: NextFunction = jest.fn();
 
 describe('POST /api/chat/reply', () => {
   beforeEach(() => {
+    latestOverride = undefined;
     resetReplyDeliveryGuardForTesting();
     OrcReplyRouteService.resetInstance();
     setOwnerMessageWatchdog(null);
@@ -284,6 +302,7 @@ describe('POST /api/chat/reply — work-item destinations (spec 2026-10-01 §6)'
   }
 
   beforeEach(() => {
+    latestOverride = undefined;
     resetReplyDeliveryGuardForTesting();
     OrcReplyRouteService.resetInstance();
     setOwnerMessageWatchdog(null);
@@ -296,6 +315,8 @@ describe('POST /api/chat/reply — work-item destinations (spec 2026-10-01 §6)'
       '[CHAT:room-think] <steve@Atlas>\n[SLACK-THREAD:C0THINK:1790000000.000100]\n\nthoughts?',
       Date.now() - 3 * HOUR,
     );
+    // The scheduled run was handed over after that: it is what Atlas answers.
+    latestOverride = { kind: 'dispatch', workItemId: 'wi-1', at: Date.now() };
     const work = makeWorkDeps({
       items: [wi({ triggerId: 'trig-1', metadata: { origin: { kind: 'trigger', triggerId: 'trig-1', topic: 'steveswiki quarterly review' } } })],
     });
@@ -374,13 +395,19 @@ describe('POST /api/chat/reply — work-item destinations (spec 2026-10-01 §6)'
     expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'room-1', thread: 'root-3' }));
   });
 
-  it('no current work and no fresh owner message → a new top-level post in the team channel', async () => {
+  /**
+   * Was: a new top-level post in the team channel. That was a guess — the
+   * agent named no destination and answers nothing (message-routing audit
+   * 2026-10-18): it is refused; a new thread is asked for with --new-thread.
+   */
+  it('no current work and no fresh owner message → refused (409), nothing posted', async () => {
     const work = makeWorkDeps();
-    const { deps } = makeDeps({ workDestination: async () => work.wd });
+    const { deps, deliver } = makeDeps({ workDestination: async () => work.wd });
     const res = mockRes();
     await createAgentReplyHandler(deps)(req({ content: 'FYI: the build is green again.' }, 'owen'), res, next);
-    expect(work.post).toHaveBeenCalledWith(expect.objectContaining({ target: 'C0TEAM1', newTopLevel: true, text: 'FYI: the build is green again.' }));
-    expect(res.statusCode).toBe(201);
+    expect(work.post).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(409);
   });
 
   it('--new-thread "<title>" → new top-level post opened with the title', async () => {
@@ -392,6 +419,61 @@ describe('POST /api/chat/reply — work-item destinations (spec 2026-10-01 §6)'
     expect(res.statusCode).toBe(201);
   });
 
+  /**
+   * 2026-10-18 (NECINA): the owner's new channel post is already its own
+   * thread. An agent answering it with --new-thread opened a second thread,
+   * and the owner's post was noted as unanswered.
+   */
+  describe('--new-thread while the owner post is owed', () => {
+    function owe(threadTs: string, receivedAt = Date.now()) {
+      const watchdog = new OwnerMessageWatchdogService({ isBusy: () => false, nudge: async () => ({ outcome: 'sent' }), postNote: async () => true });
+      watchdog.track({
+        surface: 'slack',
+        slackChannelId: 'C0ROOM',
+        threadTs,
+        sourceTs: '1790000500.000100',
+        chatChannelId: 'room-1',
+        messageId: 'root-3',
+        responsible: 'ella',
+        recipients: ['ella'],
+        required: false,
+        text: 'can you plan a promo video from this?',
+        receivedAt,
+      });
+      setOwnerMessageWatchdog(watchdog);
+    }
+
+    it('the owner post is a new channel post → answered under it, no new thread', async () => {
+      owe('1790000500.000100');
+      const work = makeWorkDeps();
+      const { deps, deliver } = makeDeps({ workDestination: async () => work.wd });
+      const res = mockRes();
+      await createAgentReplyHandler(deps)(req({ content: 'On it — plan first.', newThread: 'Promo video plan' }), res, next);
+      expect(work.post).not.toHaveBeenCalled();
+      expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'room-1', thread: 'root-3' }));
+      expect(res.statusCode).toBe(201);
+    });
+
+    it('the owner message is a reply inside a thread → the new thread is opened', async () => {
+      owe('1790000400.000100');
+      const work = makeWorkDeps();
+      const { deps, deliver } = makeDeps({ workDestination: async () => work.wd });
+      const res = mockRes();
+      await createAgentReplyHandler(deps)(req({ content: 'Separate topic.', newThread: 'Wiki link audit' }), res, next);
+      expect(work.post).toHaveBeenCalledWith(expect.objectContaining({ newTopLevel: true }));
+      expect(deliver).not.toHaveBeenCalled();
+    });
+
+    it('the owner post is older than the window → the new thread is opened', async () => {
+      owe('1790000500.000100', Date.now() - 2 * 60 * 60 * 1000);
+      const work = makeWorkDeps();
+      const { deps } = makeDeps({ workDestination: async () => work.wd });
+      const res = mockRes();
+      await createAgentReplyHandler(deps)(req({ content: 'Separate topic.', newThread: 'Wiki link audit' }), res, next);
+      expect(work.post).toHaveBeenCalledWith(expect.objectContaining({ newTopLevel: true }));
+    });
+  });
+
   it('--new-thread with no team channel → 409', async () => {
     const { deps } = makeDeps({ workDestination: async () => makeWorkDeps({ teamChannel: null }).wd });
     const res = mockRes();
@@ -399,12 +481,21 @@ describe('POST /api/chat/reply — work-item destinations (spec 2026-10-01 §6)'
     expect(res.statusCode).toBe(409);
   });
 
-  it('a Slack failure at the work destination falls back to the turn origin', async () => {
+  /**
+   * Was: fell back to the agent's last owner conversation. The answer to
+   * scheduled work does not belong there (message-routing audit 2026-10-18:
+   * no implicit fallbacks): the failure is reported to the agent instead.
+   */
+  it('a Slack failure at the work destination is reported, never moved to the last owner conversation', async () => {
     OrcReplyRouteService.getInstance().noteDelivery('atlas', '[CHAT:dm-atlas] <steve@Atlas>\n\nhi', Date.now() - 3 * HOUR);
+    latestOverride = { kind: 'dispatch', workItemId: 'wi-1', at: Date.now() };
     const work = makeWorkDeps({ items: [wi({ triggerId: 't' })], post: jest.fn(async () => { throw new Error('not_in_channel'); }) });
     const { deps, deliver } = makeDeps({ workDestination: async () => work.wd });
-    await createAgentReplyHandler(deps)(req({ content: 'done' }, 'atlas'), mockRes(), next);
-    expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'dm-atlas' }));
+    const res = mockRes();
+    await createAgentReplyHandler(deps)(req({ content: 'done' }, 'atlas'), res, next);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(409);
+    expect((res.body as { error: string }).error).toMatch(/posting to Slack failed \(not_in_channel\).*reply --conversation <id> --thread <thread>/);
   });
 
   /**
@@ -423,6 +514,7 @@ describe('POST /api/chat/reply — work-item destinations (spec 2026-10-01 §6)'
         '[CHAT:room-brief] <steve@Atlas>\n[SLACK-THREAD:C0BRIEF:1790883820.388009]\n\nthis blender video?',
         Date.now() - 3 * HOUR,
       );
+      latestOverride = { kind: 'dispatch', workItemId: 'del:verify:del', at: Date.now() };
       const verify = wi({ id: 'del:verify:del', type: 'review', owner: 'team_lead', title: 'Verify: Starship launches', metadata: { verifyOf: 'del', origin: briefOrigin } });
       const work = makeWorkDeps({ items: [verify] });
       const { deps, deliver } = makeDeps({ workDestination: async () => work.wd });
@@ -433,8 +525,14 @@ describe('POST /api/chat/reply — work-item destinations (spec 2026-10-01 §6)'
       expect(res.statusCode).toBe(201);
     });
 
-    it('when the origin conversation will not take it → a new top-level post with a topic line, not the last thread', async () => {
+    /**
+     * Was: a new top-level post with a topic line. Moving the owner's answer
+     * out of the thread they asked in is a guess (message-routing audit
+     * 2026-10-18): it is refused, with the explicit alternatives.
+     */
+    it('when the origin conversation will not take it → refused (409), never the last thread or a new top-level post', async () => {
       OrcReplyRouteService.getInstance().noteDelivery('sage', '[CHAT:room-old] <steve@Sage>\n[SLACK-THREAD:C0OLD:1790000000.000100]\n\nold question', Date.now() - 3 * HOUR);
+      latestOverride = { kind: 'dispatch', workItemId: 'del', at: Date.now() };
       const delegate = wi({ id: 'del', type: 'delegate', target: 'sage', owner: 'team_lead', title: 'Starship launches note', metadata: { origin: briefOrigin } });
       const work = makeWorkDeps({ items: [delegate] });
       const deliver = jest.fn(async (_i: { conversationId: string }) => null);
@@ -443,17 +541,23 @@ describe('POST /api/chat/reply — work-item destinations (spec 2026-10-01 §6)'
       await createAgentReplyHandler(deps)(req({ content: 'Note is ready.' }, 'sage'), res, next);
       expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'room-brief' }));
       expect(deliver).not.toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'room-old' }));
-      expect(work.post).toHaveBeenCalledWith(expect.objectContaining({ target: 'C0TEAM1', newTopLevel: true, text: '*Starship launches note*\nNote is ready.' }));
-      expect(res.statusCode).toBe(201);
+      expect(work.post).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(409);
+      expect((res.body as { error: string }).error).toMatch(/room-brief .*did not take it.*reply --conversation <id> --thread <thread>/);
     });
 
-    it('current work with no origin → a new top-level post, never the last owner thread', async () => {
+    /** Was: a new top-level post. An item that names no place is refused (audit 2026-10-18). */
+    it('current work with no origin → refused (409), never the last owner thread or a new top-level post', async () => {
       OrcReplyRouteService.getInstance().noteDelivery('sage', '[CHAT:room-old] <steve@Sage>\n[SLACK-THREAD:C0OLD:1790000000.000100]\n\nold question', Date.now() - 3 * HOUR);
+      latestOverride = { kind: 'dispatch', workItemId: 'x', at: Date.now() };
       const work = makeWorkDeps({ items: [wi({ id: 'x', type: 'delegate', target: 'sage', owner: 'team_lead', title: 'Pricing table' })] });
       const { deps, deliver } = makeDeps({ workDestination: async () => work.wd });
-      await createAgentReplyHandler(deps)(req({ content: 'Table done.' }, 'sage'), mockRes(), next);
+      const res = mockRes();
+      await createAgentReplyHandler(deps)(req({ content: 'Table done.' }, 'sage'), res, next);
       expect(deliver).not.toHaveBeenCalled();
-      expect(work.post).toHaveBeenCalledWith(expect.objectContaining({ target: 'C0TEAM1', newTopLevel: true, text: '*Pricing table*\nTable done.' }));
+      expect(work.post).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(409);
+      expect((res.body as { error: string }).error).toMatch(/work item x names no conversation or thread/);
     });
   });
 });
@@ -472,6 +576,7 @@ describe('POST /api/chat/reply — references (2026-10-02)', () => {
   } as WorkItem;
 
   beforeEach(() => {
+    latestOverride = undefined;
     resetReplyDeliveryGuardForTesting();
     OrcReplyRouteService.resetInstance();
     AgentPromptReferenceService.resetInstance();

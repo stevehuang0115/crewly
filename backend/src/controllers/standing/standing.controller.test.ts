@@ -6,6 +6,7 @@ import type { AddressInfo } from 'net';
 import express from 'express';
 import { createStandingRouter } from './standing.controller.js';
 import { StandingAnswersService } from '../../services/memory/standing-answers.service.js';
+import { setCallerIdentity } from '../../middleware/caller-identity.middleware.js';
 
 /**
  * Exercises the router over real HTTP with a real service on a temp dir.
@@ -16,10 +17,10 @@ describe('standing controller', () => {
 	let server: http.Server;
 	let base: string;
 
-	const call = async (method: string, url: string, body?: unknown): Promise<{ status: number; json: Record<string, unknown> }> => {
+	const call = async (method: string, url: string, body?: unknown, asOwner = false): Promise<{ status: number; json: Record<string, unknown> }> => {
 		const res = await fetch(`${base}${url}`, {
 			method,
-			headers: { 'Content-Type': 'application/json' },
+			headers: { 'Content-Type': 'application/json', ...(asOwner ? { 'x-test-owner': '1' } : {}) },
 			body: body === undefined ? undefined : JSON.stringify(body),
 		});
 		return { status: res.status, json: (await res.json()) as Record<string, unknown> };
@@ -34,6 +35,11 @@ describe('standing controller', () => {
 		]));
 		const app = express();
 		app.use(express.json());
+		// Stand-in for the caller-identity middleware: a test header makes the caller the owner.
+		app.use((req, _res, next) => {
+			if (req.headers['x-test-owner'] === '1') setCallerIdentity(req, { kind: 'owner', via: 'api-token' });
+			next();
+		});
 		app.use('/api/standing', createStandingRouter(
 			new StandingAnswersService({ crewlyHome: path.join(tmp, 'home') }),
 			async () => [projectPath, path.join(tmp, 'home')],
@@ -56,7 +62,7 @@ describe('standing controller', () => {
 		const { status, json } = await call('GET', `/api/standing?projectPath=${encodeURIComponent(projectPath)}`);
 		expect(status).toBe(200);
 		const data = json.data as { pagesExamined: number; pages: Array<Record<string, unknown>> };
-		expect(data.pagesExamined).toBe(3);
+		expect(data.pagesExamined).toBe(4); // three built-in pages + owner rules
 		expect(data.pages[0]).toMatchObject({ pageId: 'decisions-in-force', exists: false, stale: true, entriesInScope: 1, newerEntries: 1 });
 	});
 
@@ -83,6 +89,33 @@ describe('standing controller', () => {
 		const { status, json } = await call('PUT', '/api/standing/decisions-in-force/section', { projectPath, ...body });
 		expect(status).toBe(400);
 		expect(json.code).toBe(code);
+	});
+
+	it('PUT owner-rules: 403 owner_only for an agent, 200 without citations for the owner (#914 P2)', async () => {
+		const agent = await call('PUT', '/api/standing/owner-rules/section', { projectPath, heading: 'Replies', body: 'Always in Chinese.', cites: [] });
+		expect(agent.status).toBe(403);
+		expect(agent.json.code).toBe('owner_only');
+
+		const owner = await call('PUT', '/api/standing/owner-rules/section', { projectPath, heading: 'Replies', body: 'Always in Chinese.', cites: [] }, true);
+		expect(owner.status).toBe(200);
+		expect(owner.json.data).toMatchObject({ op: 'added', watermark: null });
+
+		const { json } = await call('GET', `/api/standing?projectPath=${encodeURIComponent(projectPath)}`);
+		const rules = (json.data as { pages: Array<Record<string, unknown>> }).pages.find((p) => p.pageId === 'owner-rules');
+		expect(rules).toMatchObject({ exists: true, stale: false, sections: [{ heading: 'Replies', cites: [] }] });
+	});
+
+	it('PUT writes a custom question page defined in standing-questions.json (#914 P2)', async () => {
+		await fs.writeFile(path.join(projectPath, '.crewly', 'standing-questions.json'), JSON.stringify({ questions: [
+			{ id: 'module-rules', question: 'How are prompts built?', source: 'decisions', match: ['modules'] },
+		] }));
+		const put = await call('PUT', '/api/standing/module-rules/section', { projectPath, heading: 'Prompts', body: 'Modules.', cites: ['dec:d1'] });
+		expect(put.status).toBe(200);
+		const { json } = await call('GET', `/api/standing?projectPath=${encodeURIComponent(projectPath)}`);
+		const data = json.data as { pagesExamined: number; pages: Array<Record<string, unknown>> };
+		expect(data.pagesExamined).toBe(5);
+		expect(data.pages.find((p) => p.pageId === 'module-rules')).toMatchObject({ question: 'How are prompts built?', exists: true, stale: false });
+		await fs.rm(path.join(projectPath, '.crewly', 'standing-questions.json'));
 	});
 
 	it('PUT returns 400 unknown_page for a page that does not exist', async () => {

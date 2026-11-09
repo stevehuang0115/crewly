@@ -22,7 +22,7 @@
  * @module services/orc/work-item-destination
  */
 
-import { TL_DELEGATION_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
+import { TEAM_LEAD_REPORT_CONSTANTS, TL_DELEGATION_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
 import type { TurnOrigin } from './orc-reply-route.service.js';
 import { formatSlackThreadKey, parseSlackThreadKey, slackThreadTag } from '../slack/slack-thread-key.js';
@@ -53,6 +53,51 @@ export type WorkItemOrigin =
    */
   | { kind: 'agent'; sessionName: string };
 
+/**
+ * Who reports finished team work to the owner, and where
+ * (`metadata.leadReport`, crewly#1371; see `team-lead-report.ts`).
+ */
+export interface LeadReport {
+  /** Session of the agent that reports (the team lead; the worker when the team has no lead) */
+  lead: string;
+  /** Its display name, when known */
+  leadName?: string;
+  /** Session of the agent that did the work */
+  worker: string;
+  /** Its display name, when known */
+  workerName?: string;
+  /** The team */
+  teamId: string;
+  teamName: string;
+  /** The team's Slack channel */
+  slackChannelId: string;
+  /** Its name, without the `#` */
+  channelName: string;
+}
+
+/**
+ * Shape check for a stamped lead report.
+ *
+ * @param value - Anything
+ * @returns True for a {@link LeadReport}
+ */
+export function isLeadReport(value: unknown): value is LeadReport {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return ['lead', 'worker', 'teamId', 'slackChannelId'].every((k) => typeof v[k] === 'string' && (v[k] as string).length > 0);
+}
+
+/**
+ * The lead report a work item is stamped with (crewly#1371).
+ *
+ * @param wi - Work item
+ * @returns The stamp, or null when its finished work is not reported by a team lead
+ */
+export function leadReportOf(wi: Pick<WorkItem, 'metadata'> | null | undefined): LeadReport | null {
+  const stamp = ((wi?.metadata ?? {}) as Record<string, unknown>)[TEAM_LEAD_REPORT_CONSTANTS.METADATA_KEY];
+  return isLeadReport(stamp) ? stamp : null;
+}
+
 /** Where the answer goes. */
 export type WorkDestination =
   /** The owner's turn origin — the existing `reply` path */
@@ -63,8 +108,8 @@ export type WorkDestination =
   | { kind: 'slack'; target: string; threadTs?: string; topic?: string; reason: string }
   /** A new top-level post in the agent's (or the work's) team channel */
   | { kind: 'new-top-level'; teamId?: string; topic?: string; reason: string }
-  /** An internal message to the agent that delegated the work */
-  | { kind: 'agent'; sessionName: string; reason: string };
+  /** An internal message to the agent that delegated the work (`workItemId`: the work it answers) */
+  | { kind: 'agent'; sessionName: string; workItemId?: string; reason: string };
 
 /** Statuses in which a work item is the agent's current work. */
 const CURRENT_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>(['running', 'accepted']);
@@ -369,6 +414,18 @@ export function planWorkDestination(input: WorkDestinationInput): WorkDestinatio
   }
   switch (origin.kind) {
     case 'owner': {
+      // Team work the orchestrator delegated for the owner: answers about it go
+      // to the team channel, where the lead reports it (crewly#1371) — never
+      // into the orchestrator's thread with the owner.
+      const leadReport = leadReportOf(workItem);
+      if (leadReport) {
+        return {
+          kind: 'new-top-level',
+          // No topic line: the report is one or two plain lines for the owner.
+          teamId: leadReport.teamId,
+          reason: `work item ${workItem.id} is team work ${leadReport.leadName ?? leadReport.lead} reports to the owner in #${leadReport.channelName}`,
+        };
+      }
       if (origin.conversationId) {
         const threadKey = origin.slackChannelId && origin.threadTs ? `${origin.slackChannelId}:${origin.threadTs}` : undefined;
         return {
@@ -416,7 +473,7 @@ export function planWorkDestination(input: WorkDestinationInput): WorkDestinatio
       };
     }
     case 'agent':
-      return { kind: 'agent', sessionName: origin.sessionName, reason: `work item ${workItem.id} was delegated by ${origin.sessionName} on its own initiative` };
+      return { kind: 'agent', sessionName: origin.sessionName, workItemId: workItem.id, reason: `work item ${workItem.id} was delegated by ${origin.sessionName} on its own initiative` };
   }
 }
 
@@ -538,10 +595,19 @@ export function ownerThreadHandover(wi: WorkItem, delegatorName?: string): { key
   const origin = originOfWorkItem(wi);
   if (origin?.kind !== 'owner' || !origin.slackChannelId || !origin.threadTs) return null;
   if (!wi.target || wi.target === delegatorName) return null;
+  // Its lead reports it in the team channel (crewly#1371): no answer in the owner's thread.
+  if (leadReportOf(wi)) return null;
   const key = formatSlackThreadKey(origin.slackChannelId, origin.threadTs);
   const relay = delegatorName ? ` ${delegatorName} does not relay it for you.` : '';
   const note =
     `The owner asked for this in Slack thread ${slackThreadTag(origin.slackChannelId, origin.threadTs)}. ` +
-    `Post your progress and your result there yourself, under your own name: reply --work-item ${wi.id} "<message>".${relay}`;
+    `Post your progress and your result there yourself, under your own name: reply --work-item ${wi.id} "<message>".${relay}` +
+    // CREW-957: the Slack ts is not a Crewly id. A member that copied it into
+    // reply-channel --thread got 404/400 and fell back to a plain reply that
+    // landed in another owner thread. Name the Crewly ids, and the one skill
+    // that takes --work-item.
+    (origin.chatThreadId
+      ? ` The Crewly thread id is ${origin.chatThreadId}${origin.conversationId ? ` in conversation ${origin.conversationId}` : ''}; if you must use reply-channel, pass that id as --thread (never the Slack ts) — reply-channel has no --work-item flag.`
+      : ` --work-item belongs to reply only; reply-channel does not take it.`);
   return { key, note };
 }

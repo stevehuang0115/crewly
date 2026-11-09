@@ -59,6 +59,33 @@ describe('SOP Types', () => {
     });
   });
 
+  describe('SOPFrontmatter rule metadata (#877)', () => {
+    it('carries the optional prevents / seenOn / reviewBy / source fields', () => {
+      const fm: SOPFrontmatter = {
+        id: 'common-x',
+        version: 1,
+        createdAt: '2026-10-23T00:00:00Z',
+        updatedAt: '2026-10-23T00:00:00Z',
+        createdBy: 'system',
+        role: 'all',
+        category: 'communication',
+        priority: 5,
+        title: 'X',
+        description: 'd',
+        triggers: ['x'],
+        tags: [],
+        prevents: 'Owner-facing messages leaked task ids',
+        seenOn: 'claude-code (2026-05)',
+        reviewBy: '2027-01-31',
+        source: 'https://github.com/stevehuang0115/crewly/pull/413',
+      };
+      expect(fm.prevents).toContain('leaked');
+      expect(fm.reviewBy).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      const bare: SOPFrontmatter = { ...fm, prevents: undefined, seenOn: undefined, reviewBy: undefined, source: undefined };
+      expect(bare.prevents).toBeUndefined();
+    });
+  });
+
   describe('SOPCondition interface', () => {
     it('should define a task-type condition', () => {
       const condition: SOPCondition = {

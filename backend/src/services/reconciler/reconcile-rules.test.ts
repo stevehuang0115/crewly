@@ -23,6 +23,7 @@ import {
   VERIFY_ESCALATED_AT_KEY,
   detectRecoverableWorkItems,
   detectDependencyResolvedWorkItems,
+  detectDueBlockedWorkItems,
   cascadeCancelChildren,
   detectStaleQueuedWorkItems,
   detectUnclaimedTasks,
@@ -30,6 +31,7 @@ import {
   selectBestAgent,
   computeAgentScore,
   runPruningPass,
+  decisionHoldPredicate,
   detectUndisposedStrandedWorkItems,
   hasUnresolvedDependencies,
   UNCLAIMED_THRESHOLD_MS,
@@ -129,7 +131,7 @@ describe('detectStuckWorkItems', () => {
     const oldStart = new Date(Date.now() - 700_000).toISOString();
     const wi = makeWorkItem({
       status: 'running',
-      type: 'project_task',
+      type: 'check',
       target: 'agent-alive',
       startedAt: oldStart,
       retryCount: 0,
@@ -152,11 +154,11 @@ describe('detectStuckWorkItems', () => {
 
   it('should detect timed-out WorkItems even with active agents', () => {
     const oldStart = new Date(Date.now() - 700_000).toISOString(); // 11+ min ago
-    // type='project_task' falls back to the default 600_000ms timeout;
-    // 'delegate' / 'review' / 'confirm' have per-type overrides that would
-    // skip this case (see DEFAULT_PER_TYPE_TIMEOUT_MS).
+    // type='check' falls back to the default 600_000ms timeout;
+    // 'delegate' / 'review' / 'project_task' / 'confirm' have per-type
+    // overrides that would skip this case (see DEFAULT_PER_TYPE_TIMEOUT_MS).
     const wi = makeWorkItem({
-      type: 'project_task',
+      type: 'check',
       status: 'running',
       target: 'agent-1',
       startedAt: oldStart,
@@ -281,6 +283,23 @@ describe('detectStuckWorkItems', () => {
     // Override default 10min → 10s for project_task; the 30s-old WI should now timeout.
     const { stuckIds } = detectStuckWorkItems([wi], agentMap, 600_000, { project_task: 10_000 });
     expect(stuckIds).toContain(wi.id);
+  });
+
+  it('gives a project task 4 h, not the 10 min default (CE-415 failed three times while Vera worked on it)', () => {
+    const agentMap = makeAgentMap([['agent-1', { status: 'active' }]]);
+    const at = (agoMs: number) => makeWorkItem({ type: 'project_task', status: 'running', target: 'agent-1', startedAt: new Date(Date.now() - agoMs).toISOString() });
+    expect(detectStuckWorkItems([at(60 * 60_000)], agentMap, 600_000).stuckIds).toHaveLength(0);
+    const late = at(4 * 60 * 60_000 + 60_000);
+    expect(detectStuckWorkItems([late], agentMap, 600_000).stuckIds).toContain(late.id);
+  });
+
+  it('does not time out an item whose claim lease is live (renewed while its holder works)', () => {
+    const wi = makeWorkItem({ type: 'check', status: 'running', target: 'agent-1', startedAt: new Date(Date.now() - 700_000).toISOString() });
+    const agentMap = makeAgentMap([['agent-1', { status: 'active' }]]);
+    const claim = createTaskClaim({ workItemId: wi.id, agentId: 'agent-1' });
+    expect(detectStuckWorkItems([wi], agentMap, 600_000, undefined, [claim]).stuckIds).toHaveLength(0);
+    const lapsed: TaskClaim = { ...claim, leaseExpiresAt: new Date(Date.now() - 1000).toISOString() };
+    expect(detectStuckWorkItems([wi], agentMap, 600_000, undefined, [lapsed]).stuckIds).toContain(wi.id);
   });
 });
 
@@ -2510,6 +2529,45 @@ describe('detectDependencyResolvedWorkItems', () => {
   });
 });
 
+describe('detectDueBlockedWorkItems (block-task until)', () => {
+  const NOW = Date.parse('2026-10-27T08:30:00Z');
+
+  it('lifts an explicit block whose until time has passed, marking the correction as the explicit-block requeue', () => {
+    const wi = makeWorkItem({
+      status: 'blocked',
+      blockSource: 'explicit',
+      target: 'ce-vera',
+      metadata: { blockedUntil: '2026-10-27T08:30:00Z' },
+    });
+    const { corrections, releasedIds } = detectDueBlockedWorkItems([wi], NOW);
+    expect(releasedIds).toEqual([wi.id]);
+    expect(corrections).toHaveLength(1);
+    expect(corrections[0]).toMatchObject({
+      entityType: 'work_item',
+      entityId: wi.id,
+      previousState: 'blocked',
+      newState: 'queued',
+      blockSource: 'explicit',
+    });
+    expect(corrections[0].reason).toContain('2026-10-27T08:30:00.000Z');
+    expect(corrections[0].reason).toContain('ce-vera');
+  });
+
+  it('leaves a timed block alone while its time is still ahead', () => {
+    const wi = makeWorkItem({ status: 'blocked', blockSource: 'explicit', metadata: { blockedUntil: '2026-10-27T08:31:00Z' } });
+    expect(detectDueBlockedWorkItems([wi], NOW).releasedIds).toEqual([]);
+  });
+
+  it('never touches an explicit block without a time, a system block, or a waiting_on_human park', () => {
+    const openEnded = makeWorkItem({ status: 'blocked', blockSource: 'explicit' });
+    const systemBlocked = makeWorkItem({ status: 'blocked', metadata: { blockedUntil: '2026-10-27T08:00:00Z' } });
+    const waiting = makeWorkItem({ status: 'blocked', blockSource: 'waiting_on_human', metadata: { blockedUntil: '2026-10-27T08:00:00Z' } });
+    const { corrections, releasedIds } = detectDueBlockedWorkItems([openEnded, systemBlocked, waiting], NOW);
+    expect(releasedIds).toEqual([]);
+    expect(corrections).toEqual([]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // detectUnreviewedPastTTL — owner step of the review escalation chain (#813)
 // ---------------------------------------------------------------------------
@@ -2752,5 +2810,44 @@ describe('detectStuckWorkItems — live claim lease (CE-232)', () => {
     const agentMap = makeAgentMap([['agent-dead', { status: 'inactive' }]]);
     const { corrections } = detectStuckWorkItems([wi], agentMap, 600_000, undefined, [claimFor(wi.id, -60_000)]);
     expect(corrections[0].newState).toBe('blocked');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// crewly#1369 §5: work waiting on an open owner decision card is not TTL-cancelled
+// ---------------------------------------------------------------------------
+describe('decision-card hold on the TTL', () => {
+  const old = (extra: Record<string, unknown> = {}) =>
+    makeWorkItem({ status: 'running', createdAt: new Date(Date.now() - 30 * 3600 * 1000).toISOString(), ...extra });
+
+  it('skips the work item the open card was asked from', () => {
+    const asked = old();
+    const other = old();
+    const held = decisionHoldPredicate([{ workItemId: asked.id }]);
+    const { expiredIds } = detectTTLExpiredWorkItems([asked, other], 24 * 3600 * 1000, held);
+    expect(expiredIds).toEqual([other.id]);
+  });
+
+  it('skips work on the open card\'s ticket (metadata link or bare ticket id)', () => {
+    const linked = old({ metadata: { projectTicket: { projectPath: '/proj', id: 'CREW-646' } } });
+    const bare = old({ projectTaskId: 'CREW-646' });
+    const otherProject = old({ metadata: { projectTicket: { projectPath: '/other', id: 'CREW-646' } } });
+    const held = decisionHoldPredicate([{ ticket: { projectPath: '/proj', id: 'CREW-646' } }]);
+    expect(held(linked)).toBe(true);
+    expect(held(bare)).toBe(true);
+    expect(held(otherProject)).toBe(false);
+    const { expiredIds } = detectTTLExpiredWorkItems([linked, bare, otherProject], 24 * 3600 * 1000, held);
+    expect(expiredIds).toEqual([otherProject.id]);
+  });
+
+  it('no open cards: nothing is held', () => {
+    expect(decisionHoldPredicate([])(old())).toBe(false);
+  });
+
+  it('runPruningPass passes the hold to the TTL rule', () => {
+    const asked = old();
+    const result = runPruningPass([asked], undefined, undefined, decisionHoldPredicate([{ workItemId: asked.id }]));
+    expect(result.ttlCancelledCount).toBe(0);
+    expect(runPruningPass([asked]).ttlCancelledCount).toBe(1);
   });
 });

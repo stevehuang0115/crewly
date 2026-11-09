@@ -10,7 +10,7 @@
 import { Request, Response } from 'express';
 import { ApiResponse } from '../../types/index.js';
 import { getSessionBackendSync, getSessionBackend, createSessionCommandHelper } from '../../services/session/index.js';
-import { TuiInputGuardError } from '../../services/session/tui-input-guard.js';
+import { TuiInputGuardError, TuiPasteHoldError } from '../../services/session/tui-input-guard.js';
 import { LoggerService, ComponentLogger } from '../../services/core/logger.service.js';
 import { TERMINAL_CONTROLLER_CONSTANTS, ORCHESTRATOR_SESSION_NAME, CREWLY_CONSTANTS, EVENT_DELIVERY_CONSTANTS, AGENT_MESSAGE_DELIVERY_CONSTANTS, RuntimeType, RUNTIME_TYPES, SPEND_CAP_CONSTANTS, TEAM_PAUSE_CONSTANTS } from '../../constants.js';
 import {
@@ -53,6 +53,7 @@ import { getCallerIdentity, isOwnerCaller } from '../../middleware/caller-identi
 import { pausedRefusalMessage, pausedTeamOfSession } from '../../services/team/team-pause.registry.js';
 import { noteTurnDelivery, withWorkItemTraceMarker } from '../../services/trace/trace-recorder.js';
 import { noteOutsideInput } from '../../services/session/input-ledger.js';
+import { describeAgentSender, wrapAgentMessage, type AgentMessageSender } from '../../services/messaging/agent-message-envelope.js';
 
 /** Logger instance for terminal controller */
 const logger: ComponentLogger = LoggerService.getInstance().createComponentLogger('TerminalController');
@@ -368,12 +369,82 @@ export async function prepareWorkItemHandOver(
 }
 
 /**
+ * The sender of an agent-to-agent message written through this route
+ * (`send-message`), when its text should carry the sender header
+ * (crewly#1375). Null for the owner / dashboard, the orchestrator, raw
+ * keystrokes, WorkItem hand-overs, an agent writing to itself, and harness
+ * services that write with an agent badge but are not team members.
+ *
+ * @param target - Receiving session
+ * @param req - The request (caller identity, body)
+ * @returns The sender, or null when the text goes as it is
+ */
+async function agentMessageSenderOf(target: string, req: Request): Promise<AgentMessageSender | null> {
+	try {
+		if (req.body?.mode !== 'message' || req.body?.workItemId) return null;
+		if (isOwnerCaller(req)) return null;
+		const sender = readAgentSessionHeader(req);
+		if (!sender || sender === target) return null;
+		// The orchestrator frames its own messages on this route.
+		if (sender === ORCHESTRATOR_SESSION_NAME) return null;
+		const found = await describeAgentSender(sender, (session) => StorageService.getInstance().findMemberBySessionName(session));
+		return found ? await withSenderRoute(found) : null;
+	} catch {
+		// The header is a courtesy: never block the delivery over it.
+		return null;
+	}
+}
+
+/**
+ * The sender header of an agent's `/deliver` message (`orchestrator/send-message`,
+ * crewly#1381 item 1): the orchestrator or a team member, never a WorkItem
+ * hand-over (the dispatch frames that) or the owner. The recipient's answer
+ * then goes back to the sender, not into the recipient's last owner thread.
+ *
+ * @param target - Receiving session
+ * @param req - The request (caller identity, body)
+ * @returns The sender, or null when the text goes as it is
+ */
+async function agentDeliverSenderOf(target: string, req: Request): Promise<AgentMessageSender | null> {
+	try {
+		if (req.body?.workItemId) return null;
+		if (isOwnerCaller(req)) return null;
+		const sender = readAgentSessionHeader(req);
+		if (!sender || sender === target) return null;
+		if (sender === ORCHESTRATOR_SESSION_NAME) return await withSenderRoute({ session: sender, name: 'Orc', team: 'Crewly orchestrator' });
+		const found = await describeAgentSender(sender, (session) => StorageService.getInstance().findMemberBySessionName(session));
+		return found ? await withSenderRoute(found) : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The sender with the route it is answering (message-routing audit
+ * 2026-10-18): the owner thread or work item travels with the message.
+ *
+ * @param sender - The sender
+ * @returns The sender, with its route when it has one
+ */
+async function withSenderRoute(sender: AgentMessageSender): Promise<AgentMessageSender> {
+	try {
+		const { currentRouteOf } = await import('../../services/orc/reply-destination.wiring.js');
+		const route = await currentRouteOf(sender.session);
+		return route ? { ...sender, route } : sender;
+	} catch {
+		// The route is a courtesy here: the header still names the sender.
+		return sender;
+	}
+}
+
+/**
  * A message from one agent to a team member whose session is down: queue it
  * and start the agent instead of answering 404 (#929).
  *
- * Only agent-to-agent messages take this path (the caller's `X-Agent-Session`
- * is the orchestrator or a team member). A raw write that hands over a WorkItem is
- * left to the pool, which already wakes offline targets for queued work (a
+ * Agent-to-agent messages take this path (the caller's `X-Agent-Session`
+ * is the orchestrator or a team member), with a start. A scheduled command's
+ * note (the scheduler credential) is queued too but starts nobody (CREW-362).
+ * A raw write that hands over a WorkItem is left to the pool, which already wakes offline targets for queued work (a
  * `deliver` that hands one over takes this path too, #1135), and
  * internal notifiers (the WorkItem dispatcher, worktree notices, …) keep their
  * 404 — a system notice is not a reason to start an agent.
@@ -388,6 +459,16 @@ async function queueMessageForOfflineMember(
 	sessionName: string,
 	data: string,
 ): Promise<OfflineAgentMessageResult | null> {
+	// A scheduled command's note (the crewly-web release line, CREW-362) to a
+	// member who is down: queued, never waking the agent. It is delivered when the
+	// agent next starts. A system notice is not a reason to start one.
+	if (getCallerIdentity(req).kind === 'scheduler') {
+		return queueForOfflineAgent(sessionName, data, {
+			findMember: (name) => StorageService.getInstance().findMemberBySessionName(name),
+			enqueue: (name, text) => SubAgentMessageQueue.getInstance().enqueue(name, text),
+			wake: null,
+		});
+	}
 	const caller = req.headers?.['x-agent-session'];
 	if (typeof caller !== 'string' || !caller) return null;
 	if (caller !== ORCHESTRATOR_SESSION_NAME) {
@@ -520,7 +601,14 @@ export async function writeToSession(this: unknown, req: Request, res: Response)
 		// is neither the owner nor an agent, and the recipient must not take it for either.
 		const caller = getCallerIdentity(req);
 		const fromScheduler = caller.kind === 'scheduler';
-		const rawDataStr = fromScheduler ? `[${caller.sender ?? 'scheduler:unknown'}] ${String(data)}` : String(data);
+		// Another agent's message names its sender and reply route (crewly#1375):
+		// the recipient must not take it for the owner, nor answer it in an owner thread.
+		const agentSender = !fromScheduler ? await agentMessageSenderOf(sessionName, req) : null;
+		const rawDataStr = fromScheduler
+			? `[${caller.sender ?? 'scheduler:unknown'}] ${String(data)}`
+			: agentSender
+				? wrapAgentMessage(String(data), agentSender)
+				: String(data);
 		const validation = validateTerminalInput(rawDataStr);
 		if (!validation.isValid) {
 			logger.warn('Terminal input validation failed', {
@@ -723,6 +811,10 @@ export async function writeToSession(this: unknown, req: Request, res: Response)
 						code: 'input_not_ours',
 						error: guardErr.message,
 					} as ApiResponse);
+					return;
+				}
+				if (guardErr instanceof TuiPasteHoldError) {
+					queuePasteHeldMessage(res, sessionName, dataStr, registration, guardErr.reason);
 					return;
 				}
 				throw guardErr;
@@ -1084,6 +1176,50 @@ function mapKeyToSequence(key: string): string {
  * Body: { message: "Hello agent", waitForReady: true }
  * Response: { success: true, verified: true }
  */
+/**
+ * Queue a message whose guarded write was held because an earlier paste of
+ * ours is still settling in the recipient's input box (`TuiPasteHoldError`).
+ *
+ * Before 2026-10-26 the hold fell through to the generic 500 ("Failed to
+ * write to session") and the sender resent by hand (Quinn → Sam 14:21).
+ * The hold is the same condition as a mid-turn hold — the box is not ours
+ * to type into right now — so it answers the same way: 202 with the queue
+ * position, and the busy-hold recheck (or the next idle) delivers it.
+ *
+ * @param res - Response to answer with 202
+ * @param sessionName - Recipient session
+ * @param message - Message text to queue
+ * @param registration - Registration service when the context has one; it
+ *   schedules the recheck. Without it the message goes straight to the
+ *   sub-agent queue and is drained on the recipient's next idle.
+ * @param reason - Why the write was held
+ */
+function queuePasteHeldMessage(
+	res: Response,
+	sessionName: string,
+	message: string,
+	registration: ApiContext['agentRegistrationService'] | undefined,
+	reason: TuiPasteHoldError['reason'],
+): void {
+	let held: { position: number; queueSize: number };
+	if (registration) {
+		held = registration.holdForBusyAgent(sessionName, message);
+	} else {
+		const queue = SubAgentMessageQueue.getInstance();
+		queue.enqueue(sessionName, message);
+		const queueSize = queue.getQueueSize(sessionName);
+		held = { position: queueSize, queueSize };
+	}
+	logger.info('Recipient input box still settling — message queued', { sessionName, reason, ...held });
+	res.status(202).json({
+		success: true,
+		queued: true,
+		position: held.position,
+		queueSize: held.queueSize,
+		message: `[AGENT_BUSY] ${sessionName}'s input box is still settling: message queued at position ${held.position} of ${held.queueSize}; it is delivered once the box is clear`,
+	} as ApiResponse);
+}
+
 export async function deliverMessage(this: ApiContext, req: Request, res: Response): Promise<void> {
 	// Set once the delivery is under way; run in `finally`.
 	let endDelivery: () => void = () => undefined;
@@ -1118,7 +1254,9 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			return;
 		}
 		// Replaced below by the hand-over text for a local WorkItem hand-over.
-		let message: string = rawMessage;
+		// An agent's message names its sender and the route it carries.
+		const deliverSender = await agentDeliverSenderOf(sessionName, req);
+		let message: string = deliverSender ? wrapAgentMessage(rawMessage, deliverSender) : rawMessage;
 		// A paused team takes no messages from other agents (specs/2026-10-04-team-pause.md).
 		if (rejectMessageToPausedTeam(sessionName, req, res)) return;
 		// A message from one agent to another: the target now acts for whoever
@@ -1293,6 +1431,10 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 						code: 'input_not_ours',
 						error: guardErr.message,
 					} as ApiResponse);
+					return;
+				}
+				if (guardErr instanceof TuiPasteHoldError) {
+					queuePasteHeldMessage(res, sessionName, message, this?.agentRegistrationService, guardErr.reason);
 					return;
 				}
 				throw guardErr;
@@ -1682,6 +1824,9 @@ export function noteAgentToAgent(target: string, req: Pick<Request, 'headers'> &
 		const body = (req.body ?? {}) as Record<string, unknown>;
 		const text = typeof body.message === 'string' ? body.message : body.mode === 'message' && typeof body.data === 'string' ? body.data : null;
 		if (text) getTurnTriggerTracker().noteSender(target, text, sender);
+		// Writing to the agent whose message this one is answering answers it:
+		// a later bare reply does not go back there (crewly#1381 item 3).
+		getTurnTriggerTracker().noteAnsweredAgent(sender, target);
 		// Writing to an agent answers what that agent asked this one.
 		try {
 			getAgentAskLedger()?.noteAnswered(sender, target);

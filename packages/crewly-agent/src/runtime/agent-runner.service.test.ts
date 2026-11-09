@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi, type Mocked, type Mock
 import { AgentRunnerService, AgentRunTimeoutError, ToolCallLoopDetector } from './agent-runner.service.js';
 import { ModelManager } from './model-manager.js';
 import { CrewlyApiClient } from './api-client.js';
-import { CREWLY_AGENT_DEFAULTS, type CrewlyAgentConfig, type SecurityPolicy, type AuditEntry } from './types.js';
+import { CREWLY_AGENT_DEFAULTS, type CrewlyAgentConfig, type SecurityPolicy, type AuditEntry, type ToolSensitivity } from './types.js';
+import { TOOL_SENSITIVITY } from './tool-registry.js';
 
 describe('AgentRunnerService', () => {
   let runner: AgentRunnerService;
@@ -250,6 +251,65 @@ describe('AgentRunnerService', () => {
       uninitRunner._generateTextFn = mockGenerateText;
 
       await expect(uninitRunner.run('Hello')).rejects.toThrow('not initialized');
+    });
+  });
+
+  describe('sub-agents (#1317)', () => {
+    const okResult = {
+      text: 'done',
+      steps: [{ toolCalls: [], toolResults: [] }],
+      usage: { inputTokens: 10, outputTokens: 5 },
+      finishReason: 'stop',
+    };
+
+    it('gives a normal agent spawn_subagent on top of the full tool set', async () => {
+      await runner.initialize();
+      mockGenerateText.mockResolvedValueOnce(okResult);
+      await runner.run('hi');
+      const tools = mockGenerateText.mock.calls[0][0].tools as Record<string, unknown>;
+      expect(tools.spawn_subagent).toBeDefined();
+      expect(tools.report_to_parent).toBeUndefined();
+      expect(tools.send_message).toBeDefined();
+      expect(tools.read_file).toBeDefined();
+    });
+
+    it('gives a sub-agent only the confined file/search/shell tools plus report_to_parent', async () => {
+      const child = new AgentRunnerService(
+        {
+          ...baseConfig,
+          sessionName: 'test-session/sub-1',
+          projectPath: '/tmp/proj',
+          subagent: { cwd: '/tmp/proj', readOnly: false, depth: 1, parentSession: 'test-session' },
+        },
+        mockModelManager,
+        mockApiClient,
+      );
+      child._generateTextFn = mockGenerateText;
+      await child.initialize();
+      mockGenerateText.mockResolvedValueOnce(okResult);
+      await child.run('task');
+      const tools = mockGenerateText.mock.calls[0][0].tools as Record<string, unknown>;
+      expect(tools.report_to_parent).toBeDefined();
+      expect(tools.read_file).toBeDefined();
+      expect(tools.bash_exec).toBeDefined();
+      expect(tools.spawn_subagent).toBeUndefined();
+      expect(tools.send_message).toBeUndefined();
+      expect(tools.delegate_task).toBeUndefined();
+      expect(tools.remember).toBeUndefined();
+      expect(child.getSubagentReport()).toBeNull();
+    });
+
+    it('folds a child\'s tokens into the parent\'s next run result and totals, once', async () => {
+      await runner.initialize();
+      runner.recordChildUsage({ input: 1000, output: 200, cachedInput: 50 });
+      mockGenerateText.mockResolvedValueOnce(okResult);
+      const first = await runner.run('one');
+      expect(first.usage).toEqual({ input: 1010, output: 205, cachedInput: 50 });
+      expect(runner.getState().totalTokens).toEqual({ input: 1010, output: 205 });
+
+      mockGenerateText.mockResolvedValueOnce(okResult);
+      const second = await runner.run('two');
+      expect(second.usage).toEqual({ input: 10, output: 5, cachedInput: 0 });
     });
   });
 
@@ -1194,6 +1254,21 @@ describe('AgentRunnerService', () => {
       expect((toolResult as Record<string, unknown>).error).toContain('read-only');
       // Should NOT have called the API
       expect(mockApiClient.post).not.toHaveBeenCalled();
+    });
+
+    it('should block create_github_issue in readOnlyMode and ask for approval when sensitive tools need it', () => {
+      const check = (name: string) =>
+        (runner as unknown as { checkApproval: (n: string, s: ToolSensitivity) => { allowed: boolean; blocked?: boolean } })
+          .checkApproval(name, TOOL_SENSITIVITY[name]);
+
+      runner.updateSecurityPolicy({ readOnlyMode: true });
+      expect(check('create_github_issue')).toMatchObject({ allowed: false, blocked: true });
+
+      runner.updateSecurityPolicy({ readOnlyMode: false, requireApproval: ['sensitive'] });
+      expect(check('create_github_issue')).toMatchObject({ allowed: false, blocked: false });
+
+      runner.updateSecurityPolicy({ readOnlyMode: false, requireApproval: [] });
+      expect(check('create_github_issue')).toEqual({ allowed: true });
     });
 
     it('should allow safe/read-only tools when readOnlyMode is active', async () => {

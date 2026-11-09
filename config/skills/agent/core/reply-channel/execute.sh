@@ -40,6 +40,9 @@ Options:
                      "<you> is working on it…" in the Slack thread, which your
                      real reply then replaces. Use it when a message was only
                      passed to you to judge, and you have decided to answer.
+  --new-thread       A deliberate new top-level post in a Slack team room. Without
+                     --thread or --new-thread such a post is refused there
+                     (409 thread_required), never put at the top level silently.
   --adds-new         Post even though the agent chosen to answer the owner
                      already replied in this thread -- when you have something
                      new, or when you were asked (without it such a post is
@@ -66,6 +69,7 @@ WORKING=""
 HANDOFF=""
 MESSAGE_REF=""
 ADDS_NEW=""
+NEW_THREAD=""
 FILES_JSON="[]"
 
 # Detect legacy JSON argument as $1
@@ -90,6 +94,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --adds-new)
       ADDS_NEW="1"
+      shift
+      ;;
+    --new-thread)
+      NEW_THREAD="1"
       shift
       ;;
     --handoff)
@@ -252,7 +260,7 @@ fi
 # Build JSON body. Export CONTENT/CMID so python can read them safely without
 # quoting the values through the shell (avoids escaping hell for multi-line
 # content with quotes, backslashes, backticks, etc.).
-BODY=$(CONTENT="$CONTENT" CMID="$CMID" THREAD_ID="$THREAD_ID" INTERIM="${INTERIM:-}" ADDS_NEW="$ADDS_NEW" FILES_JSON="$FILES_JSON" PROJECT_PATH="${CREWLY_PROJECT_PATH:-$PWD}" python3 -c '
+BODY=$(CONTENT="$CONTENT" CMID="$CMID" THREAD_ID="$THREAD_ID" INTERIM="${INTERIM:-}" ADDS_NEW="$ADDS_NEW" NEW_THREAD="$NEW_THREAD" FILES_JSON="$FILES_JSON" PROJECT_PATH="${CREWLY_PROJECT_PATH:-$PWD}" python3 -c '
 import os, json
 p = {"content": os.environ["CONTENT"], "contentType": "markdown"}
 files = json.loads(os.environ.get("FILES_JSON", "[]"))
@@ -264,6 +272,8 @@ if os.environ.get("INTERIM"):
     p["interim"] = True
 if os.environ.get("ADDS_NEW"):
     p["addsNew"] = True
+if os.environ.get("NEW_THREAD"):
+    p["newThread"] = True
 cmid = os.environ.get("CMID", "")
 if cmid:
     p["clientMessageId"] = cmid
@@ -285,7 +295,12 @@ try:
 except Exception:
     print(json.dumps({"success": True, "channelId": os.environ["CHANNEL_ID"], "raw": raw}, separators=(",", ":")))
     raise SystemExit(0)
-mid = (d.get("data") or {}).get("id", "")
+data = d.get("data") or {}
+if data.get("deliveredPrivately"):
+    # R6: an agents-only post never lands in the owner thread; it went to the agents.
+    print(json.dumps({"success": True, "posted": False, "deliveredPrivately": True, "to": data.get("to", []), "note": data.get("note", "")}, separators=(",", ":"), ensure_ascii=False))
+    raise SystemExit(0)
+mid = data.get("id", "")
 out = {"success": True}
 if mid:
     out["messageId"] = mid

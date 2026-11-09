@@ -473,9 +473,10 @@ export function buildDigestMessage(projects: DigestProject[], extraBlock?: strin
  * @param budgetTokens - Daily budget (budget tokens)
  * @param teamName - The project's team, for the boost command
  * @param rawTokens - Raw tokens used today, shown beside the weighted figure
+ * @param uncapped - True when no spend cap covers the team: the notice adds that its other work is not stopped
  * @returns Message text
  */
-export function buildBudgetPausedMessage(projectName: string, usedTokens: number, budgetTokens: number, teamName?: string, rawTokens?: number): string {
+export function buildBudgetPausedMessage(projectName: string, usedTokens: number, budgetTokens: number, teamName?: string, rawTokens?: number, uncapped = false): string {
   const boost = teamName ? `boost ${teamName} by ${compactTokens(Math.max(1_000_000, budgetTokens))} today` : 'boost <team> by 20M today';
-  return `Ticket autopilot paused for today on ${projectName}: the team has used ${formatTokens(usedTokens)} of its ${formatTokens(budgetTokens)} daily budget${rawTokens !== undefined ? ` (weighted by cost, cache reads at a fraction; ${formatTokens(rawTokens)} raw)` : ''}. It picks up again tomorrow, or reply \`${boost}\` to lift it for today.`;
+  return `Ticket autopilot paused for today on ${projectName}: the team has used ${formatTokens(usedTokens)} of its ${formatTokens(budgetTokens)} daily budget${rawTokens !== undefined ? ` (weighted by cost, cache reads at a fraction; ${formatTokens(rawTokens)} raw)` : ''}. It picks up again tomorrow, or reply \`${boost}\` to lift it for today.${uncapped ? ` ${TICKET_AUTOPILOT_CONSTANTS.NO_TEAM_CAP_NOTE.replaceAll('<team>', teamName ?? '<team>')}` : ''}`;
 }

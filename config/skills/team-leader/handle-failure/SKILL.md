@@ -50,6 +50,7 @@ bash {{SKILLS_PATH}}/team-leader/handle-failure/execute.sh '{"workerId":"worker-
 | `teamId` | No | Team ID (needed for reassignment lookup) |
 | `requiredRole` | No | Role required for the task (helps find alternatives) |
 | `taskDescription` | No | Brief task description for context |
+| `projectPath` | No | Project root; with `failureInfo.correctionClass`, the failure is counted on the project's correction ladder (#810) |
 | `failureInfo` | Yes | Failure details object (see below) |
 
 ### failureInfo Object
@@ -60,6 +61,7 @@ bash {{SKILLS_PATH}}/team-leader/handle-failure/execute.sh '{"workerId":"worker-
 | `failedSteps` | Array of failed verification step names |
 | `retries` | Number of retries already attempted |
 | `failureType` | Category of failure (see below) |
+| `correctionClass` | Optional. A short slug for the *kind* of mistake behind the failure (`skip-tests-before-pr`, `git-add-all`). Give one when the failure was a correction of how the worker works, not a flaky environment. The second time a class is recorded in a project you (the lead) get one WorkItem asking whether it can be made impossible, caught by a check or a hook, or must stay prose — answered with `decide-correction`. The output carries `correction: { class, count, raised }`. |
 
 ### Failure Types
 

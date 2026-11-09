@@ -81,8 +81,9 @@ if [ "$HAS_TEXT" = 1 ]; then
 fi
 BASE="/apps/${APP}/comments"
 
+# $1 = "note" for the reply a resolve posts first (kept off the room thread when it already has an answer)
 reply() {
-  call POST "${BASE}/${ID}/replies" "$(jq -cn --arg t "$TEXT" '{text: $t}')"
+  call POST "${BASE}/${ID}/replies" "$(jq -cn --arg t "$TEXT" --arg n "${1:-}" '{text: $t} + (if $n == "note" then {note: true} else {} end)')"
 }
 
 case "$OP" in
@@ -107,7 +108,7 @@ case "$OP" in
     ;;
   resolve|reopen)
     if [ "$HAS_TEXT" = 1 ]; then
-      R=$(reply) || { printf '%s\n' "$R"; exit 1; }
+      R=$(reply "$([ "$OP" = resolve ] && echo note)") || { printf '%s\n' "$R"; exit 1; }
     fi
     RESPONSE=$(call POST "${BASE}/${ID}/${OP}") || { printf '%s\n' "$RESPONSE"; exit 1; }
     printf '%s' "$RESPONSE" | jq -c '{success: true, id: .data.id, number: .data.number, status: .data.status, replies: (.data.replies | length)}'

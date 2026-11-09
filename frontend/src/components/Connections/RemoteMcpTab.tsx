@@ -18,7 +18,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { ExternalLink, Pencil, PlugZap, Trash2 } from 'lucide-react';
+import { ExternalLink, Pencil, PlugZap, Plus, Trash2, X } from 'lucide-react';
 import { Alert, Button, Card, Input } from '@crewly/ui';
 import { FilterPill } from '@crewly/ui/FilterPill';
 import { ConnectorAccessControl } from './ConnectorAccessControl';
@@ -61,6 +61,7 @@ export const RemoteMcpTab: React.FC<RemoteMcpTabProps> = ({ access = {}, onAcces
   const [label, setLabel] = useState(REMOTE_MCP_PRESETS[0].label);
   const [url, setUrl] = useState('');
   const [adding, setAdding] = useState(false);
+  const [headerRows, setHeaderRows] = useState<Array<{ name: string; value: string }>>([]);
   const [tests, setTests] = useState<Record<string, RemoteMcpTestResult | 'running'>>({});
   const [renaming, setRenaming] = useState<{ id: string; label: string } | null>(null);
   const [authorizing, setAuthorizing] = useState<string | null>(null);
@@ -91,8 +92,16 @@ export const RemoteMcpTab: React.FC<RemoteMcpTabProps> = ({ access = {}, onAcces
     setError(null);
     setNotice(null);
     try {
-      const { server, authorize } = await addRemoteMcp({ label: label.trim(), url: url.trim(), provider: preset.id });
+      const headers: Record<string, string> = {};
+      for (const row of headerRows) if (row.name.trim() && row.value) headers[row.name.trim()] = row.value;
+      const { server, authorize } = await addRemoteMcp({
+        label: label.trim(),
+        url: url.trim(),
+        provider: preset.id,
+        ...(Object.keys(headers).length ? { headers } : {}),
+      });
       setUrl('');
+      setHeaderRows([]);
       if (authorize && 'error' in authorize) {
         setNotice(`${server.label} added, but it needs a sign-in Crewly could not start: ${authorize.error}`);
       } else if (authorize && 'url' in authorize) {
@@ -297,6 +306,42 @@ export const RemoteMcpTab: React.FC<RemoteMcpTabProps> = ({ access = {}, onAcces
           data-testid="remote-mcp-url"
         />
         <Input label="Name" value={label} onChange={(e) => setLabel(e.target.value)} fullWidth data-testid="remote-mcp-label" />
+        <div className="space-y-2" data-testid="remote-mcp-headers">
+          <div className="text-[13px] font-semibold text-text">Request headers <span className="font-normal text-text-3">(optional)</span></div>
+          {headerRows.map((row, i) => (
+            <div key={i} className="flex items-end gap-2">
+              <Input
+                label="Header name"
+                value={row.name}
+                onChange={(e) => setHeaderRows((rows) => rows.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)))}
+                placeholder="Authorization"
+                autoComplete="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                fullWidth
+                data-testid={`remote-mcp-header-name-${i}`}
+              />
+              <Input
+                label="Value"
+                type="password"
+                value={row.value}
+                onChange={(e) => setHeaderRows((rows) => rows.map((r, j) => (j === i ? { ...r, value: e.target.value } : r)))}
+                placeholder="Bearer …"
+                autoComplete="off"
+                spellCheck={false}
+                fullWidth
+                data-testid={`remote-mcp-header-value-${i}`}
+              />
+              <Button type="button" size="sm" variant="ghost" aria-label="Remove header" onClick={() => setHeaderRows((rows) => rows.filter((_, j) => j !== i))} data-testid={`remote-mcp-header-remove-${i}`}>
+                <X className="h-4 w-4" aria-hidden="true" />
+              </Button>
+            </div>
+          ))}
+          <Button type="button" size="sm" variant="ghost" onClick={() => setHeaderRows((rows) => [...rows, { name: '', value: '' }])} data-testid="remote-mcp-header-add">
+            <Plus className="h-3 w-3" aria-hidden="true" /> Add header
+          </Button>
+          {headerRows.length > 0 && <p className="text-xs text-text-3">Values are stored on this machine and never shown again.</p>}
+        </div>
         <div className="flex items-center gap-3">
           <Button type="submit" disabled={adding || !url.trim() || !label.trim()} data-testid="remote-mcp-add">
             {adding ? 'Adding…' : 'Add server'}

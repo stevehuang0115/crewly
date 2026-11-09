@@ -248,6 +248,20 @@ describe('EscalationRouterService', () => {
       );
     });
 
+    it('says why the owner is asked when a reason is given instead of the waited-hours line', async () => {
+      const fileIo = jest.requireMock('../../utils/file-io.utils.js') as { atomicWriteJson: jest.Mock };
+      fileIo.atomicWriteJson.mockClear();
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      const id = await service.escalateUnreviewedToOwner(wi, 0, {
+        reason: 'The orchestrator did this work itself and has no separate reviewer; it cannot verify its own work.',
+      });
+      expect(id).not.toBeNull();
+      const written = fileIo.atomicWriteJson.mock.calls.map((c) => c[1]).find((e) => e.id === id);
+      expect(written.summary).toContain('did this work itself');
+      expect(written.summary).not.toContain('has waited');
+      expect(written.details).toMatchObject({ stage: 'owner', reason: expect.stringContaining('cannot verify its own work') });
+    });
+
     it('is best-effort: the escalation still resolves when the verdict render throws', async () => {
       mockVerifyItem.mockRejectedValueOnce(new Error('WorkItem not found'));
       const service = EscalationRouterService.getInstance('/tmp/test');

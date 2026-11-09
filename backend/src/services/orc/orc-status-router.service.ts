@@ -16,6 +16,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { findStatusWorkItem, planOrcStatusRoute, type OrcStatusRoute } from './orc-status-routing.js';
 import { OrcWakeCounter } from './orc-wake-counter.js';
 import { isOrchestratorSender } from './orc-delivery-enforcer.service.js';
+import { leadReportOf, orchestratorNote } from './team-lead-report.js';
 import { traceStatusRouted, withTraceMarker } from '../trace/trace-recorder.js';
 
 /** Collaborators (all injectable for tests). */
@@ -129,6 +130,8 @@ export class OrcStatusRouterService {
       this.deps.teams().catch(() => [] as Team[]),
     ]);
     const workItem = findStatusWorkItem(items, report.sender, report.workItemId, now);
+    // crewly#1371: team work its lead reports to the owner — nothing for the orchestrator to deliver.
+    const leadReport = leadReportOf(workItem);
     const lead = leadAbove(report.sender, teams);
     const senderIsLead = teams.some((t) => (t.members ?? []).some((m) => sessionOf(m) === report.sender || m.sessionName === report.sender) && sessionOf(pickTeamLead(t)) === report.sender);
     const route = planOrcStatusRoute({
@@ -137,7 +140,7 @@ export class OrcStatusRouterService {
       workItem,
       lead,
       senderIsLead,
-      deliveryOwed: report.deliveryOwed,
+      deliveryOwed: report.deliveryOwed && !leadReport,
       isOrchestrator: this.deps.isOrchestrator,
     });
 
@@ -154,7 +157,7 @@ export class OrcStatusRouterService {
         this.logger.info('Agent status recorded — orchestrator not woken', { ...logCtx, reason: route.reason });
         break;
       case 'orc':
-        if (this.enqueue({ content: withTraceMarker(`Agent status: ${report.orcText}`, traceId), conversationId: report.conversationId, source: MESSAGE_SOURCES.SYSTEM_EVENT, sourceMetadata: { [ORC_WAKE_CONSTANTS.WAKE_CATEGORY_KEY]: route.category, authorAgentSession: report.sender } })) {
+        if (this.enqueue({ content: withTraceMarker(`Agent status: ${report.orcText}${leadReport ? `\n${orchestratorNote(leadReport)}` : ''}`, traceId), conversationId: report.conversationId, source: MESSAGE_SOURCES.SYSTEM_EVENT, sourceMetadata: { [ORC_WAKE_CONSTANTS.WAKE_CATEGORY_KEY]: route.category, authorAgentSession: report.sender } })) {
           this.deps.counter.noteRouted(route.category);
         }
         this.logger.info('Agent status routed to orchestrator', { ...logCtx, category: route.category, reason: route.reason });

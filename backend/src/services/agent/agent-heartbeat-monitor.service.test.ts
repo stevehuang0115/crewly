@@ -96,7 +96,12 @@ import { AgentSuspendService } from './agent-suspend.service.js';
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
 import { AGENT_HEARTBEAT_MONITOR_CONSTANTS } from '../../constants.js';
 import { registerInProcessRuntime, unregisterInProcessRuntime } from './crewly-agent/in-process-runtime-registry.js';
-import { markPlannedRelaunch, resetPlannedRelaunches } from './planned-relaunch.registry.js';
+import { markPlannedRelaunch, markPlannedStop, resetPlannedRelaunches } from './planned-relaunch.registry.js';
+
+const restoring = new Set<string>();
+jest.mock('./restore-queue.js', () => ({
+	getRestoreQueue: () => ({ isRestoring: (name: string) => restoring.has(name) }),
+}));
 import type { Team } from '../../types/index.js';
 
 /**
@@ -376,6 +381,40 @@ describe('AgentHeartbeatMonitorService', () => {
 			);
 		});
 
+		// ce-owen was stopped on purpose (idle stop under memory pressure); the
+		// monitor had read the teams a moment earlier, saw the session gone and
+		// logged "Ghost agent detected" for a stop that had just written
+		// `inactive` itself (2026-10-25 09:17Z).
+		// Boot restore launches one agent every 15 s; the fourth and fifth of
+		// five start after the 60 s grace period and were flagged as ghosts
+		// (lyra, vera — 2026-10-25 09:36Z), flipped inactive, then restored.
+		it('does not call a session a ghost while the restore queue still has it', async () => {
+			mockSessionBackend.sessionExists.mockReturnValue(false);
+			setStartedAtInPast(service);
+			restoring.add('dev-agent-1');
+			try {
+				jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+				await service.performCheck();
+				expect(mockStorageService.updateAgentStatus).not.toHaveBeenCalledWith('dev-agent-1', 'inactive');
+			} finally {
+				restoring.clear();
+			}
+		});
+
+		it('does not call a session a ghost when storage already says inactive by the time it looks', async () => {
+			mockSessionBackend.sessionExists.mockReturnValue(false);
+			setStartedAtInPast(service);
+			const stoppedTeams = JSON.parse(JSON.stringify(mockTeams)) as Team[];
+			for (const m of stoppedTeams[0].members) m.agentStatus = 'inactive';
+			mockStorageService.getTeams.mockResolvedValueOnce(mockTeams).mockResolvedValue(stoppedTeams);
+
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+			await service.performCheck();
+
+			expect(mockStorageService.updateAgentStatus).not.toHaveBeenCalled();
+			expect(mockGateway.broadcastTeamMemberStatus).not.toHaveBeenCalled();
+		});
+
 		it('does not mark an in-process (Crewly Agent) member as a ghost while its runtime runs', async () => {
 			const fakeRuntime = { isReady: () => true, shutdown: () => undefined };
 			registerInProcessRuntime('dev-agent-1', fakeRuntime as never);
@@ -500,6 +539,20 @@ describe('AgentHeartbeatMonitorService', () => {
 			// A real crash after the window still restarts it.
 			for (let i = 0; i < 3; i++) await service.performCheck();
 			expect(mockSessionBackend.killSession).toHaveBeenCalledWith('dev-agent-1');
+		});
+
+		it('leaves an agent being stopped on purpose alone: no ghost downgrade while storage catches up (#1464)', async () => {
+			setStartedAtInPast(service);
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+			markPlannedStop('dev-agent-1');
+			try {
+				// Session already killed, `inactive` not yet written.
+				mockSessionBackend.sessionExists.mockReturnValue(false);
+				await service.performCheck();
+				expect(mockStorageService.updateAgentStatus).not.toHaveBeenCalledWith('dev-agent-1', 'inactive');
+			} finally {
+				resetPlannedRelaunches();
+			}
 		});
 
 		it('should not restart until 3 consecutive dead checks', async () => {

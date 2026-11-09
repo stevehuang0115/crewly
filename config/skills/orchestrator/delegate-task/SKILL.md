@@ -48,7 +48,21 @@ The script auto-resolves `config/skills/...` references to absolute paths so del
 | `--force-cross-team` | `forceCrossTeam` | No | Allow cross-team delegation |
 | `--request-id` / `-R` | `requestId` | No | Ticket (Request) this work is for — the id or `TKT-123` from the `[TICKET:TKT-123 <id>]` line of the message you are acting on. Links the WorkItem into `Request.workItemIds[]`. Omit it and the WorkItem is still linked when your current turn has exactly one ticket |
 | `--ticket` | `ticket` | No | Project ticket this work is for (e.g. `APP-12`). Without it a ticket is created for you when the target works on a project — see Project tickets |
+| `--thread` | `thread` | No | The owner's Slack thread this work was asked / approved in — the key from the `[SLACK-THREAD:<key>]` tag of the owner's message. A `<conversation id>:<chat thread id>` pair from the chat works too. Gives the work the owner origin (see Owner work below) |
+| `--conversation` | `conversation` | No | The owner's Crewly chat conversation this work was asked / approved in — the id from `[CHAT:<id>]`. Same as `--thread` for chat |
 | `--fallback-minutes` | — | No | Minutes until the ONE §3.0 fallback check fires for this delegation (default `120` ≈ 2× a TL milestone ETA). `0` disables it. Not cancelled on completion — keep it at 2× ETA, never a poll interval |
+
+## Owner work: the team lead reports it
+
+Work the owner asked for or approved carries the owner's place: pass `--thread`
+or `--conversation`. When the target is in a team with a Slack channel, the
+**team lead** (the worker, when the team has no lead) reports the finished work
+to the owner in that team channel, as themselves (crewly#1371). The output then
+has `ownerReport: {reportedBy, channel, note}`. You do not relay it: your
+notices about it say "No owner post needed — <lead> reports it in #<channel>".
+
+Without `--thread`/`--conversation` the result comes back to you, never to the
+owner, as before.
 
 ## Project tickets
 

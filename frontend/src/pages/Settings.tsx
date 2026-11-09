@@ -30,6 +30,7 @@ import { RuntimesTab } from '../components/Settings/RuntimesTab';
 import { CloudDevicesTab } from '../components/Settings/CloudDevicesTab';
 import { SecurityTab } from '../components/Settings/SecurityTab';
 import { PeopleTab } from '../components/Settings/PeopleTab';
+import { ActivityTab } from '../components/Settings/ActivityTab';
 import { useTabParam } from '../hooks/useTabParam';
 import {
   SETTINGS_TABS,
@@ -49,6 +50,7 @@ export const SETTINGS_TAB_LABELS: Record<SettingsTabId, string> = {
   cloud: 'Cloud & devices',
   security: 'Security',
   system: 'System',
+  activity: 'Activity',
 };
 
 /**
@@ -82,6 +84,8 @@ function renderTabContent(tab: SettingsTabId): React.ReactNode {
       return <SecurityTab />;
     case 'system':
       return <SystemTab />;
+    case 'activity':
+      return <ActivityTab />;
     default:
       return null;
   }

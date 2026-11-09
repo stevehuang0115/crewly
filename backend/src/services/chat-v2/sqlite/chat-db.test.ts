@@ -6,6 +6,7 @@
 
 import {
   applyPhaseAColumnUpgrades,
+  applyReadStateUpgrade,
   openChatDatabase,
   setBetterSqlite3LoaderForTesting,
 } from './chat-db.js';
@@ -620,5 +621,43 @@ describe('openChatDatabase', () => {
     } finally {
       db.close();
     }
+  });
+
+  describe('applyReadStateUpgrade (#1400)', () => {
+    it('creates chat_read_state on a fresh database with nothing to seed', () => {
+      const db = openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true });
+      const cols = db.prepare('PRAGMA table_info(chat_read_state)').all() as Array<{ name: string }>;
+      expect(cols.map((c) => c.name)).toEqual(['channel_id', 'last_read_seq', 'updated_at']);
+      db.close();
+    });
+
+    it('seeds every existing channel at its max seq once, and never re-seeds', () => {
+      const db = openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true });
+      db.exec('DROP TABLE chat_read_state');
+      db.exec(`INSERT INTO chat_channels (id, agent_session, owner_user_id, name, created_at) VALUES
+        ('a','s','u','a',1), ('empty','s','u','e',1)`);
+      for (const seq of [1, 2, 3]) {
+        db.prepare(
+          `INSERT INTO chat_messages (id, channel_id, seq, sender_type, sender_id, content, created_at)
+           VALUES (?, 'a', ?, 'agent', 'x', 'c', 1)`,
+        ).run(`m${seq}`, seq);
+      }
+      expect(applyReadStateUpgrade(db)).toEqual({ created: true, seeded: 2 });
+      const rows = db
+        .prepare('SELECT channel_id, last_read_seq FROM chat_read_state ORDER BY channel_id')
+        .all();
+      expect(rows).toEqual([
+        { channel_id: 'a', last_read_seq: 3 },
+        { channel_id: 'empty', last_read_seq: 0 },
+      ]);
+
+      // A later boot must not re-seed: a channel the owner marked unread stays unread.
+      db.prepare("UPDATE chat_read_state SET last_read_seq = 0 WHERE channel_id = 'a'").run();
+      expect(applyReadStateUpgrade(db)).toEqual({ created: false, seeded: 0 });
+      expect(
+        db.prepare("SELECT last_read_seq AS s FROM chat_read_state WHERE channel_id = 'a'").get(),
+      ).toEqual({ s: 0 });
+      db.close();
+    });
   });
 });

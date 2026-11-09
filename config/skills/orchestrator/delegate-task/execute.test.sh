@@ -51,6 +51,8 @@ api_call() {
         # Mirrors the real api_call on a 4xx: error envelope on stderr, exit 1.
         echo '{"error":true,"status":409,"details":{"success":false,"error":"APP-3 is already being worked in WorkItem wi-9","code":"project_ticket_refused"}}' >&2
         return 1
+      elif [ "\${TEST_ADD_LEAD:-0}" = "1" ]; then
+        echo '{"success":true,"data":{"id":"wi-stub-id","leadReport":{"lead":"ella","leadName":"Ella","channel":"#marketing","note":"n","delegatorNote":"No owner post needed — Ella reports it in #marketing; do not post it in your thread with the owner."}}}'
       elif [ "\${TEST_ADD_TICKET:-0}" = "1" ]; then
         echo '{"success":true,"data":{"id":"wi-stub-id","projectTicket":{"id":"APP-4","status":"in_progress","projectPath":"/p","project":"App","created":true}}}'
       else
@@ -427,6 +429,34 @@ if grep -q "POST /task-pool/claim" "$CALL_LOG"; then
   echo "  FAIL: claim attempted after a refusal"; FAIL=$((FAIL + 1))
 else
   echo "  PASS: nothing claimed after a refusal"; PASS=$((PASS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Test 10: owner work goes to the team lead (crewly#1371)
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== ORC delegate-task — owner place + lead report ==="
+> "$CALL_LOG"
+OUT=$(CALL_LOG="$CALL_LOG" CREWLY_ROOT=/tmp/crewly-test CREWLY_SESSION_NAME=crewly-orc TEST_ADD_LEAD=1 \
+  bash "${SKILL_PARENT}/delegate-task/execute.sh" --to crewly-test-bob --task "Re-word the tutorial" \
+  --thread D0ORC:1792000000.000100 --conversation slack-D0ORC --fallback-minutes 0 2>&1 || true)
+assert_log_contains "--thread travels as metadata.ownerThread" '"ownerThread": "D0ORC:1792000000.000100"'
+assert_log_contains "--conversation travels as metadata.ownerConversation" '"ownerConversation": "slack-D0ORC"'
+assert_output_contains "result says who reports it to the owner" '"reportedBy": "Ella"' "$OUT"
+assert_output_contains "result tells the orc not to post it" 'No owner post needed' "$OUT"
+
+> "$CALL_LOG"
+OUT=$(CALL_LOG="$CALL_LOG" CREWLY_ROOT=/tmp/crewly-test \
+  bash "${SKILL_PARENT}/delegate-task/execute.sh" --to crewly-test-bob --task "plain" --fallback-minutes 0 2>&1 || true)
+if grep -q 'ownerThread\|ownerConversation' "$CALL_LOG"; then
+  echo "  FAIL: owner place sent without --thread/--conversation"; FAIL=$((FAIL + 1))
+else
+  echo "  PASS: no owner place without --thread/--conversation"; PASS=$((PASS + 1))
+fi
+if echo "$OUT" | grep -q 'ownerReport'; then
+  echo "  FAIL: ownerReport without a lead report"; FAIL=$((FAIL + 1))
+else
+  echo "  PASS: no ownerReport without a lead report"; PASS=$((PASS + 1))
 fi
 
 # --- Summary ---

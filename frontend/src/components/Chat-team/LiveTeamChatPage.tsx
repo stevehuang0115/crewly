@@ -28,8 +28,10 @@
  * Chat): a quiet conversation list (Pinned · DMs · Channels · Group chats,
  * names + unread dots, long sections folded behind "N more"), quiet message
  * chrome (details on hover / "⋯"), a one-line composer, and on phones a
- * list ⇄ conversation switch. Opening a conversation marks it seen
- * (`markChatSeen`, the per-browser read state behind the Chat badge).
+ * list ⇄ conversation switch. Unread is the owner's server-side read state
+ * (specs/chat-unread.md, #1400): opening a conversation marks it read, a
+ * "Mark unread" action on a message keeps it for later, and the same state is
+ * shared with the Chat badge, the Cloud portal and the phone.
  *
  * @module components/Chat-team/LiveTeamChatPage
  */
@@ -51,6 +53,8 @@ import {
   type ChatApiClient,
   type ChatApiError,
   type Channel,
+  type ChannelReadState,
+  type ChatSearchHit,
   type ChatPresenceStatus,
   type ConversationGroup,
   type ConversationRow,
@@ -68,38 +72,15 @@ import { ChatErrorToast } from './ChatErrorToast';
 import { CreateGroupModal } from './CreateGroupModal';
 import { ChannelSettingsModal } from './ChannelSettingsModal';
 import { ChatConversationList } from './ChatConversationList';
+import { ChatSearchResults } from './ChatSearchResults';
 import { usePinnedChats } from '../../hooks/usePinnedChats';
-import { markChatSeen, readChatSeen, type ChatSeenRecord } from '../../hooks/useChatUnreadCount';
+import { useChatReadState } from '../../hooks/useChatReadState';
 import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
 import { channelsService, type ChannelsApi, type CrewlyChannel } from '../../services/channels.service';
 import { setVisibleInterval } from '../../utils/visible-interval';
 
 /** How often the conversation list is re-read so unread dots stay current (ms). */
 export const CHAT_LIST_POLL_MS = 30_000;
-
-/**
- * Whether a conversation has messages the owner has not seen.
- *
- * `baselineAll` is when Chat was last open before this visit (the badge's
- * record, read before the badge marks everything seen); `seenAt` is when this
- * conversation was last open. Before any record exists (first visit in this
- * browser) nothing is unread, matching the badge.
- *
- * @param lastMessageAt - ISO time of the conversation's last message
- * @param seenAt - When this conversation was last open (ms), if ever
- * @param baselineAll - When Chat was last open (ms), if ever
- * @returns True when there is something new
- */
-export function isConversationUnread(
-  lastMessageAt: string | undefined,
-  seenAt: number | undefined,
-  baselineAll: number | undefined,
-): boolean {
-  if (baselineAll === undefined || !lastMessageAt) return false;
-  const at = Date.parse(lastMessageAt);
-  if (Number.isNaN(at)) return false;
-  return at > Math.max(baselineAll, seenAt ?? 0);
-}
 
 /**
  * Landing identifier. The dedicated workspace rail was removed in favour of a
@@ -185,12 +166,6 @@ export interface LiveTeamChatPageProps {
    */
   onEnsureDm?: (agentSession: string) => Promise<string>;
   /**
-   * The Chat "seen" record as it was before this visit (the host reads it
-   * before the nav badge marks Chat seen). Drives the per-conversation
-   * unread dots. Defaults to the current record.
-   */
-  seenBaseline?: ChatSeenRecord;
-  /**
    * Crewly channels API (rooms of agents from any team, matched to Slack).
    * Defaults to `/api/channels`; injectable for tests.
    */
@@ -217,7 +192,6 @@ export function LiveTeamChatPage({
   directoryAgents = [],
   teams = [],
   onEnsureDm,
-  seenBaseline,
   channelsApi,
 }: LiveTeamChatPageProps): JSX.Element {
   return (
@@ -233,7 +207,6 @@ export function LiveTeamChatPage({
         directoryAgents={directoryAgents}
         teams={teams}
         onEnsureDm={onEnsureDm}
-        seenBaseline={seenBaseline}
         channelsApi={channelsApi ?? channelsService}
       />
     </ChatAPIProvider>
@@ -250,7 +223,6 @@ interface BodyProps {
   directoryAgents: DirectoryAgentEntry[];
   teams: ChatTeam[];
   onEnsureDm?: (agentSession: string) => Promise<string>;
-  seenBaseline?: ChatSeenRecord;
   channelsApi: ChannelsApi;
 }
 
@@ -294,7 +266,6 @@ function LiveTeamChatPageBody({
   directoryAgents,
   teams,
   onEnsureDm,
-  seenBaseline,
   channelsApi,
 }: BodyProps): JSX.Element {
   const { channels, loading: channelsLoading, error: channelsError, refresh } = useChannels();
@@ -316,10 +287,6 @@ function LiveTeamChatPageBody({
   const [showChannelSettings, setShowChannelSettings] = useState(false);
   // Phones show the list OR the conversation; md and up show both.
   const [mobileView, setMobileView] = useState<'list' | 'conversation'>('conversation');
-  // Read state: the record from before this visit + conversations opened now.
-  const [baseline] = useState<ChatSeenRecord>(() => seenBaseline ?? readChatSeen());
-  const [seen, setSeen] = useState<ChatSeenRecord>(() => ({ ...(seenBaseline ?? readChatSeen()) }));
-
   // Re-read the list now and then so unread dots and ordering stay current
   // (useChannels loads once).
   useEffect(() => {
@@ -329,6 +296,11 @@ function LiveTeamChatPageBody({
   const client = useChatApiClient();
   const pinnedChats = usePinnedChats();
   const [showCreateGroup, setShowCreateGroup] = useState(false);
+  // Cross-conversation message search (#1400): the words being searched (null
+  // = not searching) and, after opening a hit, the words the opened
+  // conversation is filtered by.
+  const [messageSearch, setMessageSearch] = useState<string | null>(null);
+  const [openWithSearch, setOpenWithSearch] = useState<string | null>(null);
 
   // Merge the agent directory into the channel list so EVERY agent appears in
   // the DM list — even offline ones with no channel yet. Agents that already
@@ -531,6 +503,9 @@ function LiveTeamChatPageBody({
 
   const handleSelectConversation = useCallback(
     async (row: ConversationRow) => {
+      // Picking from the list leaves the message search and its filter behind.
+      setMessageSearch(null);
+      setOpenWithSearch(null);
       // Virtual directory row (no channel yet): create the DM on first open,
       // refresh, then select the resolved real channel.
       if (row.id.startsWith(VIRTUAL_DM_PREFIX) && row.agentSession && onEnsureDm) {
@@ -544,6 +519,26 @@ function LiveTeamChatPageBody({
       setMobileView('conversation');
     },
     [onEnsureDm, refresh],
+  );
+
+  // A search hit lives in a chat-v2 channel; Slack-bridged `slack-*` channels
+  // are shown inside the Orchestrator conversation, so open that instead.
+  const conversationIdOfChannel = useCallback(
+    (channelId: string): string => (orcChannelId && slackChannelIds.includes(channelId) ? orcChannelId : channelId),
+    [orcChannelId, slackChannelIds],
+  );
+  const conversationNameOf = useCallback(
+    (channelId: string): string | undefined => flattenRows(groups).find((r) => r.id === conversationIdOfChannel(channelId))?.title,
+    [groups, conversationIdOfChannel],
+  );
+  const handleOpenSearchHit = useCallback(
+    (hit: ChatSearchHit, query: string) => {
+      setOpenWithSearch(query);
+      setActiveConversationId(conversationIdOfChannel(hit.channelId));
+      setMessageSearch(null);
+      setMobileView('conversation');
+    },
+    [conversationIdOfChannel],
   );
 
   // "New group" — create a multi-agent group chat, then refresh the channel list
@@ -582,6 +577,46 @@ function LiveTeamChatPageBody({
   // Crewly channels are huddles: their @-mentions are agent session names.
   const crewlyChannelIds = useMemo(() => new Set(crewlyChannels.map((c) => c.id)), [crewlyChannels]);
 
+  // The open conversation, when it is a plain group chat (#1400 private
+  // channels): the same settings dialog, backed by chat-v2 rename / roster
+  // calls instead of the Crewly-channel API. Needs a client that has them.
+  const nameBySession = useMemo(
+    () => new Map(directoryAgents.map((a) => [a.agentSession, a.name] as const)),
+    [directoryAgents],
+  );
+  const toSettingsChannel = useCallback(
+    (ch: Channel): CrewlyChannel => ({
+      id: ch.id,
+      name: ch.name,
+      purpose: ch.purpose,
+      origin: 'crewly',
+      createdAt: ch.createdAt,
+      slack: null,
+      members: (ch.members ?? []).map((m) => ({ sessionName: m.sessionName, name: nameBySession.get(m.sessionName) })),
+    }),
+    [nameBySession],
+  );
+  const managedHuddle = useMemo(() => {
+    if (managedChannel || !client.renameChannel || !client.setHuddleMembers) return null;
+    const ch = channels.find((c) => c.id === resolvedConversationId);
+    return ch && ch.type === 'huddle' ? toSettingsChannel(ch) : null;
+  }, [managedChannel, client, channels, resolvedConversationId, toSettingsChannel]);
+  const huddleSettingsApi = useMemo<Pick<ChannelsApi, 'rename' | 'addMember' | 'removeMember'>>(() => {
+    const roster = (id: string): string[] =>
+      channels.find((c) => c.id === id)?.members?.map((m) => m.sessionName) ?? [];
+    const unsupported = (): never => {
+      throw new Error('This chat server cannot edit group chats; update Crewly.');
+    };
+    const rename = client.renameChannel?.bind(client) ?? unsupported;
+    const setMembers = client.setHuddleMembers?.bind(client) ?? unsupported;
+    return {
+      rename: async (id, name) => toSettingsChannel(await rename(id, name)),
+      addMember: async (id, sessionName) => toSettingsChannel(await setMembers(id, [...roster(id), sessionName])),
+      removeMember: async (id, sessionName) =>
+        toSettingsChannel(await setMembers(id, roster(id).filter((s) => s !== sessionName))),
+    };
+  }, [client, channels, toSettingsChannel]);
+
   const activeConversation = useMemo(
     () => flattenRows(groups).find((r) => r.id === resolvedConversationId),
     [groups, resolvedConversationId],
@@ -601,41 +636,32 @@ function LiveTeamChatPageBody({
   }, [activeConversationRowId, orcChannelId, slackChannelIds]);
   const mergeChannelKey = mergeChannelIds ? mergeChannelIds.join('|') : '';
 
-  // Last activity of a row; the orchestrator's includes its merged Slack threads.
-  const lastActivityOf = useCallback(
-    (row: ConversationRow): string | undefined => {
-      if (row.id !== orcChannelId || slackChannelIds.length === 0) return row.lastMessageAt;
-      const times = [row.lastMessageAt, ...allDmRows.filter((r) => r.id.startsWith(SLACK_ID_PREFIX)).map((r) => r.lastMessageAt)]
-        .filter((t): t is string => !!t)
-        .sort();
-      return times[times.length - 1];
-    },
-    [orcChannelId, slackChannelIds, allDmRows],
+  // With nothing open (empty workspace, still loading), phones show the list —
+  // unless a message search is on, which takes the conversation column.
+  const view = activeConversation || messageSearch !== null ? mobileView : 'list';
+
+  // Server-side read state. The orchestrator conversation covers its merged
+  // Slack thread channels too; a virtual directory row has no channel yet.
+  const idsOf = useCallback(
+    (id: string): string[] => (id === orcChannelId && slackChannelIds.length > 0 ? [id, ...slackChannelIds] : [id]),
+    [orcChannelId, slackChannelIds],
   );
-
-  const isUnread = useCallback(
-    (row: ConversationRow): boolean =>
-      row.id !== resolvedConversationId &&
-      isConversationUnread(lastActivityOf(row), seen[row.id], baseline.all),
-    [resolvedConversationId, lastActivityOf, seen, baseline],
+  const openConversationId =
+    view === 'conversation' && resolvedConversationId && !resolvedConversationId.startsWith(VIRTUAL_DM_PREFIX)
+      ? resolvedConversationId
+      : null;
+  const { unreadCountOf, unreadAfterSeq, applyReadState, markUnread } = useChatReadState({
+    client,
+    channels,
+    ready: !channelsLoading,
+    openId: openConversationId,
+    idsOf,
+  });
+  const isUnread = useCallback((row: ConversationRow): boolean => unreadCountOf(row.id) > 0, [unreadCountOf]);
+  const handleMarkUnread = useCallback(
+    (message: Message) => void markUnread(message.channelId, message.seq),
+    [markUnread],
   );
-
-  // Opening a conversation (and new messages while it is open) marks it seen.
-  const activeLastAt = activeConversation ? lastActivityOf(activeConversation) : undefined;
-  useEffect(() => {
-    if (!resolvedConversationId || resolvedConversationId.startsWith(VIRTUAL_DM_PREFIX)) return;
-    const now = Date.now();
-    const ids = [resolvedConversationId, ...(mergeChannelKey ? mergeChannelKey.split('|') : [])];
-    for (const id of ids) markChatSeen(id, now);
-    setSeen((prev) => {
-      const next = { ...prev };
-      for (const id of ids) next[id] = now;
-      return next;
-    });
-  }, [resolvedConversationId, activeLastAt, mergeChannelKey]);
-
-  // With nothing open (empty workspace, still loading), phones show the list.
-  const view = activeConversation ? mobileView : 'list';
 
   return (
     <div
@@ -651,10 +677,19 @@ function LiveTeamChatPageBody({
         activeConversationId={resolvedConversationId}
         onSelectConversation={(row) => void handleSelectConversation(row)}
         isUnread={isUnread}
+        unreadCountOf={(row) => unreadCountOf(row.id)}
         isPinned={(row) => pinnedChats.isPinned(pinKeyOf(row))}
         onTogglePin={(row) => pinnedChats.toggle(pinKeyOf(row))}
         onNewGroup={() => setShowCreateGroup(true)}
         onNewChannel={() => setShowCreateChannel(true)}
+        onSearchMessages={
+          client.searchMessages
+            ? (q) => {
+                setMessageSearch(q);
+                setMobileView('conversation');
+              }
+            : undefined
+        }
         alwaysShowSession={ORCHESTRATOR_SESSION}
         emptyState={
           totalRows === 0 && !channelsLoading ? (
@@ -663,17 +698,33 @@ function LiveTeamChatPageBody({
         }
       />
 
-      <LiveTeamChatRightPanel
-        className={view === 'list' ? 'hidden md:flex' : 'flex'}
-        conversation={activeConversation}
-        mentionables={mentionables}
-        mergeChannelIds={mergeChannelIds}
-        mentionsAsSessions={!!activeConversation && crewlyChannelIds.has(activeConversation.id)}
-        pinned={activeConversation ? pinnedChats.isPinned(pinKeyOf(activeConversation)) : false}
-        onTogglePin={() => activeConversation && pinnedChats.toggle(pinKeyOf(activeConversation))}
-        onBack={() => setMobileView('list')}
-        onManageChannel={managedChannel ? () => setShowChannelSettings(true) : undefined}
-      />
+      {messageSearch !== null ? (
+        <ChatSearchResults
+          className={view === 'list' ? 'hidden md:flex' : 'flex'}
+          client={client}
+          initialQuery={messageSearch}
+          conversationNameOf={conversationNameOf}
+          onOpen={handleOpenSearchHit}
+          onClose={() => setMessageSearch(null)}
+          onBack={() => setMobileView('list')}
+        />
+      ) : (
+        <LiveTeamChatRightPanel
+          className={view === 'list' ? 'hidden md:flex' : 'flex'}
+          conversation={activeConversation}
+          mentionables={mentionables}
+          mergeChannelIds={mergeChannelIds}
+          mentionsAsSessions={!!activeConversation && crewlyChannelIds.has(activeConversation.id)}
+          pinned={activeConversation ? pinnedChats.isPinned(pinKeyOf(activeConversation)) : false}
+          onTogglePin={() => activeConversation && pinnedChats.toggle(pinKeyOf(activeConversation))}
+          onBack={() => setMobileView('list')}
+          onManageChannel={managedChannel || managedHuddle ? () => setShowChannelSettings(true) : undefined}
+          initialSearch={openWithSearch}
+          unreadAfterSeq={unreadAfterSeq}
+          onMarkUnread={handleMarkUnread}
+          onReadState={applyReadState}
+        />
+      )}
 
       {showChannelSettings && managedChannel && (
         <ChannelSettingsModal
@@ -681,6 +732,14 @@ function LiveTeamChatPageBody({
           api={channelsApi}
           onClose={() => setShowChannelSettings(false)}
           onChanged={() => void refreshCrewlyChannels()}
+        />
+      )}
+      {showChannelSettings && !managedChannel && managedHuddle && (
+        <ChannelSettingsModal
+          channel={managedHuddle}
+          api={huddleSettingsApi}
+          onClose={() => setShowChannelSettings(false)}
+          onChanged={() => void refresh()}
         />
       )}
 
@@ -726,16 +785,27 @@ interface RightPanelProps {
   onBack: () => void;
   /** Crewly channels: open the channel settings (rename, members) */
   onManageChannel?: () => void;
+  /** Words the conversation opens filtered by (from a message-search hit; null: none) */
+  initialSearch?: string | null;
+  /** Where the "Unread" divider goes in the open conversation (null: none) */
+  unreadAfterSeq: number | null;
+  /** "Mark unread" on a message */
+  onMarkUnread: (message: Message) => void;
+  /** Live read-state frames for the open conversation's channels */
+  onReadState: (state: ChannelReadState) => void;
 }
 
 /** Header / chrome props every conversation view shares. */
-type ChromeProps = Pick<RightPanelProps, 'className' | 'pinned' | 'onTogglePin' | 'onBack' | 'onManageChannel'>;
+type ChromeProps = Pick<RightPanelProps, 'className' | 'pinned' | 'onTogglePin' | 'onBack' | 'onManageChannel' | 'initialSearch'>;
 
 function LiveTeamChatRightPanel({
   conversation,
   mentionables,
   mergeChannelIds,
   mentionsAsSessions = false,
+  unreadAfterSeq,
+  onMarkUnread,
+  onReadState,
   ...chrome
 }: RightPanelProps): JSX.Element {
   // No conversation selected — happens on first render of an empty workspace.
@@ -760,6 +830,9 @@ function LiveTeamChatRightPanel({
         mentionables={mentionables}
         channelIds={mergeChannelIds}
         chrome={chrome}
+        unreadAfterSeq={unreadAfterSeq}
+        onMarkUnread={onMarkUnread}
+        onReadState={onReadState}
       />
     );
   }
@@ -769,6 +842,9 @@ function LiveTeamChatRightPanel({
       mentionables={mentionables}
       mentionsAsSessions={mentionsAsSessions}
       chrome={chrome}
+      unreadAfterSeq={unreadAfterSeq}
+      onMarkUnread={onMarkUnread}
+      onReadState={onReadState}
     />
   );
 }
@@ -779,16 +855,24 @@ function SingleChannelConversationPanel({
   mentionables,
   mentionsAsSessions,
   chrome,
+  unreadAfterSeq,
+  onMarkUnread,
+  onReadState,
 }: {
   conversation: ConversationRow;
   mentionables: MentionTarget[];
   mentionsAsSessions: boolean;
   chrome: ChromeProps;
+  unreadAfterSeq: number | null;
+  onMarkUnread: (message: Message) => void;
+  onReadState: (state: ChannelReadState) => void;
 }): JSX.Element {
-  const { messages, agentThinking, hasMore, loadMore } = useMessages(conversation.id);
+  const { messages, agentThinking, hasMore, loadMore } = useMessages(conversation.id, { onReadState });
   return (
     <ConversationView
       mentionsAsSessions={mentionsAsSessions}
+      unreadAfterSeq={unreadAfterSeq}
+      onMarkUnread={onMarkUnread}
       chrome={chrome}
       conversation={conversation}
       mentionables={mentionables}
@@ -811,15 +895,23 @@ function MergedConversationPanel({
   mentionables,
   channelIds,
   chrome,
+  unreadAfterSeq,
+  onMarkUnread,
+  onReadState,
 }: {
   conversation: ConversationRow;
   mentionables: MentionTarget[];
   channelIds: string[];
   chrome: ChromeProps;
+  unreadAfterSeq: number | null;
+  onMarkUnread: (message: Message) => void;
+  onReadState: (state: ChannelReadState) => void;
 }): JSX.Element {
-  const { messages, agentThinking, hasMore, loadMore } = useMergedMessages(channelIds);
+  const { messages, agentThinking, hasMore, loadMore } = useMergedMessages(channelIds, { onReadState });
   return (
     <ConversationView
+      unreadAfterSeq={unreadAfterSeq}
+      onMarkUnread={onMarkUnread}
       chrome={chrome}
       conversation={conversation}
       mentionables={mentionables}
@@ -874,6 +966,8 @@ function ConversationView({
   onLoadMore,
   chrome,
   mentionsAsSessions = false,
+  unreadAfterSeq = null,
+  onMarkUnread,
 }: {
   conversation: ConversationRow;
   mentionables: MentionTarget[];
@@ -884,6 +978,10 @@ function ConversationView({
   chrome: ChromeProps;
   /** Huddle-shaped mentions: agent session names instead of member ids */
   mentionsAsSessions?: boolean;
+  /** Where the "Unread" divider goes (null: none) */
+  unreadAfterSeq?: number | null;
+  /** "Mark unread" on a message */
+  onMarkUnread?: (message: Message) => void;
 }): JSX.Element {
   const { send, error: sendError, reset: resetSendError } = useSendMessage();
 
@@ -896,11 +994,13 @@ function ConversationView({
   const [search, setSearch] = useState<string | null>(null);
 
   // Reset the open thread and the search whenever the conversation changes —
-  // a thread root from one channel is meaningless in another.
+  // a thread root from one channel is meaningless in another. A conversation
+  // opened from a message-search hit starts filtered by the searched words.
+  const initialSearch = chrome.initialSearch ?? null;
   useEffect(() => {
     setActiveThreadRootId(null);
-    setSearch(null);
-  }, [conversation.id]);
+    setSearch(initialSearch);
+  }, [conversation.id, initialSearch]);
 
   // Surface validation_error and payload_too_large 400/413s as a toast.
   // Network errors (code 'network_error') get the same treatment so the
@@ -1043,6 +1143,9 @@ function ConversationView({
           variant="quiet"
           hideReplies={!searching}
           onReplyInThread={handleOpenThread}
+          onMarkUnread={onMarkUnread}
+          unreadAfterSeq={searching ? null : unreadAfterSeq}
+          unreadDividerLabel="Unread"
           messages={shownMessages}
           agentThinking={agentThinking && !searching}
           hasMore={hasMore}

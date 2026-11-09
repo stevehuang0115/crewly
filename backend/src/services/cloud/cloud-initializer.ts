@@ -229,7 +229,10 @@ export async function initializeCloudIfConfigured(): Promise<CloudInitResult> {
 			config.cloudUrl,
 			activeToken,
 			(config.tier as CloudTier) || CLOUD_CONSTANTS.TIERS.FREE,
-			config.refreshToken,
+			// The client's CURRENT refresh token, not the copy read from the file before
+			// tryRefreshToken(): a rotation near expiry replaced it, and Cloud has retired
+			// the old one. (The client also ignores a retired token as a second guard.)
+			client.getRefreshToken() ?? config.refreshToken,
 		);
 
 		// Start Cloud Sync for device discovery and message polling

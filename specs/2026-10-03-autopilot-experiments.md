@@ -220,6 +220,23 @@ outcome metrics, same config unless given), `startedAt?`.
 - While a card is `running` with an autopilot scope, the project's daily
   retro defaults to on (§4).
 
+### Supervisor read access (#1026)
+
+An autopilot card's creator and its optional `supervisor` (an agent session
+set at create) watch the run without directing it. While the card is
+`planned` or `running` they may read, with `X-Agent-Session`:
+
+- `GET …/:project/stats` and `…/runs` of the card's project. A labelled card
+  holds them to its label: no label means its label, another label is 403,
+  and the day's run trace (which spans every label) is left out of `runs`.
+- autopilot-tagged traces of that project (`/api/traces…`), only those with
+  the card's label when it has one.
+
+Nothing else: other projects stay 403, retro / self-review submits and every
+write path still need a lead, and the supervisor is not made a project
+member, so triage and dispatch never offer it tickets. Access ends when the
+card is measured (`done`) or cancelled.
+
 ## 4. Daily autopilot retro (minimal #985)
 
 Per project, opt-in: `ticketAutopilot.retro: true | false` (absent = on
@@ -237,6 +254,16 @@ while an autopilot experiment on the project is running, else off).
   trace), skipped while a retro item of the project is still live.
 - **Brief.** The day's stats in a few lines, the traces of that day with
   their `trace-read` commands, the four classes, and the submit command.
+  Each ticket trace (at most `RETRO_BRIEF_TRACES`, 25) is read for its
+  numbers — state, wall time, stall time (by cause), rework, interventions,
+  cost — and listed on one line; runs that need a retro line are ranked
+  first and flagged **read first**: ended failed / cancelled, stalled on the
+  harness (runtime quota, delivery failure) or on the team (waiting on an
+  agent, nobody pushing), any rework, or `RETRO_REVIEW_INTERVENTIONS` (2) or
+  more interventions. A wait on the owner alone is shown but not flagged. A
+  trace that cannot be read is listed without numbers. This is the #985
+  "retro at trace completion": every completed run of the day gets its
+  review inside the daily retro, without a wake per run.
 - **Submit.** `project-tickets retro --project P --day D --summary "…"
   --problem "harness_gap|Title|detail|evidence" …` →
   `POST /api/project-ticket-autopilot/:project/retro`
@@ -266,6 +293,82 @@ while an autopilot experiment on the project is running, else off).
      the deadline is Skip. When the card cannot be asked, the tickets are
      cancelled at once. The card's handler is registered even with the
      autopilot switched off.
+
+### Milestone retros (#985)
+
+The #985 "retro at a milestone" rides on the daily retro too, so a milestone
+costs no extra wake:
+
+- A **milestone** of project P on local day D is an experiment card of P
+  (autopilot scope, or a ticket link naming P) that closed on D — its last
+  `measured` / `cancelled` timeline event, else `updatedAt` — or a project
+  OKR (mission) of P that is `completed` and was last written on D — or
+  (2026-10-26) an entry of P's goals log `.crewly/goals/goals.md` whose
+  heading carries `REACHED` right after its timestamp
+  (`### [<iso>] REACHED — Set by <who>`), stamped on D. The goals log is
+  append-only, so a goal is closed by appending such an entry
+  (`set_goal` with `status: reached`; `superseded` / `cancelled` retire a
+  goal without a milestone; the words are `MEMORY_CONSTANTS.GOAL_STATUSES`,
+  hand-written `DONE` / `COMPLETED` / `MET` read as reached). The entry's
+  first non-bullet line is the goal, its `- ` lines the criteria or
+  evidence; the milestone id is `goal:<iso>`. Entries with a closed status
+  also drop out of the project's active goal that the replan brief quotes.
+  Before this, a goal set in the log never produced a milestone because the
+  log had no completion marker.
+- The tick reads D's milestones once per project (a day that is over does
+  not gain one later; `retroNoMilestonesFor` in the state). With at least
+  one, the retro for D is scheduled **even when** the daily retro is off
+  (the card's last day is also the day it stops turning the retro on) and
+  **even when** the autopilot did nothing on D (no run trace: the brief lists
+  the ticket traces only, and the WorkItem carries no trace id).
+- The brief opens with `## Milestones` before the numbers: each closed card
+  on one line (`EXP-n "title" measured|cancelled (D): verdict **…** — reason`),
+  then its hypothesis, the primary metric's baseline → result, and the
+  process numbers baseline → result (tickets shipped, owner touches per
+  ticket, stall, $ per shipped ticket; the result alone when the baseline
+  window had no autopilot work; left out when the result has none); each
+  reached goal as `Goal reached (D): objective` with its success criteria.
+  The lead is asked to say whether the change earned its keep (keep /
+  revert / next experiment) and what the process numbers say about the team.
+  At most `RETRO_MAX_MILESTONES` (5) per retro, cards first.
+- The WorkItem title carries `(milestone: EXP-n, …)`, `metadata.milestones`
+  lists the ids, and the `retro_scheduled` trace event records them (in the
+  reviewed day's run trace when there is one). The retro's wiki page repeats
+  the `## Milestones` section (without the ask), recomputed at submit.
+- A milestones read failure never blocks the retro: it is scheduled without
+  them.
+
+### Weekly cross-team retro (#985)
+
+The orchestrator reads the week's daily retros across projects and files ONE
+weekly retro. Needs the global wiki (`~/.crewly/global-wiki`, `SCHEMA.md`
+present); without it nothing is scheduled.
+
+- **Memory.** Every filed daily retro is remembered in the autopilot state
+  (`retro.filed`: project, day, problem count, the harness-gap tickets it
+  filed), pruned after `RETRO_FILED_MEMORY_DAYS` (60).
+- **Schedule.** The autopilot tick, once per ISO week, from Monday
+  `RETRO_HOUR_LOCAL` (09:00) on, for the previous ISO week, when at least one
+  daily retro of that week has been filed (a week nobody filed for is checked
+  again next tick, not skipped, so a Sunday retro filed Monday afternoon still
+  gets its review). ONE `autopilot_retro` WorkItem for the orchestrator
+  (`metadata.kind = autopilot_weekly_retro`, `week`, `start`, `end`,
+  `projectIds`, no verification), skipped while the previous weekly item is
+  still live. Stats reads that all fail back off like the daily retro.
+- **Brief.** Per project (most retros first, at most
+  `WEEKLY_RETRO_MAX_PROJECTS_IN_BRIEF` = 12): the week's numbers, each daily
+  retro with its page path on disk, then the harness gaps the week filed,
+  the four classes and the submit command.
+- **Submit.** `project-tickets retro --week 2026-W40 --summary "…"
+  --problem …` → `POST /api/project-ticket-autopilot/weekly-retro`
+  `{ week, summary, problems }` (owner or orchestrator only, else 403; a
+  future week is refused). Harness gaps are filed on the Crewly project with
+  the daily retro's dedupe, cap and ONE owner card (`source
+  retro:week:<week>`, card key `retro:week:<week>`); the page goes to the
+  global wiki at `llm-curated/autopilot-retros/weekly/<week>.md` with the
+  summary, each project's retro days and numbers, the problems by class and
+  the filed tickets.
+- **Not yet:** retros on a milestone or when a trace completes.
 
 ## Measuring CE
 
@@ -298,7 +401,12 @@ Checked on 2026-10-02 (owner's Mac, read only):
   cycle times, touches, stalls by cause, paused time, label filter).
 - `ticket-autopilot.service.test.ts`: triage traced, budget pause/resume
   events, retro scheduling once per day, retro default with a running
-  experiment, retro submit (wiki, dedupe, cap, one card).
+  experiment, retro submit (wiki, dedupe, cap, one card), weekly retro
+  scheduled once per ISO week for the orchestrator after a daily retro was
+  filed, weekly submit (403 for a lead, future week refused, global wiki
+  page, gaps with `retro:week:` source, one card).
+- `ticket-autopilot-retro.test.ts`: ISO week helpers, weekly input
+  validation, the weekly brief and page.
 - `experiment.service.test.ts`: autopilot create (ships at start), baseline
   with extra metrics and process, result with process summary, weekly
   check-in, mocked seo-ops.

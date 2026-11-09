@@ -14,12 +14,17 @@
  * *Crewly receipt · Mon 9/28*
  * *Done today*
  * • Think Tank: a daily 8 am question for you is set up
+ * • CE: the visa article draft is up — closed without your check
  * • …(at most 3)
  * *Needs your decision*
  * • Atlas: a weekly 30-min chat plus a monthly roundtable — which is realistic?
  * • …(at most 3)
  * N more on the board
  * ```
+ *
+ * A done line that closed because he said nothing for a day (#1316) says
+ * so in plain words ({@link SILENCE_ACCEPTED_MARK}), so work nobody checked
+ * never reads like work he confirmed.
  *
  * Never: ticket numbers, the owner's own words, counts nobody asked for,
  * lines for what is unknown. A section with nothing in it is
@@ -35,6 +40,9 @@ import { localParts } from './owner-receipt-data.js';
 import type { ReceiptData } from './owner-receipt.types.js';
 
 const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** Appended to a done line that closed by silence, not by the owner's OK (#1316). */
+export const SILENCE_ACCEPTED_MARK = 'closed without your check';
 
 /**
  * Escape the characters Slack reserves in message text.
@@ -86,7 +94,12 @@ export function renderReceiptSlack(data: ReceiptData): string {
   if (data.highlights.length === 0 && data.decisionsTotal === 0) return '';
   const lines: string[] = [`*Crewly receipt · ${localDateLabel(data.window.to, data.window.timezone)}*`];
   if (data.highlights.length > 0) {
-    lines.push('*Done today*', ...data.highlights.map((h) => bullet(h.team, h.summary)));
+    lines.push(
+      '*Done today*',
+      ...data.highlights.map((h) =>
+        bullet(h.team, h.acceptedBySilence ? `${h.summary.replace(/[。.!！]$/, '')} — ${SILENCE_ACCEPTED_MARK}` : h.summary),
+      ),
+    );
   }
   if (data.decisionsTotal > 0) {
     lines.push('*Needs your decision*', ...data.decisions.map((d) => bullet(d.from, d.question)));

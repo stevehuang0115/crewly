@@ -792,6 +792,20 @@ export const MEMORY_CONSTANTS = {
   },
 
   /**
+   * Status word a goals-log entry heading may carry right after its
+   * timestamp: `### [<iso>] REACHED — Set by <who>`. A closed status
+   * (reached, superseded, cancelled) takes the entry out of the project's
+   * active goal; `reached` also makes it a milestone the daily retro
+   * reviews (#985). Entries without a status word are active.
+   */
+  GOAL_STATUSES: {
+    ACTIVE: 'active',
+    REACHED: 'reached',
+    SUPERSEDED: 'superseded',
+    CANCELLED: 'cancelled',
+  },
+
+  /**
    * File names for agent-level memory
    */
   AGENT_FILES: {
@@ -893,6 +907,28 @@ export const MEMORY_CONSTANTS = {
     MAX_CONFIDENCE: 1.0,
     /** Minimum confidence value */
     MIN_CONFIDENCE: 0.0,
+  },
+
+  /**
+   * Near-duplicate detection on write (#914 P1): a new role-knowledge entry
+   * close enough to an existing one in the same scope merges its evidence
+   * into it instead of being added.
+   */
+  DEDUP: {
+    /**
+     * Token-set Jaccard at or above which two entries are one fact restated
+     * (numbers must agree, see knowledge-similarity). Set by replaying 3.7k
+     * real entries (2026-10-25): at 0.8 the matches are the same claim with
+     * another id, a re-check of the same item, or a correction of the same
+     * assertion (166 entries, 4.5%); from 0.7 down, different items that
+     * share a sentence frame ("Schedule X stops after 3 more runs" / "Schedule
+     * Y stops …") start to collide.
+     */
+    NEAR_DUPLICATE_JACCARD: 0.8,
+    /** Fewer tokens than this and only an exact match counts (short texts overlap by chance) */
+    MIN_TOKENS_FOR_NEAR: 4,
+    /** The legacy containment rule applies only to incoming texts longer than this */
+    SUBSTRING_MIN_CHARS: 20,
   },
 
   /**
@@ -1138,11 +1174,18 @@ export const AGENT_SUSPEND_CONSTANTS = {
 	/** See {@link IDLE_STOP_MEMORY_USED_PERCENT}. */
 	IDLE_STOP_MIN_FREE_MB: 1024,
 	/**
-	 * Also tight when this share of swap is in use, or the OS reports memory
-	 * pressure: "free" counts reclaimable pages and stays high while the
-	 * machine swaps itself to a crawl (2026-09-23, load 117).
+	 * Also tight when the OS reports memory pressure, or when this share of
+	 * swap is in use while free memory is under IDLE_STOP_MIN_FREE_MB ×
+	 * {@link IDLE_STOP_SWAP_FREE_FACTOR}. Swap was first added alone because
+	 * "free" counts reclaimable pages and stayed high while the machine
+	 * swapped itself to a crawl (2026-09-23, load 117); that case still trips
+	 * the OS pressure flag and the CPU-load rule. Swap alone does not count:
+	 * macOS keeps its swap file full for hours on a healthy machine, which put
+	 * a 16 GB Mac with 5–6 GB free into pressure mode 11 times on 2026-10-26.
 	 */
 	IDLE_STOP_SWAP_USED_PERCENT: 75,
+	/** Swap counts only while free memory is under this many times IDLE_STOP_MIN_FREE_MB (2 GB). */
+	IDLE_STOP_SWAP_FREE_FACTOR: 2,
 	/** Roles that should never be auto-stopped (always-on) */
 	ALWAYS_ON_ROLES: ['orchestrator', 'auditor'] as const,
 	/** Idle timeout in ms before a worker agent is stopped (default 30 min) */
@@ -1666,6 +1709,22 @@ export const PROJECT_TICKET_CONSTANTS = {
  * runs in CI (`.github/workflows/oss-boundary.yml`) and inside the jest suite.
  * Every path here is relative to the repository root.
  */
+/**
+ * Rule metadata (issue #877): every SOP records the failure it prevents, the
+ * model where that was seen, and a review date — so rules can be re-tested
+ * and deleted when they stop making a difference.
+ */
+export const RULE_METADATA_CONSTANTS = {
+	/** Directory of SOP files whose frontmatter is audited */
+	SOPS_DIR: 'config/sops',
+	/** The three frontmatter fields (plus the optional `source` link) */
+	FIELDS: { PREVENTS: 'prevents', SEEN_ON: 'seenOn', REVIEW_BY: 'reviewBy', SOURCE: 'source' } as const,
+	/** Share of SOPs that must carry all three fields for the check to pass */
+	MIN_COVERAGE: 0.8,
+	/** `prevents` starts with this when no failure was ever recorded for the rule */
+	NO_RECORDED_FAILURE: 'none recorded',
+} as const;
+
 export const OSS_BOUNDARY_CONSTANTS = {
 	/** Allowlist of explicit exceptions; every entry carries a one-line reason */
 	ALLOWLIST_FILE: 'config/oss-boundary-allowlist.json',

@@ -35,11 +35,13 @@ import {
 import { formatError } from '../../utils/format-error.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
-import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, OPEN_ITEMS_CONSTANTS, PEOPLE_CONSTANTS, COMPLETION_EVIDENCE_CONSTANTS, TEAM_PAUSE_CONSTANTS } from '../../constants.js';
+import { isMessageRoute } from '../../services/orc/message-route.js';
+import { MESSAGE_ROUTE_CONSTANTS, ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, TL_DELEGATION_CONSTANTS, OPEN_ITEMS_CONSTANTS, PEOPLE_CONSTANTS, COMPLETION_EVIDENCE_CONSTANTS, TEAM_PAUSE_CONSTANTS, TASK_TIMING_CONSTANTS } from '../../constants.js';
 import { decideCompletion, decideReviewAccept, evidenceRequiredFor, resolveEvidenceEnforcementMode } from '../../services/task-pool/completion-evidence.service.js';
 import { readAgentSessionHeader, resolveTransitionActor } from '../../utils/agent-caller.utils.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 import { ownerThreadHandover, delegatorResultNote } from '../../services/orc/work-item-destination.js';
+import { leadNameOf, leadReportOf, memberLeadReportNote, orchestratorNote } from '../../services/orc/team-lead-report.js';
 import { TlDelegationService } from '../../services/tl-delegation/tl-delegation.service.js';
 import { isTicketNumberRef } from '../../types/v2/ticket.types.js';
 import { ProjectTicketError } from '../../services/project-tickets/project-ticket.service.js';
@@ -53,6 +55,7 @@ import { getActingFor } from '../../services/people/acting-for.service.js';
 import { pausedRefusalMessage, pausedTeamById, pausedTeamOfSession } from '../../services/team/team-pause.registry.js';
 import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
 import { findDuplicateWorkItem } from '../../utils/duplicate-creation.utils.js';
+import { getTaskTimingService, normalizeTaskKind, parseEtaMinutes } from '../../services/ai/self-improvement/task-timing.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TaskPoolController');
 
@@ -507,6 +510,35 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // A named owner thread Crewly cannot read is refused, never dropped: the
+    // work would lose the owner's place and its answer would land elsewhere.
+    const namedOwnerThread = (workItem.metadata as Record<string, unknown> | undefined)?.[TL_DELEGATION_CONSTANTS.OWNER_THREAD_FIELD];
+    if (await getService().isOwnerThreadUnreadable(namedOwnerThread, delegatorOf(req, workItem))) {
+      logger.warn('Rejected WorkItem naming an unreadable owner thread', { target: workItem.target, ownerThread: namedOwnerThread });
+      res.status(400).json({
+        success: false,
+        code: 'owner_thread_unreadable',
+        error: `--thread ${String(namedOwnerThread)} is not a thread Crewly can read. Pass the [SLACK-THREAD:<key>] key of the owner's message, its chat message id, or <conversation id>:<chat thread id>; for a chat request without a thread use --conversation <id>. Nothing was delegated.`,
+      });
+      return;
+    }
+
+    // Another agent already answered the owner in the named thread: a second
+    // delegation there would get the owner two answers (CREW-878). Listed and
+    // refused; `--force-after-answer` delegates anyway.
+    const forced = (workItem.metadata as Record<string, unknown> | undefined)?.[TL_DELEGATION_CONSTANTS.FORCE_AFTER_ANSWER_FIELD] === true;
+    const answers = forced || namedOwnerThread === undefined ? [] : await getService().agentAnswersInOwnerThread(namedOwnerThread, delegatorOf(req, workItem), workItem.target);
+    if (answers.length > 0) {
+      logger.warn('Refused a delegation into a thread another agent already answered', { target: workItem.target, ownerThread: namedOwnerThread, answers: answers.length });
+      res.status(409).json({
+        success: false,
+        code: TL_DELEGATION_CONSTANTS.THREAD_ALREADY_ANSWERED_CODE,
+        error: `Not delegated: ${answers.map((a) => `${a.agent} already posted in ${String(namedOwnerThread)} after the owner's last message ("${a.preview}")`).join('; ')}. Read the thread first. If the owner still needs this work, delegate again with --force-after-answer.`,
+        answers,
+      });
+      return;
+    }
+
     // The same creator adding the same item for the same target within minutes gets the first one back
     // (ten identical "Follow through" and four duplicate briefs, audit 2026-10-14).
     const twin = findDuplicateWorkItem(
@@ -527,7 +559,26 @@ export async function addItem(req: Request, res: Response): Promise<void> {
     // Project tickets §11: delegating project work to a teammate goes through
     // a project ticket — the named one, or one created for it. The workflow
     // then adds the WorkItem itself (under the ticket folder lock).
-    const addOptions = { creatorSession: readAgentSessionHeader(req) };
+    const creatorSession = readAgentSessionHeader(req);
+    // Every message carries its destination (message-routing audit
+    // 2026-10-18): a delegation carries the route its delegator is answering,
+    // so the delegate's [RESULT] comes back naming where the consolidated
+    // answer goes. Self-assigned work never inherits the creator's last owner
+    // thread: it names one (--thread / --conversation) or has none.
+    const selfAssigned = !!creatorSession && workItem.target === creatorSession;
+    if (creatorSession && workItem.target && !selfAssigned) {
+      const meta = (workItem.metadata ?? {}) as Record<string, unknown>;
+      if (!isMessageRoute(meta[MESSAGE_ROUTE_CONSTANTS.PARENT_ROUTE_METADATA_KEY])) {
+        try {
+          const { currentRouteOf } = await import('../../services/orc/reply-destination.wiring.js');
+          const route = await currentRouteOf(creatorSession);
+          if (route) workItem = { ...workItem, metadata: { ...meta, [MESSAGE_ROUTE_CONSTANTS.PARENT_ROUTE_METADATA_KEY]: route } };
+        } catch {
+          // The parent route is a courtesy for the result relay: never block a delegation over it.
+        }
+      }
+    }
+    const addOptions = { creatorSession, ...(selfAssigned ? { inheritCreatorTurn: false } : {}) };
     let routed: RoutedDelegation | null = null;
     try {
       routed = await projectTicketWorkflow().routeDelegation({
@@ -571,6 +622,11 @@ export async function addItem(req: Request, res: Response): Promise<void> {
     // crewly#1357: a delegation the owner did not ask for in any thread — the
     // member reports to the delegator, never to the owner.
     const resultRoute = delegatorName ? delegatorResultNote(workItem, delegatorName) : null;
+    // crewly#1371: team work done for the owner is reported by the team lead, in the team channel.
+    const stamp = delegatorName ? leadReportOf(workItem) : null;
+    const leadReport = stamp
+      ? { lead: stamp.lead, leadName: leadNameOf(stamp), channel: `#${stamp.channelName}`, note: memberLeadReportNote(workItem, stamp), delegatorNote: orchestratorNote(stamp) }
+      : null;
     if (workItem.type === 'delegate') TlDelegationService.getInstance().recordDelegation(delegator, workItem.target);
 
     res.status(201).json({
@@ -582,6 +638,7 @@ export async function addItem(req: Request, res: Response): Promise<void> {
         status: workItem.status,
         ...(ownerThread ? { ownerThread } : {}),
         ...(resultRoute ? { resultRoute } : {}),
+        ...(leadReport ? { leadReport } : {}),
         ...(routed
           ? {
               projectTicket: {
@@ -1119,9 +1176,35 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
     // NOTE: Request status cascade is handled by V3DataService.onTaskCompleted
     // via the EventBus — no duplicate cascade needed here.
 
-    res.json({ success: true, message: `WorkItem ${workItemId} completed`, ...giveUpFields(outcome), ...warningFields });
+    const timing = existing ? recordCompletionTiming(existing, actor.session ?? agentId, result?.['taskKind']) : null;
+    res.json({
+      success: true,
+      message: `WorkItem ${workItemId} completed`,
+      ...giveUpFields(outcome),
+      ...warningFields,
+      ...(timing ? { timing } : {}),
+    });
   } catch (error) {
     handleServiceError(res, error);
+  }
+}
+
+/**
+ * Record how long a completed WorkItem took (claim to completion) in the
+ * worker's task-timing history and return the one-line reflection for the
+ * complete-task response. Never fails the completion.
+ *
+ * @param workItem - The item as it was before completion (carries startedAt)
+ * @param agent - The worker session
+ * @param taskKind - Kind the worker named on completion, if any
+ * @returns The reflection line, or null
+ */
+function recordCompletionTiming(workItem: WorkItem, agent: string, taskKind: unknown): string | null {
+  try {
+    return getTaskTimingService().recordCompletion({ agent, workItem, taskKind });
+  } catch (err) {
+    logger.warn('Failed to record task timing (non-fatal)', { workItemId: workItem.id, error: formatError(err) });
+    return null;
   }
 }
 
@@ -1145,8 +1228,13 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
  * @returns What the give-up recovery did with the stop
  * @throws When the WorkItem is missing or not `running` (mapped to 404 / 409)
  */
-async function recordBlocked(workItemId: string, agentId: string, reason: string | undefined): Promise<StopOutcome> {
-  const outcome = await getGiveUp().block(workItemId, { agentId, reason });
+async function recordBlocked(
+  workItemId: string,
+  agentId: string,
+  reason: string | undefined,
+  until?: string,
+): Promise<StopOutcome> {
+  const outcome = await getGiveUp().block(workItemId, { agentId, reason, ...(until ? { until } : {}) });
 
   // V3.1: Project task blocked
   const projection = getProjection();
@@ -1168,9 +1256,16 @@ async function recordBlocked(workItemId: string, agentId: string, reason: string
  * is unblocked via `POST /api/task-pool/release/:workItemId`, which puts it
  * back to `queued` for the same target.
  *
+ * With `until` (ISO 8601, in the future) the block lifts on its own: once
+ * that time has passed the reconciler returns the item to `queued` for the
+ * same target, who takes it before new work. For work that can only proceed
+ * at a known time (a report after a data window closes, a check after a
+ * deploy settles) — the alternative was holding the item `running` while
+ * waiting, or reporting it done before it was.
+ *
  * Request body:
  * ```json
- * { "agentId": "crewly-product-leo-member-n", "reason": "waiting for X" }
+ * { "agentId": "crewly-product-leo-member-n", "reason": "waiting for X", "until": "2026-10-27T08:30:00Z" }
  * ```
  *
  * @param req - Express request with workItemId param
@@ -1179,7 +1274,7 @@ async function recordBlocked(workItemId: string, agentId: string, reason: string
 export async function blockItem(req: Request, res: Response): Promise<void> {
   try {
     const { workItemId } = req.params;
-    const { agentId, reason } = req.body as { agentId?: string; reason?: string };
+    const { agentId, reason, until } = req.body as { agentId?: string; reason?: string; until?: unknown };
 
     if (!workItemId) {
       res.status(400).json({ success: false, error: 'workItemId param is required' });
@@ -1189,8 +1284,24 @@ export async function blockItem(req: Request, res: Response): Promise<void> {
       res.status(400).json({ success: false, error: 'agentId is required' });
       return;
     }
+    if (until !== undefined && until !== null && until !== '') {
+      const untilMs = typeof until === 'string' ? Date.parse(until) : NaN;
+      if (!Number.isFinite(untilMs)) {
+        res.status(400).json({ success: false, error: 'until must be an ISO 8601 date-time, e.g. 2026-10-27T08:30:00Z' });
+        return;
+      }
+      if (untilMs <= Date.now()) {
+        res.status(400).json({ success: false, error: `until must be in the future (got ${until}; now is ${new Date().toISOString()})` });
+        return;
+      }
+    }
 
-    const outcome = await recordBlocked(workItemId, agentId, reason);
+    const outcome = await recordBlocked(
+      workItemId,
+      agentId,
+      reason,
+      typeof until === 'string' && until !== '' ? until : undefined,
+    );
 
     res.json({ success: true, message: `WorkItem ${workItemId} blocked`, ...giveUpFields(outcome) });
   } catch (error) {
@@ -1794,7 +1905,10 @@ export async function handoffItem(req: Request, res: Response): Promise<void> {
  * both of which appended progress lines to the `.md` task body. With v1
  * retired, notes accumulate under `WorkItem.metadata.notes[]`.
  *
- * Body: `{ author: string, note: string }`.
+ * Body: `{ author: string, note: string, etaMinutes?: number, taskKind?: string }`.
+ * `etaMinutes` is stored as `metadata.etaMinutes` only when none is set yet
+ * (the first ETA is the one task timing measures); `taskKind` replaces
+ * `metadata.taskKind`.
  *
  * @param req - Express request
  * @param res - 200 `{ success, data: WorkItem }` | 404 | 400
@@ -1817,7 +1931,18 @@ export async function appendItemNote(req: Request, res: Response): Promise<void>
       res.status(404).json({ success: false, error: `WorkItem not found: ${workItemId}` });
       return;
     }
-    res.json({ success: true, data: updated });
+    // Task timing: the first ETA an agent states is the one its estimate
+    // bias is measured against; a named kind overrides the title classifier.
+    const eta = parseEtaMinutes(req.body?.etaMinutes);
+    const kind = normalizeTaskKind(req.body?.taskKind);
+    let latest = updated;
+    if (eta !== undefined && parseEtaMinutes(updated.metadata?.[TASK_TIMING_CONSTANTS.ETA_METADATA_KEY]) === undefined) {
+      latest = (await getService().patchMetadata(workItemId, TASK_TIMING_CONSTANTS.ETA_METADATA_KEY, eta)) ?? latest;
+    }
+    if (kind !== undefined) {
+      latest = (await getService().patchMetadata(workItemId, TASK_TIMING_CONSTANTS.KIND_METADATA_KEY, kind)) ?? latest;
+    }
+    res.json({ success: true, data: latest });
   } catch (error) {
     res.status(500).json({ success: false, error: formatError(error) });
   }

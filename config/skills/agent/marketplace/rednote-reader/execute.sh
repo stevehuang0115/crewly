@@ -182,14 +182,21 @@ get_window_geometry() {
 
 # Simulate a mouse click at absolute screen coordinates (x, y)
 click_at() {
-  local cx="$1" cy="$2"
+  local cx="${1%.*}" cy="${2%.*}"
+  # The iPad app ignores a click with no prior mouse move; move, pause, click.
+  # (Do NOT hold the press: on video pages a hold triggers 2x-speed playback.)
+  if command -v cliclick >/dev/null 2>&1; then
+    cliclick "m:$cx,$cy" w:250 "c:$cx,$cy" >/dev/null 2>&1
+    return
+  fi
   osascript -l JavaScript -e "
     ObjC.import('CoreGraphics');
     var point = \$.CGPointMake($cx, $cy);
-    var mouseDown = \$.CGEventCreateMouseEvent(null, \$.kCGEventLeftMouseDown, point, \$.kCGMouseButtonLeft);
-    var mouseUp = \$.CGEventCreateMouseEvent(null, \$.kCGEventLeftMouseUp, point, \$.kCGMouseButtonLeft);
-    \$.CGEventPost(\$.kCGHIDEventTap, mouseDown);
-    \$.CGEventPost(\$.kCGHIDEventTap, mouseUp);
+    \$.CGEventPost(\$.kCGHIDEventTap, \$.CGEventCreateMouseEvent(null, \$.kCGEventMouseMoved, point, \$.kCGMouseButtonLeft));
+    delay(0.25);
+    \$.CGEventPost(\$.kCGHIDEventTap, \$.CGEventCreateMouseEvent(null, \$.kCGEventLeftMouseDown, point, \$.kCGMouseButtonLeft));
+    delay(0.15);
+    \$.CGEventPost(\$.kCGHIDEventTap, \$.CGEventCreateMouseEvent(null, \$.kCGEventLeftMouseUp, point, \$.kCGMouseButtonLeft));
   " >/dev/null 2>&1
 }
 
@@ -284,14 +291,72 @@ find_text_field() {
 }
 
 # =============================================================================
-# search — Type a keyword into the search box and read results
+# page_state — classify the current page via Accessibility (SAFETY GUARD)
 #
-# Flow: home page → search landing → type keyword → search results
-# Handles three starting states:
-#   1. Home feed (no text field) — clicks search icon first
-#   2. Search landing page (text field present, no results)
-#   3. Search results page (text field present, with results)
+# Prints JSON: {page, reason, back:{x,y}|null, searchIcon:{x,y}|null,
+#               field:{x,y,w,h,value}|null}
+#   page = "search"   top search field + a "Search" button, nothing that sends
+#   page = "compose"  a DM/comment composer is open (Send / Say something /
+#                     说点什么 / 发送 / Online) — NEVER type or press Enter here
+#   page = "home"     bottom tab bar, no text field
+#   page = "other"    anything else (note detail, profile, results w/o field…)
+#
+# Why: on 2026-10-18 the app was left on a DM chat. The old search took the
+# first AXTextArea it found (the chat) as the search box, pasted the keyword
+# and pressed Enter, which SENT a DM. Any text area counted as "search page".
 # =============================================================================
+page_state() {
+  local geom
+  geom=$(get_window_geometry)
+  local wx wy ww
+  wx=$(echo "$geom" | jq -r '.x'); wy=$(echo "$geom" | jq -r '.y'); ww=$(echo "$geom" | jq -r '.w')
+  osascript -l JavaScript -e "
+    var proc = Application('System Events').processes.byName('$APP_NAME');
+    var WX=$wx, WY=$wy, WW=$ww;
+    var st = {compose:false, composeWhy:'', searchBtn:false, tabs:0, homeTab:null, back:null, searchIcon:null, iconCount:0, topField:null, otherField:false};
+    var SEND = /^(Send|发送|Say something|说点什么|Online|在线|text entry area.*comment)/i;
+    function scan(el, d) {
+      if (d > 22) return;
+      var r='', desc='', val='', p=null, s=null;
+      try { r = el.role(); } catch(e) {}
+      try { desc = String(el.description() || ''); } catch(e) {}
+      try { val = String(el.value() || ''); } catch(e) {}
+      try { p = el.position(); s = el.size(); } catch(e) {}
+      if ((r === 'AXButton' || r === 'AXStaticText') && /^(Send|发送|Say something…?|Share your thoughts…?\.*|说点什么.*|Online|在线)$/.test(desc || val)) {
+        st.compose = true; st.composeWhy = desc || val;
+      }
+      if (r === 'AXButton' && (desc === 'Search' || desc === '搜索')) st.searchBtn = true;
+      if (r === 'AXButton' && p && !st.back && (desc === 'Return' || desc === '返回' || desc === 'navi back')) st.back = {x: p[0]+s[0]/2, y: p[1]+s[1]/2};
+      if (r === 'AXButton' && p && s && p[1] > WY + 650 && s[0] > 100) { st.tabs++; if (!st.homeTab || p[0] < st.homeTab.px) st.homeTab = {x: p[0]+s[0]/2, y: p[1]+s[1]/2, px: p[0]}; }
+      if (r === 'AXButton' && p && s && p[0] > WX + WW - 150 && p[1] > WY + 30 && p[1] < WY + 70 && s[0] < 50 && desc !== 'More') { st.iconCount++; st.searchIcon = {x: p[0]+s[0]/2, y: p[1]+s[1]/2}; }
+      if ((r === 'AXTextField' || r === 'AXTextArea') && p && s) {
+        if (p[1] < WY + 80 && s[0] > 300 && !st.topField) st.topField = {x:p[0], y:p[1], w:s[0], h:s[1], value: val};
+        else st.otherField = true;
+      }
+      try { var c = el.uiElements(); for (var i = 0; i < Math.min(c.length, 60); i++) scan(c[i], d+1); } catch(e) {}
+    }
+    proc.windows().forEach(function(w){ scan(w, 0); });
+    var page = 'other', reason = '';
+    if (st.compose) { page = 'compose'; reason = 'composer open: ' + st.composeWhy; }
+    else if (st.topField && st.searchBtn && !st.otherField) { page = 'search'; }
+    else if (st.otherField) { page = 'other'; reason = 'a text box that is not the top search box is on screen'; }
+    else if (!st.topField && st.tabs >= 3) { page = 'home'; }
+    JSON.stringify({page: page, reason: reason, back: st.back, searchIcon: (st.iconCount === 1 ? st.searchIcon : null), iconCount: st.iconCount, homeTab: st.homeTab, field: (page === 'search' ? st.topField : null)});
+  " 2>/dev/null || echo '{"page":"unknown","reason":"accessibility read failed"}'
+}
+
+# Press only a real Back button found by Accessibility. Never the window's
+# close button, never a coordinate guess (that can hit an avatar or Send).
+press_back() {
+  local ps="$1" bx by
+  bx=$(echo "$ps" | jq -r '.back.x // empty'); by=$(echo "$ps" | jq -r '.back.y // empty')
+  [ -z "$bx" ] && return 1
+  click_at "${bx%.*}" "${by%.*}"
+  sleep 1.5
+  verify_focus
+  return 0
+}
+
 do_search() {
   local keyword
   keyword=$(printf '%s' "$INPUT" | jq -r '.keyword // empty')
@@ -301,147 +366,64 @@ do_search() {
   ensure_window
   focus_app
 
-  local geom win_x win_y win_w
-  geom=$(get_window_geometry)
-  win_x=$(echo "$geom" | jq -r '.x')
-  win_y=$(echo "$geom" | jq -r '.y')
-  win_w=$(echo "$geom" | jq -r '.w')
-
-  # Step 1: Navigate to search page if on the home feed.
-  # Ensure we are not stuck in a deep page (like a profile or detail page)
-  for i in {1..5}; do
-    local tf_info
-    tf_info=$(find_text_field)
-    if [ "$(echo "$tf_info" | jq -r '.found')" = "true" ]; then
-      break
+  # Step 1: get to the search page. Back out (max 6) from anything else.
+  local ps page i
+  for i in 1 2 3 4 5 6 7; do
+    ps=$(page_state); page=$(echo "$ps" | jq -r '.page')
+    [ "$page" = "search" ] && break
+    if [ "$page" = "home" ]; then
+      local sx sy
+      sx=$(echo "$ps" | jq -r '.searchIcon.x // empty'); sy=$(echo "$ps" | jq -r '.searchIcon.y // empty')
+      if [ -z "$sx" ]; then
+        # A tab page that is not Home (e.g. Messages has search AND a "+ new chat"
+        # icon top-right). Go to the Home tab once; never guess which icon.
+        if [ -z "${_home_tab_tried:-}" ]; then
+          _home_tab_tried=1
+          local hx hy
+          hx=$(echo "$ps" | jq -r '.homeTab.x // empty'); hy=$(echo "$ps" | jq -r '.homeTab.y // empty')
+          [ -n "$hx" ] && { click_at "${hx%.*}" "${hy%.*}"; sleep 2; verify_focus; continue; }
+        fi
+        error_exit "SAFE STOP: on a tab page but exactly one top-right search icon was not found. Nothing was typed."
+      fi
+      click_at "${sx%.*}" "${sy%.*}"
+      sleep 1.5; verify_focus
+      continue
     fi
-    # Try to find and click Return/返回 button via UI tree
-    local back_clicked
-    back_clicked=$(osascript -l JavaScript -e "
-      var app = Application('System Events');
-      var proc = app.processes.byName('$APP_NAME');
-      var clicked = false;
-      function scan(el, depth) {
-        if (depth > 15 || clicked) return;
-        try {
-          var role = el.role();
-          var desc = el.description();
-          if (role === 'AXButton' && (desc === 'Return' || desc === '返回' || desc === 'close button')) {
-            var p = el.position();
-            var s = el.size();
-            var cx = p[0] + s[0]/2;
-            var cy = p[1] + s[1]/2;
-            ObjC.import('CoreGraphics');
-            var point = \$.CGPointMake(cx, cy);
-            var mouseDown = \$.CGEventCreateMouseEvent(null, \$.kCGEventLeftMouseDown, point, \$.kCGMouseButtonLeft);
-            var mouseUp = \$.CGEventCreateMouseEvent(null, \$.kCGEventLeftMouseUp, point, \$.kCGMouseButtonLeft);
-            \$.CGEventPost(\$.kCGHIDEventTap, mouseDown);
-            \$.CGEventPost(\$.kCGHIDEventTap, mouseUp);
-            clicked = true;
-            return;
-          }
-        } catch(e) {}
-        try {
-          var children = el.uiElements();
-          for (var j = 0; j < Math.min(children.length, 50); j++) {
-            scan(children[j], depth + 1);
-            if (clicked) return;
-          }
-        } catch(e) {}
-      }
-      var windows = proc.windows();
-      for (var w = 0; w < windows.length; w++) { scan(windows[w], 0); }
-      clicked;
-    " 2>/dev/null || echo "false")
-    
-    if [ "$back_clicked" = "true" ]; then
-      sleep 1.5
-      verify_focus
-    else
-      # Fallback back coordinate
-      local bx=$(( win_x + 64 ))
-      local by=$(( win_y + 54 ))
-      click_at "$bx" "$by"
-      sleep 1.5
-      verify_focus
-    fi
+    press_back "$ps" || error_exit "SAFE STOP: page is '$page' ($(echo "$ps" | jq -r '.reason')) and no Back button was found. Nothing was typed. Navigate the app to the home page by hand."
   done
+  ps=$(page_state); page=$(echo "$ps" | jq -r '.page')
+  [ "$page" = "search" ] || error_exit "SAFE STOP: could not reach the search page (now '$page': $(echo "$ps" | jq -r '.reason')). Nothing was typed."
 
-  # Detect current page by checking for an AXTextField (present on search pages).
-  local tf_info tf_found
-  tf_info=$(find_text_field)
-  tf_found=$(echo "$tf_info" | jq -r '.found')
+  # Step 2: focus the top search field (the one page_state verified).
+  local fx fy fw fh
+  fx=$(echo "$ps" | jq -r '.field.x'); fy=$(echo "$ps" | jq -r '.field.y')
+  fw=$(echo "$ps" | jq -r '.field.w'); fh=$(echo "$ps" | jq -r '.field.h')
+  click_at "$(( ${fx%.*} + ${fw%.*} / 3 ))" "$(( ${fy%.*} + ${fh%.*} / 2 ))"
+  sleep 0.4; verify_focus
 
-  if [ "$tf_found" != "true" ]; then
-    # On the home page — click the search area in the top-right corner.
-    verify_focus
-    local search_click_x search_click_y
-    search_click_x=$(( win_x + win_w - 80 ))
-    search_click_y=$(( win_y + 52 ))
-    click_at "$search_click_x" "$search_click_y"
-    sleep 1
-    verify_focus
-
-    # Re-detect text field after page transition
-    tf_info=$(find_text_field)
-    tf_found=$(echo "$tf_info" | jq -r '.found')
-    if [ "$tf_found" != "true" ]; then
-      error_exit "Failed to navigate to search page: no text field found after clicking search icon. The app may not be on the home page or search icon position has changed."
-    fi
-  fi
-
-  # Step 2: Click the text field to ensure it's focused.
-  verify_focus
-  local field_cx field_cy
-  if [ "$tf_found" = "true" ]; then
-    local tf_x tf_y tf_w tf_h
-    tf_x=$(echo "$tf_info" | jq -r '.x')
-    tf_y=$(echo "$tf_info" | jq -r '.y')
-    tf_w=$(echo "$tf_info" | jq -r '.w')
-    tf_h=$(echo "$tf_info" | jq -r '.h')
-    field_cx=$(( tf_x + tf_w / 3 ))
-    field_cy=$(( tf_y + tf_h / 2 ))
-  else
-    field_cx=$(( win_x + 400 ))
-    field_cy=$(( win_y + 52 ))
-  fi
-  click_at "$field_cx" "$field_cy"
-  sleep 0.3
-  verify_focus
-
-  # Step 3: Clear any existing text (Cmd+A then Delete)
-  osascript -l JavaScript -e "
-    var se = Application('System Events');
-    se.keystroke('a', {using: 'command down'});
-    delay(0.2);
-    se.keyCode(51); // Delete key
-  " >/dev/null 2>&1
+  # Step 3: clear and paste (clipboard is reliable for CJK).
+  osascript -l JavaScript -e "var se=Application('System Events'); se.keystroke('a',{using:'command down'}); delay(0.2); se.keyCode(51);" >/dev/null 2>&1
   sleep 0.2
-
-  # Step 4: Paste the keyword via clipboard (reliable for CJK characters).
-  verify_focus
   printf '%s' "$keyword" | pbcopy
   sleep 0.1
-  osascript -l JavaScript -e "
-    var se = Application('System Events');
-    se.keystroke('v', {using: 'command down'});
-  " >/dev/null 2>&1
-  sleep 0.5
+  osascript -l JavaScript -e "Application('System Events').keystroke('v',{using:'command down'});" >/dev/null 2>&1
+  sleep 0.6
 
-  # Step 5: Press Enter to submit the search
-  verify_focus
-  osascript -l JavaScript -e "
-    var se = Application('System Events');
-    se.keyCode(36); // Enter
-  " >/dev/null 2>&1
+  # Step 4: verify BEFORE Enter — still the search page, and the keyword landed
+  # in the top search field. Otherwise undo the paste and stop.
+  ps=$(page_state); page=$(echo "$ps" | jq -r '.page')
+  local got
+  got=$(echo "$ps" | jq -r '.field.value // empty')
+  if [ "$page" != "search" ] || [ "$got" != "$keyword" ]; then
+    osascript -l JavaScript -e "var se=Application('System Events'); se.keystroke('a',{using:'command down'}); delay(0.2); se.keyCode(51);" >/dev/null 2>&1
+    error_exit "SAFE STOP: before pressing Enter the check failed (page '$page', search box has '$got'). Text was cleared, Enter NOT pressed, nothing sent."
+  fi
 
-  # Wait for results to load
+  osascript -l JavaScript -e "Application('System Events').keyCode(36);" >/dev/null 2>&1
   sleep 3
 
-  # Step 6: Read the feed (search results use the same layout)
   local feed_result
   feed_result=$(do_feed_internal 150)
-
   echo "{\"success\":true,\"action\":\"search\",\"keyword\":$(printf '%s' "$keyword" | jq -Rs .),\"data\":$feed_result}"
 }
 
@@ -1349,6 +1331,7 @@ case "$ACTION" in
   raw)           do_raw ;;
   screenshot)    do_screenshot ;;
   search)        do_search ;;
+  page-state)    check_app; ensure_window; echo "{\"success\":true,\"action\":\"page-state\",\"data\":$(page_state)}" ;;
   tap)           do_tap ;;
   read-detail)   do_read_detail ;;
   goto-profile)  do_goto_profile ;;

@@ -40,6 +40,7 @@ import type { StorageEvent } from '../core/storage.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { NetworkStatusService, warnUnlessOfflineRepeat } from '../core/network-status.service.js';
 import { SLACK_CLOUD_CONSTANTS } from '../../constants.js';
 import { SlackIdentityCloudError, type IdentityCloudClient } from './slack-agent-identity.service.js';
 import { teamChannelLeader, teamChannelMembers, orchestratorSyncEntry } from './slack-team-channel.service.js';
@@ -358,7 +359,7 @@ export class SlackInstanceRegistryService {
       return true;
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
-      this.logger.warn('Slack instance registry heartbeat failed', { error: this.lastError });
+      warnUnlessOfflineRepeat(this.logger, 'slack-registry-heartbeat', 'Slack instance registry heartbeat failed', { error: this.lastError });
       return false;
     }
   }
@@ -436,7 +437,7 @@ export class SlackInstanceRegistryService {
       return { installUrls: [...this.pendingInstalls] };
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
-      this.logger.warn('Slack agent sync failed', { error: this.lastError });
+      warnUnlessOfflineRepeat(this.logger, 'slack-registry-sync', 'Slack agent sync failed', { error: this.lastError });
       return null;
     }
   }
@@ -583,6 +584,19 @@ export class SlackInstanceRegistryService {
   }
 
   /**
+   * Report what became of a room-join request Cloud relayed to this machine,
+   * so the asking machine (and through it the owner) hears about a failure
+   * instead of waiting on a room that never formed (crewly#1430).
+   *
+   * @param body - Channel, the asking machine and the outcome
+   * @throws {SlackIdentityCloudError} when Cloud refuses or cannot be reached
+   */
+  async reportRoomJoin(body: { slackChannelId: string; slackChannelName: string; requesterInstanceId: string; ok: boolean; joined: string[]; rejected: string[]; error?: string }): Promise<void> {
+    const { deviceId } = await this.resolveIdentity();
+    await this.cloudRequest('POST', SLACK_CLOUD_CONSTANTS.ROOM_JOIN_RESULT_PATH, { ...body, instanceId: deviceId });
+  }
+
+  /**
    * The account's Slack routing log for one channel: which machines each
    * message was pushed to, and why (Cloud keeps 14 days).
    *
@@ -675,6 +689,7 @@ export class SlackInstanceRegistryService {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: controller.signal,
       });
+      NetworkStatusService.getInstance().recordSuccess('slack-registry');
       const text = await res.text();
       let parsed: { success?: boolean; data?: T; error?: string; code?: string } = {};
       try {
@@ -692,6 +707,9 @@ export class SlackInstanceRegistryService {
       return parsed.data as T;
     } catch (err) {
       if (err instanceof SlackIdentityCloudError) throw err;
+      // The raw fetch error carries the DNS/route code; the wrapped one below
+      // does not, so the offline breaker hears about it here.
+      NetworkStatusService.getInstance().recordFailure('slack-registry', err);
       const message = err instanceof Error ? err.message : String(err);
       throw new SlackIdentityCloudError(502, 'network', `Cloud unreachable: ${message}`);
     } finally {

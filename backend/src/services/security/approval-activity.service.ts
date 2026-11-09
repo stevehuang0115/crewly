@@ -24,6 +24,7 @@ import type { OwnerDecision } from '../../types/decision.types.js';
 import type { HeldBrowserAction } from '../browser/held-action-store.js';
 import type { WhatsAppDraft } from '../../types/whatsapp.types.js';
 import type { HeldSend } from '../google/gmail-send-gate.js';
+import { listOutboundTools, type OutboundTool } from './outbound-tools.js';
 
 /** Days the endpoint accepts. */
 export const APPROVAL_ACTIVITY_DAYS = [7, 30] as const;
@@ -122,6 +123,8 @@ export interface ApprovalActivity {
   gmail: TrackedCount<{ waiting: number }>;
   /** Newest first */
   items: ActivityItem[];
+  /** Every bundled tool whose effect leaves Crewly, with how it is held (#894) */
+  outbound: OutboundTool[];
 }
 
 /** Collaborators (each may be unavailable; tests inject fakes). */
@@ -358,6 +361,7 @@ export class ApprovalActivityService {
       whatsapp,
       gmail: { tracked: true, note: 'Only the sends waiting now are known; settled ones are not kept.', counts: { waiting: gmail.length } },
       items: items.slice(0, MAX_ACTIVITY_ITEMS),
+      outbound: listOutboundTools(),
     };
   }
 }

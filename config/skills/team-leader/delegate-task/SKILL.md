@@ -49,7 +49,7 @@ Assigns a task to a worker within the Team Leader's subordinate scope. Validates
 | `--from` | `fromSession` | No | Delegating TL's session name (for monitoring) |
 | `--request-id` / `-R` | `requestId` | No | Ticket this work is for: the id (or `TKT-123`) from the `[TICKET:TKT-123 <id>]` line of the message you are acting on. Omit it and the task is still linked when your current turn has exactly one ticket |
 | `--ticket` | `ticket` | No | Project ticket this work is for (e.g. `APP-12`). Without it a ticket is created for you when the target works on a project — see Project tickets |
-| `--thread` | `thread` | No | Owner request from Slack: the key from the `[SLACK-THREAD:<key>]` of the owner's message. The member answers the owner in that thread itself — see Owner requests |
+| `--thread` | `thread` | No | Owner request from Slack: the key from the `[SLACK-THREAD:<key>]` of the owner's message. A `<conversation id>:<chat thread id>` pair from the chat works too. The member answers the owner in that thread itself — see Owner requests |
 | `--conversation` | `conversation` | No | Owner request from the Crewly chat (no Slack thread): the conversation id from the `[CHAT:<id>]` of the owner's message — see Owner requests |
 | `--no-member-fits` | `noMemberFits` | No | You keep the work: record what is missing (access, tool, permission, everyone busy). Needs `--task`; nothing is delegated — see No member fits |
 | `--work-item` | `workItemId` | No | With `--no-member-fits`: the WorkItem you keep (gets a `[NO-MEMBER-FITS]` note) |

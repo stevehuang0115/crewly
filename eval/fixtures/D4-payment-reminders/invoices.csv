@@ -1,0 +1,9 @@
+invoice,customer,email,issued,due,amount,status
+INV-1003,Harbor Dental,accounts@harbordental.test,2026-08-21,2026-09-20,1250.00,unpaid
+INV-1005,Oak Street Cafe,owner@oakstreetcafe.test,2026-09-01,2026-10-01,380.00,paid
+INV-1007,Greenline Movers,billing@greenline.test,2026-09-01,2026-10-01,2140.50,unpaid
+INV-1009,Pinewood Clinic,finance@pinewood.test,2026-09-05,2026-10-05,990.00,paid
+INV-1011,Riverside Florist,hello@riversideflorist.test,2026-09-15,2026-10-15,275.00,unpaid
+INV-1012,Summit Fitness,ap@summitfitness.test,2026-09-10,2026-10-10,1600.00,unpaid
+INV-1014,Blue Door Books,shop@bluedoorbooks.test,2026-09-30,2026-10-30,420.00,unpaid
+INV-1015,Northside Vet,accounts@northsidevet.test,2026-09-20,2026-10-20,815.25,unpaid

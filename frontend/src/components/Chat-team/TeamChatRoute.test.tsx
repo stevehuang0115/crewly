@@ -161,12 +161,10 @@ describe('TeamChatRoute', () => {
     teamsRef.loading = false;
   });
 
-  it('passes the Chat seen record from before this visit', async () => {
-    window.localStorage.setItem('crewly.chat.seen', JSON.stringify({ all: 123 }));
+  it('no longer passes a per-browser seen record (read state is server-side)', async () => {
     renderAt('/team-chat');
     await screen.findByTestId('live-team-chat');
-    expect(liveProps).toHaveBeenCalledWith(expect.objectContaining({ seenBaseline: { all: 123 } }));
-    window.localStorage.removeItem('crewly.chat.seen');
+    expect(liveProps.mock.calls.at(-1)?.[0]).not.toHaveProperty('seenBaseline');
   });
 
   it('still renders the page when the ensure calls fail', async () => {

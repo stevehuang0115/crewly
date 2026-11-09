@@ -55,6 +55,26 @@ afterEach(async () => {
 });
 
 describe('WikiSearchService', () => {
+  describe('visible_to_people (#969)', () => {
+    beforeEach(async () => {
+      await writePage(
+        'llm-curated/people/alice-drive.md',
+        '---\ntitle: Alice Drive notes\nsummary: From Alice Drive\nkeep_because: hard_fact\nvisible_to_people:\n  - UALICE\n---\n# Alice\n\nAnthropic quarterly figures from Alice Drive.\n',
+      );
+    });
+
+    it('shows a private-sourced page to its person and the owner, hides it from others', async () => {
+      const hitPaths = async (viewerPerson?: string) => {
+        const r = await svc.search({ vaultPath: vaultRoot, query: 'Anthropic', viewerRole: 'developer', viewerPerson });
+        return r.ok ? r.hits.map((h) => h.relativePath) : [];
+      };
+      expect(await hitPaths('UALICE')).toContain('llm-curated/people/alice-drive.md');
+      expect(await hitPaths(undefined)).toContain('llm-curated/people/alice-drive.md');
+      expect(await hitPaths('UBOB')).not.toContain('llm-curated/people/alice-drive.md');
+      expect(await hitPaths('UBOB')).toContain('llm-curated/customers/anthropic.md');
+    });
+  });
+
   describe('input validation', () => {
     it('rejects relative vaultPath', async () => {
       const result = await svc.search({ vaultPath: 'relative/path', query: 'x' });

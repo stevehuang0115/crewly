@@ -37,12 +37,15 @@ import {
   DISPOSITION_REQUIRED_STATUSES,
   isWorkItemDisposed,
   isExplicitlyBlocked,
+  isBlockedUntilReached,
+  blockedUntilOf,
   isWaitingOnHumanBlocked,
   WORK_ITEM_BLOCK_SOURCES,
 } from '../../types/v2/work-item.types.js';
 import { CLAIM_ACTIVITY_LIVENESS_WINDOW_MS } from '../../types/v2/claim.types.js';
 import { evaluateRequestCompletion } from '../v3/request-completion.js';
 import { AGENT_ATTENTION_CONSTANTS } from '../../constants.js';
+import { readProjectTicketLink } from '../../types/project-ticket.types.js';
 
 // ---------------------------------------------------------------------------
 // Agent Health Types (abstraction over existing services)
@@ -101,6 +104,8 @@ export interface AgentHealth {
  *
  * Defaults:
  *   - `delegate`, `review` — 4h (these supervise long-running coordination)
+ *   - `project_task`       — 4h (a ticket's work: CE-415 failed three times
+ *     at 10 min while Vera was still on it, 2026-10-19)
  *   - `confirm`            — Number.POSITIVE_INFINITY (waits for user; never timeout)
  *   - everything else      — falls back to the caller-provided default
  *
@@ -109,6 +114,7 @@ export interface AgentHealth {
 export const DEFAULT_PER_TYPE_TIMEOUT_MS: Partial<Record<WorkItem['type'], number>> = {
   delegate: 4 * 60 * 60 * 1000,
   review: 4 * 60 * 60 * 1000,
+  project_task: 4 * 60 * 60 * 1000,
   confirm: Number.POSITIVE_INFINITY,
 };
 
@@ -145,7 +151,7 @@ function resolveTimeoutForType(
  * @param timeoutMs - Default running timeout (default: 10 min); per-type overrides
  *                   in {@link DEFAULT_PER_TYPE_TIMEOUT_MS} apply on top of this
  * @param timeoutOverrides - Optional caller-supplied per-type overrides
- * @param claims - Active claims; an item with an unexpired lease is not blocked for a dead agent
+ * @param claims - Active claims; an item with an unexpired lease is neither blocked for a dead agent nor timed out
  * @returns Array of corrections and affected WorkItem IDs
  */
 export function detectStuckWorkItems(
@@ -176,7 +182,9 @@ export function detectStuckWorkItems(
     const effectiveTimeoutMs = resolveTimeoutForType(wi.type, timeoutMs, timeoutOverrides);
     const isTimedOut = Number.isFinite(effectiveTimeoutMs) && (now - startedAt) > effectiveTimeoutMs;
 
-    if (isAgentDead && liveLeaseItems.has(wi.id)) continue;
+    // A live lease also means progress: the lease is only renewed while its
+    // holder is visibly working, so the timeout runs from the last renewal.
+    if (liveLeaseItems.has(wi.id)) continue;
 
     if (isAgentDead) {
       const newStatus: WorkItemStatus = wi.retryCount < wi.maxRetries ? 'blocked' : 'failed';
@@ -741,8 +749,53 @@ export function pickTTLExpiryTarget(current: WorkItemStatus): WorkItemStatus | n
 }
 
 /**
+ * An open owner decision card a WorkItem may be waiting on: the work item the
+ * asker was on when it asked, and the ticket the card is about.
+ */
+export interface DecisionHoldLink {
+  workItemId?: string;
+  ticket?: { projectPath: string; id: string };
+}
+
+/**
+ * Whether a WorkItem waits on an open decision card (crewly#1369 §5): it is
+ * the work item the card was asked from, or it works on the card's ticket.
+ * Such an item is not TTL-cancelled — the owner's answer is what it waits for
+ * (two WorkItems on CREW-646 were cancelled while D-822 waited).
+ *
+ * @param holds - Open decision cards
+ * @returns Predicate over WorkItems
+ *
+ * @example
+ * ```typescript
+ * const held = decisionHoldPredicate([{ workItemId: 'wi-1' }]);
+ * held(wi); // true for wi-1
+ * ```
+ */
+export function decisionHoldPredicate(holds: readonly DecisionHoldLink[]): (wi: Pick<WorkItem, 'id' | 'metadata' | 'projectTaskId'>) => boolean {
+  const ids = new Set<string>();
+  const tickets = new Set<string>();
+  const bareTicketIds = new Set<string>();
+  for (const h of holds) {
+    if (h.workItemId) ids.add(h.workItemId);
+    if (h.ticket?.id) {
+      tickets.add(`${h.ticket.projectPath}#${h.ticket.id}`);
+      bareTicketIds.add(h.ticket.id);
+    }
+  }
+  if (ids.size === 0 && tickets.size === 0) return () => false;
+  return (wi) => {
+    if (ids.has(wi.id)) return true;
+    const link = readProjectTicketLink(wi.metadata);
+    if (link) return tickets.has(`${link.projectPath}#${link.id}`);
+    return !!wi.projectTaskId && bareTicketIds.has(wi.projectTaskId);
+  };
+}
+
+/**
  * Detects WorkItems that have exceeded their time-to-live.
- * Default TTL is 24 hours.
+ * Default TTL is 24 hours. Items waiting on an open owner decision card
+ * ({@link decisionHoldPredicate}) are skipped while the card is open.
  *
  * Picks a state-machine-legal terminal target for each expired WI via
  * {@link pickTTLExpiryTarget}, so the correction never fails with
@@ -759,11 +812,13 @@ export function pickTTLExpiryTarget(current: WorkItemStatus): WorkItemStatus | n
  *
  * @param workItems - All non-terminal WorkItems to check
  * @param ttlMs - Maximum age before auto-cancel (default: 24h)
+ * @param heldByDecision - Items waiting on an open decision card (never expired while it is open)
  * @returns Corrections for expired WorkItems
  */
 export function detectTTLExpiredWorkItems(
   workItems: WorkItem[],
   ttlMs: number = 24 * 60 * 60 * 1000,
+  heldByDecision?: (wi: WorkItem) => boolean,
 ): { corrections: ReconcileCorrection[]; expiredIds: string[] } {
   const corrections: ReconcileCorrection[] = [];
   const expiredIds: string[] = [];
@@ -780,6 +835,9 @@ export function detectTTLExpiredWorkItems(
     const age = now - anchorAt;
 
     if (age > ttlMs) {
+      // The holder waits on the owner's answer to an open card: that wait is
+      // the work, not a stale item (crewly#1369 §5).
+      if (heldByDecision?.(wi)) continue;
       const target = pickTTLExpiryTarget(wi.status);
       // No legal terminal edge from this status — skip rather than emit a
       // correction the state machine will reject on every single pass.
@@ -1320,6 +1378,7 @@ export interface PruningResult {
  * @param allWorkItems - All WorkItems in the system
  * @param ttlMs - TTL threshold (default: 24h)
  * @param staleThresholdMs - Stale queue threshold (default: 1h)
+ * @param heldByDecision - Items waiting on an open decision card, skipped by the TTL rule
  * @returns Aggregated pruning result. The TTL outcome is reported as two
  *   separate counters — {@link PruningResult.ttlCancelledCount} (discarded)
  *   and {@link PruningResult.ttlAutoVerifiedCount} (accepted) — because only
@@ -1330,11 +1389,12 @@ export function runPruningPass(
   allWorkItems: WorkItem[],
   ttlMs: number = 24 * 60 * 60 * 1000,
   staleThresholdMs: number = 60 * 60 * 1000,
+  heldByDecision?: (wi: WorkItem) => boolean,
 ): PruningResult {
   const workItemMap = new Map(allWorkItems.map(wi => [wi.id, wi]));
 
   // 1. TTL expiry
-  const ttl = detectTTLExpiredWorkItems(allWorkItems, ttlMs);
+  const ttl = detectTTLExpiredWorkItems(allWorkItems, ttlMs, heldByDecision);
 
   // 2. Orphan detection
   const orphans = detectOrphanWorkItems(allWorkItems, workItemMap);
@@ -1931,4 +1991,53 @@ export function detectDependencyResolvedWorkItems(
   }
 
   return { corrections, unblockedIds };
+}
+
+/**
+ * Lifts explicit blocks whose `until` time has passed (block-task `until`).
+ *
+ * An agent that can only proceed at a known time blocks its item with an
+ * `until`; here the block lifts and the item returns to `queued` for the
+ * same target (`releaseBack` keeps `target`), who takes it before new work.
+ * An explicit block without `until`, a system block and a waiting_on_human
+ * park are not touched — they keep their own rules.
+ *
+ * The correction carries `blockSource: 'explicit'` so the apply path can tell
+ * the data provider that this blocked → queued flip is the one explicit-block
+ * requeue the reconciler may perform.
+ *
+ * @param workItems - All WorkItems
+ * @param now - The current time (epoch ms); defaults to now
+ * @returns Corrections (blocked → queued) and the ids they release
+ *
+ * @example
+ * ```typescript
+ * const due = detectDueBlockedWorkItems(workItems);
+ * result.corrections.push(...due.corrections);
+ * ```
+ */
+export function detectDueBlockedWorkItems(
+  workItems: WorkItem[],
+  now: number = Date.now(),
+): { corrections: ReconcileCorrection[]; releasedIds: string[] } {
+  const corrections: ReconcileCorrection[] = [];
+  const releasedIds: string[] = [];
+
+  for (const wi of workItems) {
+    if (!isBlockedUntilReached(wi, now)) continue;
+    const until = blockedUntilOf(wi);
+    const untilIso = until === null ? 'unknown' : new Date(until).toISOString();
+    corrections.push(createCorrection({
+      entityType: 'work_item',
+      entityId: wi.id,
+      previousState: 'blocked',
+      newState: 'queued',
+      reason: `Block lifted: its until time ${untilIso} has passed, back to queued for ${wi.target ?? 'the pool'}`,
+      evidence: `blockSource=explicit, blockedUntil=${untilIso}, now=${new Date(now).toISOString()}`,
+      blockSource: WORK_ITEM_BLOCK_SOURCES.EXPLICIT,
+    }));
+    releasedIds.push(wi.id);
+  }
+
+  return { corrections, releasedIds };
 }

@@ -24,7 +24,7 @@ function split(total: number, n: number): number[] {
 
 describe('budgetWeightsFor', () => {
   it('uses the Claude weights: reads x0.1, writes x1.25, input and output x1', () => {
-    for (const model of ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-4-5', 'claude-fable-5-1']) {
+    for (const model of ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-4-5', 'claude-haiku-5-5', 'claude-fable-5-1']) {
       expect(budgetWeightsFor(model)).toEqual({ input: 1, output: 1, cacheWrite: 1.25, cacheRead: 0.1 });
     }
   });

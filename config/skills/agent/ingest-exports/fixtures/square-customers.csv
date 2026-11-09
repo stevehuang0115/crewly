@@ -1,0 +1,4 @@
+First Name,Last Name,Company Name,Email Address,Phone Number,Street Address 1,City,State,Postal Code,Creation Source,First Visit,Last Visit,Transaction Count,Total Spend,Reference ID
+Maria,Lopez,,maria@example.test,+1 555 010 1001,12 Elm St,Oakland,CA,94601,Directory,2025-11-02,2026-09-11,6,$284.00,
+Daniel,Chen,Chen Family,daniel@example.test,+1 555 010 1002,,Oakland,CA,94602,Instant Profile,2026-09-05,2026-09-05,1,$117.45,
+Priya,Natarajan,,priya@example.test,,,Berkeley,CA,94704,Directory,2026-03-14,2026-08-30,3,$135.00,REF-77

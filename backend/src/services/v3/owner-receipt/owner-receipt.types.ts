@@ -11,8 +11,13 @@ import { OWNER_RECEIPT_CONSTANTS } from '../../../constants.js';
 
 /** What happened to one ask. */
 export type ReceiptOutcome =
-  /** Ticket done */
+  /** Ticket done, and nothing says it closed by silence (the owner confirmed it, or it needed no OK) */
   | 'done'
+  /**
+   * Ticket done because nobody objected before the auto-accept deadline
+   * (#1316): accepted, never checked by the owner
+   */
+  | 'auto_accepted'
   /** Answered; waiting for the owner's OK (待验收) */
   | 'to_review'
   /** Someone is on it */
@@ -27,6 +32,7 @@ export type ReceiptOutcome =
 /** All outcomes, in display order. */
 export const RECEIPT_OUTCOMES: readonly ReceiptOutcome[] = [
   'done',
+  'auto_accepted',
   'to_review',
   'in_progress',
   'blocked',
@@ -142,6 +148,11 @@ export interface ReceiptHighlight {
   summary: string;
   /** Deliverables found in the answer (the line prefers tickets that have some) */
   deliverableCount: number;
+  /**
+   * It closed because nobody objected in time, not because the owner
+   * confirmed it (#1316) — the line says so
+   */
+  acceptedBySilence: boolean;
   completedAt: string;
 }
 
@@ -204,6 +215,8 @@ export interface OwnerReceiptState {
   lastSentAt?: string;
   /** Local date (YYYY-MM-DD) of the last send, so one day gets one receipt */
   lastSentLocalDate?: string;
+  /** Local date (YYYY-MM-DD) the weekly pulls line last went out (#1387), so one week gets one line */
+  lastPullsLocalDate?: string;
   /** The one-time format ask (#856 follow-up), once it was asked */
   formatAsk?: ReceiptFormatAsk;
 }

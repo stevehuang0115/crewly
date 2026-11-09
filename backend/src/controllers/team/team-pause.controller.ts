@@ -26,6 +26,7 @@ import {
 	type TeamPauseServiceDeps,
 } from '../../services/team/team-pause.service.js';
 import { stopTeamMemberGracefully } from './team.controller.js';
+import { actorFromRequest, recordActivity } from '../../services/activity/activity-log.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TeamPause');
 
@@ -89,6 +90,12 @@ export async function pauseTeamHandler(this: ApiContext, req: Request, res: Resp
 			...(typeof body.reason === 'string' ? { reason: body.reason } : {}),
 			...(typeof body.until === 'string' ? { until: body.until } : {}),
 		});
+		recordActivity({
+			actor: actorFromRequest(req),
+			action: 'team.paused',
+			target: { type: 'team', id: out.team.id, name: out.team.name },
+			after: { ...(typeof body.reason === 'string' ? { reason: body.reason } : {}), ...(typeof body.until === 'string' ? { until: body.until } : {}), stopped: out.stopped },
+		});
 		res.json({
 			success: true,
 			message: `${out.team.name} is paused.${out.stopped.length ? ` Stopped: ${out.stopped.join(', ')}.` : ''}`,
@@ -116,6 +123,7 @@ export async function resumeTeamHandler(this: ApiContext, req: Request, res: Res
 	if (rejectNonOwner(req, res, { success: false, error: 'Only the owner can resume a team', code: 'owner_only' })) return;
 	try {
 		const out = await ensureTeamPauseService(this).resume(req.params.id);
+		if (out.wasPaused) recordActivity({ actor: actorFromRequest(req), action: 'team.resumed', target: { type: 'team', id: out.team.id, name: out.team.name } });
 		res.json({
 			success: true,
 			message: out.wasPaused ? `${out.team.name} is resumed.` : `${out.team.name} was not paused.`,

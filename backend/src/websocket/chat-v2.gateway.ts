@@ -9,6 +9,7 @@
  *  - Client→server: `{type:"ping",ts}` every 25s
  *  - Server→client: `{type:"pong",ts}` echo within 10s
  *  - Server→client: `{type:"message",payload:{channelId,message:MessageDTO}}`
+ *  - Server→client: `{type:"read_state",payload:{channelId,lastReadSeq,unreadCount}}`
  *  - Server→client: `{type:"presence",payload:{agentSession,status,lastSeenAt?}}`
  *  - Server→client: `{type:"error",code,message}` followed by close() on fatal
  *
@@ -50,6 +51,10 @@ export type ChatWireEvent =
         status: ChatAgentPresenceStatus;
         lastSeenAt?: number | null;
       };
+    }
+  | {
+      type: 'read_state';
+      payload: { channelId: string; lastReadSeq: number; unreadCount: number };
     }
   | { type: 'pong'; ts: number }
   | { type: 'error'; code: string; message: string };
@@ -567,6 +572,28 @@ export function buildMessageEvent(
   return {
     type: 'message',
     payload: { channelId, message },
+  };
+}
+
+/**
+ * Build the `read_state` frame (#1400): the owner's marker and unread count for
+ * a channel changed (read, mark-unread, or a new message raised the count).
+ *
+ * @param state - Channel id, marker and unread count
+ * @returns Wire frame ready for {@link ChatV2Gateway.broadcast}
+ */
+export function buildReadStateEvent(state: {
+  channelId: string;
+  lastReadSeq: number;
+  unreadCount: number;
+}): Extract<ChatWireEvent, { type: 'read_state' }> {
+  return {
+    type: 'read_state',
+    payload: {
+      channelId: state.channelId,
+      lastReadSeq: state.lastReadSeq,
+      unreadCount: state.unreadCount,
+    },
   };
 }
 

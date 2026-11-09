@@ -629,6 +629,56 @@ describe('AgentAutoClaimService', () => {
   });
 });
 
+describe('recoverPendingTasks — a member the owner stopped (Evership / Eve, 2026-10-26)', () => {
+  const eve = { id: '398f05df-69f1-45d3-bcb6-81d0cff8b419', name: 'Eve', sessionName: '', agentId: 'evership-eve-398f05df', agentStatus: 'inactive', role: 'fullstack-developer' };
+  const evership = (member: Record<string, unknown>) => [{ id: 'evership', name: 'Evership', members: [member] }];
+  const weeklyReport = {
+    id: 'wi-eve-1',
+    title: 'weekly-report',
+    type: 'delegate',
+    owner: 'team_lead',
+    target: 'evership-eve-398f05df',
+    status: 'queued' as const,
+    retryCount: 0,
+    maxRetries: 1,
+    createdAt: new Date().toISOString(),
+    inputTokens: 0,
+    outputTokens: 0,
+    cost: 0,
+  };
+  const recover = () => (AgentAutoClaimService.getInstance() as unknown as { recoverPendingTasks: () => Promise<void> }).recoverPendingTasks();
+
+  beforeEach(() => {
+    mockAxiosGet.mockReset();
+    mockAxiosPost.mockReset().mockResolvedValue({ data: { success: true } });
+    mockRecordOrphanedWorkItem.mockReset().mockResolvedValue(null);
+    mockRetargetQueuedItem.mockClear();
+    mockTriggerGet.mockReset();
+    AgentAutoClaimService.getInstance().initialize({ on: jest.fn() } as never, async () => new Map());
+  });
+
+  it('neither wakes nor escalates the queued work of a member the owner stopped', async () => {
+    const stopped = { ...eve, dropoutReason: 'manual' };
+    mockGetTeams.mockResolvedValue(evership(stopped));
+    mockAxiosGet.mockResolvedValue({ data: { data: evership(stopped) } });
+    mockGetAvailableItems.mockResolvedValueOnce([weeklyReport]);
+    await recover();
+    expect(mockAxiosPost).not.toHaveBeenCalled();
+    expect(mockRecordOrphanedWorkItem).not.toHaveBeenCalled();
+    expect(mockRetargetQueuedItem).not.toHaveBeenCalled();
+  });
+
+  it('wakes a member that merely exited, found by its agent id although it has no session name', async () => {
+    const idle = { ...eve, dropoutReason: 'idle_exit' };
+    mockGetTeams.mockResolvedValue(evership(idle));
+    mockAxiosGet.mockResolvedValue({ data: { data: evership(idle) } });
+    mockGetAvailableItems.mockResolvedValue([weeklyReport]);
+    await recover();
+    expect(mockAxiosPost).toHaveBeenCalledWith(expect.stringMatching(/\/api\/teams\/evership\/members\/398f05df-69f1-45d3-bcb6-81d0cff8b419\/start$/), { workItemId: 'wi-eve-1' });
+    expect(mockRecordOrphanedWorkItem).not.toHaveBeenCalled();
+  });
+});
+
 describe('AgentAutoClaimService.healOrphans (2026-09-24 metrics trigger)', () => {
   const teams = [
     {

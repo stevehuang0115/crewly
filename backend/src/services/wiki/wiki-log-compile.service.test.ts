@@ -116,6 +116,32 @@ describe('WikiLogCompileService', () => {
     expect(page).toContain(': d');
   });
 
+  it('a week too long for one page is compiled in parts: oldest first, the rest on the next run (2026-10-26)', async () => {
+    // 150 candidates × ~400 quoted chars ≈ 60 KB, over the body cap.
+    const long = (i: number) => `(learning) [[Topic-${i % 7}]] ` + `entry ${i} ` + 'x'.repeat(420);
+    let log = '';
+    for (let i = 0; i < 150; i++) log += entry(6 - (i * 5) / 150, long(i), i % 2 ? 'leo' : 'mia');
+    await writeLog(log);
+    const first = await service.compile(vault, { now: NOW });
+    expect(first.compiled).toBe(true);
+    expect(first.candidates).toBe(150);
+    expect(first.entriesCompiled).toBeLessThan(150);
+    expect(first.entriesCompiled).toBeGreaterThanOrEqual(3);
+    const page = parsePage(await fs.readFile(path.join(vault, first.pagePath!), 'utf8'));
+    expect(Buffer.byteLength(page.body, 'utf8')).toBeLessThanOrEqual(56 * 1024);
+    // The oldest entries went first; the newest waits.
+    expect(page.body).toContain('entry 0 ');
+    expect(page.body).not.toContain('entry 149 ');
+    const state = JSON.parse(await fs.readFile(path.join(vault, '.wiki-compile-state.json'), 'utf8')) as { compiledKeys: string[] };
+    expect(state.compiledKeys).toHaveLength(first.entriesCompiled);
+    // The next run takes the rest.
+    const second = await service.compile(vault, { now: NOW });
+    expect(second).toMatchObject({ compiled: true, candidates: 150 - first.entriesCompiled });
+    const again = await fs.readFile(path.join(vault, first.pagePath!), 'utf8');
+    expect(again).toContain('entry 149 ');
+    expect(second.entriesCompiled + first.entriesCompiled).toBeLessThanOrEqual(150);
+  });
+
   it('dry run plans without writing a page or state', async () => {
     await writeLog(entry(3, 'a') + entry(2, 'b') + entry(1, 'c'));
     const r = await service.compile(vault, { now: NOW, dryRun: true });

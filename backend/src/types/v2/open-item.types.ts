@@ -64,7 +64,7 @@ export interface RequestOpenItem {
   /** ISO — when the agent said it */
   createdAt: string;
   status: OpenItemStatus;
-  /** Commitment: when it is due (ISO, local time resolved at extraction) */
+  /** Commitment: when it is due (ISO, local time resolved at extraction); owner question: when an answer is expected */
   due?: string;
   /** Commitment: whether `due` came from the text or is the default */
   dueSource?: 'text' | 'default';
@@ -92,6 +92,13 @@ export interface RequestOpenItem {
   gateDecisionId?: string;
   /** Commitment waiting on the owner: the question item from the same message whose answer opens it (CREW-440) */
   gateItemId?: string;
+  /**
+   * Question: a yes/no decision asked in prose ("should I close PR #12?").
+   * Without a card it is due ({@link RequestOpenItem.due}) an answer: the
+   * owner's next message in the thread resolves it, and silence past the due
+   * time is followed up by the stall watcher (crewly#1369).
+   */
+  ownerQuestion?: boolean;
   /** Question: the decision card it became (`D-<n>`) */
   decisionId?: string;
   /** Question: the owner's answer (option label or words) */

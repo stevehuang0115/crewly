@@ -37,9 +37,9 @@ export type {
 export { useChannels } from './hooks/useChannels';
 export type { UseChannelsResult } from './hooks/useChannels';
 export { useMessages, selectRootMessages, selectThreadReplies } from './hooks/useMessages';
-export type { UseMessagesResult } from './hooks/useMessages';
+export type { UseMessagesResult, UseMessagesOptions } from './hooks/useMessages';
 export { useMergedMessages, toChronological } from './hooks/useMergedMessages';
-export type { UseMergedMessagesResult } from './hooks/useMergedMessages';
+export type { UseMergedMessagesResult, UseMergedMessagesOptions } from './hooks/useMergedMessages';
 export { useSendMessage } from './hooks/useSendMessage';
 export type { UseSendMessageResult } from './hooks/useSendMessage';
 export { useAgentPresence } from './hooks/useAgentPresence';
@@ -62,6 +62,7 @@ export type { UseObservedWorkspacesOptions } from './hooks/useObservedWorkspaces
 // API primitives (advanced: e.g. tests that want to inject a custom client)
 export { HttpChatApiClient } from './api/client';
 export type { ChatApiClient, ChannelSubscription, HttpClientOptions } from './api/client';
+export type { ChannelReadState, UnreadSummary, ChatSearchHit, ChatSearchOptions } from './types/chat.types';
 export { MockChatApiClient } from './api/mock-client';
 export type { MockClientOptions } from './api/mock-client';
 export { ChatApiError, CHAT_API_ERROR_CODES } from './api/errors';

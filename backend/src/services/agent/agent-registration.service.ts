@@ -55,11 +55,12 @@ import {
 	INPUT_BLOCKED_RETRY_CONSTANTS,
 	USAGE_LIMIT_STATE_CONSTANTS,
 } from '../../constants.js';
+import { clearMemoryStop } from './memory-stop-hold.js';
 import { TuiInputGuardError, TuiPasteHoldError, screenShowsTurnInProgress, type TuiInputReading } from '../session/tui-input-guard.js';
 import { InputBlockedRetryService } from '../messaging/input-blocked-retry.service.js';
 import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thread-key.js';
 import { delay } from '../../utils/async.utils.js';
-import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
+import { buildRuntimeModelFlags, isSafeSkillRuntimeFlag } from '../../utils/runtime-model-flags.utils.js';
 import { buildRemoteMcpLaunchFlags } from '../connector/remote-mcp-launch.service.js';
 import { effectiveMemberModelId, fallbackRuntimeModelId } from '../../utils/member-default-model.utils.js';
 import { canMemberDelegate, getLeadSubordinates } from '../../utils/team.utils.js';
@@ -71,6 +72,7 @@ import { SessionMemoryService } from '../memory/session-memory.service.js';
 import { StartupBriefingService } from '../memory/startup-briefing.service.js';
 import { ActiveWorkBriefingService } from './active-work-briefing.service.js';
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
+import { clearPlannedStop, markPlannedStop } from './planned-relaunch.registry.js';
 import { ContextWindowMonitorService } from './context-window-monitor.service.js';
 import { OAuthReloginMonitorService } from './oauth-relogin-monitor.service.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
@@ -886,6 +888,13 @@ export class AgentRegistrationService {
 					const skillConfig = JSON.parse(skillContent);
 					if (skillConfig.runtime?.runtime === runtimeType && Array.isArray(skillConfig.runtime?.flags)) {
 						for (const flag of skillConfig.runtime.flags) {
+							// skill.json is external input (marketplace skills too) and these
+							// flags are typed into the launch line: refuse anything that is not
+							// a plain flag (CREW-967).
+							if (!isSafeSkillRuntimeFlag(flag)) {
+								this.logger.warn('Refused unsafe runtime flag from skill.json', { skillId, flag: String(flag).slice(0, 80) });
+								continue;
+							}
 							flags.add(flag);
 						}
 					}
@@ -1393,6 +1402,16 @@ export class AgentRegistrationService {
 		['team-lead', 'team-leader'],
 		['operations', 'ops'],
 		['devops', 'ops'],
+		// The directory is `fullstack-dev`; teams name the role in full
+		// (Evership's Eve ran on the generalist prompt for weeks, 2026-10-27).
+		['fullstack-developer', 'fullstack-dev'],
+		['full-stack-developer', 'fullstack-dev'],
+		['fullstack', 'fullstack-dev'],
+		['full-stack', 'fullstack-dev'],
+		['backend-dev', 'backend-developer'],
+		['frontend-dev', 'frontend-developer'],
+		['customer-support', 'support'],
+		['pm', 'product-manager'],
 	]);
 
 	/**
@@ -3960,6 +3979,8 @@ Loop until done, blocked, or explicitly reassigned:
 		}
 
 		try {
+			// Starting by any path (owner, reconciler, retry) ends the memory-stop hold.
+			clearMemoryStop(sessionName);
 			this.logger.info('Creating agent session (unified approach)', {
 				sessionName,
 				role,
@@ -4511,6 +4532,10 @@ Loop until done, blocked, or explicitly reassigned:
 		try {
 			this.logger.info('Terminating agent session (unified approach)', { sessionName, role });
 
+			// The heartbeat monitor must not call this a ghost while the session
+			// is gone but storage still says active (#1464).
+			markPlannedStop(sessionName);
+
 			// Stop runtime exit monitoring before killing the session
 			RuntimeExitMonitorService.getInstance().stopMonitoring(sessionName);
 			// ...and with it the session's pending registration flow, which no
@@ -4564,6 +4589,7 @@ Loop until done, blocked, or explicitly reassigned:
 				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
 			);
 			this.logger.info('Agent status updated to inactive', { sessionName, role });
+			clearPlannedStop(sessionName);
 
 			// Unregister from persistence so explicitly stopped agents don't reappear in resume popup
 			try {

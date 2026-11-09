@@ -104,6 +104,8 @@ export interface WakeMessageInput {
   owns?: boolean;
   /** Mentioned agents no longer on this machine (the recipient is the orchestrator) */
   goneMentions?: string[];
+  /** The app's publisher is no longer on this machine (the recipient is the orchestrator) */
+  gonePublisher?: string;
   dataChanges: AppChange[];
   events: AppChange[];
   /** Anonymous submissions from public visitors (P3) */
@@ -530,9 +532,12 @@ export function buildAppWakeMessage(input: WakeMessageInput): string {
   const decisions = (input.decisions ?? []).filter((d) => d.decision?.outcome === 'approved' || d.decision?.outcome === 'declined');
   const byOwner = input.dataChanges.length > 0 || input.events.length > 0 || comments.length > 0 || decisions.length > 0;
   const onlyComments = comments.length > 0 && input.dataChanges.length === 0 && input.events.length === 0 && decisions.length === 0;
+  const gonePublisher = input.gonePublisher ? inline(input.gonePublisher, 60) : '';
   lines.push(
     !byOwner && (visitors.length > 0 || skipped > 0)
       ? `[APP CHANGES] Public visitors submitted to your app "${name}" (${input.appId}) — ${url}`
+      : gonePublisher && !input.isPublisher
+        ? `[APP CHANGES] The owner changed the app "${name}" (${input.appId}), whose agent is no longer on this machine — ${url}`
       : input.owns && !input.isPublisher && onlyComments
         ? `[APP CHANGES] The owner commented on the app "${name}" (${input.appId}) — you own its comments — ${url}`
       : input.isPublisher
@@ -546,6 +551,12 @@ export function buildAppWakeMessage(input: WakeMessageInput): string {
           : `[APP CHANGES] The owner's app "${name}" (${input.appId}) addressed you — ${url}`,
   );
   if (decisions.length > 0) lines.push(...describeDecisions(decisions));
+  if (gonePublisher && !input.isPublisher) {
+    lines.push(
+      `Its publisher ${gonePublisher} is not an agent on this machine any more, so this came to you. ` +
+        'Read the changes yourself, hand the app to another agent, or tell the owner; nothing else will act on them.',
+    );
+  }
   const gone = (input.goneMentions ?? []).map((n) => inline(n, 40)).filter(Boolean);
   if (gone.length > 0) {
     lines.push(

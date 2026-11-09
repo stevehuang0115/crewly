@@ -63,6 +63,21 @@ describe('ChatConversationList', () => {
     expect(within(screen.getByTestId('conv-row-ch-1')).getByText('#')).toBeInTheDocument();
   });
 
+  it('shows the server unread count instead of a dot when a count is supplied (99+ capped)', () => {
+    const counts: Record<string, number> = { 'dm-2': 3, 'ch-1': 150 };
+    render(
+      <ChatConversationList
+        {...base}
+        isUnread={(r) => (counts[r.id] ?? 0) > 0}
+        unreadCountOf={(r) => counts[r.id] ?? 0}
+      />,
+    );
+    expect(screen.getByTestId('conv-unread-dm-2')).toHaveTextContent('3');
+    expect(screen.getByTestId('conv-unread-dm-2')).toHaveAttribute('aria-label', '3 unread');
+    expect(screen.getByTestId('conv-unread-ch-1')).toHaveTextContent('99+');
+    expect(screen.queryByTestId('conv-unread-dm-1')).not.toBeInTheDocument();
+  });
+
   it('Crewly channels are their own section, before team channels; the new-channel button shows when wired', () => {
     const onNewChannel = vi.fn();
     const withChannels = [...groups, { id: 'crewly-channels', label: 'Channels', rows: [{ id: 'huddle-1', kind: 'channel' as const, title: 'tech-brief' }] }];
@@ -99,6 +114,22 @@ describe('ChatConversationList', () => {
     expect(screen.getByText('No conversations match your search.')).toBeInTheDocument();
     fireEvent.keyDown(screen.getByTestId('conv-search'), { key: 'Escape' });
     expect(screen.queryByTestId('conv-search')).not.toBeInTheDocument();
+  });
+
+  it('Find offers a message search when wired, with the typed words (#1400)', () => {
+    const onSearchMessages = vi.fn();
+    const { unmount } = render(<ChatConversationList {...base} onSearchMessages={onSearchMessages} />);
+    fireEvent.click(screen.getByTestId('conv-search-toggle'));
+    expect(screen.queryByTestId('conv-search-messages')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('conv-search'), { target: { value: ' docker reset ' } });
+    expect(screen.getByTestId('conv-search-messages')).toHaveTextContent('Search messages for “docker reset”');
+    fireEvent.click(screen.getByTestId('conv-search-messages'));
+    expect(onSearchMessages).toHaveBeenCalledWith('docker reset');
+    unmount();
+    render(<ChatConversationList {...base} />);
+    fireEvent.click(screen.getByTestId('conv-search-toggle'));
+    fireEvent.change(screen.getByTestId('conv-search'), { target: { value: 'zzz' } });
+    expect(screen.queryByTestId('conv-search-messages')).not.toBeInTheDocument();
   });
 
   it('shows the empty state when there are no conversations', () => {

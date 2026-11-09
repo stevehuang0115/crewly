@@ -22,6 +22,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { randomUUID } from 'crypto';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { NetworkStatusService, warnUnlessOfflineRepeat } from '../core/network-status.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
 import type {
@@ -624,13 +625,14 @@ export class CloudSyncService extends EventEmitter {
       // Not "may not work": without a queue id the Slack instance heartbeat
       // is skipped, so Cloud marks this machine stale and every inbound
       // Slack event is queued instead of delivered (2026-09-21).
-      const level = this.queueId === null ? 'error' : 'warn';
-      this.logger[level](
-        this.queueId === null
-          ? 'Queue registration failed — this machine will not receive Cloud or Slack messages until it succeeds'
-          : 'Queue re-registration failed — still polling the queue registered earlier',
-        { error: this.queueError, attempt: this.queueFailures, retryInMs: delay },
-      );
+      const detail = { error: this.queueError, attempt: this.queueFailures, retryInMs: delay };
+      if (this.queueId === null) {
+        this.logger.error('Queue registration failed — this machine will not receive Cloud or Slack messages until it succeeds', detail);
+      } else {
+        // Offline, the re-registration fails every minute for the whole outage
+        // (38 lines on 2026-10-25); one line per 10 min says the same.
+        warnUnlessOfflineRepeat(this.logger, 'cloud-sync-register', 'Queue re-registration failed — still polling the queue registered earlier', detail);
+      }
     }
     this.scheduleRegister(gen, delay);
   }
@@ -793,7 +795,16 @@ export class CloudSyncService extends EventEmitter {
 
     if (!response.ok) {
       const failure = await relayFailure(response, 'Queue registration failed');
-      if (response.status === 403) throw new QueueForbiddenError(failure.message);
+      if (response.status === 403) {
+        // The relay answers 403 both for a queue held by another account and
+        // for a token it rejects (an expired JWT after the Mac slept). Only
+        // the first is a reason to take a fresh queue; the second is a token
+        // refresh, then a retry of the same queue.
+        if (failure.message.includes(CLOUD_SYNC_CONSTANTS.RELAY_FOREIGN_QUEUE_ERROR)) {
+          throw new QueueForbiddenError(failure.message);
+        }
+        await this.handleAuthError(response.status);
+      }
       throw failure;
     }
 
@@ -964,9 +975,12 @@ export class CloudSyncService extends EventEmitter {
       }
 
       this.heartbeatFailures = 0;
+      NetworkStatusService.getInstance().recordSuccess('cloud-sync');
       this.markContact();
     } catch (error) {
       this.heartbeatFailures++;
+      // Offline-class codes (ENOTFOUND on `cause`) count toward the breaker; a Cloud outage does not.
+      NetworkStatusService.getInstance().recordFailure('cloud-sync', error);
       this.logger.warn('Heartbeat failed', {
         error: error instanceof Error ? error.message : String(error),
         failures: this.heartbeatFailures,
@@ -1122,9 +1136,11 @@ export class CloudSyncService extends EventEmitter {
 
       this.devices = Array.from(deduped.values());
       this.devicePollFailures = 0;
+      NetworkStatusService.getInstance().recordSuccess('cloud-sync');
       this.emit('devices_updated', this.getDevices());
     } catch (error) {
       this.devicePollFailures++;
+      NetworkStatusService.getInstance().recordFailure('cloud-sync', error);
       this.logger.warn('Device poll failed', {
         error: error instanceof Error ? error.message : String(error),
         failures: this.devicePollFailures,
@@ -1193,6 +1209,8 @@ export class CloudSyncService extends EventEmitter {
 
       if (!rawMessages || rawMessages.length === 0) {
         this.messagePollFailures = 0;
+        // The usual outcome of a poll: an answer, so the network is up.
+        NetworkStatusService.getInstance().recordSuccess('cloud-sync');
         this.markContact();
         return 0;
       }
@@ -1259,11 +1277,17 @@ export class CloudSyncService extends EventEmitter {
       await this.ackMessages(messageIds);
 
       this.messagePollFailures = 0;
+      // Any answer from Cloud ends an offline episode, so the breaker never
+      // stays tripped while the polls already succeed.
+      NetworkStatusService.getInstance().recordSuccess('cloud-sync');
       this.markContact();
       this.logger.debug('Polled and processed messages', { count: rawMessages.length });
       return rawMessages.length;
     } catch (error) {
       this.messagePollFailures++;
+      // The fastest Cloud caller (every few seconds): with it the breaker trips
+      // within seconds of a DNS outage instead of waiting for the recovery loop.
+      NetworkStatusService.getInstance().recordFailure('cloud-sync', error);
       this.logger.warn('Message poll failed', {
         error: error instanceof Error ? error.message : String(error),
         failures: this.messagePollFailures,
@@ -1476,6 +1500,7 @@ export class CloudSyncService extends EventEmitter {
         });
 
         if (response.ok) {
+          NetworkStatusService.getInstance().recordSuccess('cloud-sync');
           this.logger.info('Cloud Sync recovery succeeded — resuming normal polling');
           this.heartbeatFailures = 0;
           this.devicePollFailures = 0;
@@ -1508,9 +1533,19 @@ export class CloudSyncService extends EventEmitter {
           this.logger.warn('Recovery heartbeat failed, will retry', { status: response.status });
         }
       } catch (error) {
-        this.logger.warn('Recovery attempt failed, will retry', {
+        // `fetch failed` carries the real code (ENOTFOUND, …) on `cause`; the
+        // breaker reads it and, once offline, this line drops to debug.
+        const net = NetworkStatusService.getInstance();
+        net.recordFailure('cloud-sync', error);
+        const detail = {
           error: error instanceof Error ? error.message : String(error),
-        });
+          ...(net.isOffline() ? { offlineMinutes: net.offlineMinutes() } : {}),
+        };
+        if (net.shouldLog('cloud-sync')) {
+          this.logger.warn('Recovery attempt failed, will retry', detail);
+        } else {
+          this.logger.debug('Recovery attempt failed, will retry (repeat while offline)', detail);
+        }
       }
     }, recoveryInterval);
 

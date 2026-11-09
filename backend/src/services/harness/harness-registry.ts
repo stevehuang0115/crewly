@@ -83,7 +83,7 @@ export const HARNESS_DEFINITIONS: readonly HarnessDefinition[] = [
 				id: 'subscription',
 				label: 'Claude subscription (Pro / Max)',
 				kind: 'broker',
-				broker: { command: 'claude', args: ['setup-token'] },
+				broker: { command: 'claude', args: ['auth', 'login'] },
 			},
 			{ id: 'api_key', label: 'Anthropic API key', kind: 'api_key' },
 		],

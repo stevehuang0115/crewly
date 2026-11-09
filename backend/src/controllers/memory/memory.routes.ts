@@ -12,6 +12,9 @@ import {
   remember,
   recall,
   recordLearning,
+  recordCorrection,
+  decideCorrection,
+  listCorrections,
   setGoal,
   getGoals,
   updateFocus,
@@ -34,6 +37,9 @@ import {
  * - POST /recall          - Retrieve relevant knowledge from memory
  * - POST /supersede       - Mark a memory entry as superseded by a newer one (M4)
  * - POST /record-learning - Record a learning or discovery
+ * - POST /corrections      - Count a correction class on the ladder (#810)
+ * - GET  /corrections      - List a project's correction classes
+ * - POST /corrections/:class/decide - Record the lead's rung for a class
  * - POST /goals           - Set or append a project goal
  * - GET  /goals           - Get active project goals
  * - POST /focus           - Update the team's current focus
@@ -55,6 +61,9 @@ export function createMemoryRouter(): Router {
   router.post('/recall', recall);
   router.post('/supersede', supersedeMemory);
   router.post('/record-learning', recordLearning);
+  router.post('/corrections', recordCorrection);
+  router.get('/corrections', listCorrections);
+  router.post('/corrections/:class/decide', decideCorrection);
   router.post('/goals', setGoal);
   router.get('/goals', getGoals);
   router.post('/focus', updateFocus);

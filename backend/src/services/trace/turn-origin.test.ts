@@ -72,12 +72,20 @@ describe('turn-origin', () => {
 			expect(ctx.record).toHaveBeenCalledWith(expect.objectContaining({ traceId: 'tr-1', type: 'turn.unsolicited' }));
 		});
 
-		it('one submit consumes every queued harness write; the next bare submit is unsolicited', () => {
+		it('one submit consumes ONE harness write: two pastes queued mid-turn and submitted one by one are both ours (crewly#1431)', () => {
 			ctx.current.set('ella', 'tr-1');
 			noteHarnessWrite('ella');
 			noteHarnessWrite('ella');
 			expect(notePromptSubmitted('ella')).toBe(false);
+			expect(notePromptSubmitted('ella')).toBe(false);
 			expect(notePromptSubmitted('ella')).toBe(true);
+		});
+
+		it('a harness write older than the TTL no longer vouches for a prompt', () => {
+			ctx.current.set('ella', 'tr-1');
+			const t0 = 1_800_000_000_000;
+			noteHarnessWrite('ella', t0);
+			expect(notePromptSubmitted('ella', t0 + 21 * 60 * 1000)).toBe(true);
 		});
 
 		it('falls back to the last trace the session worked in when the current one has expired', () => {

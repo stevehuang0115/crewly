@@ -13,6 +13,7 @@
  */
 
 import { LoggerService } from '../core/logger.service.js';
+import { SUB_AGENT_QUEUE_CONSTANTS } from '../../constants.js';
 
 /** Tuning for {@link scheduleDeferredStartRetry}. */
 export const DEFERRED_START_RETRY_CONSTANTS = {
@@ -112,4 +113,23 @@ export async function scheduleDeferredStartRetry(sessionName: string, deps: Defe
 	} finally {
 		inFlight.delete(sessionName);
 	}
+}
+
+/**
+ * Whether the periodic queued-wake sweep may wake an agent again. The gap
+ * after the n-th sweep wake that did not bring the agent up is
+ * QUEUED_WAKE_SWEEP_MS * 2^(n-1), capped at QUEUED_WAKE_SWEEP_MAX_BACKOFF_MS,
+ * so a start that keeps failing is not relaunched four times an hour.
+ *
+ * @param prev - The sweep's earlier wakes of this agent since it was last up (none = never woken)
+ * @param now - Epoch ms of this sweep
+ * @returns True when the agent is due
+ */
+export function sweepWakeDue(prev: { count: number; at: number } | undefined, now: number): boolean {
+	if (!prev) return true;
+	const gap = Math.min(
+		SUB_AGENT_QUEUE_CONSTANTS.QUEUED_WAKE_SWEEP_MS * 2 ** Math.max(0, prev.count - 1),
+		SUB_AGENT_QUEUE_CONSTANTS.QUEUED_WAKE_SWEEP_MAX_BACKOFF_MS,
+	);
+	return now - prev.at >= gap;
 }

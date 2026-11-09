@@ -40,6 +40,7 @@ import {
   type ExperimentMetric,
   type ExperimentStatus,
   type ExperimentStoreData,
+  type ExperimentSupervision,
   type ExperimentTicketLink,
   type Measurement,
 } from '../../types/experiment.types.js';
@@ -117,6 +118,8 @@ export interface CreateExperimentInput {
   metrics?: unknown;
   /** Autopilot scope: when the period starts (ISO, not in the future; default: now) */
   startedAt?: unknown;
+  /** Agent session that watches the run read-only (#1026; default: only the creator) */
+  supervisor?: unknown;
 }
 
 /** An error with an HTTP status. */
@@ -655,6 +658,7 @@ export class ExperimentService {
       confidence = c;
     }
     const ticket = validateTicketLink(input.ticket);
+    const supervisor = validateSupervisor(input.supervisor);
     const title = text(input.title) ?? hypothesis.slice(0, 80);
     const scope = await this.parseAutopilotScope(input, metric);
     const startedAt = input.startedAt === undefined || input.startedAt === null || input.startedAt === '' ? undefined : parseShipTime(String(input.startedAt), this.now());
@@ -702,6 +706,7 @@ export class ExperimentService {
         windowDays,
         ...(ticket ? { ticket } : {}),
         createdBy: caller,
+        ...(supervisor ? { supervisor } : {}),
         confidence,
         status: 'planned',
         createdAt: at,
@@ -1362,6 +1367,49 @@ export class ExperimentService {
       }
     }
   }
+}
+
+/**
+ * The optional `supervisor` of a new card (#1026).
+ *
+ * @param raw - Input value
+ * @returns The session name, or undefined when not given
+ * @throws ExperimentError(400) when it is not a session name
+ */
+export function validateSupervisor(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const v = typeof raw === 'string' ? raw.trim() : '';
+  if (!EXPERIMENT_CONSTANTS.SUPERVISOR_PATTERN.test(v) || v === 'owner') {
+    throw new ExperimentError(400, 'supervisor must be an agent session name');
+  }
+  return v;
+}
+
+/**
+ * What a session may read of an autopilot project as the supervisor (or the
+ * creator) of its experiment cards (#1026). Only planned / running autopilot
+ * cards on that project count, so access ends when a card is measured or
+ * cancelled. A card without a label opens the whole project; labelled cards
+ * open their labels only. Read-only: nothing here grants ticket work.
+ *
+ * @param experiments - All experiment cards
+ * @param session - Agent session
+ * @param projectId - Autopilot project id
+ * @returns The readable scope, or null when the session supervises nothing there
+ */
+export function supervisionOf(experiments: readonly Experiment[], session: string, projectId: string): ExperimentSupervision | null {
+  if (!session || session === 'owner') return null;
+  const labels = new Set<string>();
+  let found = false;
+  for (const e of experiments) {
+    if (!e.autopilot || e.autopilot.projectId !== projectId) continue;
+    if (!EXPERIMENT_CONSTANTS.SUPERVISION_STATUSES.includes(e.status)) continue;
+    if (e.supervisor !== session && e.createdBy !== session) continue;
+    if (!e.autopilot.label) return { labels: null };
+    found = true;
+    labels.add(e.autopilot.label.toLowerCase());
+  }
+  return found ? { labels: [...labels] } : null;
 }
 
 /**

@@ -7,7 +7,7 @@
  * @module controllers/memory/memory.controller.test
  */
 
-import { remember, recall, recordLearning, getMyContext, supersedeMemory } from './memory.controller.js';
+import { remember, recall, recordLearning, getMyContext, supersedeMemory, recordCorrection, decideCorrection, listCorrections, setGoal } from './memory.controller.js';
 
 // Mock LoggerService before any imports that use it
 jest.mock('../../services/core/logger.service.js', () => ({
@@ -23,10 +23,29 @@ jest.mock('../../services/core/logger.service.js', () => ({
   },
 }));
 
+// Mock CorrectionLadderService (#810)
+const mockLadderRecord = jest.fn();
+const mockLadderDecide = jest.fn();
+const mockLadderList = jest.fn();
+jest.mock('../../services/memory/correction-ladder.service.js', () => ({
+  CorrectionLadderService: {
+    getInstance: () => ({
+      record: mockLadderRecord,
+      decide: mockLadderDecide,
+      list: mockLadderList,
+    }),
+  },
+}));
+
 // Mock MemoryService
 const mockRemember = jest.fn();
 const mockRecall = jest.fn();
 const mockRecordLearning = jest.fn();
+
+const mockGetTimingBlock = jest.fn<string | null, [string]>(() => null);
+jest.mock('../../services/ai/self-improvement/task-timing.service.js', () => ({
+  getTaskTimingService: () => ({ getTimingBlock: (agent: string) => mockGetTimingBlock(agent) }),
+}));
 
 jest.mock('../../services/memory/memory.service.js', () => ({
   MemoryService: {
@@ -38,14 +57,17 @@ jest.mock('../../services/memory/memory.service.js', () => ({
   },
 }));
 
-// Mock GoalTrackingService
+// Mock GoalTrackingService (isGoalStatus is the real rule, repeated here because the module is replaced)
+const mockSetGoal = jest.fn();
 jest.mock('../../services/memory/goal-tracking.service.js', () => ({
   GoalTrackingService: {
     getInstance: () => ({
       getGoals: jest.fn().mockResolvedValue([]),
       getCurrentFocus: jest.fn().mockResolvedValue(null),
+      setGoal: mockSetGoal,
     }),
   },
+  isGoalStatus: (v: unknown) => typeof v === 'string' && ['active', 'reached', 'superseded', 'cancelled'].includes(v.toLowerCase()),
 }));
 
 // Mock DailyLogService
@@ -92,6 +114,39 @@ describe('MemoryController', () => {
     mockRecall.mockReset();
     mockRecordLearning.mockReset();
     mockSupersede.mockReset();
+    mockLadderRecord.mockReset();
+    mockLadderDecide.mockReset();
+    mockLadderList.mockReset();
+    mockSetGoal.mockReset();
+  });
+
+  // ========================= setGoal =========================
+
+  describe('setGoal', () => {
+    it('rejects missing goal or projectPath', async () => {
+      await setGoal({ body: { goal: 'Ship it' } } as any, mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockSetGoal).not.toHaveBeenCalled();
+    });
+
+    it('appends a plain goal without a status', async () => {
+      mockSetGoal.mockResolvedValue(undefined);
+      await setGoal({ body: { goal: 'Ship it', projectPath: '/p', setBy: 'orchestrator' } } as any, mockRes as any, mockNext);
+      expect(mockSetGoal).toHaveBeenCalledWith('/p', 'Ship it', 'orchestrator', undefined);
+      expect(mockRes.json).toHaveBeenCalledWith({ success: true });
+    });
+
+    it('passes a known status (any case) through lower-cased and rejects an unknown one with 400 (#985)', async () => {
+      mockSetGoal.mockResolvedValue(undefined);
+      await setGoal({ body: { goal: 'Ship it\n- shipped', projectPath: '/p', setBy: 'owner', status: 'Reached' } } as any, mockRes as any, mockNext);
+      expect(mockSetGoal).toHaveBeenCalledWith('/p', 'Ship it\n- shipped', 'owner', 'reached');
+
+      mockSetGoal.mockClear();
+      await setGoal({ body: { goal: 'Ship it', projectPath: '/p', status: 'finished' } } as any, mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenLastCalledWith({ success: false, error: expect.stringContaining('Unknown status "finished"') });
+      expect(mockSetGoal).not.toHaveBeenCalled();
+    });
   });
 
   // ========================= remember =========================
@@ -765,6 +820,125 @@ describe('MemoryController', () => {
 
   // ========================= getMyContext =========================
 
+  describe('recordLearning with correctionClass (#810)', () => {
+    const body = {
+      agentId: 'dev-001',
+      agentRole: 'developer',
+      projectPath: '/path/to/project',
+      learning: 'Never git add -A',
+      relatedTask: 'TICKET-9',
+      correctionClass: 'git-add-all',
+    };
+
+    it('counts the class on the ladder and reports the tally', async () => {
+      mockRecordLearning.mockResolvedValue(undefined);
+      mockLadderRecord.mockResolvedValue({ record: { class: 'git-add-all', count: 2 }, raised: true, workItemId: 'wi-1' });
+
+      await recordLearning({ body } as any, mockRes as any, mockNext);
+
+      expect(mockRecordLearning).toHaveBeenCalledWith(expect.objectContaining({ learning: 'Never git add -A' }));
+      expect(mockLadderRecord).toHaveBeenCalledWith({
+        projectPath: '/path/to/project',
+        correctionClass: 'git-add-all',
+        agentId: 'dev-001',
+        text: 'Never git add -A',
+        source: 'learning',
+        relatedTask: 'TICKET-9',
+      });
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: true,
+        correction: { class: 'git-add-all', count: 2, raised: true, workItemId: 'wi-1' },
+      });
+    });
+
+    it('keeps the learning when the ladder fails', async () => {
+      mockRecordLearning.mockResolvedValue(undefined);
+      mockLadderRecord.mockRejectedValue(new Error('disk full'));
+
+      await recordLearning({ body } as any, mockRes as any, mockNext);
+
+      expect(mockRes.status).not.toHaveBeenCalled();
+      expect(mockRes.json).toHaveBeenCalledWith({ success: true, correction: { error: 'disk full' } });
+    });
+
+    it('does not touch the ladder without a class', async () => {
+      mockRecordLearning.mockResolvedValue(undefined);
+      await recordLearning({ body: { ...body, correctionClass: undefined } } as any, mockRes as any, mockNext);
+      expect(mockLadderRecord).not.toHaveBeenCalled();
+      expect(mockRes.json).toHaveBeenCalledWith({ success: true });
+    });
+  });
+
+  describe('recordCorrection', () => {
+    it('rejects missing fields', async () => {
+      await recordCorrection({ body: { projectPath: '/p', correctionClass: 'c' } } as any, mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockLadderRecord).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when the ladder refuses the class', async () => {
+      mockLadderRecord.mockRejectedValue(new Error('Correction class "??" has no letters or digits'));
+      await recordCorrection({ body: { projectPath: '/p', correctionClass: '??', agentId: 'a', text: 't' } } as any, mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({ success: false, error: 'Correction class "??" has no letters or digits' });
+    });
+
+    it('records with a known source and defaults unknown sources to manual', async () => {
+      mockLadderRecord.mockResolvedValue({ record: { class: 'c', count: 1 }, raised: false, skipped: 'below_threshold' });
+      await recordCorrection({ body: { projectPath: '/p', correctionClass: 'c', agentId: 'a', text: 't', source: 'failure' } } as any, mockRes as any, mockNext);
+      expect(mockLadderRecord).toHaveBeenCalledWith(expect.objectContaining({ source: 'failure' }));
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: true,
+        data: { class: 'c', count: 1, raised: false, workItemId: undefined, skipped: 'below_threshold' },
+      });
+
+      await recordCorrection({ body: { projectPath: '/p', correctionClass: 'c', agentId: 'a', text: 't', source: 'bogus' } } as any, mockRes as any, mockNext);
+      expect(mockLadderRecord).toHaveBeenLastCalledWith(expect.objectContaining({ source: 'manual' }));
+    });
+  });
+
+  describe('decideCorrection', () => {
+    const req = (body: Record<string, unknown>, cls = 'git-add-all') => ({ params: { class: cls }, body }) as any;
+
+    it('rejects missing fields', async () => {
+      await decideCorrection(req({ projectPath: '/p', rung: 'check' }), mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockLadderDecide).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for an unknown class and 400 for a bad rung', async () => {
+      mockLadderDecide.mockRejectedValueOnce(new Error('No correction class "nope" in /p'));
+      await decideCorrection(req({ projectPath: '/p', rung: 'check', reason: 'r', decidedBy: 'tl' }, 'nope'), mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(404);
+
+      mockLadderDecide.mockRejectedValueOnce(new Error('Unknown rung "vibes"'));
+      await decideCorrection(req({ projectPath: '/p', rung: 'vibes', reason: 'r', decidedBy: 'tl' }), mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenLastCalledWith(400);
+    });
+
+    it('records the decision', async () => {
+      const record = { class: 'git-add-all', count: 2, decision: { rung: 'check', reason: 'r', decidedBy: 'tl' } };
+      mockLadderDecide.mockResolvedValue(record);
+      await decideCorrection(req({ projectPath: '/p', rung: 'check', reason: 'r', link: 'PR #1', decidedBy: 'tl' }), mockRes as any, mockNext);
+      expect(mockLadderDecide).toHaveBeenCalledWith({ projectPath: '/p', correctionClass: 'git-add-all', rung: 'check', reason: 'r', link: 'PR #1', decidedBy: 'tl' });
+      expect(mockRes.json).toHaveBeenCalledWith({ success: true, data: record });
+    });
+  });
+
+  describe('listCorrections', () => {
+    it('needs projectPath', async () => {
+      await listCorrections({ query: {} } as any, mockRes as any, mockNext);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+    });
+
+    it('lists the project classes', async () => {
+      mockLadderList.mockResolvedValue([{ class: 'c', count: 3 }]);
+      await listCorrections({ query: { projectPath: '/p' } } as any, mockRes as any, mockNext);
+      expect(mockLadderList).toHaveBeenCalledWith('/p');
+      expect(mockRes.json).toHaveBeenCalledWith({ success: true, data: [{ class: 'c', count: 3 }] });
+    });
+  });
+
   describe('getMyContext', () => {
     beforeEach(() => {
       mockRecall.mockResolvedValue({
@@ -793,6 +967,34 @@ describe('MemoryController', () => {
       expect(payload.success).toBe(true);
       expect(payload.data).toHaveProperty('memories');
       expect(payload.data).not.toHaveProperty('knowledgeDocs');
+    });
+
+    it('recalls with the caller\'s context when given, else the generic one (#857)', async () => {
+      await getMyContext(
+        { body: { agentId: 'dev-001', agentRole: 'developer', projectPath: '/p', context: ' developer session startup, unfinished work ' } } as any,
+        mockRes as any,
+        mockNext,
+      );
+      expect(mockRecall).toHaveBeenCalledWith(expect.objectContaining({ context: 'developer session startup, unfinished work', scope: 'both' }));
+
+      mockRecall.mockClear();
+      await getMyContext({ body: { agentId: 'dev-001', agentRole: 'developer', projectPath: '/p', context: '   ' } } as any, mockRes as any, mockNext);
+      expect(mockRecall).toHaveBeenCalledWith(expect.objectContaining({ context: 'developer agent context for current work' }));
+
+      mockRecall.mockClear();
+      await getMyContext({ body: { agentId: 'dev-001', agentRole: 'developer', projectPath: '/p', context: 'x'.repeat(900) } } as any, mockRes as any, mockNext);
+      expect(mockRecall.mock.calls[0][0].context).toHaveLength(500);
+    });
+
+    it("includes the agent's task-timing summary only when it has history", async () => {
+      const req = { body: { agentId: 'dev-001', agentRole: 'developer', projectPath: '/p' } } as any;
+      await getMyContext(req, mockRes as any, mockNext);
+      expect((mockRes.json as jest.Mock).mock.calls[0][0].data).not.toHaveProperty('taskTimings');
+
+      mockGetTimingBlock.mockReturnValueOnce('Your own task times: revision median 23 min.');
+      await getMyContext(req, mockRes as any, mockNext);
+      expect(mockGetTimingBlock).toHaveBeenCalledWith('dev-001');
+      expect((mockRes.json as jest.Mock).mock.calls[1][0].data.taskTimings).toContain('revision median 23 min');
     });
 
     it('should return 400 when agentId is missing', async () => {

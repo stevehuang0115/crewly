@@ -993,9 +993,39 @@ describe('SlackOrchestratorBridge', () => {
       await nodeFs.rm(home, { recursive: true, force: true });
     });
 
-    it('refuses a download that would leave the disk below the low-disk threshold', async () => {
+    // 2026-11-05: steamfun-ops (77 GB disk, 11 GB free) refused a 9 MB .pptx
+    // because downloads kept the janitor's 15 GB low-disk mark free.
+    it('downloads a small file on a server with 11 GB free', async () => {
       const { readFreeBytes } = jest.requireMock('../worktree/low-disk-guard.js') as { readFreeBytes: jest.Mock };
-      readFreeBytes.mockResolvedValueOnce(15.5 * 1024 ** 3);
+      readFreeBytes.mockResolvedValueOnce(11 * 1024 ** 3);
+      const home = await nodeFs.mkdtemp(nodePath.join(nodeOs.tmpdir(), 'crewly-dl-test-'));
+      const homeSpy = jest.spyOn(nodeOs, "homedir").mockReturnValue(home);
+      const bridge = new SlackOrchestratorBridge();
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'getBotToken').mockReturnValue('xoxb-test');
+      jest.spyOn(slackService, 'getFileInfo').mockResolvedValue({ url_private: 'x', url_private_download: 'x' });
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue('ok');
+      const fetchSpy = jest.spyOn(global, 'fetch').mockRejectedValue(new Error('network off in test'));
+      const downloadMessageFiles = (bridge as any).downloadMessageFiles.bind(bridge);
+      const message: SlackIncomingMessage = {
+        id: '1', type: 'message', text: '', userId: 'U1',
+        channelId: 'C1', ts: '1', teamId: 'T1', eventTs: '1',
+        hasFiles: true,
+      };
+      await downloadMessageFiles(message, [{ id: 'F3', name: 'template.pptx',
+        mimetype: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', filetype: 'pptx',
+        size: 9 * 1024 ** 2, url_private: 'x', url_private_download: 'x', permalink: 'x' }]);
+      // The disk check let it through: the download was attempted.
+      expect(fetchSpy).toHaveBeenCalled();
+      expect(message.fileFailures?.[0]?.reason ?? '').not.toContain('Not enough disk space:');
+      fetchSpy.mockRestore();
+      homeSpy.mockRestore();
+      await nodeFs.rm(home, { recursive: true, force: true });
+    });
+
+    it('refuses a download that would leave less than the download safety margin free', async () => {
+      const { readFreeBytes } = jest.requireMock('../worktree/low-disk-guard.js') as { readFreeBytes: jest.Mock };
+      readFreeBytes.mockResolvedValueOnce(2.5 * 1024 ** 3);
       const home = await nodeFs.mkdtemp(nodePath.join(nodeOs.tmpdir(), 'crewly-dl-test-'));
       const homeSpy = jest.spyOn(nodeOs, "homedir").mockReturnValue(home);
       const bridge = new SlackOrchestratorBridge();

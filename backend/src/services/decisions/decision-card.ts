@@ -7,22 +7,26 @@
 
 import { DECISION_CONSTANTS } from '../../constants.js';
 import type { SlackBlock } from '../../types/slack.types.js';
-import type { DecisionAnswerFile, DecisionButtonValue, DecisionChoice, DecisionOption, OwnerDecision } from '../../types/decision.types.js';
+import type { DecisionAnswerFile, DecisionButtonValue, DecisionChoice, DecisionKind, DecisionLanguage, DecisionOption, OwnerDecision } from '../../types/decision.types.js';
 import type { SlackFile } from '../../types/slack.types.js';
 import { isAudioOrVideo } from '../../utils/inbound-file-hint.utils.js';
 import { matchOption } from './decision-contract.js';
+import { cardText, clipQuestion, contextSection, detailsLine, formatWhenZh } from './decision-wording.js';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /**
- * Short local time for the card: "14:05" today, "tomorrow 12:00", else "Thu Oct 2 12:00".
+ * Short local time for the card: "14:05" today, "tomorrow 12:00", else "Thu Oct 2 12:00"
+ * (Chinese for a Chinese owner: "明天 12:00").
  *
  * @param at - Moment
  * @param now - Clock
+ * @param lang - Owner language (absent = English)
  * @returns Text
  */
-export function formatWhen(at: Date, now: Date = new Date()): string {
+export function formatWhen(at: Date, now: Date = new Date(), lang?: DecisionLanguage): string {
+  if (lang === 'zh') return formatWhenZh(at, now);
   const hm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
   const day = (d: Date): string => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
   if (day(at) === day(now)) return hm;
@@ -53,21 +57,35 @@ export function optionLabel(d: Pick<OwnerDecision, 'options'>, key: string | und
   return d.options.find((o) => o.key === key)?.label ?? String(key ?? '');
 }
 
+/** Slack's header block limit (characters). */
+const HEADER_MAX_CHARS = 150;
+
 /**
- * The card header: ticket id + title, else the asker's topic.
+ * The card header: a system decision's own title, else the question itself
+ * (crewly#1367: the card leads with the question in plain words — never a
+ * ticket id or a ticket title the owner has to decode).
  *
  * @param d - Decision
  * @returns Header text (≤ 150 characters, Slack's header limit)
  */
-export function cardHeader(d: Pick<OwnerDecision, 'ticket' | 'id' | 'title' | 'browser'>): string {
+export function cardHeader(d: Pick<OwnerDecision, 'id' | 'title' | 'browser' | 'question'>): string {
   const text = d.title
     ? d.title
-    : d.ticket
-      ? `${d.ticket.id} · ${d.ticket.title}`
-      : d.browser
-        ? `Browser · ${d.browser.agentName} is waiting for your OK`
-        : `Decision ${d.id}`;
-  return text.length > 150 ? `${text.slice(0, 149)}…` : text;
+    : d.browser
+      ? `Browser · ${d.browser.agentName} is waiting for your OK`
+      : d.question?.trim() || `Decision ${d.id}`;
+  return text.length > HEADER_MAX_CHARS ? `${text.slice(0, HEADER_MAX_CHARS - 1)}…` : text;
+}
+
+/**
+ * Whether the card shows the question again under the header: only when the
+ * header is something else (a system title) or had to be clipped.
+ *
+ * @param d - Decision
+ * @returns True when a question section is needed
+ */
+export function showsQuestionSection(d: Pick<OwnerDecision, 'id' | 'title' | 'browser' | 'question'>): boolean {
+  return cardHeader(d) !== d.question;
 }
 
 /**
@@ -118,22 +136,24 @@ export function parseButtonValue(raw: unknown): DecisionButtonValue | null {
  * @returns mrkdwn text
  */
 export function pendingContextLine(d: OwnerDecision, now: Date = new Date()): string {
-  const when = formatWhen(new Date(d.deadline), now);
+  const lang = d.ownerLanguage;
+  const t = cardText(lang);
+  const when = formatWhen(new Date(d.deadline), now, lang);
   const parts: string[] = [];
   if (d.remindAt && Date.parse(d.remindAt) > now.getTime()) {
-    parts.push(`⏰ Reminding you ${formatWhen(new Date(d.remindAt), now)}.`);
+    parts.push(t.remindingAt(formatWhen(new Date(d.remindAt), now, lang)));
   }
   if (d.system?.defaultIsDecline) {
-    parts.push(`Nothing is accepted until you answer. No answer by ${when}: ${defaultLabel(d)}.`);
-  } else if (d.kind === 'browser_action') {
-    parts.push(`Nothing happens without your OK. If no answer by ${when}, the answer is ${defaultLabel(d)}.`);
+    parts.push(t.declineDefault(when, defaultLabel(d)));
+  } else if (isHeldAction(d)) {
+    parts.push(t.heldDefault(when, defaultLabel(d)));
   } else if (d.sensitive) {
-    parts.push(`This needs your OK (${d.sensitive}); I won't go ahead without an answer.`);
+    parts.push(t.sensitive(d.sensitive));
   } else if (d.defaultKey === DECISION_CONSTANTS.WAIT_DEFAULT) {
     // Says what to do — not "wait for what?" (specs/2026-10-02-decision-card-thread-answers.md §2).
-    parts.push(`Tap an answer or reply in this thread — I'll hold this until you do.`);
+    parts.push(t.waitHold);
   } else {
-    parts.push(`If no answer by ${when}, I'll go with ${defaultLabel(d)}.`);
+    parts.push(t.goWithDefault(when, defaultLabel(d)));
   }
   parts.push(d.id);
   return parts.join(' · ');
@@ -159,11 +179,12 @@ function optionDetails(options: DecisionOption[]): string | null {
  * @returns Blocks
  */
 export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date = new Date()): SlackBlock[] {
-  const blocks: Array<Record<string, unknown>> = [
-    { type: 'header', text: { type: 'plain_text', text: cardHeader(d), emoji: true } },
-    { type: 'section', text: { type: 'mrkdwn', text: d.question } },
-  ];
+  const t = cardText(d.ownerLanguage);
+  const blocks: Array<Record<string, unknown>> = [{ type: 'header', text: { type: 'plain_text', text: cardHeader(d), emoji: true } }];
+  if (showsQuestionSection(d)) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: d.question } });
   for (const text of d.body ?? []) if (text.trim()) blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+  const context = contextSection(d.context, d.ownerLanguage, d.merge);
+  if (context) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: context } });
   const details = optionDetails(d.options);
   if (details) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: details } });
   blocks.push({
@@ -184,7 +205,7 @@ export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date =
             {
               type: 'button',
               action_id: DECISION_CONSTANTS.REMIND_ACTION_ID,
-              text: { type: 'plain_text', text: 'Remind me tomorrow', emoji: true },
+              text: { type: 'plain_text', text: t.remindButton, emoji: true },
               value: buttonValue(d.id, 'remind', instanceId),
             },
           ]
@@ -196,13 +217,15 @@ export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date =
             {
               type: 'button',
               action_id: DECISION_CONSTANTS.SKIP_ACTION_ID,
-              text: { type: 'plain_text', text: 'Skip', emoji: true },
+              text: { type: 'plain_text', text: t.skipButton, emoji: true },
               value: buttonValue(d.id, DECISION_CONSTANTS.SKIP_OPTION, instanceId),
             },
           ]
         : []),
     ],
   });
+  const refs = detailsLine(d, d.ownerLanguage);
+  if (refs) blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: refs }] });
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: pendingContextLine(d, now) }] });
   return blocks as unknown as SlackBlock[];
 }
@@ -215,32 +238,68 @@ export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date =
  * @param d - Decision
  * @returns True when snoozing is allowed
  */
-export function canRemind(d: Pick<OwnerDecision, 'kind' | 'system'>): boolean {
-  return d.kind !== 'browser_action' && !d.system;
+export function canRemind(d: Pick<OwnerDecision, 'kind' | 'system'> & Partial<Pick<OwnerDecision, 'tierChange'>>): boolean {
+  return !isHeldAction(d) && !d.system && !isNoticeCard(d);
+}
+
+/**
+ * Decision kinds that hold one concrete action (a browser click, an email, a
+ * reply into a room) until the owner says yes: their default is the safe
+ * "no", applied unanswered; no snooze or skip, and words that are neither
+ * yes nor no leave them open.
+ */
+export const HELD_ACTION_KINDS: ReadonlySet<DecisionKind> = new Set<DecisionKind>(['browser_action', 'gmail_send', 'private_share']);
+
+/**
+ * Whether a decision holds an action until the owner approves it ({@link HELD_ACTION_KINDS}).
+ *
+ * @param d - Decision
+ * @returns True for a held action
+ */
+export function isHeldAction(d: Pick<OwnerDecision, 'kind'>): boolean {
+  return !!d.kind && HELD_ACTION_KINDS.has(d.kind);
+}
+
+/**
+ * Whether a card is a notice: the change already happened and its one
+ * action undoes it (model-tier auto mode, crewly#1173). Nothing to snooze
+ * or skip — not answering keeps it.
+ *
+ * @param d - Decision
+ * @returns True for a notice
+ */
+export function isNoticeCard(d: Partial<Pick<OwnerDecision, 'tierChange'>>): boolean {
+  return !!d.tierChange?.notice;
 }
 
 /**
  * Whether the card offers "Skip": every card except sensitive asks, system
- * decisions and held browser actions — those already have a "No", which is
- * what skipping them means ({@link skipChoice}).
+ * decisions, held browser actions and merge cards with a "not now" — those
+ * already have a "No", which is what skipping them means ({@link skipChoice}).
+ * A merge card's way out is named by its outcome (先不合 / Not now), not
+ * "Skip" (crewly#1367).
  *
  * @param d - Decision
  * @returns True when the Skip button is shown
  */
-export function canSkip(d: Pick<OwnerDecision, 'kind' | 'system' | 'sensitive'>): boolean {
-  return d.kind !== 'browser_action' && !d.system && !d.sensitive;
+export function canSkip(d: Pick<OwnerDecision, 'kind' | 'system' | 'sensitive'> & Partial<Pick<OwnerDecision, 'merge' | 'options' | 'tierChange'>>): boolean {
+  if (d.merge && d.options && noOption(d.options)) return false;
+  if (isNoticeCard(d)) return false;
+  return !isHeldAction(d) && !d.system && !d.sensitive;
 }
 
 /**
- * What "skip" means for a card: a real skip where {@link canSkip}; else the
- * safe way out — its "no" option, else its default when that never lets
+ * What "skip" means for a card: a real skip where {@link canSkip}; a
+ * notice's default (keep what happened); else the safe way out — its "no" option, else its default when that never lets
  * anything through, else a real skip (dropping a sensitive ask does nothing).
  *
  * @param d - Decision
  * @returns Choice
  */
-export function skipChoice(d: Pick<OwnerDecision, 'kind' | 'system' | 'sensitive' | 'options' | 'defaultKey'>): DecisionChoice {
+export function skipChoice(d: Pick<OwnerDecision, 'kind' | 'system' | 'sensitive' | 'options' | 'defaultKey'> & Partial<Pick<OwnerDecision, 'merge' | 'tierChange'>>): DecisionChoice {
   if (canSkip(d)) return { kind: 'skip' };
+  // A notice's default keeps what already happened.
+  if (isNoticeCard(d) && d.options.some((o) => o.key === d.defaultKey)) return { kind: 'option', key: d.defaultKey };
   const no = noOption(d.options);
   if (no) return { kind: 'option', key: no.key };
   if (defaultIsSafe(d) && d.options.some((o) => o.key === d.defaultKey)) return { kind: 'option', key: d.defaultKey };
@@ -256,7 +315,7 @@ export function skipChoice(d: Pick<OwnerDecision, 'kind' | 'system' | 'sensitive
  * @returns True when the default is safe to apply unanswered
  */
 export function defaultIsSafe(d: Pick<OwnerDecision, 'kind' | 'system'>): boolean {
-  return d.kind === 'browser_action' || d.system?.defaultIsDecline === true;
+  return isHeldAction(d) || d.system?.defaultIsDecline === true;
 }
 
 /**
@@ -270,7 +329,7 @@ export function defaultIsSafe(d: Pick<OwnerDecision, 'kind' | 'system'>): boolea
 export function renderSettledCard(d: OwnerDecision, ownerName?: string, now: Date = new Date(), askerName?: string): SlackBlock[] {
   return [
     { type: 'header', text: { type: 'plain_text', text: cardHeader(d), emoji: true } },
-    { type: 'section', text: { type: 'mrkdwn', text: d.question } },
+    ...(showsQuestionSection(d) ? [{ type: 'section', text: { type: 'mrkdwn', text: d.question } }] : []),
     { type: 'context', elements: [{ type: 'mrkdwn', text: settledLine(d, ownerName, now, askerName) }] },
   ] as unknown as SlackBlock[];
 }
@@ -284,26 +343,25 @@ export function renderSettledCard(d: OwnerDecision, ownerName?: string, now: Dat
  * @returns Text
  */
 export function settledLine(d: OwnerDecision, ownerName?: string, now: Date = new Date(), askerName?: string): string {
-  const at = formatWhen(new Date(d.resolvedAt ?? d.updatedAt), now);
-  const who = ownerName || (d.answeredBy ? `<@${d.answeredBy}>` : 'The owner');
+  const t = cardText(d.ownerLanguage);
+  const at = formatWhen(new Date(d.resolvedAt ?? d.updatedAt), now, d.ownerLanguage);
+  const who = ownerName || (d.answeredBy ? `<@${d.answeredBy}>` : t.theOwner);
   switch (d.status) {
     case 'resolved':
-      if (d.answeredVia === 'thread') return `✔ Answered in thread · ${at}`;
-      return d.chosenKey
-        ? `✔ ${who} chose *${optionLabel(d, d.chosenKey)}* · ${at}`
-        : `✔ ${who} answered: “${(d.answerText ?? '').slice(0, 200)}” · ${at}`;
+      if (d.answeredVia === 'thread') return t.answeredInThread(at);
+      return d.chosenKey ? t.chose(who, optionLabel(d, d.chosenKey), at) : t.answered(who, (d.answerText ?? '').slice(0, 200), at);
     case 'defaulted':
       return deadlineDefaultLine(d, now, askerName, true);
     case 'parked':
-      return `⏸ Parked — no answer, so I'm not going ahead. Answer from "Waiting on you" to reopen it. · ${d.id}`;
+      return t.parked(d.id);
     case 'cancelled':
-      return `✓ Closed — ${closedReasonLabel(d.closedReason)} · ${at}`;
+      return t.closed(closedReasonLabel(d.closedReason), at);
     case 'expired':
       return d.browser
         ? `Expired — ${d.browser.agentName} will ask again · ${at}`
-        : `✓ Closed — ${DECISION_CONSTANTS.CLOSED_REASONS.STALE} · ${at}`;
+        : t.closed(DECISION_CONSTANTS.CLOSED_REASONS.STALE, at);
     case 'skipped':
-      return `⤼ ${who} skipped this · ${at}`;
+      return t.skipped(who, at);
     default:
       return pendingContextLine(d, now);
   }
@@ -323,27 +381,56 @@ export function settledLine(d: OwnerDecision, ownerName?: string, now: Date = ne
  * @returns Text
  */
 export function deadlineDefaultLine(d: OwnerDecision, now: Date = new Date(), askerName?: string, settled = false): string {
-  const when = formatWhen(new Date(d.deadline), now);
-  if (d.defaultKey === DECISION_CONSTANTS.WAIT_DEFAULT) return `No answer by ${when} — still open.`;
-  const name = askerName?.trim() || 'I';
-  const verb = settled ? `${name} went with` : name === 'I' ? "I'll go with" : `${name} will go with`;
-  return `No answer by ${when}, so ${verb} "${defaultLabel(d)}".`;
+  const t = cardText(d.ownerLanguage);
+  const when = formatWhen(new Date(d.deadline), now, d.ownerLanguage);
+  if (d.defaultKey === DECISION_CONSTANTS.WAIT_DEFAULT) return t.defaultNoAnswerOpen(when);
+  return t.defaultNoAnswer(when, t.defaultVerb(askerName?.trim() || null, settled), defaultLabel(d));
 }
 
 /**
- * The one reminder of the `wait` cards nobody answered in a thread: what is
- * asked and how to answer (specs/2026-10-02-decision-card-thread-answers.md §2).
- * Several cards in one thread share one reminder that lists them.
+ * The one reminder of the `wait` cards nobody answered in a thread: ONE
+ * short line pointing at the card above, never the card repeated
+ * (crewly#1367; specs/2026-10-02-decision-card-thread-answers.md §2). Several
+ * cards in one thread share one reminder that counts them.
  *
  * @param ds - The thread's due cards (one or more)
  * @param ownerUserId - The owner's Slack id (mentioned), when known
  * @returns mrkdwn text
  */
-export function waitReminderLine(ds: Pick<OwnerDecision, 'question'> | ReadonlyArray<Pick<OwnerDecision, 'question'>>, ownerUserId?: string | null): string {
-  const list = Array.isArray(ds) ? ds : [ds as Pick<OwnerDecision, 'question'>];
+export function waitReminderLine(
+  ds: ReminderCard | ReadonlyArray<ReminderCard>,
+  ownerUserId?: string | null,
+): string {
+  const list = Array.isArray(ds) ? ds : [ds as ReminderCard];
   const at = ownerUserId ? `<@${ownerUserId}> ` : '';
-  if (list.length === 1) return `${at}Still waiting on you: ${list[0].question} — tap an answer on the card above, or reply here.`;
-  return `${at}Still waiting on you for ${list.length} questions in this thread:\n${list.map((d) => `• ${d.question}`).join('\n')}\nTap an answer on each card above, or reply here.`;
+  const t = cardText(list[list.length - 1]?.ownerLanguage);
+  if (list.length === 1) return t.waitReminder(at, clipQuestion(list[0].question));
+  return t.waitReminderMany(at, list.length);
+}
+
+/** What a reminder line needs of a card. */
+export type ReminderCard = Pick<OwnerDecision, 'question'> & Partial<Pick<OwnerDecision, 'ownerLanguage'>>;
+
+/**
+ * The "Remind me tomorrow" reminder: one short line pointing at the card.
+ *
+ * @param d - The card
+ * @param ownerUserId - Owner's Slack id (mentioned), when known
+ * @returns Text
+ */
+export function remindNowLine(d: ReminderCard, ownerUserId?: string | null): string {
+  return cardText(d.ownerLanguage).remindNow(ownerUserId ? `<@${ownerUserId}> ` : '', clipQuestion(d.question));
+}
+
+/**
+ * The one re-ask of a sensitive card: one short line pointing at the card.
+ *
+ * @param d - The card
+ * @param ownerUserId - Owner's Slack id (mentioned), when known
+ * @returns Text
+ */
+export function sensitiveReaskLine(d: ReminderCard & Pick<OwnerDecision, 'sensitive'>, ownerUserId?: string | null): string {
+  return cardText(d.ownerLanguage).sensitiveReask(ownerUserId ? `<@${ownerUserId}> ` : '', clipQuestion(d.question), String(d.sensitive ?? ''));
 }
 
 /**
@@ -374,7 +461,8 @@ export function cardFallbackText(d: OwnerDecision): string {
   // The id is always in the text: every machine reads a reply's thread from
   // Slack and must recognise the card in it (specs/2026-10-03-one-responder-per-message.md §1 c).
   const id = header.includes(d.id) ? '' : ` [${d.id}]`;
-  return `${header}${id}: ${d.question} (${d.options.map((o) => o.label).join(' / ')})`;
+  const options = `(${d.options.map((o) => o.label).join(' / ')})`;
+  return showsQuestionSection(d) ? `${header}${id}: ${d.question} ${options}` : `${d.question}${id} ${options}`;
 }
 
 /**

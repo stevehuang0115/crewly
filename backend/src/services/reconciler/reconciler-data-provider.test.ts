@@ -160,7 +160,9 @@ import type { WakeAction, WakeActionResult } from '../../types/v2/reconcile.type
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { ResourceModeService } from '../agent/resource-mode.service.js';
+import { noteMemoryStop, resetMemoryStops } from '../agent/memory-stop-hold.js';
 import { setLocalApiPort, resetLocalApiPortForTesting } from '../../utils/local-api-url.utils.js';
+import { NetworkStatusService } from '../core/network-status.service.js';
 
 /** The provider's answer, as a full outcome (CREW-304). */
 async function wakeResult(
@@ -286,6 +288,37 @@ describe('LiveReconcilerDataProvider', () => {
       const result = await provider.getActiveWorkItems();
 
       expect(result).toEqual([]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // getOpenDecisionHolds (crewly#1369 §5)
+  // -----------------------------------------------------------------------
+
+  describe('getOpenDecisionHolds', () => {
+    afterEach(async () => {
+      const { DecisionService } = await import('../decisions/decision.service.js');
+      DecisionService.setInstance(null);
+    });
+
+    it('lists the work item / ticket of each open card', async () => {
+      const { DecisionService } = await import('../decisions/decision.service.js');
+      const list = jest.fn().mockResolvedValue([
+        { id: 'D-1', status: 'open', workItemId: 'wi-1' },
+        { id: 'D-2', status: 'open', ticket: { projectId: 'p', projectPath: '/p', id: 'CREW-646', title: 't' } },
+        { id: 'D-3', status: 'parked', workItemId: 'wi-3' },
+        { id: 'D-4', status: 'open' },
+      ]);
+      DecisionService.setInstance({ list, stop: jest.fn() } as unknown as InstanceType<typeof DecisionService>);
+      expect(await provider.getOpenDecisionHolds()).toEqual([{ workItemId: 'wi-1' }, { ticket: { projectPath: '/p', id: 'CREW-646' } }]);
+      expect(list).toHaveBeenCalledWith('open');
+    });
+
+    it('is empty without a decision service or when it fails', async () => {
+      expect(await provider.getOpenDecisionHolds()).toEqual([]);
+      const { DecisionService } = await import('../decisions/decision.service.js');
+      DecisionService.setInstance({ list: jest.fn().mockRejectedValue(new Error('x')), stop: jest.fn() } as unknown as InstanceType<typeof DecisionService>);
+      expect(await provider.getOpenDecisionHolds()).toEqual([]);
     });
   });
 
@@ -984,6 +1017,32 @@ describe('LiveReconcilerDataProvider', () => {
       expect(mockPool.releaseBack).not.toHaveBeenCalled();
     });
 
+    // block-task `until`: the one explicit-block requeue the reconciler may
+    // perform — the agent asked for it when it set the time.
+    it('lifts an explicit block whose until time has passed when the due-block rule asks', async () => {
+      const past = new Date(Date.now() - 60_000).toISOString();
+      mockPool.findWorkItem.mockResolvedValueOnce({ id: 'wi-1', status: 'blocked', blockSource: 'explicit', metadata: { blockedUntil: past } });
+      await provider.requeueWorkItem('wi-1', { allowExplicitWhenDue: true });
+
+      expect(mockPool.releaseBack).toHaveBeenCalledWith('wi-1', 'blocked_until_reached');
+    });
+
+    it('does not lift a timed explicit block before its time, even when asked', async () => {
+      const future = new Date(Date.now() + 60 * 60_000).toISOString();
+      mockPool.findWorkItem.mockResolvedValueOnce({ id: 'wi-1', status: 'blocked', blockSource: 'explicit', metadata: { blockedUntil: future } });
+      await provider.requeueWorkItem('wi-1', { allowExplicitWhenDue: true });
+
+      expect(mockPool.releaseBack).not.toHaveBeenCalled();
+    });
+
+    it('does not lift a due explicit block for some OTHER rule\'s requeue (no flag)', async () => {
+      const past = new Date(Date.now() - 60_000).toISOString();
+      mockPool.findWorkItem.mockResolvedValueOnce({ id: 'wi-1', status: 'blocked', blockSource: 'explicit', metadata: { blockedUntil: past } });
+      await provider.requeueWorkItem('wi-1');
+
+      expect(mockPool.releaseBack).not.toHaveBeenCalled();
+    });
+
     it('still re-queues a system-blocked WorkItem (agent back online)', async () => {
       mockPool.findWorkItem.mockResolvedValueOnce({ id: 'wi-1', status: 'blocked' });
       await provider.requeueWorkItem('wi-1');
@@ -1145,6 +1204,67 @@ describe('LiveReconcilerDataProvider', () => {
   // -----------------------------------------------------------------------
 
   describe('executeWakeAction', () => {
+    afterEach(() => {
+      NetworkStatusService.resetInstance();
+    });
+
+    it('skips start and rehydrate wakes while the machine is offline, without touching the API', async () => {
+      const net = NetworkStatusService.getInstance();
+      const dns = Object.assign(new Error('getaddrinfo ENOTFOUND api.crewlyai.com'), { code: 'ENOTFOUND' });
+      for (let i = 0; i < 3; i++) net.recordFailure('relay', dns);
+      expect(net.isOffline()).toBe(true);
+      mockSuspend.isSuspended.mockReturnValue(true);
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = jest.fn();
+      try {
+        const base = {
+          workItemId: 'wi-1',
+          score: 60,
+          scoreBreakdown: { skillMatch: 30, urgency: 20, contextFamiliarity: 10, loadPenalty: 0 },
+          triggeredAt: new Date().toISOString(),
+        };
+        const start = await wakeResult(provider, { ...base, agentSessionName: 'agent-idle', strategy: 'start' });
+        const rehydrate = await wakeResult(provider, { ...base, agentSessionName: 'agent-max', strategy: 'rehydrate' });
+        expect(start).toEqual({ outcome: 'skipped', reason: 'network offline' });
+        expect(rehydrate).toEqual({ outcome: 'skipped', reason: 'network offline' });
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+        expect(mockSuspend.rehydrateAgent).not.toHaveBeenCalled();
+        // Back online: the same start goes through.
+        net.recordSuccess('relay');
+        globalThis.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+        expect(await wakeOk(provider, { ...base, agentSessionName: 'agent-idle', strategy: 'start' })).toBe(true);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('does not start an agent the machine just stopped for memory while pressure mode lasts (Vera, 2026-10-26)', async () => {
+      const mode = jest.spyOn(ResourceModeService.prototype, 'getMode').mockReturnValue('pressure');
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+      try {
+        noteMemoryStop('agent-idle');
+        const base = {
+          workItemId: 'wi-1',
+          score: 60,
+          scoreBreakdown: { skillMatch: 30, urgency: 20, contextFamiliarity: 10, loadPenalty: 0 },
+          triggeredAt: new Date().toISOString(),
+        };
+        expect(await wakeResult(provider, { ...base, agentSessionName: 'agent-idle', strategy: 'start' })).toEqual({
+          outcome: 'skipped',
+          reason: 'stopped for memory; held while pressure lasts',
+        });
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+        // Pressure clears: the same start goes through.
+        mode.mockReturnValue('normal');
+        expect(await wakeOk(provider, { ...base, agentSessionName: 'agent-idle', strategy: 'start' })).toBe(true);
+      } finally {
+        globalThis.fetch = originalFetch;
+        mode.mockRestore();
+        resetMemoryStops();
+      }
+    });
+
     it('rehydrates suspended agent', async () => {
       mockSuspend.isSuspended.mockReturnValue(true);
       mockSuspend.rehydrateAgent.mockResolvedValue(true);
@@ -1236,7 +1356,7 @@ describe('LiveReconcilerDataProvider', () => {
         });
         expect(result).toBe(true);
         const url = (globalThis.fetch as jest.Mock).mock.calls[0][0] as string;
-        expect(url.startsWith('http://localhost:8797/api/')).toBe(true);
+        expect(url.startsWith('http://127.0.0.1:8797/api/')).toBe(true);
       } finally {
         resetLocalApiPortForTesting();
         globalThis.fetch = originalFetch;

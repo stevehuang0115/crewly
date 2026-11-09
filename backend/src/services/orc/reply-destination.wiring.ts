@@ -9,13 +9,14 @@
 
 import { createHash } from 'node:crypto';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
-import { REPLY_ROUTING_CONSTANTS, TURN_TRIGGER_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, REPLY_ROUTING_CONSTANTS, TURN_TRIGGER_CONSTANTS } from '../../constants.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { parseSlackThreadKey } from '../slack/slack-thread-key.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { AgentPromptReferenceService } from './agent-prompt-reference.service.js';
 import {
   fixCommand,
+  latestInputOf,
   resolveReplyDestination,
   type ReplyDestination,
   type ReplyHints,
@@ -23,15 +24,20 @@ import {
   type ReplyResolution,
   type ReplyResolverDeps,
 } from './reply-destination-resolver.js';
+import { noticeRefusedDecisionReply, type RefusedReplyNoticeDeps } from './refused-decision-reply-notice.js';
 import { defaultWorkDestinationDeps, deliverToWorkDestination, type WorkDestinationDeps } from './work-item-destination.wiring.js';
-import { currentWorkItemOf, shortTopic, withTopicLine } from './work-item-destination.js';
+import { originOfWorkItem } from './work-item-destination.js';
+import { comparePostPlace, placeOfOwnerRoute, routeOfTrigger, type MessageRoute, type PostPlace, type RouteCheckOutcome } from './message-route.js';
 import { isSlackDm } from './orc-reply-route.service.js';
 import { traceOutboundReply } from '../trace/trace-recorder.js';
 import { stripTraceMarkers } from '../trace/trace-markers.js';
 import { getTraceContext } from '../trace/trace-context.service.js';
 import { getTurnTriggerTracker, type TurnTrigger } from '../trace/turn-trigger.js';
 import { triggeredByMetadata, triggeredByPhrase, withTriggeredByLine } from './triggered-by.js';
+import { stripOwnerTextIds } from '../../utils/owner-text-ids.utils.js';
 import { memberNameFromSession } from '../../utils/member-session-name.utils.js';
+import { checkReplyAudience, recordPrivateShare, type ReplyAudienceDeps } from './reply-audience.js';
+import { getPrivateShareDecisions, type HeldReply, type HeldReplyPost } from './private-share-decisions.js';
 
 /** How long an identical reply from one agent counts as a duplicate send. */
 const REPLY_DUPLICATE_WINDOW_MS = 120_000;
@@ -79,10 +85,51 @@ export interface ReplyDeliveryDeps {
   turnTrigger?: (session: string) => TurnTrigger | null;
   /** The owner wrote to the agent in this conversation recently (its post there is an answer). Omitted: no. */
   ownerAskedRecently?: (session: string, conversationId: string) => boolean;
+  /**
+   * The owner wrote to the agent in this conversation earlier in its working
+   * window: a post there answers that, not the agent's newest owner message
+   * elsewhere (R8: Pia's #flopost answer said "Triggered by your message in
+   * #awesome-videos"). Omitted: no.
+   */
+  ownerAskedEarlier?: (session: string, conversationId: string) => boolean;
+  /**
+   * The owner wrote in this thread recently (to anyone): a post there is part
+   * of the owner's conversation and gets no "Triggered by" line (message
+   * audit 2026-10-20). Omitted: no.
+   */
+  ownerWroteInThread?: (conversationId: string, thread: string) => boolean;
+  /**
+   * The latest trigger that names what the agent answers (turn-trigger.ts
+   * `routedTrigger`), for the route check. Omitted: no check.
+   */
+  routedTrigger?: (session: string) => TurnTrigger | null;
   /** The session's current run trace id. Omitted: none. */
   currentTrace?: (session: string) => string | null;
   /** A conversation as the owner knows it (`#content-team`, `the DM with Ella`). Omitted: unnamed. */
   conversationPlace?: (conversationId: string) => string | null;
+  /**
+   * Send an agent's answer to another agent's message back to that agent
+   * (crewly#1375), as a message carrying the replier's sender header. True
+   * when taken. Omitted: the work-destination messenger is used as is.
+   */
+  answerAgent?: (fromSession: string, toSession: string, text: string) => Promise<boolean>;
+  /**
+   * Who is told when a reply to an owner-answered decision is refused and no
+   * fallback took it (CREW-372). Omitted: nobody (the agent still gets the error).
+   */
+  refusedReplyNotice?: RefusedReplyNoticeDeps;
+  /**
+   * The audience check (crewly#969): a reply written shortly after the agent
+   * read someone's connector grant goes to the owner DM instead of a shared
+   * place. Omitted: no check.
+   */
+  audience?: ReplyAudienceDeps;
+  /**
+   * A reply was moved to the owner DM: raise the Share / Keep private card
+   * under it (crewly#969). Called after the DM copy landed; a failure is
+   * logged, the DM copy stands.
+   */
+  privateShareCard?: (held: HeldReply) => Promise<unknown>;
 }
 
 /** What a delivery did. */
@@ -97,6 +144,8 @@ export type ReplyDelivery =
       messageTs?: string;
       /** The agent an internal message went to (work with an agent origin, crewly#1357) */
       agentSession?: string;
+      /** The shared place the reply was held from when it went to the owner DM instead (crewly#969) */
+      heldFrom?: string;
     }
   | { ok: false; error: string; destination: ReplyDestination; held?: boolean };
 
@@ -110,19 +159,24 @@ export interface DeliverReplyInput {
   noOwnerDm?: boolean;
   /** Post even when a colleague already answered the owner here (`--adds-new`) */
   addsNew?: boolean;
+  /**
+   * The owner said in the agent's DM to share a private-sourced reply in the
+   * shared place it was held from (`--share`, crewly#969). Honoured only
+   * while the owner's message in that DM is recent.
+   */
+  share?: boolean;
 }
 
 /**
  * Resolve and deliver an agent's message. Never guesses: a destination that
  * does not take the message is reported as an error with the command to run.
  *
- * When the chosen place refuses the message, only these real places are
- * tried next (each logged), never "the latest thread" or the global current
- * conversation:
- *  - a hint that did not take it → resolution without the hints;
- *  - the current work's owner conversation → a new top-level post in the
- *    team channel, opened with the work's topic;
- *  - the current work's Slack place → the owner's turn origin, else the DM.
+ * When the chosen place refuses the message, only the SAME place is tried
+ * by another way (each logged): the Slack thread a delegate was handed, or
+ * the Slack thread a chat thread with no row stands for. It is never moved
+ * to another place — not a new top-level post, not the owner DM, not the
+ * agent's last owner conversation (message-routing audit 2026-10-18, R2):
+ * the agent gets the error and the command that works.
  *
  * @param input - Agent, text, references, hints
  * @param deps - Collaborators (default: the real ones)
@@ -150,7 +204,92 @@ export async function deliverReply(input: DeliverReplyInput, deps?: ReplyDeliver
     recentDeliveries.set(dupKey, { at: Date.now(), delivery: result });
   }
   traceOutboundReply(clean, result);
+  if (result.ok) await checkLandedRoute(clean, result, deps).catch(() => undefined);
   return result;
+}
+
+/** Route check outcomes since boot (the regression check of the routing invariant). */
+const routeCheckStats: Record<RouteCheckOutcome, number> = { match: 0, mismatch: 0, unknown: 0 };
+
+/**
+ * Counts of the route check since boot.
+ *
+ * @returns match / mismatch / unknown counts
+ */
+export function getRouteCheckStats(): Readonly<Record<RouteCheckOutcome, number>> {
+  return { ...routeCheckStats };
+}
+
+/** Zero the route check counts (tests). */
+export function resetRouteCheckStatsForTesting(): void {
+  routeCheckStats.match = 0;
+  routeCheckStats.mismatch = 0;
+  routeCheckStats.unknown = 0;
+}
+
+/**
+ * Compare where a delivered post landed with the place of the request it
+ * answers (the route of the agent's latest routed input), and log a
+ * mismatch. A post the agent addressed by an explicit reference answers that
+ * reference and is not checked; an internal message to an agent has no
+ * Slack place. Never throws, never blocks: it is a regression signal.
+ *
+ * @param input - The delivered input
+ * @param delivery - Where it landed
+ * @param deps - Collaborators (default: the real ones)
+ * @returns The outcome, or null when not checked
+ */
+export async function checkLandedRoute(input: DeliverReplyInput, delivery: Extract<ReplyDelivery, { ok: true }>, deps?: ReplyDeliveryDeps): Promise<RouteCheckOutcome | null> {
+  const dest = delivery.destination;
+  if (REFERENCE_SOURCES.has(dest.source) || dest.source === 'prompt' || delivery.agentSession) return null;
+  const d = deps ?? (await defaultReplyDeliveryDeps());
+  const trigger = d.routedTrigger?.(input.session) ?? null;
+  const route = routeOfTrigger(trigger, d.resolver.turnOrigin(input.session));
+  if (!route) return null;
+  const expected = await expectedPlaceOf(route, d);
+  const landed: PostPlace = {
+    ...(delivery.conversationId ? { conversationId: delivery.conversationId } : {}),
+    ...(dest.kind === 'conversation' && dest.thread ? { thread: dest.thread } : {}),
+    ...(delivery.slackChannelId ? { slackChannelId: delivery.slackChannelId } : {}),
+    ...(delivery.threadTs ? { threadTs: delivery.threadTs } : {}),
+  };
+  const outcome = expected === 'internal' ? 'mismatch' : comparePostPlace(expected, landed);
+  routeCheckStats[outcome] += 1;
+  if (outcome === 'mismatch') {
+    logger.warn('[RouteCheck] Post landed outside the thread of the request it answers', {
+      session: input.session,
+      route,
+      expected: expected === 'internal' ? 'internal (agent-to-agent)' : expected,
+      landed,
+      source: dest.source,
+      mismatches: routeCheckStats.mismatch,
+    });
+  }
+  return outcome;
+}
+
+/**
+ * The place a route's answer belongs in: an owner route's thread, a work
+ * item's owner origin, or `internal` for work an agent delegated (its answer
+ * goes to that agent, never to Slack).
+ *
+ * @param route - The route
+ * @param d - Collaborators
+ * @returns The place, `internal`, or null when unknown
+ */
+async function expectedPlaceOf(route: MessageRoute, d: ReplyDeliveryDeps): Promise<PostPlace | 'internal' | null> {
+  if (route.kind === 'owner') return placeOfOwnerRoute(route);
+  const wi = await d.resolver.workItem(route.workItemId).catch(() => null);
+  const origin = wi ? originOfWorkItem(wi) : null;
+  if (!origin) return null;
+  if (origin.kind === 'agent') return 'internal';
+  if (origin.kind !== 'owner') return null;
+  return {
+    ...(origin.conversationId ? { conversationId: origin.conversationId } : {}),
+    ...(origin.chatThreadId ? { thread: origin.chatThreadId } : {}),
+    ...(origin.slackChannelId ? { slackChannelId: origin.slackChannelId } : {}),
+    ...(origin.threadTs ? { threadTs: origin.threadTs } : {}),
+  };
 }
 
 /**
@@ -175,7 +314,41 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
   if (dest.kind === 'unresolved') {
     return { ok: false, destination: dest, error: notDelivered(dest.reason, dest.fix) };
   }
+  // crewly#969: what the agent read through a person's grant is that person's
+  // data; a reply drawing on it does not go where other people read.
+  let heldFrom: string | undefined;
+  let held: HeldReply | undefined;
+  if (d.audience) {
+    const audience = { ...d.audience, ...(d.conversationPlace ? { conversationPlace: d.conversationPlace } : {}) };
+    const shared = input.share === true && (await ownerSaidShare(input.session, d)) ? recordPrivateShare(input.session, dest, audience) : [];
+    if (shared.length > 0) {
+      logger.info('Agent posts a private-sourced reply to a shared place: the owner said to share it', { session: input.session, people: shared });
+    } else {
+      const verdict = await checkReplyAudience(input.session, dest, audience);
+      if (input.share === true && verdict.kind !== 'open') {
+        logger.warn('--share ignored: the owner did not say so in the agent DM recently', { session: input.session, heldFrom: verdict.heldFrom });
+      }
+      if (verdict.kind === 'held') {
+        logger.warn('Agent reply held: it draws on private data and the place is shared', { session: input.session, heldFrom: verdict.heldFrom, people: verdict.people });
+        return { ok: false, destination: dest, error: notDelivered(verdict.reason, verdict.fix), held: true };
+      }
+      if (verdict.kind === 'redirect') {
+        logger.info('Agent reply moved to the owner DM: it draws on private data', { session: input.session, heldFrom: verdict.heldFrom, people: verdict.people });
+        held = { session: input.session, content: input.content, destination: dest, heldFrom: verdict.heldFrom, people: verdict.people, ownerDm: verdict.destination.conversationId };
+        dest = verdict.destination;
+        heldFrom = verdict.heldFrom;
+        input = { ...input, content: `${verdict.note}\n\n${input.content}` };
+      }
+    }
+  }
   let result = await attempt(input, dest, prompt, d);
+  if (result.ok && heldFrom) {
+    result = { ...result, heldFrom };
+    if (held && d.privateShareCard) {
+      const card = held;
+      void d.privateShareCard(card).catch((err) => logger.warn('Share card not raised for a held reply', { session: card.session, heldFrom: card.heldFrom, error: err instanceof Error ? err.message : String(err) }));
+    }
+  }
   if (result.ok || ('held' in result && result.held)) return result;
 
   // Work handed over from the owner's DM with another agent (a lead's
@@ -186,15 +359,18 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
   const delegated = await postToDelegatedThread(input, dest, d);
   if (delegated) return delegated;
 
-  const ownDm = dest.source === 'hint' ? null : await ownDmInsteadOfOthers(input, dest, d);
-  if (ownDm) {
-    logger.warn('Destination is another agent\'s DM with the owner — answering in this agent\'s own owner DM', {
-      session: input.session,
-      from: dest.kind === 'conversation' ? dest.conversationId : undefined,
-      to: ownDm.dest.conversationId,
-    });
-    const viaDm = await attempt({ ...input, content: ownDm.content }, ownDm.dest, prompt, d);
-    if (viaDm.ok) return viaDm;
+  // Work handed over from another agent's DM with the owner: this agent
+  // cannot post there, and its answer is not moved to its own DM — it goes
+  // to the agent the owner asked (message-routing audit 2026-10-18, R2).
+  if (!result.ok && dest.kind === 'conversation' && (await isOthersOwnerDm(input.session, dest.conversationId, d))) {
+    const delegator = await delegatorOfWork(input, d);
+    return {
+      ...result,
+      error: notDelivered(
+        `conversation ${dest.conversationId} is another agent's DM with the owner, where you cannot post`,
+        delegator ? `send-message --to ${delegator} "<your answer>"  (${delegator} answers the owner there)` : 'send your answer to the agent who handed you this work (send-message --to <agent>)',
+      ),
+    };
   }
 
   const hintedThread = dest.source === 'hint' && dest.kind === 'conversation' ? dest.thread : undefined;
@@ -211,25 +387,10 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
     return withCardFix(result, hintedThread, d);
   }
 
-  // The current WORK's place refused it (the owner's own turn origin is not
-  // swapped for another place: that is an error the agent sees).
-  if (dest.source === 'current-work') {
-    const fallback = await currentWorkFallback(input.session, dest, d);
-    if (fallback) {
-      logger.warn('Current work destination did not take the message — trying the next real place', {
-        session: input.session,
-        from: dest.kind === 'work' ? dest.destination.kind : 'conversation',
-        to: fallback.kind === 'work' ? fallback.destination.kind : `conversation ${fallback.conversationId}`,
-      });
-      const retry = await attempt(input, fallback, prompt, d);
-      if (retry.ok) return retry;
-    }
-  }
-
-  // An answered reference (decision / ticket / work item / message) must not
-  // die in a thread the conversation could not post into: post straight to
-  // that Slack thread, then as a new top-level post in the room's channel.
-  if (dest.kind === 'conversation' && REFERENCE_SOURCES.has(dest.source)) {
+  // An answered reference (decision / ticket / work item / message / route)
+  // must not die in a thread the conversation could not post into: post
+  // straight to that same Slack thread. Never a new top-level post instead.
+  if (dest.kind === 'conversation' && (REFERENCE_SOURCES.has(dest.source) || dest.source === 'route' || dest.source === 'current-work' || dest.source === 'turn-origin')) {
     for (const fallback of await referenceFallbacks(input.session, dest, d)) {
       logger.warn('Referenced conversation did not take the reply — trying the next real place', {
         session: input.session,
@@ -241,7 +402,28 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
       if (retry.ok) return retry;
     }
   }
-  return withCardFix(result, hintedThread, d);
+  const fixed = await withCardFix(result, hintedThread, d);
+  if (dest.source === 'decision' && !fixed.ok) await noticeRefusal(input, dest, fixed.error, d);
+  return fixed;
+}
+
+/**
+ * Every way of delivering a reply to an owner-answered decision has failed:
+ * tell the agent's lead (CREW-372). Best-effort; never changes the result.
+ *
+ * @param input - The reply
+ * @param dest - The decision destination that refused
+ * @param error - The error the agent is shown
+ * @param d - Collaborators
+ */
+async function noticeRefusal(input: DeliverReplyInput, dest: Exclude<ReplyDestination, { kind: 'unresolved' }>, error: string, d: ReplyDeliveryDeps): Promise<void> {
+  if (!d.refusedReplyNotice) return;
+  const decisionId = input.reference?.decisionId ?? /\bD-\d+\b/.exec(dest.reason)?.[0];
+  if (!decisionId) return;
+  const firstLine = error.split('\n')[0].trim();
+  const outcome = await noticeRefusedDecisionReply({ decisionId, agentSession: input.session, failedStep: firstLine || dest.reason }, d.refusedReplyNotice);
+  if (outcome.sent) logger.warn('Reply to an answered decision was refused — told the lead', { session: input.session, decisionId, to: outcome.to, target: outcome.target });
+  else logger.warn('Reply to an answered decision was refused — no notice sent', { session: input.session, decisionId, reason: outcome.reason });
 }
 
 /**
@@ -352,8 +534,8 @@ const REFERENCE_SOURCES: ReadonlySet<string> = new Set(['decision', 'ticket', 'w
 
 /**
  * Where an answered reference goes when its conversation refused the post:
- * the Slack thread it names (a card posted straight to Slack has no chat row),
- * then a new top-level post in the room's channel.
+ * the Slack thread it names (a card posted straight to Slack has no chat
+ * row). Only that same thread — never a new top-level post.
  *
  * @param session - Agent
  * @param failed - The conversation destination that refused
@@ -376,13 +558,7 @@ async function referenceFallbacks(
       reason: `conversation ${failed.conversationId} could not post into thread ${failed.thread} — Slack thread post`,
     });
   }
-  const wi = currentWorkItemOf(await d.resolver.poolItems().catch(() => [] as WorkItem[]), session);
-  out.push({
-    kind: 'work',
-    destination: { kind: 'new-top-level', ...(wi ? { topic: shortTopic(wi.title) } : {}), reason: `conversation ${failed.conversationId} did not take the reply` },
-    source: failed.source,
-    reason: `conversation ${failed.conversationId} did not take the reply — new top-level post`,
-  });
+  void session;
   return out;
 }
 
@@ -395,6 +571,15 @@ async function referenceFallbacks(
  * @param prompt - The agent's prompt reference
  * @returns A different instruction, or empty when there is none
  */
+/**
+ * What to do when the place a reply resolved to cannot take it. Resending
+ * the same `reply` would resolve to the same place, so the advice names
+ * the explicit alternatives (message-routing audit 2026-10-18: refusals
+ * must be actionable).
+ */
+const UNPOSTABLE_ADVICE =
+  'reply --conversation <id> --thread <thread> "<message>" to name a place you can post in, or tell whoever gave you this work (send-message --to <session> "<message>")';
+
 function retryAdvice(dest: Exclude<ReplyDestination, { kind: 'unresolved' }>, prompt: ReplyReference | undefined): string {
   const same = REFERENCE_SOURCES.has(dest.source) || dest.source === 'prompt';
   const cmd = fixCommand(prompt);
@@ -402,66 +587,32 @@ function retryAdvice(dest: Exclude<ReplyDestination, { kind: 'unresolved' }>, pr
 }
 
 /**
- * The agent's own owner DM, when the destination that refused its message is
- * ANOTHER agent's DM with the owner (work delegated from that DM). The text
- * is opened with `Re: <work title>` so the owner sees what it answers.
+ * Whether a conversation is another agent's DM with the owner (a Slack DM
+ * the replying agent is not in).
  *
- * @param input - Agent, text, references
- * @param failed - The destination that refused
+ * @param session - Replying agent
+ * @param conversationId - The conversation that refused
  * @param d - Collaborators
- * @returns The DM destination and the text to post, or null
+ * @returns True for another agent's owner DM
  */
-async function ownDmInsteadOfOthers(
-  input: DeliverReplyInput,
-  failed: Exclude<ReplyDestination, { kind: 'unresolved' }>,
-  d: ReplyDeliveryDeps,
-): Promise<{ dest: Extract<ReplyDestination, { kind: 'conversation' }>; content: string } | null> {
-  if (failed.kind !== 'conversation') return null;
-  const slack = d.resolver.slackChannelOfConversation(failed.conversationId);
-  if (!slack || !isSlackDm(slack)) return null;
-  if (await d.resolver.ownsConversation(input.session, failed.conversationId).catch(() => true)) return null;
-  const dm = await d.resolver.ownerDm(input.session).catch(() => null);
-  if (!dm || dm === failed.conversationId) return null;
-  const wi = input.reference?.workItemId
-    ? await d.resolver.workItem(input.reference.workItemId).catch(() => null)
-    : currentWorkItemOf(await d.resolver.poolItems().catch(() => [] as WorkItem[]), input.session);
-  const topic = wi ? `Re: ${shortTopic(wi.title)}` : undefined;
-  return {
-    dest: { kind: 'conversation', conversationId: dm, source: 'owner-dm', reason: 'the owner asked in a DM with another agent — your DM with the owner' },
-    content: withTopicLine(topic, input.content),
-  };
+async function isOthersOwnerDm(session: string, conversationId: string, d: ReplyDeliveryDeps): Promise<boolean> {
+  const slack = d.resolver.slackChannelOfConversation(conversationId);
+  if (!slack || !isSlackDm(slack)) return false;
+  return !(await d.resolver.ownsConversation(session, conversationId).catch(() => true));
 }
 
 /**
- * The next real place after the current work's destination refused a message.
+ * The agent that handed the replier the work it is answering, when known.
  *
- * @param session - Agent
- * @param failed - The destination that refused
+ * @param input - Agent, reference
  * @param d - Collaborators
- * @returns A fallback destination, or null
+ * @returns The delegator's session, or null
  */
-async function currentWorkFallback(
-  session: string,
-  failed: Exclude<ReplyDestination, { kind: 'unresolved' }>,
-  d: ReplyDeliveryDeps,
-): Promise<Exclude<ReplyDestination, { kind: 'unresolved' }> | null> {
-  if (failed.kind === 'conversation') {
-    const items = await d.resolver.poolItems().catch(() => [] as WorkItem[]);
-    const wi = currentWorkItemOf(items, session);
-    return {
-      kind: 'work',
-      destination: { kind: 'new-top-level', ...(wi ? { topic: shortTopic(wi.title) } : {}), reason: `conversation ${failed.conversationId} did not take the reply` },
-      source: 'current-work',
-      reason: `conversation ${failed.conversationId} did not take the reply — new top-level post`,
-    };
-  }
-  const origin = d.resolver.turnOrigin(session);
-  if (origin) {
-    const thread = origin.slackThreadKey ?? origin.chatThreadId;
-    return { kind: 'conversation', conversationId: origin.conversationId, ...(thread ? { thread } : {}), source: 'turn-origin', reason: 'the work destination did not take the reply — your last owner conversation' };
-  }
-  const dm = await d.resolver.ownerDm(session).catch(() => null);
-  return dm ? { kind: 'conversation', conversationId: dm, source: 'owner-dm', reason: 'the work destination did not take the reply — your DM with the owner' } : null;
+async function delegatorOfWork(input: DeliverReplyInput, d: ReplyDeliveryDeps): Promise<string | null> {
+  const id = input.reference?.workItemId ?? d.resolver.latestInput?.(input.session)?.workItemId;
+  const wi = id ? await d.resolver.workItem(id).catch(() => null) : null;
+  const by = (wi?.metadata as Record<string, unknown> | undefined)?.delegatedBy;
+  return typeof by === 'string' && by && by !== input.session ? by : null;
 }
 
 /**
@@ -473,20 +624,32 @@ async function currentWorkFallback(
  * @param input - Agent, text, interim flag
  * @param postedConversationId - Conversation the post lands in (undefined: a Slack place outside chat)
  * @param d - Collaborators
+ * @param answering - The work item the post names, when it names one
+ * @param thread - The thread the post lands in, when it lands in one
  * @returns Metadata and the text to post, or null when no trigger is known
  */
 async function provenanceOf(
   input: Pick<DeliverReplyInput, 'session' | 'content' | 'interim'>,
   postedConversationId: string | undefined,
-  d: Pick<ReplyDeliveryDeps, 'resolver' | 'turnTrigger' | 'ownerAskedRecently' | 'currentTrace' | 'conversationPlace'>,
+  d: Pick<ReplyDeliveryDeps, 'resolver' | 'turnTrigger' | 'ownerAskedRecently' | 'ownerAskedEarlier' | 'ownerWroteInThread' | 'currentTrace' | 'conversationPlace'>,
+  answering?: { workItemId?: string },
+  thread?: string,
 ): Promise<{ metadata: Record<string, unknown>; content?: string } | null> {
   try {
-    const trigger = d.turnTrigger?.(input.session) ?? null;
+    const trigger = triggerOfAnsweredInput(input.session, d, answering);
     if (!trigger) return null;
     const workItem = trigger.workItemId ? await d.resolver.workItem(trigger.workItemId).catch(() => null) : null;
+    // The post answers the owner's message in the conversation it lands in
+    // when the owner wrote to the agent there — even when a newer owner
+    // message elsewhere is the agent's latest (R8).
+    const answersOwnerHere =
+      !!postedConversationId &&
+      ((d.ownerAskedRecently?.(input.session, postedConversationId) ?? false) ||
+        (trigger.triggerKind === 'owner_message' && trigger.conversationId !== postedConversationId && (d.ownerAskedEarlier?.(input.session, postedConversationId) ?? false)) ||
+        (!!thread && (d.ownerWroteInThread?.(postedConversationId, thread) ?? false)));
     const phrase = triggeredByPhrase(trigger, {
       ...(postedConversationId ? { postedConversationId } : {}),
-      ownerAskedHere: !!postedConversationId && (d.ownerAskedRecently?.(input.session, postedConversationId) ?? false),
+      ownerAskedHere: answersOwnerHere,
       workItem,
       ...(d.conversationPlace ? { conversationPlace: d.conversationPlace } : {}),
     });
@@ -502,27 +665,44 @@ async function provenanceOf(
 }
 
 /**
+ * The trigger of the input a post answers: for a post addressed to a work
+ * item, that work item's dispatch (the session's own trigger when it is that
+ * dispatch), never whatever was delivered to the agent last (R8).
+ *
+ * @param session - Agent
+ * @param d - Collaborators
+ * @param answering - The work item the post names, when it names one
+ * @returns The trigger, or null
+ */
+function triggerOfAnsweredInput(session: string, d: Pick<ReplyDeliveryDeps, 'turnTrigger'>, answering?: { workItemId?: string }): TurnTrigger | null {
+  const current = d.turnTrigger?.(session) ?? null;
+  const id = answering?.workItemId;
+  if (!id || current?.workItemId === id) return current;
+  return { triggerKind: 'dispatch', workItemId: id, rootKind: 'dispatch', rootRef: id, viaAgents: [], at: Date.now(), ...(current?.traceId ? { traceId: current.traceId } : {}) };
+}
+
+/**
  * Provenance for a post an agent makes straight into a conversation
  * (`reply-channel`, `POST /chat/channels/:id/messages`), outside
  * {@link deliverReply}: the record to store and the text with the
  * "Triggered by" line when one is shown. Never throws.
  *
- * @param input - Agent, conversation, text, interim flag
+ * @param input - Agent, conversation, text, interim flag, thread
  * @param deps - Collaborators (default: the real ones)
  * @returns The text to store and the record, if any
  */
 export async function provenanceForAgentPost(
-  input: { session: string; conversationId: string; content: string; interim?: boolean },
-  deps?: Pick<ReplyDeliveryDeps, 'resolver' | 'turnTrigger' | 'ownerAskedRecently' | 'currentTrace' | 'conversationPlace'>,
+  input: { session: string; conversationId: string; content: string; interim?: boolean; thread?: string },
+  deps?: Pick<ReplyDeliveryDeps, 'resolver' | 'turnTrigger' | 'ownerAskedRecently' | 'ownerAskedEarlier' | 'ownerWroteInThread' | 'currentTrace' | 'conversationPlace'>,
 ): Promise<{ content: string; triggeredBy?: Record<string, unknown> }> {
   try {
     const d = deps ?? (await defaultReplyDeliveryDeps());
-    const p = await provenanceOf({ session: input.session, content: input.content, interim: input.interim }, input.conversationId, d);
-    if (!p) return { content: input.content };
+    const p = await provenanceOf({ session: input.session, content: input.content, interim: input.interim }, input.conversationId, d, undefined, input.thread);
+    if (!p) return { content: stripOwnerTextIds(input.content) };
     const record = p.metadata[TURN_TRIGGER_CONSTANTS.METADATA_KEY] as Record<string, unknown> | undefined;
-    return { content: p.content ?? input.content, ...(record ? { triggeredBy: record } : {}) };
+    return { content: stripOwnerTextIds(p.content ?? input.content), ...(record ? { triggeredBy: record } : {}) };
   } catch {
-    return { content: input.content };
+    return { content: stripOwnerTextIds(input.content) };
   }
 }
 
@@ -545,9 +725,17 @@ async function attempt(
   const ticket = dest.source === 'ticket' ? input.reference?.ticket : dest.source === 'prompt' ? prompt?.ticket : undefined;
   const deliversTicket = ticket ? { [REPLY_ROUTING_CONSTANTS.DELIVERS_TICKET_METADATA_KEY]: ticket } : undefined;
   const answeredReference = dest.source === 'prompt' || dest.source === 'ticket' || dest.source === 'decision' || dest.source === 'work-item' || dest.source === 'message';
-  const provenance = await provenanceOf(input, dest.kind === 'conversation' ? dest.conversationId : undefined, d);
+  const answeredWorkItem = dest.source === 'work-item' ? input.reference?.workItemId : dest.source === 'prompt' ? prompt?.workItemId : undefined;
+  const provenance = await provenanceOf(
+    input,
+    dest.kind === 'conversation' ? dest.conversationId : undefined,
+    d,
+    answeredWorkItem ? { workItemId: answeredWorkItem } : undefined,
+    dest.kind === 'conversation' ? dest.thread : undefined,
+  );
   const metadata = { ...(deliversTicket ?? {}), ...(provenance?.metadata ?? {}) };
   if (provenance?.content !== undefined) input = { ...input, content: provenance.content };
+  input = { ...input, content: stripOwnerTextIds(input.content) };
   if (dest.kind === 'conversation') {
     if (input.interim !== true && input.addsNew !== true && dest.thread && d.priorRoomAnswer) {
       const prior = await d.priorRoomAnswer({ conversationId: dest.conversationId, thread: dest.thread, agentSession: input.session }).catch(() => null);
@@ -574,17 +762,25 @@ async function attempt(
       const why = member
         ? `conversation ${dest.conversationId} (${dest.reason}) could not post it into its Slack thread`
         : `conversation ${dest.conversationId} (${dest.reason}) did not take it — you are not a member there`;
-      return { ok: false, destination: dest, error: notDelivered(why, retryAdvice(dest, prompt)) };
+      // A work item's place is fixed by the item: resending the same reply lands there again.
+      const advice = dest.source === 'work-item' || dest.source === 'current-work' || dest.source === 'route' ? UNPOSTABLE_ADVICE : retryAdvice(dest, prompt);
+      return { ok: false, destination: dest, error: notDelivered(why, advice) };
     }
     if (answeredReference && input.interim !== true) AgentPromptReferenceService.getInstance().clear(input.session);
     return { ok: true, destination: dest, messageId, conversationId: dest.conversationId };
+  }
+  if (dest.source === 'agent-message' && dest.destination.kind === 'agent' && d.answerAgent) {
+    const to = dest.destination.sessionName;
+    const taken = await d.answerAgent(input.session, to, input.content).catch(() => false);
+    if (!taken) return { ok: false, destination: dest, error: notDelivered(`${dest.reason}: ${to} could not be reached`, `send-message --to ${to} "<your answer>"`) };
+    return { ok: true, destination: dest, agentSession: to };
   }
   try {
     const wd = await d.workDestination();
     const posted = await deliverToWorkDestination(input.session, dest.destination, input.content, wd);
     if (!posted) {
       const why = dest.destination.kind === 'agent' ? `${dest.reason}: ${dest.destination.sessionName} could not be reached` : `${dest.reason}: there is no Slack channel to post in`;
-      return { ok: false, destination: dest, error: notDelivered(why, fixCommand(prompt)) };
+      return { ok: false, destination: dest, error: notDelivered(why, UNPOSTABLE_ADVICE) };
     }
     if (answeredReference && input.interim !== true) AgentPromptReferenceService.getInstance().clear(input.session);
     return {
@@ -596,8 +792,33 @@ async function attempt(
       ...(posted.agentSession ? { agentSession: posted.agentSession } : {}),
     };
   } catch (err) {
-    return { ok: false, destination: dest, error: notDelivered(`posting to Slack failed (${err instanceof Error ? err.message : String(err)})`, fixCommand(prompt)) };
+    return { ok: false, destination: dest, error: notDelivered(`posting to Slack failed (${err instanceof Error ? err.message : String(err)})`, UNPOSTABLE_ADVICE) };
   }
+}
+
+/**
+ * Whether a chat thread is agent-to-agent coordination kept inside Crewly
+ * (crewly#1340): the message, or the root of its thread, carries
+ * `agentCoordinationInternal`. `reply-channel` keeps a post in such a thread
+ * internal; a file must not go to the Slack thread key stored on that
+ * message either (Pia's v3/v4 videos for Ella landed in Steve's thread,
+ * 2026-10-18).
+ *
+ * @param threadId - A chat message id (anything else is not internal)
+ * @param deps - Collaborators (default: the real ones)
+ * @returns Why the thread is internal, or null
+ */
+export async function internalCoordinationThread(threadId: unknown, deps?: ReplyDeliveryDeps): Promise<string | null> {
+  if (typeof threadId !== 'string' || !threadId.trim() || parseSlackThreadKey(threadId)) return null;
+  const d = deps ?? (await defaultReplyDeliveryDeps());
+  const { AGENT_COORDINATION_CONSTANTS } = await import('../../constants.js');
+  const reasonOf = (id: string | undefined): string | null => {
+    const v = id ? d.resolver.getMessage(id)?.metadata?.[AGENT_COORDINATION_CONSTANTS.INTERNAL_METADATA_KEY] : undefined;
+    return typeof v === 'string' && v ? v : null;
+  };
+  const msg = d.resolver.getMessage(threadId.trim());
+  if (!msg) return null;
+  return reasonOf(msg.id) ?? reasonOf(msg.threadId);
 }
 
 /**
@@ -688,6 +909,37 @@ function logResolution(session: string, r: ReplyResolution): void {
     ...(d.kind !== 'unresolved' ? { source: d.source } : {}),
     reason: d.reason,
   });
+}
+
+/**
+ * The real {@link ReplyDeliveryDeps.answerAgent}: the answer goes to the
+ * other agent with the replier's sender header (so it can answer back), and
+ * the replier's open ask from that agent counts as answered.
+ *
+ * @param fromSession - Replying agent
+ * @param toSession - Agent whose message it answers
+ * @param text - Answer
+ * @returns True when the message was taken
+ */
+async function defaultAnswerAgent(fromSession: string, toSession: string, text: string): Promise<boolean> {
+  const [{ getAgentMessenger }, { describeAgentSender, wrapAgentMessage }, { StorageService }, { getAgentAskLedger }] = await Promise.all([
+    import('./work-item-destination.wiring.js'),
+    import('../messaging/agent-message-envelope.js'),
+    import('../core/storage.service.js'),
+    import('../messaging/agent-ask-ledger.service.js'),
+  ]);
+  const messenger = getAgentMessenger();
+  if (!messenger) return false;
+  const sender = (await describeAgentSender(fromSession, (s) => StorageService.getInstance().findMemberBySessionName(s))) ?? { session: fromSession };
+  const taken = await messenger(toSession, wrapAgentMessage(text, sender));
+  if (taken) {
+    try {
+      getAgentAskLedger()?.noteAnswered(fromSession, toSession);
+    } catch {
+      /* best effort */
+    }
+  }
+  return taken;
 }
 
 /**
@@ -800,18 +1052,19 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
       const { channel } = c.ensureDmChannel({ agentSession: session, principal: { userId: SLACK_AGENT_DM_CONSTANTS.OWNER_USER_ID, source: 'oss' } });
       return channel.id;
     },
+    // The one rule for "this thread is the agent's own work": live items and
+    // items finished within the done grace (crewly#1496: a `--thread` hint
+    // was refused 45 min after the item was verified, while `--work-item`
+    // on the same item resolved to that thread).
     delegatedThread: async (session, slackChannelId, threadTs) => {
-      const { originOfWorkItem: originOf } = await import('./work-item-destination.js');
-      const { TERMINAL_WORK_ITEM_STATUSES } = await import('../../types/v2/work-item.types.js');
-      return (await pool()).some((w) => {
-        if (w.target !== session || TERMINAL_WORK_ITEM_STATUSES.has(w.status)) return false;
-        const o = originOf(w);
-        if (!o || o.kind !== 'owner') return false;
-        const key = parseSlackThreadKey(o.threadTs && o.slackChannelId ? `${o.slackChannelId}:${o.threadTs}` : undefined);
-        return !!key && key.slackChannelId === slackChannelId && key.threadTs === threadTs;
-      });
+      const { isDelegatedInThread } = await import('./work-item-destination.js');
+      return isDelegatedInThread(await pool(), session, slackChannelId, threadTs, Date.now());
     },
     surfacedOwnerConversations: (session) => SubAgentMessageQueue.getInstance().surfacedUnansweredConversations(session),
+    // What the agent answers: the latest input that names it, not a reminder
+    // or notice delivered since (message-routing audit 2026-10-18).
+    // An agent message already answered with send-message is not (crewly#1381).
+    latestInput: (session) => latestInputOf(getTurnTriggerTracker().openRoutedTrigger(session)),
     now: () => Date.now(),
   };
   const { deliverAgentReplyToConversation } = await import('../../controllers/chat/chat.controller.js');
@@ -820,6 +1073,26 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
     resolver,
     deliverToConversation: deliverAgentReplyToConversation,
     workDestination: defaultWorkDestinationDeps,
+    answerAgent: defaultAnswerAgent,
+    refusedReplyNotice: {
+      decision: async (id) => {
+        const all = (await DecisionService.getInstance()?.list('all').catch(() => [])) ?? [];
+        const x = all.find((y) => y.id === id);
+        return x ? { status: x.status, ...(x.card ? { card: { slackChannelId: x.card.slackChannelId, threadTs: x.card.threadTs ?? x.card.messageTs } } : {}) } : null;
+      },
+      leadOf: async (session) => {
+        const [{ StorageService }, { leadAbove }] = await Promise.all([import('../core/storage.service.js'), import('../task-pool/untargeted-router.js')]);
+        return leadAbove(session, await StorageService.getInstance().getTeams().catch(() => []));
+      },
+      tell: async (toSession, text) => (await import('./work-item-destination.wiring.js')).getAgentMessenger()?.(toSession, text) ?? false,
+      orchestrator: ORCHESTRATOR_SESSION_NAME,
+      postToCard: async (card, text) => {
+        const wd = await defaultWorkDestinationDeps();
+        await wd.post({ agentSession: ORCHESTRATOR_SESSION_NAME, target: card.slackChannelId, threadTs: card.threadTs, text });
+        return true;
+      },
+      now: () => Date.now(),
+    },
     priorRoomAnswer: async (input) => {
       const { getSlackTeamChannelService } = await import('../slack/slack-team-channel.service.js');
       return (await getSlackTeamChannelService()?.heldReplyFor(input)) ?? null;
@@ -831,14 +1104,116 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
     },
     turnTrigger: (session) => getTurnTriggerTracker().trigger(session),
     ownerAskedRecently: (session, conversationId) => getTurnTriggerTracker().ownerAskedRecently(session, conversationId),
+    ownerAskedEarlier: (session, conversationId) => getTurnTriggerTracker().ownerAskedWithin(session, conversationId, TURN_TRIGGER_CONSTANTS.FRESH_MS),
+    ownerWroteInThread: (conversationId, thread) => ownerWroteInThreadRecently(chatLookup, conversationId, thread),
+    routedTrigger: (session) => getTurnTriggerTracker().openRoutedTrigger(session),
     currentTrace: (session) => getTraceContext().currentTrace(session),
     conversationPlace: (id) => chatConversationPlace(chatLookup, id),
+    audience: await defaultAudienceDeps(resolver, chatLookup),
+    privateShareCard: (held) => getPrivateShareDecisions()?.onHeld(held) ?? Promise.resolve(null),
   };
 }
 
-/** The chat-v2 lookups {@link chatConversationPlace} uses. */
+/**
+ * Post a reply the audience check held, where it was going, as written: the
+ * owner tapped Share on its card (crewly#969). The audience check is not run
+ * again (the owner's tap is the approval); the share itself is logged by the
+ * card handler.
+ *
+ * @param held - The held reply
+ * @param deps - Delivery deps (default: the real ones)
+ * @returns What happened
+ */
+export async function postHeldReply(held: HeldReply, deps?: ReplyDeliveryDeps): Promise<HeldReplyPost> {
+  const d = deps ?? (await defaultReplyDeliveryDeps());
+  const place = (held.destination.kind === 'conversation' ? d.conversationPlace?.(held.destination.conversationId) : null) ?? held.heldFrom;
+  const result = await attempt({ session: held.session, content: held.content }, held.destination, undefined, d);
+  if (!result.ok) return { ok: false, error: result.error };
+  logger.info('Held reply posted where it was going: the owner tapped Share', { session: held.session, place });
+  return { ok: true, place };
+}
+
+/**
+ * Whether the owner wrote to the agent in its owner DM recently — the
+ * approval `reply --share` stands on (crewly#969).
+ *
+ * @param session - Agent session
+ * @param d - Delivery deps
+ * @returns True when the owner DM exists and the owner asked there within the window
+ */
+async function ownerSaidShare(session: string, d: ReplyDeliveryDeps): Promise<boolean> {
+  if (!d.audience || !d.ownerAskedRecently) return false;
+  const dm = await d.audience.ownerDm(session).catch(() => null);
+  return !!dm && d.ownerAskedRecently(session, dm) === true;
+}
+
+/**
+ * The real audience-check lookups (crewly#969): the private-source tracker,
+ * chat-v2 conversation kinds and the people directory.
+ *
+ * @param resolver - Resolver deps (for the owner DM and Slack mirrors)
+ * @param chatLookup - chat-v2 lookups, or null
+ * @returns The deps
+ */
+async function defaultAudienceDeps(resolver: ReplyResolverDeps, chatLookup: ChatChannelLookup | null): Promise<ReplyAudienceDeps> {
+  const [{ getPrivateSourceTracker }, { getPeopleDirectory }] = await Promise.all([
+    import('../people/private-source.service.js'),
+    import('../people/people-directory.service.js'),
+  ]);
+  return {
+    recentPeople: (session) => getPrivateSourceTracker().recentPeople(session),
+    conversationKind: (id) => {
+      try {
+        const ch = chatLookup?.getChannelForBridge(id);
+        return !ch ? 'unknown' : ch.type === 'dm' ? 'dm' : 'shared';
+      } catch {
+        return 'unknown';
+      }
+    },
+    slackChannelOf: (id) => resolver.slackChannelOfConversation(id),
+    ownerDm: (session) => resolver.ownerDm(session),
+    offersCard: () => getPrivateShareDecisions()?.offersCard() ?? false,
+    personName: (id) => {
+      try {
+        return getPeopleDirectory().get(id)?.name ?? undefined;
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
+
+/** The chat-v2 lookups {@link chatConversationPlace} and {@link ownerWroteInThreadRecently} use. */
 interface ChatChannelLookup {
   getChannelForBridge(id: string): { name: string; type?: string; agentSession?: string } | null;
+  getMessageForBridge?(id: string): { id: string; channelId: string; threadId?: string } | null;
+  findSlackThreadRoot?(channelId: string, slackThreadTs: string): { id: string } | null;
+  listThreadForBridge?(channelId: string, rootId: string): Array<{ senderType: string; createdAt: number }>;
+}
+
+/**
+ * Whether the owner wrote in a thread (a chat message id or a Slack thread
+ * key) within {@link TURN_TRIGGER_CONSTANTS.OWNER_ANSWER_WINDOW_MS}. Never throws.
+ *
+ * @param chat - chat-v2 lookups, or null
+ * @param conversationId - chat-v2 channel id
+ * @param thread - Chat message id or `<slackChannel>:<threadTs>`
+ * @param now - Clock (epoch ms)
+ * @returns True when a user row in the thread is that recent
+ */
+export function ownerWroteInThreadRecently(chat: ChatChannelLookup | null, conversationId: string, thread: string, now: number = Date.now()): boolean {
+  try {
+    if (!chat?.listThreadForBridge) return false;
+    const named = chat.getMessageForBridge?.(thread);
+    let rootId = named && named.channelId === conversationId ? (named.threadId ?? named.id) : undefined;
+    const key = rootId ? null : parseSlackThreadKey(thread);
+    if (!rootId && key) rootId = chat.findSlackThreadRoot?.(conversationId, key.threadTs)?.id;
+    if (!rootId) return false;
+    const since = now - TURN_TRIGGER_CONSTANTS.OWNER_ANSWER_WINDOW_MS;
+    return chat.listThreadForBridge(conversationId, rootId).some((m) => m.senderType === 'user' && m.createdAt >= since);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -869,6 +1244,22 @@ export function chatConversationPlace(chat: ChatChannelLookup | null, conversati
     if (!ch) return null;
     if (ch.type === 'dm') return `the DM with ${memberNameFromSession(ch.agentSession || ch.name)}`;
     return ch.name ? `#${ch.name.replace(/^#/, '')}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The route an agent's own messages carry onward: what it is answering now
+ * (its latest routed input; message-route.ts). Never throws.
+ *
+ * @param session - Agent session
+ * @returns The route, or null when its input names none
+ */
+export async function currentRouteOf(session: string): Promise<MessageRoute | null> {
+  try {
+    const { OrcReplyRouteService } = await import('./orc-reply-route.service.js');
+    return routeOfTrigger(getTurnTriggerTracker().routedTrigger(session), OrcReplyRouteService.getInstance().getLastOrigin(session));
   } catch {
     return null;
   }

@@ -69,6 +69,21 @@ describe('StandingRefreshService', () => {
 		expect(wi.briefMarkdown).toContain('/skills/agent/core/standing-update/execute.sh --page decisions-in-force');
 	});
 
+	it('refreshes a custom question page like a built-in one and never raises the owner rules page (#914 P2)', async () => {
+		await fs.writeFile(path.join(projectPath, '.crewly', 'standing-questions.json'), JSON.stringify({ questions: [
+			{ id: 'rule-book', question: 'Which rules apply?', source: 'decisions', match: ['rule'] },
+			{ id: 'k8s', question: 'What about Kubernetes?', source: 'decisions', match: ['kubernetes'] },
+		] }));
+		const res = await make().tick();
+		expect(res.pagesExamined).toBe(5); // three built-in + two custom; owner rules is not a refresh candidate
+		expect(res.created.map((c) => c.key)).toEqual([`project:${projectPath}:decisions-in-force`, `project:${projectPath}:rule-book`]);
+		expect(res.skipped.no_entries).toBe(3); // gotchas, preferences, k8s (filter matched nothing)
+		const custom = pool.items.find((wi) => wi.metadata?.['pageId'] === 'rule-book');
+		expect(custom?.title).toContain('Which rules apply?');
+		expect(custom?.briefMarkdown).toContain('--page rule-book');
+		expect(pool.items.some((wi) => wi.metadata?.['pageId'] === 'owner-rules')).toBe(false);
+	});
+
 	// steamfun-ops 2026-09-30: a refresh queued for a dormant team's leader
 	// tried a refused cold launch 230+ times a day. A chore must wait for its
 	// target to be awake — and must still be raised once it is.

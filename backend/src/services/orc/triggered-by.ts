@@ -20,7 +20,7 @@ const C = TURN_TRIGGER_CONSTANTS;
 export interface TriggeredByContext {
   /** Conversation the post lands in (undefined: a Slack place outside chat) */
   postedConversationId?: string;
-  /** The owner wrote to this agent in the posted conversation recently: the post is an answer */
+  /** The owner wrote to this agent in the posted conversation, or in the posted thread, recently: the post is an answer */
   ownerAskedHere?: boolean;
   /** The work item the trigger names, when it names one */
   workItem?: WorkItem | null;
@@ -30,9 +30,15 @@ export interface TriggeredByContext {
   agentName?: (session: string) => string;
 }
 
-/** Cut a title to one short line. */
-function shortTitle(title: string): string {
-  const one = title.replace(/\s+/g, ' ').trim();
+/** Cut a title to one short line, without internal ids or a leading tag. */
+export function shortTitle(title: string): string {
+  const one = title
+    .replace(C.LEADING_TAG_PATTERN, '')
+    .replace(C.INTERNAL_ID_PATTERN, '')
+    .replace(/[(（]\s*[)）]/g, '')
+    .replace(/\s+([,，:：)）])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
   return one.length > C.MAX_TITLE_CHARS ? `${one.slice(0, C.MAX_TITLE_CHARS - 1)}…` : one;
 }
 
@@ -59,11 +65,19 @@ export function triggeredByPhrase(trigger: TurnTrigger | null, ctx: TriggeredByC
     }
     case 'agent_message': {
       if (!trigger.sender) return 'a message from another agent';
-      const chain = trigger.viaAgents.length > 1 ? trigger.viaAgents.map(name).join(' → ') : name(trigger.sender);
-      const from = trigger.viaAgents.length > 1 ? `a hand-off ${chain}` : `${chain}'s message`;
+      // Only the agent that wrote: a longer chain is noise to the owner (the record keeps it).
+      const from = `${name(trigger.sender)}'s message`;
       if (trigger.rootKind === 'owner_message') return `${from} (passing on your request)`;
       if (trigger.rootKind === 'scheduled') return `${from} (from a scheduled task)`;
       return from;
+    }
+    case 'delegated_result': {
+      // A result on work delegated for the owner, posted where the owner asked, needs no label.
+      const route = trigger.route;
+      if (route?.kind === 'owner' && route.conversationId === ctx.postedConversationId) return null;
+      const who = trigger.sender ?? trigger.textSender;
+      const from = who ? `${name(who)}'s result for work you delegated` : 'a result for work you delegated';
+      return route?.kind === 'owner' || trigger.rootKind === 'owner_message' ? `${from} (passing on your request)` : from;
     }
     case 'dispatch':
     case 'scheduled': {

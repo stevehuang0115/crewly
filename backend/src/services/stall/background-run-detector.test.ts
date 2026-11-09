@@ -48,11 +48,42 @@ describe('detectBackgroundRun', () => {
 	});
 });
 
+describe('submitted async jobs register with no duration (crewly#1386)', () => {
+	it.each([
+		'三条片段已经提交到 Flow 了，作为第 3 步的预览。',
+		'Submitted three Veo clips for the fight scene.',
+		'视频已提交，让它们跑完再对比。',
+		'Queued 3 renders on Flow.',
+	])('registers %j with no estimate', (text) => {
+		const run = detectBackgroundRun(text);
+		expect(run).not.toBeNull();
+		expect(run?.estimateMs).toBeNull();
+	});
+
+	it('takes the duration when one is named', () => {
+		expect(detectBackgroundRun('三条片段已经提交到 Flow。预计 40 分钟。')?.estimateMs).toBe(40 * 60_000);
+	});
+
+	it('a later timed run in the same post wins over an untimed submission', () => {
+		expect(detectBackgroundRun('片段已提交到 Flow。另外后台在跑转码，大概 20 分钟。')?.estimateMs).toBe(20 * 60_000);
+	});
+
+	it.each([
+		'PR 已经提交了。',
+		'I submitted the form.',
+		'表单已提交。',
+		'要不要我把视频提交到 Flow？',
+		'三条片段已经提交到 Flow，都生成完了，见附件。',
+	])('does not register %j', (text) => {
+		expect(detectBackgroundRun(text)).toBeNull();
+	});
+});
+
 describe('isRunFinishedReport', () => {
 	it.each(['跑完了，见附件', '渲染完成了', 'Done, file attached', 'The render failed with OOM', '挂了，重跑中', 'ready: https://x/y.mp4'])('%j is a report', (t) => {
 		expect(isRunFinishedReport(t)).toBe(true);
 	});
-	it.each(['还在跑', 'still rendering, 20 more minutes', '跑完了吗？', ''])('%j is not', (t) => {
+	it.each(['还在跑', 'still rendering, 20 more minutes', '跑完了吗？', '', '让它们跑完，对比后看差多少。', "Once they are done I'll compare them."])('%j is not', (t) => {
 		expect(isRunFinishedReport(t)).toBe(false);
 	});
 });

@@ -117,4 +117,5 @@ RESPONSE=$(api_call POST "/google/gmail/send" "$BODY" 2>&1) || {
   exit 1
 }
 
-printf '%s' "$RESPONSE" | jq -c '{success: (.success // false), id: .data.id, threadId: .data.threadId}'
+printf '%s' "$RESPONSE" | jq -c '{success: (.success // false), id: .data.id, threadId: .data.threadId}
+  + (if .data.drafted == true then {drafted: true, draftId: .data.draftId, pendingId: .data.pendingId, approvalCard: (.data.approvalCard // false), message: .data.message} else {} end)'

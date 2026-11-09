@@ -35,7 +35,7 @@ import * as path from 'path';
 import { existsSync } from 'fs';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { atomicWriteJson, safeReadJson, ensureDir } from '../../utils/file-io.utils.js';
-import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, WIKI_KB_CONSTANTS } from '../../constants.js';
 import { isLogArchivePath } from './wiki-vault-walk.js';
 import { redactSensitive } from './wiki-redaction.js';
 import { WikiHistoryService } from './wiki-history.service.js';
@@ -54,6 +54,8 @@ const FROZEN_FOLDERS: ReadonlySet<string> = new Set([
   'sop',
   'sop-overrides',
   'okr',
+  // The owner's explicit rules (#914 P2): human-owned, never cleaned up.
+  WIKI_KB_CONSTANTS.OWNER_FOLDER,
 ]);
 
 /** Folder under the vault where llm-curated pages live. */

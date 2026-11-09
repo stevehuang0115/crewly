@@ -692,5 +692,16 @@ describe('MessageStore', () => {
       expect(ids).toEqual(expect.arrayContaining([inDm, mentioned]));
       expect(ids).toHaveLength(2);
     });
+
+    it('searchAll (the owner\'s view, #1400) reaches every room, keeps the filters and skips system rows', () => {
+      const mine = say(room, 'video plan', 1_000);
+      const theirs = say(otherRoom, 'video secret budget', 2_000);
+      messages.insert({ channelId: room, senderType: 'system', senderId: 'system', content: 'video system note' });
+      expect(messages.searchAll({ terms: ['video'], limit: 10 }).map((h) => h.id)).toEqual([theirs, mine]);
+      expect(messages.searchAll({ terms: ['video', 'budget'], limit: 10 }).map((h) => h.id)).toEqual([theirs]);
+      expect(messages.searchAll({ terms: ['video'], channel: 'secret', limit: 10 }).map((h) => h.id)).toEqual([theirs]);
+      expect(messages.searchAll({ terms: ['video'], limit: 1 })).toHaveLength(1);
+      expect(messages.searchAll({ terms: ['video'], limit: 10 })[0].channel_type).toBe('huddle');
+    });
   });
 });

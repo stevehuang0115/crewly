@@ -63,7 +63,8 @@ bash config/skills/orchestrator/send-pdf-to-slack/execute.sh \
 | `--file`, `-f` | Yes | Path to the markdown file to convert |
 | `--title`, `-T` | No | Title for the uploaded PDF (defaults to filename) |
 | `--text`, `-t` | No | Initial comment to include with the upload |
-| `--thread`, `-r` | No | Slack thread timestamp for threaded upload |
+| `--thread`, `-r` | No | The Slack thread timestamp the PDF answers. Without it the harness picks the thread of your work, or the upload is refused (409 `thread_unresolved`) — it is never posted at the top level by default  |
+| `--allow-new-thread` | No | Post at the channel's top level on purpose (a new thread) |
 
 ## Example: Daily Report with Infographics
 

@@ -14,6 +14,7 @@ import type { ChatV2Config } from './config.js';
 import { ChannelStore } from './sqlite/channel.store.js';
 import { EventEmitter } from 'events';
 import { MessageStore } from './sqlite/message.store.js';
+import { ReadStateStore } from './sqlite/read-state.store.js';
 import { redactOpenLinkTokens } from '../apps/app-open-link.js';
 import { CHAT_SEARCH_CONSTANTS, TURN_TRIGGER_CONSTANTS } from '../../constants.js';
 import { openChatDatabase, type ChatDatabase } from './sqlite/chat-db.js';
@@ -43,6 +44,8 @@ import {
   type ChatMessageListResult,
   type ChatMessageRow,
   type ChatPrincipal,
+  type ChatReadStateDTO,
+  type ChatUnreadSummaryDTO,
   type ChatSenderType,
   type ChatTimelineItemDTO,
   type ChatTimelineResult,
@@ -324,6 +327,32 @@ const DEFAULT_PRESENCE = () => ({
  * - Maps rows → DTOs.
  * - Fans out to WebSocket / adapters in later phases.
  */
+/**
+ * Defensive upper bound on a huddle roster — a 200-member huddle would tax
+ * both the dispatcher fan-out and downstream rate limits.
+ */
+const MAX_HUDDLE_MEMBERS = 50;
+
+/** A Slack message ts (`<epoch seconds>.<micros>`), as in a `[SLACK-THREAD:<channel>:<ts>]` tag */
+const SLACK_TS_RE = /^\d{9,11}\.\d{4,8}$/;
+
+/** One hit of a chat search (`GET /api/chat/search`): a compact, owner-visible snippet. */
+export interface ChatSearchHit {
+  id: string;
+  /** ISO timestamp */
+  time: string;
+  channelId: string;
+  /** Channel name as stored (channels may carry a leading `#`) */
+  channel: string;
+  channelType: ChatChannelType;
+  sender: string;
+  /** `user` | `agent` (system rows are never returned) */
+  senderType: string;
+  /** Flattened, redacted snippet, at most `CHAT_SEARCH_CONSTANTS.SNIPPET_CHARS` characters */
+  text: string;
+  threadId: string | null;
+}
+
 export class ChatV2Service extends EventEmitter {
   /** Phase A spec §3.2: max mention count per message. */
   static readonly MAX_MENTIONS_PER_MESSAGE = 50;
@@ -334,6 +363,7 @@ export class ChatV2Service extends EventEmitter {
   private readonly db: ChatDatabase;
   private readonly channels: ChannelStore;
   private readonly messages: MessageStore;
+  private readonly readState: ReadStateStore;
   private readonly outbox: CloudOutboxStore;
   private presence: ChatV2ServiceOptions['getPresence'];
   private readonly validateTeamMembership: ChatV2ServiceOptions['validateTeamMembership'];
@@ -347,6 +377,7 @@ export class ChatV2Service extends EventEmitter {
     this.db = options.db ?? openChatDatabase({ dbPath: options.config.storage.dbPath });
     this.channels = new ChannelStore(this.db);
     this.messages = new MessageStore(this.db);
+    this.readState = new ReadStateStore(this.db);
     this.outbox = new CloudOutboxStore(this.db);
     this.presence = options.getPresence ?? DEFAULT_PRESENCE;
     this.validateTeamMembership = options.validateTeamMembership;
@@ -518,9 +549,12 @@ export class ChatV2Service extends EventEmitter {
   /**
    * Search the chat messages one agent can see (its DMs, the channels and
    * rooms it is in, and messages that @-mention it) and return compact hits.
-   * An agent principal may only search as itself.
+   * An agent principal may only search as itself. The owner (a principal
+   * without an agent badge) may leave `agentSession` empty to search every
+   * conversation on this machine — the `/team-chat` cross-conversation
+   * search (#1400).
    *
-   * @param args.agentSession - Whose view is searched
+   * @param args.agentSession - Whose view is searched; empty = the owner's view of everything
    * @param args.principal - Caller
    * @param args.query - Keywords (whitespace separated, all must appear)
    * @param args.channel - Channel id or name
@@ -528,20 +562,21 @@ export class ChatV2Service extends EventEmitter {
    * @param args.to - End (exclusive), epoch ms
    * @param args.limit - Most hits
    * @returns Hits, newest first
-   * @throws {ChatError} `validation_error` (400) without a session or a keyword; `forbidden` (403) for another agent's view
+   * @throws {ChatError} `validation_error` (400) without a keyword, or without a session for an agent caller; `forbidden` (403) for another agent's view
    */
   searchMessagesForAgent(args: {
-    agentSession: string;
+    agentSession?: string;
     principal: ChatPrincipal;
     query: string;
     channel?: string;
     from?: number;
     to?: number;
     limit?: number;
-  }): Array<{ id: string; time: string; channelId: string; channel: string; sender: string; text: string; threadId: string | null }> {
+  }): ChatSearchHit[] {
     const agentSession = (args.agentSession ?? '').trim();
-    if (!agentSession) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'agent session is required');
-    if (args.principal.agentSession && args.principal.agentSession !== agentSession) {
+    const callerSession = (args.principal.agentSession ?? '').trim();
+    if (!agentSession && callerSession) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'agent session is required');
+    if (callerSession && callerSession !== agentSession) {
       throw new ChatError(CHAT_ERROR_CODES.FORBIDDEN, 403, 'An agent can only search its own chat history');
     }
     const terms = (args.query ?? '')
@@ -552,13 +587,14 @@ export class ChatV2Service extends EventEmitter {
     if (terms.length === 0) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'query is required');
     const requested = typeof args.limit === 'number' && Number.isFinite(args.limit) && args.limit > 0 ? Math.floor(args.limit) : CHAT_SEARCH_CONSTANTS.DEFAULT_LIMIT;
     const limit = Math.min(requested, CHAT_SEARCH_CONSTANTS.MAX_LIMIT);
-    const rows = this.messages.searchForAgent(agentSession, {
+    const searchOpts = {
       terms,
       ...(args.channel ? { channel: args.channel.trim() } : {}),
       ...(args.from !== undefined && Number.isFinite(args.from) ? { fromMs: args.from } : {}),
       ...(args.to !== undefined && Number.isFinite(args.to) ? { toMs: args.to } : {}),
       limit,
-    });
+    };
+    const rows = agentSession ? this.messages.searchForAgent(agentSession, searchOpts) : this.messages.searchAll(searchOpts);
     return rows.map((r) => {
       const flat = redactOpenLinkTokens(ownerVisibleContent(r.sender_type, r.content)).replace(/\s+/g, ' ').trim();
       return {
@@ -566,7 +602,9 @@ export class ChatV2Service extends EventEmitter {
         time: new Date(r.created_at).toISOString(),
         channelId: r.channel_id,
         channel: r.channel_name,
+        channelType: r.channel_type,
         sender: r.sender_id,
+        senderType: r.sender_type,
         text: flat.length > CHAT_SEARCH_CONSTANTS.SNIPPET_CHARS ? `${flat.slice(0, CHAT_SEARCH_CONSTANTS.SNIPPET_CHARS)}…` : flat,
         threadId: r.thread_id,
       };
@@ -921,36 +959,7 @@ export class ChatV2Service extends EventEmitter {
       );
     }
 
-    // Dedupe + trim member sessions. We accept any non-empty trimmed
-    // string here — actual agent existence is validated by the
-    // dispatcher when it tries to resolve the session at fan-out time.
-    const seen = new Set<string>();
-    const members: string[] = [];
-    for (const raw of args.memberSessions ?? []) {
-      const s = (raw ?? '').trim();
-      if (!s) continue;
-      if (seen.has(s)) continue;
-      seen.add(s);
-      members.push(s);
-    }
-    if (members.length === 0) {
-      throw new ChatError(
-        CHAT_ERROR_CODES.VALIDATION,
-        400,
-        'memberSessions must include at least one agent session',
-      );
-    }
-    // Defensive upper bound — a 200-member huddle would tax both the
-    // dispatcher fan-out and downstream rate limits. The cap can be
-    // raised when we have a real use case.
-    const MAX_HUDDLE_MEMBERS = 50;
-    if (members.length > MAX_HUDDLE_MEMBERS) {
-      throw new ChatError(
-        CHAT_ERROR_CODES.VALIDATION,
-        400,
-        `huddle exceeds the ${MAX_HUDDLE_MEMBERS}-member cap`,
-      );
-    }
+    const members = this.normalizeHuddleRoster(args.memberSessions ?? []);
 
     const nowMs = this.now();
     const row = this.channels.create({
@@ -982,6 +991,81 @@ export class ChatV2Service extends EventEmitter {
     insertMany(members);
 
     return this.toChannelDTO(row);
+  }
+
+  /**
+   * Dedupe + trim a huddle roster and enforce its bounds. Agent existence
+   * is not checked here — the dispatcher validates sessions at fan-out.
+   *
+   * @param raw - Session names as supplied by the caller
+   * @returns The cleaned roster, in input order
+   * @throws {ChatError} `validation_error` (400) when the roster is empty or
+   *   over {@link MAX_HUDDLE_MEMBERS}
+   */
+  private normalizeHuddleRoster(raw: readonly (string | null | undefined)[]): string[] {
+    const seen = new Set<string>();
+    const members: string[] = [];
+    for (const r of raw) {
+      const s = (r ?? '').trim();
+      if (!s) continue;
+      if (seen.has(s)) continue;
+      seen.add(s);
+      members.push(s);
+    }
+    if (members.length === 0) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        'memberSessions must include at least one agent session',
+      );
+    }
+    if (members.length > MAX_HUDDLE_MEMBERS) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `huddle exceeds the ${MAX_HUDDLE_MEMBERS}-member cap`,
+      );
+    }
+    return members;
+  }
+
+  /**
+   * Replace the roster of a group chat the owner holds (#1400 private
+   * channels): invite or remove agents after the fact. Crewly channels are
+   * edited through `/api/channels` (their Slack bots follow) and refused here.
+   *
+   * @param channelId - The huddle
+   * @param memberSessions - The complete desired roster
+   * @param principal - The owner
+   * @returns The channel with its new `members`
+   * @throws {ChatError} `channel_not_found` (404) when unknown or not owned;
+   *   `validation_error` (400) for a non-huddle, a Crewly channel, an empty
+   *   roster or one over the member cap
+   */
+  setHuddleRoster(
+    channelId: string,
+    memberSessions: readonly string[],
+    principal: ChatPrincipal,
+  ): ChatChannelDTO {
+    const row = this.requireOwnedChannel(channelId, principal);
+    if (row.type !== 'huddle') {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'only a group chat has an explicit roster');
+    }
+    this.requireNotCrewlyChannel(row);
+    const members = this.normalizeHuddleRoster(memberSessions);
+    this.setHuddleMembers(row.id, members);
+    return this.toChannelDTO(row);
+  }
+
+  /** Internal: refuse owner edits on a Crewly channel, which `/api/channels` owns. */
+  private requireNotCrewlyChannel(row: ChatChannelRow): void {
+    if (row.type === 'huddle' && this.sharedChannel?.(row.id)) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        'this is a Crewly channel; rename it or change its members through /api/channels',
+      );
+    }
   }
 
   /**
@@ -1672,7 +1756,8 @@ export class ChatV2Service extends EventEmitter {
   /**
    * Phase 6.0b — rename a channel. Replaces the legacy
    * `updateConversationTitle` route. Server validates the same name
-   * constraints as `createChannel`.
+   * constraints as `createChannel`. Exposed as `PATCH /channels/:id` and the
+   * `renameChannel` relay RPC for group chats (#1400 private channels).
    *
    * @param channelId - The channel to rename
    * @param name - New name (trimmed, ≤ maxChannelNameChars)
@@ -1694,6 +1779,9 @@ export class ChatV2Service extends EventEmitter {
       );
     }
     const row = this.requireOwnedChannel(channelId, principal);
+    // #1400 private channels: a Crewly channel is renamed through /api/channels
+    // so its Slack channel follows.
+    this.requireNotCrewlyChannel(row);
     this.channels.rename(channelId, trimmed);
     return this.toChannelDTO({ ...row, name: trimmed });
   }
@@ -1791,6 +1879,45 @@ export class ChatV2Service extends EventEmitter {
       )
       .all(sinceMs, ...replySources, capped) as Array<{ content: string }>;
     return rows.map((r) => r.content);
+  }
+
+  /**
+   * When the owner wrote, as epoch ms, newest first. Same owner filter as
+   * {@link getRecentOwnerMessageContents} (agents quoting the owner or posting
+   * through the reply tool are not the owner), but reads only the time, never
+   * the text: for the owner active-minutes estimate (#1387).
+   *
+   * With `bucketMs`, returns one time per bucket the owner wrote in (the
+   * bucket's start), so a busy fortnight is a few thousand rows, never cut off.
+   *
+   * @param sinceMs - Only messages created at/after this
+   * @param limit - Max times returned (default 100, capped at 100000)
+   * @param bucketMs - Optional bucket size: one time per bucket the owner wrote in
+   * @returns Message times (or bucket starts), newest first
+   */
+  getOwnerMessageTimes(sinceMs: number, limit = 100, bucketMs?: number): number[] {
+    const capped = Math.min(Math.max(1, Math.floor(limit)), 100_000);
+    const bucket = bucketMs && bucketMs > 0 ? Math.floor(bucketMs) : 0;
+    const replySources = OWNER_EVIDENCE_METADATA.AGENT_REPLY_SOURCES;
+    const replySourcePlaceholders = replySources.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(
+        `SELECT ${bucket ? 'DISTINCT (CAST(created_at AS INTEGER) / CAST(? AS INTEGER)) * CAST(? AS INTEGER)' : 'created_at'} AS created_at FROM chat_messages
+         WHERE sender_type = 'user' AND created_at >= ?
+           AND (
+             metadata IS NULL
+             OR (
+               json_valid(metadata)
+               AND json_extract(metadata, '$.${OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION}') IS NULL
+               AND json_extract(metadata, '$.${OWNER_EVIDENCE_METADATA.REMOTE_AGENT_SESSION}') IS NULL
+               AND COALESCE(json_extract(metadata, '$.source'), '') NOT IN (${replySourcePlaceholders})
+             )
+           )
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(...(bucket ? [bucket, bucket] : []), sinceMs, ...replySources, capped) as Array<{ created_at: number }>;
+    return rows.map((r) => r.created_at);
   }
 
   /**
@@ -1926,6 +2053,7 @@ export class ChatV2Service extends EventEmitter {
     // clients. The legacy ChatService.EventEmitter contract is now
     // owned by chat-v2 directly.
     this.emit('chat_message', dto);
+    this.syncReadStateAfterMessage(dto, senderType === 'user' && !agentAuthoredAsUser);
     return dto;
   }
 
@@ -2053,8 +2181,75 @@ export class ChatV2Service extends EventEmitter {
     // on idempotent retries.
     if (!deduped) {
       this.emit('chat_message', dto);
+      this.syncReadStateAfterMessage(dto, input.senderType === 'user');
     }
     return { message: dto, deduped };
+  }
+
+  /**
+   * File an agent's post that already went to Slack by another route
+   * (`reply --work-item` / `--new-thread` / `--ticket`) so the chat history
+   * and `search-chat` can find it (CREW-877).
+   *
+   * Unlike {@link recordTurn} this is a QUIET write: it inserts the row and
+   * emits nothing. Every consumer of `chat_message` (the dispatcher that wakes
+   * agents, the Slack mirrors that post a room row to Slack, the live gateway,
+   * owner-message and delivery trackers) hangs off that event, and the post is
+   * already in Slack, so an emit would re-deliver it or echo it as a second
+   * Slack post. The row is the agent's own (`sender_id` = the poster), an
+   * `agent` / `out` row, never an owner message. Syncs to Cloud like any other
+   * agent row. Skipped when a row for the same Slack message exists already.
+   *
+   * @param input.channelId - The chat channel the Slack channel maps to
+   * @param input.agentSession - The posting agent (becomes `sender_id`)
+   * @param input.content - What was posted
+   * @param input.slackChannelId - Slack channel the post is in
+   * @param input.slackTs - The post's own Slack ts
+   * @param input.slackThreadTs - Slack thread the post is in, when threaded
+   * @returns The stored message id, or null when a row for that Slack message already existed
+   * @throws {ChatError} `channel_not_found` (404) / `channel_archived` (404) / `validation_error` (400)
+   */
+  recordSlackOnlyAgentPost(input: {
+    channelId: string;
+    agentSession: string;
+    content: string;
+    slackChannelId: string;
+    slackTs: string;
+    slackThreadTs?: string;
+  }): string | null {
+    if (!input.content || input.content.length === 0) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'content is required');
+    if (!input.agentSession) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'agentSession is required');
+    if (!input.slackChannelId || !input.slackTs) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'slackChannelId and slackTs are required');
+    const content = Buffer.byteLength(input.content, 'utf-8') > this.config.maxMessageBytes
+      ? input.content.slice(0, this.config.maxMessageBytes)
+      : input.content;
+    // Another path (a mirror) already filed this Slack message: no second row.
+    if (this.messages.hasSlackMessage(input.slackChannelId, input.slackTs)) return null;
+    // A thread whose root has a chat row is filed under it; otherwise the row
+    // carries the thread key only (like a reply-tool row), never `slackThreadTs`
+    // with no root, which would make it look like the thread's root.
+    const root = input.slackThreadTs ? this.messages.findThreadRootBySlackTs(input.channelId, input.slackThreadTs) : null;
+    const threadKey = input.slackThreadTs && !root ? formatSlackThreadKey(input.slackChannelId, input.slackThreadTs) : undefined;
+    const { row, deduped } = this.messages.insert({
+      channelId: input.channelId,
+      senderType: 'agent',
+      senderId: input.agentSession,
+      content,
+      clientMessageId: `slack-only:${input.slackChannelId}:${input.slackTs}`,
+      ...(root ? { threadId: root.id } : {}),
+      metadata: {
+        source: 'slack',
+        slackOnly: true,
+        slackChannelId: input.slackChannelId,
+        slackTs: input.slackTs,
+        // A top-level post is its own thread root for the replies that follow.
+        ...(!input.slackThreadTs ? { slackThreadTs: input.slackTs } : {}),
+        ...(root ? { slackThreadTs: input.slackThreadTs } : {}),
+        ...(threadKey ? { [SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]: threadKey } : {}),
+      },
+      nowMs: this.now(),
+    });
+    return deduped ? null : row.id;
   }
 
   /**
@@ -2129,7 +2324,20 @@ export class ChatV2Service extends EventEmitter {
     const trimmed = raw.trim();
     if (trimmed.length === 0) return undefined;
 
-    const root = this.messages.getById(trimmed);
+    let root = this.messages.getById(trimmed);
+    // A Slack ts (`1793621773.519539`) from a `[SLACK-THREAD:<channel>:<ts>]`
+    // tag names the same thread as the Crewly root message (CREW-957): resolve
+    // it instead of refusing, so a member that copied the tag still posts there.
+    if (!root && SLACK_TS_RE.test(trimmed)) {
+      const bySlack = this.messages.findThreadRootBySlackTs(channelId, trimmed);
+      if (bySlack) return bySlack.id;
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `threadId is a Slack ts, and no thread of this channel carries it. Use the Crewly thread id from your brief (a message id), or run reply --work-item <your WorkItem id> "<message>"`,
+        { threadId: trimmed },
+      );
+    }
     if (!root) {
       throw new ChatError(
         CHAT_ERROR_CODES.VALIDATION,
@@ -2274,6 +2482,96 @@ export class ChatV2Service extends EventEmitter {
   }
 
   // -------------------------------------------------------------------------
+  // Read state (#1400) — the owner's per-message unread, synced to all clients
+  // -------------------------------------------------------------------------
+
+  /**
+   * Mark a channel read up to `seq` (default: everything). Forward-only.
+   * Emits `read_state` so every connected client converges.
+   *
+   * @param channelId - Channel id
+   * @param principal - Auth principal (must be able to read the channel)
+   * @param seq - Read up to this seq; omit for the channel's last message
+   * @returns The new marker and unread count
+   * @throws {ChatError} `validation_error` (400) on a non-integer / negative seq,
+   *   `channel_not_found` (404)
+   */
+  markChannelRead(channelId: string, principal: ChatPrincipal, seq?: number): ChatReadStateDTO {
+    this.requireReadableChannel(channelId, principal);
+    if (seq !== undefined) this.assertSeq(seq, 0);
+    const state = this.readState.markRead(channelId, seq, new Date(this.now()).toISOString());
+    this.emit('read_state', state);
+    return state;
+  }
+
+  /**
+   * Mark the message at `seq` unread (marker = `seq - 1`, may move backward) so
+   * the owner can keep it for later, even after replying.
+   *
+   * @param channelId - Channel id
+   * @param principal - Auth principal (must be able to read the channel)
+   * @param seq - `seq` of the message to mark unread (>= 1)
+   * @returns The new marker and unread count
+   * @throws {ChatError} `validation_error` (400) on a missing / invalid seq,
+   *   `channel_not_found` (404)
+   */
+  markChannelUnread(channelId: string, principal: ChatPrincipal, seq: number): ChatReadStateDTO {
+    this.requireReadableChannel(channelId, principal);
+    this.assertSeq(seq, 1);
+    const state = this.readState.markUnread(channelId, seq, new Date(this.now()).toISOString());
+    this.emit('read_state', state);
+    return state;
+  }
+
+  /**
+   * Unread summary across every channel the caller sees in the conversation
+   * list (own + bridged, not archived). Only channels with unread are listed.
+   *
+   * @param principal - Auth principal
+   * @returns Total unread and the per-channel breakdown
+   */
+  getUnreadSummary(principal: ChatPrincipal): ChatUnreadSummaryDTO {
+    const ids = [
+      ...this.channels.listByOwner(principal.userId, { limit: 100 }),
+      ...this.channels.listBridged({ limit: 200 }),
+    ].map((r) => r.id);
+    const channels = this.readState.listUnread([...new Set(ids)]);
+    return { total: channels.reduce((n, c) => n + c.unreadCount, 0), channels };
+  }
+
+  /** Validate a seq argument: integer, >= `min`. */
+  private assertSeq(seq: unknown, min: number): asserts seq is number {
+    if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < min) {
+      throw new ChatError(
+        CHAT_ERROR_CODES.VALIDATION,
+        400,
+        `seq must be an integer >= ${min}`,
+      );
+    }
+  }
+
+  /**
+   * Keep the read marker in step with a freshly persisted message: the owner's
+   * own message advances it (forward-only); a message that counts as unread
+   * announces the raised count. Both emit `read_state`. Never throws — read
+   * state must not fail a message write.
+   *
+   * @param dto - The persisted message
+   * @param ownerAuthored - True when the owner (not an agent writing as the owner) sent it
+   */
+  private syncReadStateAfterMessage(dto: ChatMessageDTO, ownerAuthored: boolean): void {
+    try {
+      if (ownerAuthored) {
+        this.emit('read_state', this.readState.markRead(dto.channelId, dto.seq));
+      } else if (dto.senderType !== 'user' && dto.contentType !== 'system_note') {
+        this.emit('read_state', this.readState.get(dto.channelId));
+      }
+    } catch {
+      /* best-effort: the badge self-heals on the next list/unread fetch */
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // DTO mappers
   // -------------------------------------------------------------------------
 
@@ -2286,6 +2584,7 @@ export class ChatV2Service extends EventEmitter {
     const channelType = row.type ?? 'dm';
     const presenceSource = channelType === 'dm' ? row.agent_session : '';
     const presence = (this.presence ?? DEFAULT_PRESENCE)(presenceSource);
+    const readState = this.readState.get(row.id);
     return {
       id: row.id,
       agentSession: row.agent_session,
@@ -2302,6 +2601,8 @@ export class ChatV2Service extends EventEmitter {
       teamId: row.team_id ?? undefined,
       projectId: row.project_id ?? undefined,
       targetMemberId: row.target_member_id ?? undefined,
+      lastReadSeq: readState.lastReadSeq,
+      unreadCount: readState.unreadCount,
       // Phase B-2: huddle channels surface their roster inline so the
       // Portal can render member avatars without a second round-trip.
       // Non-huddle rows leave this undefined.

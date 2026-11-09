@@ -31,6 +31,7 @@ import type { Team, TeamBudget } from '../../types/index.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { MESSAGE_SOURCES, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { formatError } from '../../utils/format-error.js';
+import { recordActivity } from '../activity/activity-log.service.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -411,6 +412,14 @@ export class TeamBudgetGateService {
     if (this.notified.length > NOTIFY_DEDUP_CAPACITY) this.notified.shift();
 
     const content = this.formatEnvelope(check);
+    // Activity log (crewly#881 / #853): the budget line a team crossed, once per level per day.
+    recordActivity({
+      actor: { type: 'system', id: 'budget-gate' },
+      action: 'budget.exceeded',
+      target: { type: 'team', id: check.teamId, name: check.teamName },
+      after: { level: check.level, tokensToday: check.usage.tokensToday, usdThisMonth: check.usage.usdThisMonth, ...(check.usage.maxTokensPerDay !== undefined ? { maxTokensPerDay: check.usage.maxTokensPerDay } : {}), ...(check.usage.maxUsdPerMonth !== undefined ? { maxUsdPerMonth: check.usage.maxUsdPerMonth } : {}) },
+      ...(check.detail ? { note: check.detail } : {}),
+    });
 
     if (this.eventBus) {
       try {

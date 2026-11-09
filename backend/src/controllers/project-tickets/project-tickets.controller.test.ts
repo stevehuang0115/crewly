@@ -7,7 +7,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { createProjectTicketsMigrationRouter, createProjectTicketsRouter, createTicketAutopilotRouter } from './project-tickets.routes.js';
-import { projectTicketWorkflow, ticketAutopilot } from './project-tickets.controller.js';
+import { createAutopilotRetroDeps, projectTicketWorkflow, ticketAutopilot } from './project-tickets.controller.js';
 import { TicketAutopilotService } from '../../services/project-tickets/ticket-autopilot.service.js';
 import { ProjectTicketService } from '../../services/project-tickets/project-ticket.service.js';
 import { ProjectTicketWorkflowService, type ProjectTicketPool } from '../../services/project-tickets/project-ticket-workflow.service.js';
@@ -315,5 +315,72 @@ describe('project tickets API', () => {
       expect(svc).toBeInstanceOf(TicketAutopilotService);
       expect(ticketAutopilot()).toBe(svc);
     });
+  });
+});
+
+/** A project-scoped vault schema (same shape the wiki ingest tests use). */
+const RETRO_VAULT_YAML = `
+vault_scope: project
+vault_id: retro-test
+hardcoded:
+  - path: memory/
+    frozen: true
+    description: "Project memory."
+    referenced_by: [skill:remember]
+llm_curated:
+  - path: llm-curated/
+    frozen: false
+    seed_subdirs: [decisions]
+    llm_can_create_subdirs: true
+    lint_may_restructure: true
+write_policy:
+  canonical: [team-leader, orchestrator]
+  proposed_only: [worker]
+  schema_writer: [steve]
+`;
+
+describe('createAutopilotRetroDeps — retro pages pass the wiki retention gate', () => {
+  let root: string;
+  const savedHome = process.env.CREWLY_HOME;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'retro-deps-'));
+    process.env.CREWLY_HOME = path.join(root, 'home');
+    await fs.mkdir(path.join(root, 'home', 'global-wiki'), { recursive: true });
+    await fs.writeFile(path.join(root, 'home', 'global-wiki', 'SCHEMA.md'), RETRO_VAULT_YAML, 'utf8');
+    await fs.mkdir(path.join(root, 'project', '.crewly', 'wiki'), { recursive: true });
+    await fs.writeFile(path.join(root, 'project', '.crewly', 'wiki', 'SCHEMA.md'), RETRO_VAULT_YAML, 'utf8');
+  });
+
+  afterEach(async () => {
+    if (savedHome === undefined) delete process.env.CREWLY_HOME;
+    else process.env.CREWLY_HOME = savedHome;
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it('writes the daily retro page into the project vault with a keep_because', async () => {
+    const deps = createAutopilotRetroDeps();
+    const rel = 'llm-curated/autopilot-retros/2026-10-25.md';
+    const written = await deps.writeWiki(path.join(root, 'project'), rel, '# Retro 2026-10-25\n\nOne ticket shipped, one stalled on review.', 'crewly-orc');
+    expect(written).toBe(true);
+    const page = await fs.readFile(path.join(root, 'project', '.crewly', 'wiki', rel), 'utf8');
+    expect(page).toContain('keep_because: reusable_method');
+    expect(page).toContain('One ticket shipped');
+  });
+
+  it('writes the weekly cross-team retro page into the global vault', async () => {
+    const deps = createAutopilotRetroDeps();
+    const rel = 'llm-curated/autopilot-retros/weekly/2026-W43.md';
+    const written = await deps.writeGlobalWiki!(rel, '# Weekly retro 2026-W43\n\nRedelivery failures repeated across teams.', 'crewly-orc');
+    expect(written).toBe(true);
+    const page = await fs.readFile(path.join(root, 'home', 'global-wiki', rel), 'utf8');
+    expect(page).toContain('keep_because: reusable_method');
+    expect(page).toContain('Redelivery failures repeated');
+  });
+
+  it('returns false (not a throw) when the vault has no SCHEMA.md', async () => {
+    await fs.rm(path.join(root, 'home', 'global-wiki', 'SCHEMA.md'));
+    const deps = createAutopilotRetroDeps();
+    expect(await deps.writeGlobalWiki!('llm-curated/autopilot-retros/weekly/2026-W43.md', '# x\n\nbody', 'crewly-orc')).toBe(false);
   });
 });

@@ -8,7 +8,8 @@
  * @module services/pr-review/pr-review.service
  */
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
+import { assertValidPrTarget } from './pr-review.validation.js';
 import * as crypto from 'crypto';
 
 // ========================= Constants =========================
@@ -145,8 +146,12 @@ export function verifyWebhookSignature(
  * @throws Error if gh CLI fails or diff exceeds size limit
  */
 export function fetchPrDiff(repo: string, prNumber: number): string {
-  const diff = execSync(
-    `gh pr diff ${prNumber} --repo ${repo}`,
+  // repo / prNumber come from a request body or webhook: validate, then pass
+  // them as argv entries, never through a shell (CREW-967).
+  assertValidPrTarget(repo, prNumber);
+  const diff = execFileSync(
+    'gh',
+    ['pr', 'diff', String(prNumber), '--repo', repo],
     { encoding: 'utf-8', timeout: GH_CLI_TIMEOUT_MS },
   );
 
@@ -384,9 +389,10 @@ export function postReviewComment(
   prNumber: number,
   body: string,
 ): string {
-  const escapedBody = body.replace(/'/g, "'\\''");
-  const result = execSync(
-    `gh pr comment ${prNumber} --repo ${repo} --body '${escapedBody}'`,
+  assertValidPrTarget(repo, prNumber);
+  const result = execFileSync(
+    'gh',
+    ['pr', 'comment', String(prNumber), '--repo', repo, '--body', body],
     { encoding: 'utf-8', timeout: GH_CLI_TIMEOUT_MS },
   );
   return result.trim();

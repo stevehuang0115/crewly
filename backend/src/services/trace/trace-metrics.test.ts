@@ -168,8 +168,8 @@ describe('trace-metrics', () => {
 			const events = [
 				requestCreated(0, 'req-1', 'open'),
 				delivered(0, 'ella', 'owner_message', 'build the page'),
-				// Unprompted: a correction.
-				delivered(20, 'ella', 'owner_message', 'make it blue'),
+				// The owner changes the work: a correction.
+				delivered(20, 'ella', 'owner_message', 'no, make it blue'),
 				// Agent replies, then the owner answers.
 				outbound(30, 'ella'),
 				delivered(40, 'ella', 'owner_message', 'yes go ahead'),
@@ -190,8 +190,26 @@ describe('trace-metrics', () => {
 			];
 			const m = computeTraceMetrics(root({ refs: { requestId: 'req-1' } }), events, { now });
 			// manual is computed but not collected yet: left out of the total (#999).
-			expect(m.ownerTouches).toEqual({ answered: 1, approved: 2, sentBack: 1, corrected: 1, manual: 1, total: 5 });
+			expect(m.ownerTouches).toEqual({ answered: 1, approved: 2, sentBack: 1, corrected: 1, other: 0, manual: 1, total: 5 });
 			expect(m.rework.sendBacks).toBe(1);
+		});
+
+		it('counts only what the owner wrote; a correction needs a rejection signal (crewly#1389)', () => {
+			const chat = (who: string, text: string): string => `[CHAT:c1] <${who}@#ce> ${text}`;
+			const events = [
+				requestCreated(0, 'req-1', 'open'),
+				// Another agent's room post and a context-only digest share the owner's prefix.
+				delivered(10, 'ella', 'owner_message', chat('Owen (agent)', '[Slack thread so far — oldest→newest, 2 messages]\n  Owen [bot]: done')),
+				delivered(12, 'ella', 'owner_message', '[CHAT:c1] <Rex (agent)@#ce> [Context only — not for you to answer] Messages in this room'),
+				// The owner agreeing, then asking something new, with no agent post between.
+				delivered(20, 'ella', 'owner_message', chat('UOWNER', '好的')),
+				delivered(25, 'ella', 'owner_message', chat('UOWNER', 'what about the FAQ page?')),
+				// The owner's words after the thread digest are what is classified.
+				delivered(30, 'ella', 'owner_message', chat('UOWNER', '[Slack thread so far — 1 message]\n  Ella [bot]: shipped\n[end of Slack thread — the message you are asked about follows.]\n不对，我要的是视频')),
+			];
+			const m = computeTraceMetrics(root({ refs: { requestId: 'req-1' } }), events, { now, detail: true });
+			expect(m.ownerTouches).toEqual({ answered: 0, approved: 0, sentBack: 0, corrected: 1, other: 2, manual: 0, total: 3 });
+			expect(m.ownerTouchEvents?.map((t) => t.text)).toEqual(['好的', 'what about the FAQ page?', '不对，我要的是视频']);
 		});
 
 		it('counts a decision answer as answered and an approval-kind decision as approved', () => {
@@ -295,10 +313,49 @@ describe('trace-metrics', () => {
 			expect(m.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_agent', sessions: ['sam'] })]);
 		});
 
+		it('a block with an until time is a planned wait, not a stall, and holds nobody (CREW-893)', () => {
+			const blockedUntil = (m: number, until: number): TraceEvent =>
+				ev(m, 'workitem.status', system, { refs: { workItemId: 'wi-1', session: 'sam' }, data: { from: 'running', to: 'blocked', retryCount: 0, blockedUntil: at(until) } });
+			// Blocked at 5 until 185; back to queued at 186 and running at 187: the three hours were planned.
+			const planned = computeTraceMetrics(
+				root(),
+				[wiCreated(0, 'wi-1', 'sam'), wiStatus(1, 'wi-1', 'sam', 'queued', 'running'), blockedUntil(5, 185), wiStatus(186, 'wi-1', 'sam', 'blocked', 'queued'), wiStatus(187, 'wi-1', 'sam', 'queued', 'running')],
+				{ now: atMin(188), stallMinutes: 30 },
+			);
+			expect(planned.stalls.count).toBe(0);
+			// Only the minutes around the wait count as the agent's: the wait itself does not.
+			expect(planned.time.waitingAgentMs).toBeLessThan(10 * MIN);
+			// Still blocked long past its until time: that is a stall on the agent again.
+			const overdue = computeTraceMetrics(root(), [wiCreated(0, 'wi-1', 'sam'), wiStatus(1, 'wi-1', 'sam', 'queued', 'running'), blockedUntil(5, 35), wiStatus(200, 'wi-1', 'sam', 'blocked', 'queued')], { now: atMin(200), stallMinutes: 30 });
+			expect(overdue.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_agent', start: at(35), end: at(200), sessions: ['sam'] })]);
+			expect(overdue.stalls.items[0].detail).toContain('past its until time');
+			// A block without an until time holds the agent from the block on, as before.
+			const openEnded = computeTraceMetrics(root(), [wiCreated(0, 'wi-1', 'sam'), wiStatus(1, 'wi-1', 'sam', 'queued', 'running'), wiStatus(5, 'wi-1', 'sam', 'running', 'blocked'), wiStatus(200, 'wi-1', 'sam', 'blocked', 'queued')], { now: atMin(200), stallMinutes: 30 });
+			expect(openEnded.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_agent', start: at(5), end: at(200) })]);
+		});
+
+		it('a work item born blocked until a known time (a commitment follow-up) is a planned wait too', () => {
+			const bornBlocked = (m: number, until: number): TraceEvent =>
+				ev(m, 'workitem.created', system, { refs: { workItemId: 'wi-fu', session: 'sam' }, data: { type: 'delegate', status: 'blocked', blockedUntil: at(until) }, outcome: 'queued' });
+			// Held from 0 until 300 for the promised work; a colleague's step at 200 ends the window: no stall, nobody held.
+			const planned = computeTraceMetrics(root(), [bornBlocked(0, 300), skill(200, 'ella')], { now: atMin(200), stallMinutes: 30 });
+			expect(planned.stalls.count).toBe(0);
+			expect(planned.time.waitingAgentMs).toBe(0);
+			// Past its due time and still held: the agent is late on the promise.
+			const overdue = computeTraceMetrics(root(), [bornBlocked(0, 60), skill(200, 'ella')], { now: atMin(200), stallMinutes: 30 });
+			expect(overdue.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_agent', start: at(60), end: at(200), sessions: ['sam'] })]);
+			// Born blocked with no end in sight: held from the start, as before.
+			const openEnded = computeTraceMetrics(root(), [ev(0, 'workitem.created', system, { refs: { workItemId: 'wi-fu', session: 'sam' }, data: { type: 'delegate', status: 'blocked' }, outcome: 'queued' }), skill(200, 'ella')], { now: atMin(200), stallMinutes: 30 });
+			expect(openEnded.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_agent', start: at(0), end: at(200) })]);
+		});
+
 		it('nobody_pushing when nothing is open and nobody works', () => {
 			const m = computeTraceMetrics(root({ kind: 'goal' }), [skill(0, 'ella'), skill(100, 'ella')], { now });
 			expect(m.stalls.items).toEqual([expect.objectContaining({ cause: 'nobody_pushing', ms: 100 * MIN })]);
 			expect(m.stalls.byCause).toEqual({ runtime_quota: 0, delivery_failure: 0, waiting_on_owner: 0, waiting_on_agent: 0, nobody_pushing: 1 });
+			// Time per cause rides along in the list summary so a week's reader can split idle time (#1472).
+			expect(m.stalls.msByCause).toEqual({ runtime_quota: 0, delivery_failure: 0, waiting_on_owner: 0, waiting_on_agent: 0, nobody_pushing: 100 * MIN });
+			expect(summarizeTraceMetrics(m).stallMsByCause).toEqual(m.stalls.msByCause);
 		});
 
 		it('is not a stall while an agent is busy, and harness pushes are not progress', () => {

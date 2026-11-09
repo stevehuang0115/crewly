@@ -53,8 +53,8 @@ describe('harness registry', () => {
 		expect(isRetiredHarness('nope')).toBe(false);
 	});
 
-	it('Claude offers subscription (setup-token broker) and API key', () => {
-		expect(getLoginMethod('claude-code', 'subscription')?.broker).toEqual({ command: 'claude', args: ['setup-token'] });
+	it('Claude offers subscription (Claude Code\'s own `auth login`, no token capture) and API key', () => {
+		expect(getLoginMethod('claude-code', 'subscription')?.broker).toEqual({ command: 'claude', args: ['auth', 'login'] });
 		expect(getLoginMethod('claude-code', 'api_key')?.kind).toBe('api_key');
 		expect(getBrokerLoginMethod('claude-code')?.id).toBe('subscription');
 	});

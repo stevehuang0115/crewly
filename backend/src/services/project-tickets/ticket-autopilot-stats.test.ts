@@ -30,13 +30,13 @@ function entry(traceId: string, kind: 'autopilot' | 'ticket' | 'request', day: s
 }
 
 /** Detail metrics: each owner touch with its time, every stall. */
-function metrics(over: { touches?: Array<[OwnerTouchEvent['kind'], string]>; stalls?: TraceStall[] } = {}): TraceMetrics {
+function metrics(over: { touches?: Array<[OwnerTouchEvent['kind'], string, string?]>; stalls?: TraceStall[] } = {}): TraceMetrics {
   const stalls = over.stalls ?? [];
   const byCause = { runtime_quota: 0, delivery_failure: 0, waiting_on_owner: 0, waiting_on_agent: 0, nobody_pushing: 0 };
   for (const s of stalls) byCause[s.cause] += 1;
   return {
-    ownerTouches: { answered: 0, approved: 0, sentBack: 0, corrected: 0, manual: 0, total: (over.touches ?? []).length },
-    ownerTouchEvents: (over.touches ?? []).map(([kind, at]) => ({ kind, at })),
+    ownerTouches: { answered: 0, approved: 0, sentBack: 0, corrected: 0, other: 0, manual: 0, total: (over.touches ?? []).length },
+    ownerTouchEvents: (over.touches ?? []).map(([kind, at, text]) => ({ kind, at, ...(text !== undefined ? { text } : {}) })),
     stalls: { thresholdMinutes: 30, count: stalls.length, totalMs: stalls.reduce((a, s) => a + s.ms, 0), byCause, items: stalls },
   } as unknown as TraceMetrics;
 }
@@ -132,9 +132,9 @@ describe('ticket-autopilot-stats', () => {
     expect(d5.cycleTime.toVerified.medianMs).toBe((4 * 24 + 0) * H); // CE-3: day 1 10:00 → day 5 10:00
 
     // Each touch on the day it happened; none outside the range or before the work started.
-    expect(d3.ownerTouches).toEqual({ answered: 1, approved: 0, sentBack: 0, corrected: 0, total: 1 });
-    expect(d4.ownerTouches).toEqual({ answered: 0, approved: 0, sentBack: 0, corrected: 1, total: 1 });
-    expect(d5.ownerTouches).toEqual({ answered: 0, approved: 1, sentBack: 1, corrected: 0, total: 2 });
+    expect(d3.ownerTouches).toEqual({ answered: 1, approved: 0, sentBack: 0, corrected: 0, other: 0, total: 1 });
+    expect(d4.ownerTouches).toEqual({ answered: 0, approved: 0, sentBack: 0, corrected: 1, other: 0, total: 1 });
+    expect(d5.ownerTouches).toEqual({ answered: 0, approved: 1, sentBack: 1, corrected: 0, other: 0, total: 2 });
     expect(s.total.ownerTouches.total).toBe(4);
 
     expect(d3.stalls.count).toBe(0); // the 08:00 stall was before the autopilot's work
@@ -184,6 +184,17 @@ describe('ticket-autopilot-stats', () => {
     expect(a.total.stalls.count + b.total.stalls.count).toBe(all.total.stalls.count);
     expect(all.traceCount).toBe(5);
     expect(computeAutopilotStats({ ...base, traces, unreadable: 1 }).incomplete).toBe(true);
+  });
+
+  it('counts one owner message delivered into several traces once (crewly#1389)', () => {
+    const msg = (id: string, ticket: string, text: string, ts: string): StatsTrace => ({
+      entry: entry(id, 'ticket', '2026-10-03', [], ticket),
+      metrics: metrics({ touches: [['other', ts, text]] }),
+      events: [status(ticket, 'ready', 'in_progress', at(3, 9))],
+    });
+    const traces = [msg('tr-a', 'CE-1', 'ship it', at(3, 12)), msg('tr-b', 'CE-2', 'ship it', at(3, 12)), msg('tr-c', 'CE-3', 'and the FAQ', at(3, 12))];
+    const s = computeAutopilotStats({ ...base, traces });
+    expect(s.days[0].ownerTouches).toEqual({ answered: 0, approved: 0, sentBack: 0, corrected: 0, other: 2, total: 2 });
   });
 
   it('computes detail metrics from the events when none are given', () => {

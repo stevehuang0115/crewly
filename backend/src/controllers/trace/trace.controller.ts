@@ -23,6 +23,7 @@ import { getTraceAnalysis } from '../../services/trace/trace-analysis.service.js
 import { isOwnerCaller, ownerAuthRequiredBody } from '../../middleware/caller-identity.middleware.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { isTraceId, isTraceRootKind, TRACE_ROOT_KINDS, type TraceIndexEntry, type TraceRefKind, type TraceRefs } from '../../services/trace/trace.types.js';
+import type { ExperimentSupervision } from '../../types/experiment.types.js';
 
 /** Query parameter → index ref kind, in lookup order. */
 const REF_PARAMS: ReadonlyArray<[string, TraceRefKind]> = [
@@ -126,6 +127,43 @@ async function mayReadProject(caller: TraceCaller, projectId: string, cache?: Ma
 }
 
 /**
+ * What a caller may read of a project as an experiment supervisor (#1026):
+ * null = nothing, `labels` null = every trace of the project.
+ *
+ * @param caller - Caller
+ * @param projectId - Tagged project
+ * @param cache - Per-request results by project
+ * @returns The scope, or null
+ */
+async function supervisionOf(caller: TraceCaller, projectId: string, cache?: Map<string, ExperimentSupervision | null>): Promise<ExperimentSupervision | null> {
+	if (!caller.session) return null;
+	if (cache?.has(projectId)) return cache.get(projectId) ?? null;
+	let scope: ExperimentSupervision | null = null;
+	try {
+		const { ticketAutopilot } = await import('../project-tickets/project-tickets.controller.js');
+		scope = await ticketAutopilot().supervisionFor(projectId, caller);
+	} catch {
+		scope = null;
+	}
+	cache?.set(projectId, scope);
+	return scope;
+}
+
+/**
+ * Whether a trace lies in a supervisor's scope: every trace of the project,
+ * or one carrying a supervised label.
+ *
+ * @param scope - Supervisor scope
+ * @param entry - Index entry
+ * @returns True when inside
+ */
+function inSupervision(scope: ExperimentSupervision, entry: TraceIndexEntry): boolean {
+	if (scope.labels === null) return true;
+	const wanted = scope.labels;
+	return (entry.tags?.labels ?? []).some((l) => wanted.includes(l.toLowerCase()));
+}
+
+/**
  * Whether an agent took part in a trace (its actor, the session an event is
  * about, or the root's actor): the ticket's assignee, the agents of a reused
  * Request trace.
@@ -141,21 +179,39 @@ async function tookPart(session: string, traceId: string): Promise<boolean> {
 	return full.events.some((e) => e.actor.session === session || e.refs.session === session);
 }
 
+/** Per-request lookups of {@link mayReadTrace}. */
+interface ReadCache {
+	projects: Map<string, boolean>;
+	supervision: Map<string, ExperimentSupervision | null>;
+}
+
+/**
+ * A fresh per-request cache.
+ *
+ * @returns Empty cache
+ */
+function readCache(): ReadCache {
+	return { projects: new Map(), supervision: new Map() };
+}
+
 /**
  * Whether a caller may read one trace. Untagged traces: everyone, as before.
  * Autopilot-tagged traces: the owner, the orchestrator, members of the
- * project's teams, and any agent that took part in the trace.
+ * project's teams, a supervisor of an experiment on the project (its labels
+ * only, #1026), and any agent that took part in the trace.
  *
  * @param caller - Caller (null = no credential)
  * @param entry - Index entry
- * @param cache - Per-request project results
+ * @param cache - Per-request lookups
  * @returns True when allowed
  */
-async function mayReadTrace(caller: TraceCaller | null, entry: TraceIndexEntry, cache?: Map<string, boolean>): Promise<boolean> {
+async function mayReadTrace(caller: TraceCaller | null, entry: TraceIndexEntry, cache?: ReadCache): Promise<boolean> {
 	const projectId = entry.tags?.autopilot?.projectId;
 	if (!projectId) return true;
 	if (!caller) return false;
-	if (await mayReadProject(caller, projectId, cache)) return true;
+	if (await mayReadProject(caller, projectId, cache?.projects)) return true;
+	const scope = await supervisionOf(caller, projectId, cache?.supervision);
+	if (scope && inSupervision(scope, entry)) return true;
 	return !!caller.session && (await tookPart(caller.session, entry.traceId));
 }
 
@@ -180,7 +236,8 @@ async function allowTraceRead(req: Request, res: Response, id: string): Promise<
 /**
  * GET /api/traces
  *
- * @param req - Query: since (ISO), type (root kind), limit, metrics (0 to leave them out), stallMinutes
+ * @param req - Query: since / until (ISO; together a closed window, #1472), type (root kind), limit,
+ *   metrics (0 to leave them out), stallMinutes, autopilotProject, day, label
  * @param res - `{ success, data: { traces, writeFailures } }`
  */
 export async function listTraces(req: Request, res: Response): Promise<void> {
@@ -188,6 +245,16 @@ export async function listTraces(req: Request, res: Response): Promise<void> {
 	const since = sinceRaw ? new Date(sinceRaw) : undefined;
 	if (since && Number.isNaN(since.getTime())) {
 		res.status(400).json({ success: false, error: 'since must be an ISO date' });
+		return;
+	}
+	const untilRaw = queryString(req.query.until);
+	const until = untilRaw ? new Date(untilRaw) : undefined;
+	if (until && Number.isNaN(until.getTime())) {
+		res.status(400).json({ success: false, error: 'until must be an ISO date' });
+		return;
+	}
+	if (since && until && until < since) {
+		res.status(400).json({ success: false, error: 'until must not be before since' });
 		return;
 	}
 	const type = queryString(req.query.type);
@@ -203,11 +270,13 @@ export async function listTraces(req: Request, res: Response): Promise<void> {
 	const autopilotProjectId = queryString(req.query.autopilotProject);
 	const label = queryString(req.query.label);
 	const caller = callerOf(req);
-	const projects = new Map<string, boolean>();
+	const cache = readCache();
 	if (autopilotProjectId) {
 		if (!callerOrDeny(req, res)) return;
-		if (!(await mayReadProject(caller as TraceCaller, autopilotProjectId, projects))) {
-			res.status(403).json({ success: false, error: 'Only the owner, the orchestrator or a member of the project can read its autopilot traces' });
+		// Members, or a supervisor (its rows are filtered per label below).
+		const member = await mayReadProject(caller as TraceCaller, autopilotProjectId, cache.projects);
+		if (!member && !(await supervisionOf(caller as TraceCaller, autopilotProjectId, cache.supervision))) {
+			res.status(403).json({ success: false, error: 'Only the owner, the orchestrator, a member of the project or a supervisor of its experiment can read its autopilot traces' });
 			return;
 		}
 	} else if (label || day) {
@@ -228,6 +297,7 @@ export async function listTraces(req: Request, res: Response): Promise<void> {
 	const requested = queryInt(req.query.limit, TRACE_CONSTANTS.DEFAULT_LIST_LIMIT);
 	const entries = store.list({
 		...(since ? { since } : {}),
+		...(until ? { until } : {}),
 		...(type && isTraceRootKind(type) ? { rootKind: type } : {}),
 		...(autopilotProjectId ? { autopilotProjectId } : {}),
 		...(day ? { day } : {}),
@@ -237,7 +307,7 @@ export async function listTraces(req: Request, res: Response): Promise<void> {
 	});
 	// Autopilot-tagged rows the caller may not read are left out; untagged rows are unchanged.
 	const visible: typeof entries = [];
-	for (const entry of entries) if (await mayReadTrace(caller, entry, projects)) visible.push(entry);
+	for (const entry of entries) if (await mayReadTrace(caller, entry, cache)) visible.push(entry);
 	const traces = withMetrics ? await getTraceAnalysis().withMetrics(visible, stallMinutes) : visible;
 	// writeFailures: trace writes lost since the backend started (disk full, permissions).
 	res.json({ success: true, data: { traces, writeFailures: store.writeFailures } });

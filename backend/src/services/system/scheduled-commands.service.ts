@@ -20,6 +20,9 @@
  *   credential is minted in memory per spawn and is never written to a file or
  *   a log.
  * - Every skip is logged at debug; a run is logged at info only when spawned.
+ *   The one exception is a missing cwd: it is logged at error and sent to the
+ *   owner once (not every tick) until the directory comes back, because the job
+ *   is silently not running.
  *
  * Config shape: `[{name, cwd, command, args?, intervalMinutes, enabled?, lockFile?}]`.
  *
@@ -86,6 +89,8 @@ export interface ScheduledCommandsDeps {
 	openLog?: (file: string) => number;
 	/** Closes an fd */
 	closeLog?: (fd: number) => void;
+	/** Owner/TL alert path (default: none); returns true when delivered */
+	notify?: (notice: { title: string; message: string; urgent: boolean }) => Promise<boolean>;
 }
 
 /**
@@ -197,6 +202,33 @@ export function parseScheduledCommands(text: string): LoadedScheduledCommands {
 	return out;
 }
 
+/**
+ * Read the working directories of the enabled scheduled commands.
+ *
+ * Used by the worktree janitor so it never removes a worktree a scheduled
+ * command runs in. A missing file is a normal "no jobs" (empty list); an
+ * unreadable or invalid file is reported as null so the caller can tell
+ * "nothing configured" from "could not read".
+ *
+ * @param configPath - Path of scheduled-commands.json
+ * @param readFile - File reader (default fs.readFileSync)
+ * @returns Absolute cwds of enabled entries (`~` expanded), or null when the file could not be read or parsed
+ */
+export function readScheduledCommandCwds(
+	configPath: string,
+	readFile: (file: string) => string = (f) => readFileSync(f, 'utf-8'),
+): string[] | null {
+	let text: string;
+	try {
+		text = readFile(configPath);
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === 'ENOENT' ? [] : null;
+	}
+	const loaded = parseScheduledCommands(text);
+	if (loaded.entries.length === 0 && loaded.warnings.length > 0) return null;
+	return loaded.entries.map((e) => e.cwd);
+}
+
 /** Outcome of one tick for one entry (also returned to tests). */
 export type RunOutcome = 'spawned' | 'skipped-running' | 'skipped-lock' | 'skipped-no-cwd' | 'spawn-failed';
 
@@ -209,6 +241,8 @@ export class ScheduledCommandsService {
 	private timers: NodeJS.Timeout[] = [];
 	/** Last spawned pid per entry name */
 	private readonly lastPid = new Map<string, number>();
+	/** Entries whose missing cwd was already reported (cleared when the cwd returns) */
+	private readonly missingCwdAlerted = new Set<string>();
 
 	/**
 	 * @param deps - Paths, logger and optional process/filesystem overrides
@@ -224,6 +258,7 @@ export class ScheduledCommandsService {
 				return openSync(f, 'a');
 			},
 			closeLog: closeSync,
+			notify: async () => false,
 			...deps,
 		};
 	}
@@ -312,9 +347,26 @@ export class ScheduledCommandsService {
 			}
 		}
 		if (!this.deps.pathExists(entry.cwd)) {
-			logger.warn(`scheduled-commands: ${entry.name} not run, cwd missing`, { cwd: entry.cwd });
+			if (!this.missingCwdAlerted.has(entry.name)) {
+				this.missingCwdAlerted.add(entry.name);
+				logger.error(`scheduled-commands: ${entry.name} not run, cwd missing`, { cwd: entry.cwd });
+				void this.deps
+					.notify({
+						title: `Scheduled command "${entry.name}" is not running`,
+						message: `Its working directory is missing: ${entry.cwd}. The job is skipped every ${entry.intervalMinutes} min until the directory is restored (this alert is sent once).`,
+						urgent: true,
+					})
+					.catch((err) =>
+						logger.error(`scheduled-commands: ${entry.name} missing-cwd alert failed`, {
+							error: err instanceof Error ? err.message : String(err),
+						}),
+					);
+			} else {
+				logger.debug(`scheduled-commands: ${entry.name} not run, cwd still missing`, { cwd: entry.cwd });
+			}
 			return 'skipped-no-cwd';
 		}
+		this.missingCwdAlerted.delete(entry.name);
 		let fd = -1;
 		try {
 			const logFile = path.join(

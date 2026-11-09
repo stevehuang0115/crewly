@@ -13,6 +13,7 @@
 
 import { WORKTREE_JANITOR_CONSTANTS } from '../../constants.js';
 import { formatBytes } from './worktree-janitor.git.js';
+import { heldWorktreeNoticeLine, type HeldTicketMatch } from '../project-tickets/ticket-hold.js';
 
 /** Facts about one kept, unmerged worktree. */
 export interface UnmergedWorktreeFacts {
@@ -69,16 +70,26 @@ export function pruneUnmergedState(state: UnmergedNoticeState, now: number): Unm
 }
 
 /**
- * The short plain-English message to a team lead.
+ * The short plain-English message to a team lead. When a ticket put this
+ * work on hold, the notice says so and asks only for the close — never
+ * "merge it" (crewly#1369: the plain notice became a new ticket and a
+ * "merge?" card although the owner had said "do not merge").
  *
  * @param f - Worktree facts
+ * @param hold - The held ticket naming this branch / worktree, if any
  * @returns Message text
  */
-export function buildUnmergedNotice(f: UnmergedWorktreeFacts): string {
+export function buildUnmergedNotice(f: UnmergedWorktreeFacts, hold?: HeldTicketMatch | null): string {
 	const branch = f.branch ? `branch ${f.branch}` : 'detached HEAD (no branch)';
 	const pushed = f.branch ? (f.pushed ? 'pushed' : 'NOT pushed') : 'NOT pushed (no branch)';
 	const size = f.sizeBytes !== null ? `, ${formatBytes(f.sizeBytes)} on disk` : '';
 	const n = f.commitsNotOnMain;
+	if (hold) {
+		return (
+			`Worktree with unmerged work: ${f.path} (${branch}) has ${n} commit${n === 1 ? '' : 's'} not on ${f.defaultRef}, ${pushed}${size}. ` +
+			heldWorktreeNoticeLine(hold)
+		);
+	}
 	return (
 		`Worktree with unmerged work: ${f.path} (${branch}) has ${n} commit${n === 1 ? '' : 's'} not on ${f.defaultRef}, ${pushed}${size}. ` +
 		'Please merge it to main (or tell me why to drop it), make sure main matches what is live, then remove the worktree.'

@@ -1,4 +1,4 @@
-import { onChatRow, onSlackInboundPost, onSlackOutboundPost, ownerLanguageOf, postReportFallback, resolveReportPlace, type OwnerLanguageChatReads } from './owner-completion-report.wiring.js';
+import { onAgentSlackPost, onChatRow, onSlackInboundPost, onSlackOutboundPost, ownerLanguageOf, postReportFallback, resolveReportPlace, type OwnerLanguageChatReads } from './owner-completion-report.wiring.js';
 import type { ReportPlace } from './owner-completion-report.service.js';
 
 const comment = { appId: 'upb7se5pfj', commentId: 'QMSjXIhFanDw' };
@@ -60,8 +60,11 @@ describe('answer feeds', () => {
   it('an agent chat row answers its conversation and its Slack thread; interim and owner rows do not', () => {
     const s = svc();
     onChatRow(s, { channelId: 'conv', senderType: 'agent', threadId: 'root', metadata: { slackThreadKey: 'C0MKT123:1791380650.784969' } });
-    expect(s.noteChatAnswer).toHaveBeenCalledWith('conv', 'root');
-    expect(s.noteSlackAnswer).toHaveBeenCalledWith('C0MKT123', '1791380650.784969');
+    expect(s.noteChatAnswer).toHaveBeenCalledWith('conv', 'root', undefined);
+    expect(s.noteSlackAnswer).toHaveBeenCalledWith('C0MKT123', '1791380650.784969', undefined);
+    const a = svc();
+    onChatRow(a, { channelId: 'conv', senderType: 'agent', senderId: 'sage', threadId: 'root', metadata: {} });
+    expect(a.noteChatAnswer).toHaveBeenCalledWith('conv', 'root', 'sage');
     const t = svc();
     onChatRow(t, { channelId: 'conv', senderType: 'agent', metadata: { interim: true } });
     onChatRow(t, { channelId: 'conv', senderType: 'user', metadata: {} });
@@ -76,8 +79,16 @@ describe('answer feeds', () => {
     onSlackInboundPost(s, { channelId: 'C1', threadTs: '1.5', authorAgentSession: 'lyra' });
     expect(s.noteSlackAnswer.mock.calls).toEqual([
       ['C1', '1.2'],
-      ['C1', '1.5'],
+      ['C1', '1.5', 'lyra'],
     ]);
+  });
+
+  it('agent posts made on this machine carry their author; interim lines do not count (crewly#1376)', () => {
+    const s = svc();
+    onAgentSlackPost(s, { agent: 'sage', slackChannelId: 'C1', threadTs: '1.6' });
+    onAgentSlackPost(s, { agent: 'sage', slackChannelId: 'C1', threadTs: '1.7', interim: true });
+    onAgentSlackPost(s, { agent: '', slackChannelId: 'C1' });
+    expect(s.noteSlackAnswer.mock.calls).toEqual([['C1', '1.6', 'sage']]);
   });
 });
 

@@ -596,6 +596,8 @@ export const TOOL_SENSITIVITY: Record<string, ToolSensitivity> = {
   remember: 'sensitive',
   complete_task: 'sensitive',
   broadcast: 'sensitive',
+  // Files an issue on GitHub as the owner's gh login (CREW-967).
+  create_github_issue: 'sensitive',
   // Destructive: irreversible or high-impact operations
   start_agent: 'destructive',
   stop_agent: 'destructive',
@@ -617,6 +619,10 @@ export const TOOL_SENSITIVITY: Record<string, ToolSensitivity> = {
   // The task layer only plans and verifies; the acting happens through
   // `computer`, which carries the destructive rating.
   desktop_task: 'sensitive',
+  // Short-lived sub-agents (#1317): spawning spends tokens and may write
+  // files under cwd; reporting back is informational.
+  spawn_subagent: 'sensitive',
+  report_to_parent: 'safe',
 };
 
 /**

@@ -10,8 +10,11 @@
  * no history says "Not tracked yet" — blocked commands, for one.
  *
  * Below the counts: the recent items as rows (what, which agent, outcome,
- * when), linked to their request or run where there is one. A quiet line
- * at the end keeps the agent isolation check.
+ * when), linked to their request or run where there is one. Then the tools
+ * that reach outside (mail, messaging, the owner's connected accounts,
+ * browsers and the desktop) with what holds each one — a draft, the owner's
+ * word, a card, or nothing (crewly#894). A quiet line at the end keeps the
+ * agent isolation check.
  *
  * The former security score, isolation map and data-sovereignty report were
  * dropped (owner, 2026-10-02).
@@ -27,7 +30,7 @@ import { useApprovalActivity } from '../../hooks/useApprovalActivity';
 import { usePtyStatus } from '../../hooks/usePtyStatus';
 import { formatRelativeTimeCompact } from '../../utils/time';
 import { LINKS, ROUTES } from '../../constants/routes.constants';
-import type { ActivityCategory, ActivityItem, ActivityOutcome, ApprovalActivity } from '../../services/security.service';
+import type { ActivityCategory, ActivityItem, ActivityOutcome, ApprovalActivity, OutboundGate, OutboundTool } from '../../services/security.service';
 
 /** Status word and tone per outcome. */
 export const OUTCOME_LABEL: Record<ActivityOutcome, { label: string; tone: StatusTone }> = {
@@ -52,6 +55,35 @@ export const CATEGORY_LABEL: Record<ActivityCategory, string> = {
   whatsapp: 'WhatsApp reply',
   gmail: 'Email send',
 };
+
+/** What each hold is called, and its tone: held = good, acts as you = quiet, nothing = attention. */
+export const GATE_LABEL: Record<OutboundGate, { label: string; tone: StatusTone }> = {
+  draft: { label: 'Draft only', tone: 'success' },
+  owner_word: { label: 'Your word', tone: 'success' },
+  owner_card: { label: 'Card', tone: 'success' },
+  as_owner: { label: 'Acts as you', tone: 'neutral' },
+  none: { label: 'Nothing in the way', tone: 'attention' },
+};
+
+/** Gates that stop the effect until the owner acts. */
+const HELD_GATES: ReadonlySet<OutboundGate> = new Set<OutboundGate>(['draft', 'owner_word', 'owner_card']);
+
+/** Rows shown before "Show all". */
+const OUTBOUND_VISIBLE = 6;
+
+/**
+ * One line summing up the outbound tools: how many are held, act as the
+ * owner, or have nothing in the way.
+ *
+ * @param tools - Outbound tools
+ * @returns e.g. `9 held until you act · 10 act as you · 7 with nothing in the way`
+ */
+export function outboundSummary(tools: OutboundTool[]): string {
+  const held = tools.filter((t) => HELD_GATES.has(t.gate)).length;
+  const asOwner = tools.filter((t) => t.gate === 'as_owner').length;
+  const none = tools.filter((t) => t.gate === 'none').length;
+  return `${held} held until you act · ${asOwner} act as you · ${none} with nothing in the way`;
+}
 
 /**
  * Where a row links to, if anywhere.
@@ -168,6 +200,49 @@ export const ApprovalCounts: React.FC<{ data: ApprovalActivity }> = ({ data }) =
 };
 
 /**
+ * The tools that reach outside, each with its hold.
+ *
+ * @param props - Tools, in display order
+ * @returns Section, or null when the backend sent none
+ */
+export const OutboundTools: React.FC<{ tools: OutboundTool[] | undefined }> = ({ tools }) => {
+  if (!tools || tools.length === 0) return null;
+  return (
+    <section aria-labelledby="security-outbound-heading" className="flex flex-col" data-testid="security-outbound">
+      <h3 id="security-outbound-heading" className="mb-1 text-[13px] font-semibold text-text-2">
+        Tools that reach outside
+      </h3>
+      <p className="mb-2 text-[13px] text-text-2" data-testid="security-outbound-summary">
+        What an agent can do beyond Crewly, and what holds it: {outboundSummary(tools)}.
+      </p>
+      <ShowAll limit={OUTBOUND_VISIBLE} data-testid="security-outbound-list" className="border-y border-border-soft">
+        {tools.map((t) => {
+          const g = GATE_LABEL[t.gate] ?? GATE_LABEL.none;
+          return (
+            <CompactRow
+              key={t.skill}
+              data-testid={`outbound-${t.skill.replace(/\//g, '-')}`}
+              className="px-0"
+              primary={
+                <>
+                  {t.surface} <span className="font-normal text-text-3">· {t.skill}</span>
+                </>
+              }
+              meta={t.note}
+              trailing={
+                <StatusLabel tone={g.tone} size="sm">
+                  {g.label}
+                </StatusLabel>
+              }
+            />
+          );
+        })}
+      </ShowAll>
+    </section>
+  );
+};
+
+/**
  * Settings › Security panel.
  *
  * @returns Panel
@@ -252,6 +327,8 @@ export const SecurityTab: React.FC = () => {
               </ShowAll>
             )}
           </section>
+
+          <OutboundTools tools={data.outbound} />
         </>
       )}
 

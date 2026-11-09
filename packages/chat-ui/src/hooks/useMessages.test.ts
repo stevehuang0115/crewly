@@ -286,3 +286,25 @@ describe('selectRootMessages / selectThreadReplies', () => {
     expect(selectThreadReplies(timeline, 'm-99')).toEqual([]);
   });
 });
+
+describe('useMessages read_state (#1400)', () => {
+  it('hands read_state frames for the channel to onReadState', async () => {
+    const client = new MockChatApiClient();
+    const channelId = (await client.listChannels())[0].id;
+    const onReadState = vi.fn();
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(ChatAPIProvider, { client, mode: 'mock' }, children);
+    const { result } = renderHook(() => useMessages(channelId, { onReadState }), { wrapper });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      (client as unknown as { emit(id: string, e: unknown): void }).emit(channelId, {
+        type: 'read_state',
+        channelId,
+        lastReadSeq: 5,
+        unreadCount: 0,
+      });
+    });
+    expect(onReadState).toHaveBeenCalledWith({ channelId, lastReadSeq: 5, unreadCount: 0 });
+  });
+});

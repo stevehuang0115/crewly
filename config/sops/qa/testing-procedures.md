@@ -19,6 +19,11 @@ tags:
   - testing
   - quality
   - qa
+# Rule metadata (#877): what this rule prevents, where seen, when to re-test
+prevents: "none recorded — part of the original default SOP library (2026-01-29); re-test before keeping"
+seenOn: "unknown"
+reviewBy: 2026-12-31
+source: https://github.com/stevehuang0115/crewly/commit/77d504515
 ---
 
 # Testing Procedures

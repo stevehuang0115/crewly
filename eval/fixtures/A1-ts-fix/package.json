@@ -1,0 +1,13 @@
+{
+  "name": "a1-ts-fix-fixture",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test src/**/*.test.ts 2>/dev/null || npx tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}

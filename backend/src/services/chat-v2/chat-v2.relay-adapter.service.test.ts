@@ -274,6 +274,69 @@ describe('ChatV2RelayAdapter', () => {
     expect(out.members.map((m) => m.sessionName).sort()).toEqual(['sess-x', 'sess-y']);
   });
 
+  it('renameChannel and setHuddleMembers RPCs edit a huddle the owner holds (#1400)', async () => {
+    const huddle = service.createHuddle({
+      name: 'h',
+      memberSessions: ['sess-x'],
+      principal: { userId: 'dev-user-001', source: 'oss' },
+    });
+
+    cloudSync.emitInbound(
+      buildRequestMsg('portal-h4', {
+        id: 'r-h4',
+        method: 'renameChannel',
+        params: { channelId: huddle.id, name: 'Launch crew' },
+      }),
+    );
+    await flushMicrotasks();
+    const renamed = cloudSync.outbound[0].payload as ChatResponsePayload;
+    expect(renamed.error).toBeUndefined();
+    expect((renamed.result as { name: string }).name).toBe('Launch crew');
+
+    cloudSync.emitInbound(
+      buildRequestMsg('portal-h5', {
+        id: 'r-h5',
+        method: 'setHuddleMembers',
+        params: { channelId: huddle.id, memberSessions: ['sess-x', 'sess-y', null] },
+      }),
+    );
+    await flushMicrotasks();
+    const roster = cloudSync.outbound[1].payload as ChatResponsePayload;
+    expect(roster.error).toBeUndefined();
+    const ch = roster.result as { members: Array<{ sessionName: string }> };
+    expect(ch.members.map((m) => m.sessionName).sort()).toEqual(['sess-x', 'sess-y']);
+  });
+
+  it('searchMessages RPC searches every conversation the owner holds, with the REST filters (#1400)', async () => {
+    const principal = { userId: 'dev-user-001', source: 'oss' as const };
+    const room = service.createHuddle({ name: 'awesome-videos', memberSessions: ['pia'], principal });
+    const other = service.createHuddle({ name: 'secret', memberSessions: ['bob'], principal });
+    service.recordTurn({ channelId: room.id, senderType: 'user', senderId: 'Steve', content: 'three-video plan', metadata: { source: 'slack' } });
+    service.recordTurn({ channelId: other.id, senderType: 'user', senderId: 'Steve', content: 'three-video budget', metadata: { source: 'slack' } });
+
+    cloudSync.emitInbound(buildRequestMsg('portal-s1', { id: 'r-s1', method: 'searchMessages', params: { query: 'three-video' } }));
+    await flushMicrotasks();
+    const all = cloudSync.outbound[0].payload as ChatResponsePayload;
+    expect(all.error).toBeUndefined();
+    const res = all.result as { count: number; hits: Array<{ channel: string; channelType: string; text: string }> };
+    expect(res.count).toBe(2);
+    expect(res.hits.map((h) => h.channel).sort()).toEqual(['awesome-videos', 'secret']);
+    expect(res.hits[0].channelType).toBe('huddle');
+
+    cloudSync.emitInbound(buildRequestMsg('portal-s2', { id: 'r-s2', method: 'searchMessages', params: { query: 'three-video', channel: 'secret', limit: 5 } }));
+    await flushMicrotasks();
+    const narrowed = cloudSync.outbound[1].payload as ChatResponsePayload;
+    expect((narrowed.result as { hits: Array<{ text: string }> }).hits.map((h) => h.text)).toEqual(['three-video budget']);
+
+    cloudSync.emitInbound(buildRequestMsg('portal-s3', { id: 'r-s3', method: 'searchMessages', params: { query: 'x', from: 'nonsense' } }));
+    await flushMicrotasks();
+    expect((cloudSync.outbound[2].payload as ChatResponsePayload).error?.code).toBe('validation_error');
+
+    cloudSync.emitInbound(buildRequestMsg('portal-s4', { id: 'r-s4', method: 'searchMessages', params: {} }));
+    await flushMicrotasks();
+    expect((cloudSync.outbound[3].payload as ChatResponsePayload).error?.code).toBe('validation_error');
+  });
+
   it('ensureDmChannel creates a channel and replies with the DTO', async () => {
     cloudSync.emitInbound(
       buildRequestMsg('portal-2', {
@@ -778,6 +841,70 @@ describe('ChatV2RelayAdapter', () => {
   // -------------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // Read state RPCs (#1400)
+  // -------------------------------------------------------------------------
+
+  describe('read state RPCs', () => {
+    const principal = { userId: 'dev-user-001', source: 'oss' as const };
+
+    /** Run one RPC and return the (single) response payload. */
+    async function rpc(method: ChatRequestPayload['method'], params?: Record<string, unknown>): Promise<ChatResponsePayload> {
+      cloudSync.outbound.length = 0;
+      cloudSync.emitInbound(buildRequestMsg('portal-1', { id: `r-${method}`, method, params }));
+      await flushMicrotasks();
+      return cloudSync.outbound[0].payload as ChatResponsePayload;
+    }
+
+    function seed(n: number): string {
+      const ch = service.createChannel({ agentSession: 'sam', name: 'Sam', principal });
+      for (let i = 0; i < n; i++) {
+        service.recordTurn({ channelId: ch.id, senderType: 'agent', senderId: 'sam', content: `m${i}`, metadata: { source: 'slack' } });
+      }
+      return ch.id;
+    }
+
+    it('getUnread returns the total and per-channel breakdown', async () => {
+      const id = seed(2);
+      const r = await rpc('getUnread', {});
+      expect(r.error).toBeUndefined();
+      expect(r.result).toEqual({ total: 2, channels: [{ channelId: id, lastReadSeq: 0, unreadCount: 2 }] });
+    });
+
+    it('markChannelRead is forward-only and seq is optional', async () => {
+      const id = seed(3);
+      expect((await rpc('markChannelRead', { channelId: id })).result).toEqual({ channelId: id, lastReadSeq: 3, unreadCount: 0 });
+      expect((await rpc('markChannelRead', { channelId: id, seq: 1 })).result).toMatchObject({ lastReadSeq: 3 });
+    });
+
+    it('markChannelUnread moves the marker to seq - 1', async () => {
+      const id = seed(3);
+      await rpc('markChannelRead', { channelId: id });
+      expect((await rpc('markChannelUnread', { channelId: id, seq: 2 })).result).toEqual({
+        channelId: id,
+        lastReadSeq: 1,
+        unreadCount: 2,
+      });
+    });
+
+    it('returns validation errors for a missing channelId or a bad seq', async () => {
+      const id = seed(1);
+      expect((await rpc('markChannelRead', {})).error?.code).toBe('validation_error');
+      expect((await rpc('markChannelUnread', { channelId: id })).error?.code).toBe('validation_error');
+    });
+
+    it('forwards a read_state broadcast to Portal as a chat_event', async () => {
+      await rpc('listChannels');
+      cloudSync.outbound.length = 0;
+      const frame = { type: 'read_state', payload: { channelId: 'c1', lastReadSeq: 4, unreadCount: 0 } };
+      gateway.fire('c1', frame);
+      await flushMicrotasks();
+      expect(cloudSync.outbound).toHaveLength(1);
+      expect(cloudSync.outbound[0].type).toBe('chat_event');
+      expect(cloudSync.outbound[0].payload).toEqual({ channelId: 'c1', event: frame });
+    });
+  });
 
   it('start is idempotent — calling twice does not double-subscribe', async () => {
     adapter.start(); // already started in beforeEach

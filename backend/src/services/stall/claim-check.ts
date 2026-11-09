@@ -68,11 +68,43 @@ export function claimPatternsFor(name: string): RegExp[] {
 }
 
 /**
+ * Where a sentence first claims the named teammate, or -1.
+ *
+ * @param sentence - One sentence of the post
+ * @param patterns - The claim patterns for one name
+ * @returns Index of the earliest match, or -1 when none matches
+ */
+export function claimIndex(sentence: string, patterns: readonly RegExp[]): number {
+	let at = -1;
+	for (const re of patterns) {
+		const m = re.exec(sentence);
+		if (m && (at === -1 || m.index < at)) at = m.index;
+	}
+	return at;
+}
+
+/**
+ * Whether the words before the hand-off make it a plan for later rather than
+ * a claim about now: "你看过说可以，我再交给 Dex", "会随这次一起交给 Dex",
+ * "once you approve, I'll hand it to Dana" (crewly#1427 item 5). Only the
+ * text before the match counts — "交给 Pia 了，你点一下看看" stays a claim.
+ *
+ * @param sentence - One sentence of the post
+ * @param at - Where the claim match starts
+ * @returns True when the sentence announces a future or conditional hand-off
+ */
+export function isPlannedHandOff(sentence: string, at: number): boolean {
+	const before = sentence.slice(0, Math.max(0, at));
+	return C.CLAIM_PLAN_ZH.test(before) || C.CLAIM_PLAN_EN.test(before);
+}
+
+/**
  * Claims in an agent's post that a named teammate is doing the work.
  *
  * A member is matched by its display name (not the speaker itself); each
- * member is reported once, with the first sentence that claims it. Questions
- * and negated sentences ("不是 Pia 在做") are skipped.
+ * member is reported once, with the first sentence that claims it. Questions,
+ * negated sentences ("不是 Pia 在做") and planned hand-offs ("你说可以我再交给
+ * Pia") are skipped.
  *
  * @param text - The agent's post
  * @param members - The speaker's teammates (name + session)
@@ -97,7 +129,9 @@ export function detectTeammateClaims(text: string, members: readonly ClaimableMe
 		const s = raw.trim();
 		if (!s || QUESTION_END.test(s) || NEGATED.test(s)) continue;
 		for (const { m, res } of patterns) {
-			if (seen.has(m.session) || !res.some((re) => re.test(s))) continue;
+			if (seen.has(m.session)) continue;
+			const at = claimIndex(s, res);
+			if (at === -1 || isPlannedHandOff(s, at)) continue;
 			seen.add(m.session);
 			const one = s.replace(/\s+/g, ' ');
 			out.push({ member: m.session, memberName: m.name.trim(), sentence: one.length > C.RUN_HEAD_MAX_CHARS ? `${one.slice(0, C.RUN_HEAD_MAX_CHARS - 1)}…` : one });
@@ -109,6 +143,10 @@ export function detectTeammateClaims(text: string, members: readonly ClaimableMe
 /**
  * The one line the speaker gets when nothing is assigned to the teammate.
  *
+ * The last clause exists because of 2026-10-23: four false nudges each made
+ * the agent post a "说明一下，现在没有交给 Dex" note in the owner's thread.
+ * A harness check must never produce owner-visible text.
+ *
  * @param memberName - The teammate as named
  * @param sentence - The claiming sentence
  * @returns Nudge text
@@ -116,6 +154,8 @@ export function detectTeammateClaims(text: string, members: readonly ClaimableMe
 export function claimNudgeText(memberName: string, sentence: string): string {
 	return (
 		`${C.CLAIM_CHECK_TAG} You told the owner ${memberName} is doing it ("${sentence}"); nothing is assigned to ${memberName} ` +
-		`(no work item or ticket for ${memberName} within ${Math.round(C.CLAIM_CHECK_WINDOW_MS / 60_000)} minutes of that reply). Delegate it now, or correct the thread.`
+		`(no work item or ticket for ${memberName} within ${Math.round(C.CLAIM_CHECK_WINDOW_MS / 60_000)} minutes of that reply). ` +
+		`Delegate it now, or fix the wording in your next reply if you misspoke. If it was only a plan for later, do nothing — ` +
+		`and never post about this note in the owner's thread.`
 	);
 }

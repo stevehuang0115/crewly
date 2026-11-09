@@ -14,6 +14,7 @@ import { getActingFor } from '../../services/people/acting-for.service.js';
 import { GrantSharingError, validateAuthorizedBy, validateSharing, type GrantOwnership, type GrantSharing } from '../../services/people/grant-sharing.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
+import { actorFromRequest, recordActivity } from '../../services/activity/activity-log.service.js';
 
 /** A validated ownership / sharing change. */
 export interface GrantSharingChange {
@@ -58,11 +59,13 @@ export function readSharingChange(body: unknown): GrantSharingChange {
  *
  * @param apply - Sends the change to Cloud (the connector's token service)
  * @param sendError - The connector's error responder
+ * @param connectorId - The connector, for the activity log (#881); `unknown` when left out
  * @returns Express handler
  */
 export function createSharingHandler(
 	apply: (req: Request, change: GrantSharingChange) => Promise<GrantOwnership>,
 	sendError: (req: Request, res: Response, err: unknown) => void,
+	connectorId = 'unknown',
 ): (req: Request, res: Response) => Promise<void> {
 	return async (req, res) => {
 		if (rejectNonOwner(req, res, { success: false, error: 'owner_only', message: 'Only the owner can change who a connection is shared with (Connections).' })) return;
@@ -74,7 +77,16 @@ export function createSharingHandler(
 			return;
 		}
 		try {
-			res.json({ success: true, data: await apply(req, change) });
+			const data = await apply(req, change);
+			// Who re-owned or re-shared a connected account, and with whom.
+			const account = (req.body as { email?: unknown } | undefined)?.email;
+			recordActivity({
+				actor: actorFromRequest(req),
+				action: 'connector.sharing.updated',
+				target: { type: 'connector', id: connectorId, ...(typeof account === 'string' && account ? { name: account } : {}) },
+				after: { ...data },
+			});
+			res.json({ success: true, data });
 		} catch (err) {
 			sendError(req, res, err);
 		}

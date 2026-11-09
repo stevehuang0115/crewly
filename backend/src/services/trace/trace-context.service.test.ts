@@ -17,6 +17,9 @@ const REQ = '9b1f0d1e-0000-4000-8000-000000000001';
 describe('classifyDelivery', () => {
 	it.each([
 		['[CHAT:conv:abcd1234] can you build the page?', 'owner_message'],
+		['[CHAT:c1] <UG94JLNGK@#ce> ship it', 'owner_message'],
+		['[CHAT:c1] <Owen (agent)@#ce> [Slack thread so far — oldest→newest, 8 messages]', 'agent_message'],
+		['[CHAT:c1] <Ella (Personal Assistant Team) (agent)@#C0C6P921QSD> [Context only — not for you to answer] Messages', 'agent_message'],
 		['\n[CREWLY-DISPATCH] WorkItem x queued for you (type=delegate).', 'dispatch'],
 		['[CREWLY-DISPATCH] 3 WorkItems are still queued for you — this one message covers all of them.', 'redelivery'],
 		['[TASK RE-DELIVERY] You were working on this task', 'redelivery'],

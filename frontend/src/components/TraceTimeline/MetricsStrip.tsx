@@ -75,7 +75,7 @@ export function metricTiles(m: TraceMetrics): Tile[] {
 			id: 'touches',
 			label: 'Your touches',
 			value: String(touches.total),
-			title: `Answered ${touches.answered}, approved ${touches.approved}, sent back ${touches.sentBack}, corrected ${touches.corrected}`,
+			title: `Answered ${touches.answered}, approved ${touches.approved}, sent back ${touches.sentBack}, corrected ${touches.corrected}, other ${touches.other ?? 0}`,
 		},
 		{
 			id: 'rework',
@@ -152,7 +152,7 @@ export const MetricsStrip: React.FC<MetricsStripProps> = ({ metrics, nameOf = (s
 				<dl className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-[13px] sm:grid-cols-[auto_1fr]">
 					<dt className="text-text-2">Your touches</dt>
 					<dd className="text-text">
-						answered {m.ownerTouches.answered} · approved {m.ownerTouches.approved} · sent back {m.ownerTouches.sentBack} · corrected {m.ownerTouches.corrected}
+						answered {m.ownerTouches.answered} · approved {m.ownerTouches.approved} · sent back {m.ownerTouches.sentBack} · corrected {m.ownerTouches.corrected} · other {m.ownerTouches.other ?? 0}
 					</dd>
 					<dt className="text-text-2">Rework</dt>
 					<dd className="text-text">

@@ -1,9 +1,14 @@
 /**
  * Harness credentials store — the harness logins Crewly itself holds.
  *
- * Claude Code's `setup-token` prints a long-lived OAuth token instead of
- * saving it, and an Anthropic API key has to reach agents somehow; both live
- * here, in `<crewlyHome>/harness-credentials.json` with mode 0600. Codex
+ * An Anthropic API key has to reach agents somehow, so it lives here, in
+ * `<crewlyHome>/harness-credentials.json` with mode 0600. Crewly no longer
+ * saves Claude.ai sign-in tokens: Claude Code stores its own login (config
+ * dir or keychain) and Anthropic's rules say developers may not collect or
+ * store those. Older versions did save a `claude setup-token` token here
+ * (`claude.oauthToken`, `claudeAccounts.<name>.oauthToken`); that data is
+ * only read to keep an account working until the owner signs it in again,
+ * then deleted (services/harness/claude-token-migration.service.ts). Codex
  * writes its own credentials (`$CODEX_HOME/auth.json`), so nothing is stored
  * for it unless a future flow needs the key. Antigravity CLI reads its Gemini
  * API key only from the environment, so Crewly keeps that key here too.
@@ -26,7 +31,7 @@ import { buildHarnessPath } from './harness-exec.utils.js';
 /** Stored credentials. Every field is optional. */
 export interface HarnessCredentials {
 	claude?: {
-		/** Long-lived token from `claude setup-token` (exported as CLAUDE_CODE_OAUTH_TOKEN) */
+		/** LEGACY, read-only: token an older Crewly saved from `claude setup-token`; removed by the migration */
 		oauthToken?: string;
 		/** Anthropic API key (exported as ANTHROPIC_API_KEY) */
 		anthropicApiKey?: string;
@@ -123,19 +128,6 @@ export class HarnessCredentialsStore {
 	}
 
 	/**
-	 * Store Claude's long-lived OAuth token. Replaces a stored API key, so
-	 * agents use exactly the login the owner chose last.
-	 *
-	 * @param token - Token printed by `claude setup-token`
-	 * @throws Error when the token is empty
-	 */
-	setClaudeOauthToken(token: string): void {
-		if (!isNonEmptyString(token)) throw new Error('Claude OAuth token is empty');
-		const current = this.read();
-		this.write({ ...current, claude: { oauthToken: token.trim(), updatedAt: new Date().toISOString() } });
-	}
-
-	/**
 	 * Store an Anthropic API key. Replaces a stored OAuth token.
 	 *
 	 * @param key - Anthropic API key
@@ -204,23 +196,8 @@ export class HarnessCredentialsStore {
 	}
 
 	/**
-	 * Store the `setup-token` token of one of the owner's other Claude Code accounts.
-	 *
-	 * @param account - Account name (validated by the caller)
-	 * @param token - Token printed by `claude setup-token`
-	 * @throws Error when the token is empty
-	 */
-	setClaudeAccountToken(account: string, token: string): void {
-		if (!isNonEmptyString(token)) throw new Error('Claude OAuth token is empty');
-		const current = this.read();
-		this.write({
-			...current,
-			claudeAccounts: { ...(current.claudeAccounts ?? {}), [account]: { oauthToken: token.trim(), updatedAt: new Date().toISOString() } },
-		});
-	}
-
-	/**
-	 * The stored token of one of the owner's other Claude Code accounts.
+	 * LEGACY: the token an older Crewly saved for one of the owner's other
+	 * Claude Code accounts (never written any more).
 	 *
 	 * @param account - Account name
 	 * @returns The token, or null when none is stored
@@ -241,7 +218,8 @@ export class HarnessCredentialsStore {
 	}
 
 	/**
-	 * Forget the token of one of the owner's other Claude Code accounts.
+	 * Forget the token of one of the owner's other Claude Code accounts. The
+	 * `claudeAccounts` key goes away with its last entry.
 	 *
 	 * @param account - Account name
 	 */
@@ -250,7 +228,80 @@ export class HarnessCredentialsStore {
 		if (!current.claudeAccounts?.[account]) return;
 		const accounts = { ...current.claudeAccounts };
 		delete accounts[account];
-		this.write({ ...current, claudeAccounts: accounts });
+		const next: HarnessCredentials = { ...current };
+		if (Object.keys(accounts).length > 0) next.claudeAccounts = accounts;
+		else delete next.claudeAccounts;
+		this.write(next);
+	}
+
+	/**
+	 * LEGACY: the default login's token an older Crewly saved.
+	 *
+	 * @returns The token, or null
+	 */
+	getLegacyClaudeOauthToken(): string | null {
+		const token = this.read().claude?.oauthToken;
+		return isNonEmptyString(token) ? token : null;
+	}
+
+	/**
+	 * Delete the default login's legacy token. The `claude` key is removed
+	 * when nothing but bookkeeping is left (a stored API key stays).
+	 */
+	clearLegacyClaudeOauthToken(): void {
+		const current = this.read();
+		if (!current.claude || !('oauthToken' in current.claude)) return;
+		const { oauthToken: _removed, ...rest } = current.claude;
+		const next: HarnessCredentials = { ...current };
+		if (isNonEmptyString(rest.anthropicApiKey)) next.claude = rest;
+		else delete next.claude;
+		this.write(next);
+	}
+
+	/**
+	 * Remove what an older Crewly left for Claude sign-in tokens once no token
+	 * is stored: empty `claudeAccounts` entries or object, an empty
+	 * `claude.oauthToken`, and a `claude` object holding nothing but
+	 * bookkeeping. A stored API key and every other key stay untouched. Does
+	 * nothing (and does not rewrite the file) when there is nothing to remove.
+	 */
+	pruneLegacyClaudeKeys(): void {
+		const current = this.read();
+		const next: HarnessCredentials = { ...current };
+		let changed = false;
+		if (next.claudeAccounts) {
+			const kept = Object.fromEntries(Object.entries(next.claudeAccounts).filter(([, v]) => isNonEmptyString(v?.oauthToken)));
+			if (Object.keys(kept).length !== Object.keys(next.claudeAccounts).length || Object.keys(kept).length === 0) {
+				changed = true;
+				if (Object.keys(kept).length > 0) next.claudeAccounts = kept;
+				else delete next.claudeAccounts;
+			}
+		}
+		if (next.claude && !isNonEmptyString(next.claude.oauthToken)) {
+			const { oauthToken: _unused, updatedAt: _stamp, ...rest } = next.claude;
+			if (Object.keys(rest).length === 0) {
+				delete next.claude;
+				changed = true;
+			} else if ('oauthToken' in next.claude) {
+				next.claude = { ...rest, ...(next.claude.updatedAt ? { updatedAt: next.claude.updatedAt } : {}) };
+				changed = true;
+			}
+		}
+		if (changed) this.write(next);
+	}
+
+	/**
+	 * Env that keeps an account working with the token an older Crewly saved
+	 * for it. LEGACY, transition only: empty once the account's native login
+	 * is verified and the token deleted. This is the only place the token is
+	 * handed to a Claude Code process.
+	 *
+	 * @param account - Named account; null = the default login
+	 * @returns `{ CLAUDE_CODE_OAUTH_TOKEN }`, or `{}` when no token is stored
+	 */
+	legacyClaudeTokenEnv(account: string | null): Record<string, string> {
+		const token = account ? this.getClaudeAccountToken(account) : this.getLegacyClaudeOauthToken();
+		return token ? { [HARNESS_CONSTANTS.CLAUDE.OAUTH_TOKEN_ENV]: token } : {};
 	}
 
 	/**
@@ -269,8 +320,8 @@ export class HarnessCredentialsStore {
 	 * Env vars to inject into agent sessions.
 	 *
 	 * Always sets PATH (user npm prefix bin first, see harness-exec.utils).
-	 * Adds `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` when Crewly holds
-	 * a Claude credential. Nothing is added for Codex: it reads its own
+	 * Adds `ANTHROPIC_API_KEY` when Crewly holds one (and, during the token
+	 * migration only, the legacy token of the default login). Nothing is added for Codex: it reads its own
 	 * `auth.json`.
 	 *
 	 * For an `antigravity-cli` session it also adds the stored Gemini key as
@@ -287,8 +338,9 @@ export class HarnessCredentialsStore {
 		const env: Record<string, string> = { PATH: buildHarnessPath(baseEnv.PATH) };
 		const stored = this.read();
 		const claude = stored.claude;
-		if (isNonEmptyString(claude?.oauthToken)) {
-			env[HARNESS_CONSTANTS.CLAUDE.OAUTH_TOKEN_ENV] = claude.oauthToken;
+		const legacy = this.legacyClaudeTokenEnv(null);
+		if (Object.keys(legacy).length > 0) {
+			Object.assign(env, legacy);
 		} else if (isNonEmptyString(claude?.anthropicApiKey)) {
 			env[HARNESS_CONSTANTS.CLAUDE.API_KEY_ENV] = claude.anthropicApiKey;
 		}

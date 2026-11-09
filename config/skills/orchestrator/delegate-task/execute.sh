@@ -18,6 +18,12 @@ TEAM_ID=""
 FORCE_CROSS_TEAM="false"
 REQUEST_ID=""
 PROJECT_TICKET=""
+# The owner place this work was asked / approved in (crewly#1371): a Slack
+# thread key or a chat conversation. With it the work carries the owner
+# origin, and team work is reported to the owner by the team lead.
+OWNER_THREAD=""
+OWNER_CONVERSATION=""
+FORCE_AFTER_ANSWER=""
 # Self-heal fix #3 (2026-05-20): default fallback timer. Per the
 # orchestrator prompt §3.0 the orc is supposed to set 2× ETA manually
 # for every dispatch, but the convention was unenforced — observable in
@@ -56,12 +62,16 @@ while [[ $# -gt 0 ]]; do
     --team|-g)       TEAM_ID="$2";          shift 2 ;;
     --request-id|-R) REQUEST_ID="$2";       shift 2 ;;
     --ticket)        PROJECT_TICKET="$2";   shift 2 ;;
+    --thread)        OWNER_THREAD="$2";     shift 2 ;;
+    --conversation)  OWNER_CONVERSATION="$2"; shift 2 ;;
+    --force-after-answer) FORCE_AFTER_ANSWER="1"; shift ;;
     --force-cross-team) FORCE_CROSS_TEAM="true"; shift ;;
     --fallback-minutes) FALLBACK_MINUTES="$2"; shift 2 ;;
     --json|-j)       INPUT_JSON="$2";       shift 2 ;;
     --help|-h)
       echo "Usage: execute.sh --to agent-session --task 'implement feature' --priority high --project /path [--team teamId] [--context 'extra info'] [--ticket <project ticket id, e.g. APP-12>]"
       echo "Work for an agent on a project always runs through a project ticket: --ticket uses that backlog/ready ticket, otherwise one is created for you."
+      echo "Work the owner asked for or approved: add --thread <key> (from [SLACK-THREAD:<key>]) or --conversation <id> (from [CHAT:<id>]). Team work is then reported to the owner by the team lead in the team channel; you do not relay it."
       exit 0
       ;;
     --)              shift; break ;;
@@ -98,6 +108,8 @@ if [ -n "$INPUT_JSON" ]; then
   [ "$FORCE_CROSS_TEAM" = "false" ] && FORCE_CROSS_TEAM=$(printf '%s' "$INPUT" | jq -r '.forceCrossTeam // "false"')
   [ -z "$REQUEST_ID" ] && REQUEST_ID=$(printf '%s' "$INPUT" | jq -r '.requestId // empty')
   [ -z "$PROJECT_TICKET" ] && PROJECT_TICKET=$(printf '%s' "$INPUT" | jq -r '.ticket // .projectTicketId // empty')
+  [ -z "$OWNER_THREAD" ] && OWNER_THREAD=$(printf '%s' "$INPUT" | jq -r '.thread // .ownerThread // empty')
+  [ -z "$OWNER_CONVERSATION" ] && OWNER_CONVERSATION=$(printf '%s' "$INPUT" | jq -r '.conversation // .ownerConversation // empty')
 fi
 
 require_param "to (--to)" "$TO"
@@ -298,7 +310,10 @@ POOL_BODY=$(jq -n \
   --arg requestId "${REQUEST_ID:-}" \
   --arg projectTicketId "${PROJECT_TICKET:-}" \
   --arg delegatedBy "${CREWLY_SESSION_NAME:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $delegatedBy != "" then {delegatedBy: $delegatedBy} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end) + (if $projectTicketId != "" then {projectTicketId: $projectTicketId} else {} end)')
+  --arg ownerThread "${OWNER_THREAD:-}" \
+  --arg ownerConversation "${OWNER_CONVERSATION:-}" \
+  --arg forceAfterAnswer "${FORCE_AFTER_ANSWER:-}" \
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $delegatedBy != "" then {delegatedBy: $delegatedBy} else {} end) + (if $ownerThread != "" then {ownerThread: $ownerThread} else {} end) + (if $ownerConversation != "" then {ownerConversation: $ownerConversation} else {} end) + (if $forceAfterAnswer != "" then {forceAfterAnswer: true} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end) + (if $projectTicketId != "" then {projectTicketId: $projectTicketId} else {} end)')
 # projectTicketId / metadata.delegatedBy: work for an agent on a project runs
 # through a project ticket (specs/2026-09-28-project-tickets.md §11). The
 # backend uses --ticket, or creates a ticket and links this WorkItem to it.
@@ -314,6 +329,9 @@ POOL_OK=$(echo "$POOL_RESULT" | jq -r '.success // "false"' 2>/dev/null)
 WI_ID=$(echo "$POOL_RESULT" | jq -r '.data.id // .workItemId // empty' 2>/dev/null || true)
 PROJECT_TICKET_INFO=$(echo "$POOL_RESULT" | jq -c '.data.projectTicket // null' 2>/dev/null || echo 'null')
 [ -n "$PROJECT_TICKET_INFO" ] || PROJECT_TICKET_INFO='null'
+# Team work done for the owner (crewly#1371): who reports it to the owner, and where.
+LEAD_REPORT_INFO=$(echo "$POOL_RESULT" | jq -c '.data.leadReport // null' 2>/dev/null || echo 'null')
+[ -n "$LEAD_REPORT_INFO" ] || LEAD_REPORT_INFO='null'
 
 if [ "$POOL_OK" != "true" ]; then
   # Surface the backend's reason (e.g. a --ticket refused by the project-ticket rules).
@@ -418,6 +436,8 @@ jq -n \
   --arg fallbackTriggerId "${FALLBACK_TRIGGER_ID:-}" \
   --arg fallbackMinutes "${FALLBACK_MINUTES:-0}" \
   --argjson projectTicket "$PROJECT_TICKET_INFO" \
+  --argjson leadReport "$LEAD_REPORT_INFO" \
   '{success: true, workItemId: $workItemId, target: $target, priority: $priority, title: $title, state: $state, message: $message}
    + (if $fallbackTriggerId != "" then {fallbackTriggerId: $fallbackTriggerId, fallbackMinutes: ($fallbackMinutes|tonumber)} else {} end)
-   + (if $projectTicket != null then {projectTicket: $projectTicket} else {} end)'
+   + (if $projectTicket != null then {projectTicket: $projectTicket} else {} end)
+   + (if $leadReport != null then {ownerReport: {reportedBy: $leadReport.leadName, channel: $leadReport.channel, note: $leadReport.delegatorNote}} else {} end)'

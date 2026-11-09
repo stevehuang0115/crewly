@@ -27,7 +27,7 @@ import type {
   SlackRawAttachment,
   SlackInboundMeta,
   SlackCloudEventEnvelope,
-  SlackRoomJoinRequest,
+  SlackRoomJoinRequest, SlackRoomJoinResult,
   SlackInteractionEvent,
   SlackReactionEvent,
 } from '../../types/slack.types.js';
@@ -186,7 +186,8 @@ interface FileUploadOptions {
    * The agent's cosmetic identity, used when it has no bot of its own. An
    * image is then uploaded privately and posted in a message under this
    * name/icon (an image block), instead of arriving from the workspace app
-   * as "Crewly". Other files keep the plain upload.
+   * as "Crewly". Any other file is uploaded privately and its permalink
+   * posted under this name/icon in the same thread.
    */
   persona?: { username: string; iconEmoji?: string; iconUrl?: string };
 }
@@ -481,6 +482,18 @@ export function uploadedFileId(result: unknown): string | undefined {
   return first?.files?.[0]?.id ?? first?.id ?? undefined;
 }
 
+/**
+ * The permalink from a `files.uploadV2` result (same nesting as
+ * {@link uploadedFileId}).
+ *
+ * @param result - `files.uploadV2` result
+ * @returns The first file's permalink, if any
+ */
+export function uploadedFilePermalink(result: unknown): string | undefined {
+  const first = (result as { files?: Array<{ permalink?: string; files?: Array<{ permalink?: string }> }> } | undefined)?.files?.[0];
+  return first?.files?.[0]?.permalink ?? first?.permalink ?? undefined;
+}
+
 export class SlackService extends EventEmitter {
   private logger = LoggerService.getInstance().createComponentLogger('SlackService');
   private app: SlackApp | null = null;
@@ -517,6 +530,8 @@ export class SlackService extends EventEmitter {
 
   /** Handles a Cloud-pushed room-join request (wired to the team-channel service). */
   roomJoinHandler: ((join: SlackRoomJoinRequest) => Promise<unknown> | unknown) | null = null;
+  /** What to do with a room-join result Cloud relayed back to this (asking) machine (crewly#1430) */
+  roomJoinResultHandler: ((result: SlackRoomJoinResult) => Promise<unknown> | unknown) | null = null;
   /** Whether a Slack conversation belongs to an agent's own app (the master bot cannot post there). Set by the initializer. */
   isAgentOwnedConversation: ((channelId: string) => boolean) | null = null;
   /** Slack user id of the person who installed the app (owner notifications go to their DM). Set by the initializer. */
@@ -1038,6 +1053,21 @@ export class SlackService extends EventEmitter {
     const event = envelope?.event;
     if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
       this.logger.warn('Malformed slack_event envelope — dropped', { eventId: envelope?.eventId });
+      return null;
+    }
+    // Room-join result (crewly#1430): the machine we asked says what it did.
+    if (envelope.roomJoinResult || (event.type as string) === SLACK_CLOUD_CONSTANTS.ROOM_JOIN_RESULT_EVENT_TYPE) {
+      const result = envelope.roomJoinResult;
+      if (!result || !result.slackChannelId) {
+        this.logger.warn('Malformed room-join result envelope — dropped', { eventId: envelope.eventId });
+        return null;
+      }
+      this.logger[result.ok ? 'info' : 'warn']('Room-join result from Cloud', { slackChannel: result.slackChannelId, instanceId: result.instanceId, ok: result.ok, joined: result.joined, rejected: result.rejected, ...(result.error ? { error: result.error } : {}) });
+      if (this.roomJoinResultHandler) {
+        void Promise.resolve(this.roomJoinResultHandler(result)).catch((err: unknown) => {
+          this.logger.warn('Room-join result handler failed', { error: err instanceof Error ? err.message : String(err) });
+        });
+      }
       return null;
     }
     // Room join (2026-10-13): another machine's orchestrator put some of our
@@ -2659,10 +2689,17 @@ export class SlackService extends EventEmitter {
    * @throws Error if the client is not initialized or upload fails
    */
   async uploadFile(options: FileUploadOptions): Promise<{ fileId?: string }> {
+    // `files.uploadV2` cannot carry a username or icon (a Slack API limit),
+    // so an agent without its own bot would arrive as the workspace app
+    // ("Crewly"). Post the file under the agent's name instead: an image in
+    // an image block, any other file (Kai's PDF, 2026-10-18) as its
+    // permalink. Either falls back to the plain upload in the same thread.
+    const isImage = PERSONA_IMAGE_EXT.test(options.filename || options.filePath);
     const asPersona =
-      !options.botToken && options.persona && PERSONA_IMAGE_EXT.test(options.filename || options.filePath)
-        ? await this.uploadImageAsPersona(options).catch((err) => {
-            this.logger.warn('Image post under the agent identity failed — uploading as the workspace app', {
+      !options.botToken && options.persona
+        ? await (isImage ? this.uploadImageAsPersona(options) : this.uploadFileAsPersona(options)).catch((err) => {
+            this.logger.warn('File post under the agent identity failed — uploading as the workspace app', {
+              kind: isImage ? 'image' : 'file',
               error: err instanceof Error ? err.message : String(err),
             });
             return null;
@@ -2671,6 +2708,42 @@ export class SlackService extends EventEmitter {
     const result = asPersona ?? (await this.uploadWithRetry(options, SLACK_FILE_UPLOAD_CONSTANTS));
     this.emitOutbound({ channelId: options.channelId, threadTs: options.threadTs, notAnAnswer: false, kind: 'file' });
     return result;
+  }
+
+  /**
+   * Upload a (non-image) file privately, then post its permalink in a
+   * message under the agent's name/icon. Slack shows the file in that
+   * message and shares it with the channel. Throws on any failure; the
+   * caller falls back to the plain upload.
+   *
+   * @param options - Upload options with `persona`
+   * @returns The uploaded file id
+   */
+  private async uploadFileAsPersona(options: FileUploadOptions): Promise<{ fileId?: string }> {
+    if (!this.client || !options.persona) throw new Error('Slack client not initialized');
+    const filename = options.filename || basename(options.filePath);
+    const uploaded = await this.client.files.uploadV2({
+      file: createReadStream(options.filePath),
+      filename,
+      ...(options.title ? { title: options.title } : {}),
+    });
+    const fileId = uploadedFileId(uploaded);
+    const permalink = uploadedFilePermalink(uploaded);
+    if (!fileId || !permalink) throw new Error('private upload returned no file id or permalink');
+    const { username, iconEmoji, iconUrl } = options.persona;
+    const link = `<${permalink}|${(options.title || filename).replace(/[<>|]/g, '')}>`;
+    await this.client.chat.postMessage({
+      channel: options.channelId,
+      text: options.initialComment ? `${options.initialComment}\n${link}` : link,
+      ...(options.threadTs ? { thread_ts: options.threadTs } : {}),
+      unfurl_links: true,
+      unfurl_media: true,
+      username,
+      ...(iconEmoji ? { icon_emoji: iconEmoji } : iconUrl ? { icon_url: iconUrl } : {}),
+    });
+    this.status.messagesSent++;
+    this.recordDeliveryOutcome(options.channelId, null);
+    return { fileId };
   }
 
   /**

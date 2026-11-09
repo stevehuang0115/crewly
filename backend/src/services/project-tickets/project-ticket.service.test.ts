@@ -43,6 +43,43 @@ describe('ProjectTicketService', () => {
     expect(ensureTracked).toHaveBeenCalledWith(project);
   });
 
+  describe('holds (crewly#1369)', () => {
+    it('sets and lifts a hold through update, with Log lines', async () => {
+      await svc.create(project, 'crewly', { title: 'Gmail approve-then-send' }, 'owner');
+      const held = await svc.update(project, 'CREW-1', { hold: '  owner: do not merge PR #1138 ' }, 'crewly-orc');
+      expect(held.hold).toBe('owner: do not merge PR #1138');
+      expect(held.log.slice(-1)[0]).toMatch(/ · crewly-orc · HOLD: owner: do not merge PR #1138$/);
+      const onDisk = await fs.readFile(held.filePath, 'utf8');
+      expect(onDisk).toContain('hold: "owner: do not merge PR #1138"');
+      const lifted = await svc.update(project, 'CREW-1', { hold: null }, 'owner');
+      expect(lifted.hold).toBeUndefined();
+      expect(lifted.log.slice(-1)[0]).toMatch(/ · owner · hold lifted$/);
+      expect(await fs.readFile(held.filePath, 'utf8')).not.toContain('hold:');
+    });
+
+    it('a new ticket about the same PR as a held ticket is held too and linked', async () => {
+      await svc.create(project, 'crewly', { title: 'Gmail approve-then-send card' }, 'owner');
+      await svc.appendLog(project, 'CREW-1', 'crewly-orc', 'HOLD: PR #1138: do not merge, do not ask Steve to merge');
+      const follow = await svc.create(project, 'crewly', { title: 'Decide the fate of OPEN PR #1138', description: 'janitor says wt-crew257 is unmerged' }, 'crewly-orc');
+      expect(follow.hold).toMatch(/^held by CREW-1: HOLD: PR #1138: do not merge/);
+      expect(follow.description).toMatch(/^ON HOLD \(CREW-1, matched on PR #1138\)/);
+      expect(follow.description).toContain('janitor says wt-crew257 is unmerged');
+      expect(follow.log.some((l) => /HOLD: linked to CREW-1 \(PR #1138\); allowed: close the PR and remove the worktree/.test(l))).toBe(true);
+      const root = await svc.get(project, 'CREW-1');
+      expect(root?.log.slice(-1)[0]).toContain('CREW-2 was opened about this work (PR #1138)');
+      // A third ticket through the linked one still names the root.
+      const third = await svc.create(project, 'crewly', { title: 'Close PR #1138' }, 'crewly-orc');
+      expect(third.hold).toMatch(/^held by CREW-1:/);
+    });
+
+    it('tickets about other work are not held', async () => {
+      await svc.create(project, 'crewly', { title: 'Gmail card' }, 'owner');
+      await svc.update(project, 'CREW-1', { hold: 'do not merge PR #1138' }, 'owner');
+      const other = await svc.create(project, 'crewly', { title: 'Fix PR #1140 lint', description: 'see CREW-1' }, 'owner');
+      expect(other.hold).toBeUndefined();
+    });
+  });
+
   it('checks git tracking only once per project', async () => {
     await svc.create(project, 'p', { title: 'a' }, 'owner');
     await svc.create(project, 'p', { title: 'b' }, 'owner');

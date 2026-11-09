@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
-import { isModelTier, parseTierModels, resolveTierModel, tierMapFor, tierRank } from './model-tier.utils.js';
+import { isModelTier, isTierChangeMode, leadChangesTiersItself, parseTierModels, resolveTierModel, tierChangeModeOf, tierMapFor, tierRank } from './model-tier.utils.js';
 
 describe('isModelTier / tierRank', () => {
   it('knows the three tiers', () => {
@@ -58,5 +58,20 @@ describe('parseTierModels', () => {
     expect(parseTierModels({ 'claude-code': { weak: 'a b' } }).ok).toBe(false);
     expect(parseTierModels([]).ok).toBe(false);
     expect(parseTierModels({ 'claude-code': 'haiku' }).ok).toBe(false);
+  });
+});
+
+describe('tier change mode', () => {
+  it('knows approve and auto, default approve', () => {
+    expect(isTierChangeMode('approve')).toBe(true);
+    expect(isTierChangeMode('auto')).toBe(true);
+    expect(isTierChangeMode('silent')).toBe(false);
+    expect(tierChangeModeOf({})).toBe('approve');
+    expect(tierChangeModeOf({ tierChangeMode: 'auto' })).toBe('auto');
+  });
+  it('auto applies only while Optimize usage is on', () => {
+    expect(leadChangesTiersItself({ optimizeUsage: true, tierChangeMode: 'auto' })).toBe(true);
+    expect(leadChangesTiersItself({ optimizeUsage: false, tierChangeMode: 'auto' })).toBe(false);
+    expect(leadChangesTiersItself({ optimizeUsage: true })).toBe(false);
   });
 });

@@ -10,8 +10,8 @@ import type { Team } from '../../types/index.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { TraceMetrics } from '../trace/trace-metrics.js';
 import type { ChatMessageDTO } from '../chat-v2/types.js';
-import { PROJECT_TICKET_CONSTANTS } from '../../constants.js';
-import { assignmentBackedBy, ongoingStallOf, teammatesOf, ticketLinkedIds, toStallMessage, type AssignmentTicket } from './stall-watcher.wiring.js';
+import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS } from '../../constants.js';
+import { assignmentBackedBy, ongoingStallOf, stallLeadFor, teammatesOf, ticketLinkedIds, toStallMessage, type AssignmentTicket } from './stall-watcher.wiring.js';
 
 const SAID = Date.parse('2026-10-16T23:54:00Z');
 const MIN = 60_000;
@@ -96,5 +96,17 @@ describe('teammatesOf', () => {
 		expect(teammatesOf(teams, 'ella')).toEqual([{ name: 'Pia', session: 'pia' }]);
 		expect(teammatesOf(teams, 'rex')).toEqual([]);
 		expect(teammatesOf(teams, 'nobody')).toEqual([]);
+	});
+});
+
+describe('stallLeadFor', () => {
+	const teams = [
+		{ id: 't1', name: 'FloPost', members: [{ id: '1', name: 'Ella', sessionName: 'ella', role: 'team-leader' }, { id: '2', name: 'Pia', sessionName: 'pia', role: 'member' }] },
+		{ id: 't2', name: 'Wang law', members: [{ id: '3', name: 'Owen', sessionName: 'owen', role: 'member' }] },
+	] as unknown as Team[];
+	it('is the team lead; the orchestrator when no lead runs here; nobody for the orchestrator (2026-10-22 audit)', () => {
+		expect(stallLeadFor(teams, 'pia')).toBe('ella');
+		expect(stallLeadFor(teams, 'owen')).toBe(ORCHESTRATOR_SESSION_NAME);
+		expect(stallLeadFor(teams, ORCHESTRATOR_SESSION_NAME)).toBeNull();
 	});
 });

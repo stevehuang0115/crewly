@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# gmail multi-action skill (v1.1.0) — 9 actions.
+# gmail multi-action skill (v1.2.0) — 9 actions.
 #
-# Email ops:           list, read, search, send
+# Email ops:           list, read, search, send (saves a draft; never sends)
 # Label management:    add-label, remove-label, list-labels
 # Status management:   mark-as-read, mark-as-unread
 #
@@ -14,7 +14,7 @@
 #   bash execute.sh '{"action":"list","q":"is:unread in:inbox","maxResults":10}'
 #   bash execute.sh '{"action":"read","id":"18fa..."}'
 #   bash execute.sh '{"action":"search","q":"from:a@b.com","maxResults":5}'
-#   bash execute.sh '{"action":"send","to":"a@b.com","subject":"Hi","body":"..."}'
+#   bash execute.sh '{"action":"send","to":"a@b.com","subject":"Hi","body":"..."}'   # -> a draft in the account's Drafts
 #   bash execute.sh '{"action":"list-labels"}'
 #   bash execute.sh '{"action":"add-label","id":"18fa...","labelId":"Label_5"}'
 #   bash execute.sh '{"action":"remove-label","id":"18fa...","labelId":"Label_5"}'
@@ -23,7 +23,7 @@
 #
 # Env (injected by the executor):
 #   CREWLY_CRED_GMAIL_ACCESS_TOKEN  — OAuth access token (required)
-#   CREWLY_CRED_GMAIL_EMAIL         — account email (used as From: for send)
+#   CREWLY_CRED_GMAIL_EMAIL         — account email (used as From: on the draft)
 #
 # Required scope: https://www.googleapis.com/auth/gmail.modify (covers all 9 actions)
 #
@@ -407,16 +407,19 @@ print(raw)
         "Failed to encode MIME message"
     fi
 
-    SEND_BODY=$(jq -nc --arg raw "$RAW" '{raw:$raw}')
-    gmail_call SEND_RESP POST "/messages/send" "$SEND_BODY"
+    # An agent's send is always a draft (crewly#894, the rule #999 set for
+    # gmail-send): the message lands in the account's Drafts and only the
+    # owner sends it. drafts.create takes the same raw MIME as messages.send.
+    SEND_BODY=$(jq -nc --arg raw "$RAW" '{message:{raw:$raw}}')
+    gmail_call SEND_RESP POST "/drafts" "$SEND_BODY"
     if [ "${_LAST_HTTP:-}" != "200" ]; then
       MSG=$(api_error_message "$SEND_RESP")
       emit_error 2 \
-        "Error: Gmail API returned status ${_LAST_HTTP:-?} when sending message: ${MSG}" \
+        "Error: Gmail API returned status ${_LAST_HTTP:-?} when saving the draft: ${MSG}" \
         "Gmail API error (HTTP ${_LAST_HTTP:-?}): ${MSG}"
     fi
 
-    OUT=$(printf '%s' "$SEND_RESP" | jq -c '{success:true, id:.id, threadId:.threadId}')
+    OUT=$(printf '%s' "$SEND_RESP" | jq -c '{success:true, draft:true, id:.id, messageId:.message.id, threadId:.message.threadId, note:"Saved as a draft in the account\u0027s Drafts folder; only the owner sends it."}')
     emit_success "$OUT"
     ;;
 

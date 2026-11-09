@@ -91,6 +91,27 @@ export interface TeamRecommendation {
 // =============================================================================
 
 /**
+ * A template onboarding may recommend besides the hardcoded mappings — on a
+ * Crewly Pro install, the paid templates from `CREWLY_TEMPLATE_DIRS`. Only
+ * the fields matching and the proposal need; a `TeamTemplate` fits.
+ */
+export interface CatalogTemplate {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly tags?: readonly string[];
+  readonly roles: readonly {
+    readonly role: string;
+    readonly label: string;
+    readonly jobDescription?: string;
+    readonly defaultSkills: readonly string[];
+  }[];
+}
+
+/** Most agents a catalog template's proposal lists (the spec's 2–4). */
+const CATALOG_MAX_AGENTS = 4;
+
+/**
  * Match strategy for one hardcoded mapping. We score each mapping
  * against the input by counting keyword hits in the industry string +
  * task names; the highest score wins. Ties break by mapping order
@@ -341,7 +362,11 @@ const HARDCODED_MAPPINGS: readonly HardcodedMapping[] = [
  * the conversation can keep moving even if discovery captured nothing
  * useful.
  *
+ * A `catalog` template (Crewly Pro's, via `CREWLY_TEMPLATE_DIRS`) wins when
+ * its tags match more of the context than the best hardcoded mapping.
+ *
  * @param ctx - Business context collected during phases 1–3.
+ * @param catalog - Extra templates to consider (default: none)
  * @returns A team recommendation ready for phase 4.
  *
  * @example
@@ -357,7 +382,10 @@ const HARDCODED_MAPPINGS: readonly HardcodedMapping[] = [
  * // → templateId: 'growth-marketing-team', 2 agents, …
  * ```
  */
-export function recommendTeam(ctx: BusinessContext): TeamRecommendation {
+export function recommendTeam(
+  ctx: BusinessContext,
+  catalog: readonly CatalogTemplate[] = [],
+): TeamRecommendation {
   const haystack = buildHaystack(ctx);
 
   let bestScore = 0;
@@ -369,6 +397,21 @@ export function recommendTeam(ctx: BusinessContext): TeamRecommendation {
       bestScore = score;
       best = mapping;
     }
+  }
+
+  // A catalog template must match strictly better than the built-in pick
+  // (and at least once), so free installs and weak matches don't change.
+  let bestTemplate: CatalogTemplate | null = null;
+  for (const template of catalog) {
+    const score = scoreTemplate(template, haystack);
+    if (score > bestScore && template.roles.length > 0) {
+      bestScore = score;
+      bestTemplate = template;
+    }
+  }
+
+  if (bestTemplate) {
+    return fromCatalogTemplate(bestTemplate);
   }
 
   if (best && bestScore > 0) {
@@ -438,6 +481,38 @@ function scoreMapping(mapping: HardcodedMapping, haystack: string): number {
     if (haystack.includes(kw)) score += 1;
   }
   return score;
+}
+
+/**
+ * Count how many of a catalog template's tags appear in the haystack as whole
+ * words ("ai" does not match "email"). A kebab-case tag also matches with
+ * spaces ("social-media" ↔ "social media").
+ */
+function scoreTemplate(template: CatalogTemplate, haystack: string): number {
+  let score = 0;
+  for (const tag of template.tags ?? []) {
+    const kw = tag.toLowerCase().trim();
+    if (!kw) continue;
+    const words = kw.split(/[-\s]+/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    if (new RegExp(`(?<![\\p{L}\\p{N}])${words.join('[-\\s]+')}(?![\\p{L}\\p{N}])`, 'u').test(haystack)) score += 1;
+  }
+  return score;
+}
+
+/**
+ * Turn a matched catalog template into the proposal shown in phase 4.
+ */
+function fromCatalogTemplate(template: CatalogTemplate): TeamRecommendation {
+  return {
+    templateId: template.id,
+    agents: template.roles.slice(0, CATALOG_MAX_AGENTS).map((r) => ({
+      role: r.role,
+      responsibilities: r.jobDescription ?? r.label,
+      skillIds: [...r.defaultSkills],
+    })),
+    reasoning: `${template.name}: ${template.description}`,
+    source: `template:${template.id}`,
+  };
 }
 
 // =============================================================================

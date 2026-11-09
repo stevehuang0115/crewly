@@ -29,15 +29,19 @@ export interface TierDraft {
 /** A change the owner applied, and what the quality guard found. */
 export interface AppliedTierChange extends TierChangeEntry {
   appliedAt: string;
+  /** The approving decision, or the batch id of a change applied without a card (auto mode) */
   decisionId: string;
   /** Send-back stats over the member's last settled items before the change */
   baseline: QualityStats;
   /**
    * `watching` — a lowered member, not judged yet; `ok` — judged, no worse;
-   * `revert_proposed` — worse, a revert card went to the owner; `expired` —
-   * too few items within the watch window; `not_watched` — raised or same rank.
+   * `revert_proposed` — worse, a revert card went to the owner;
+   * `auto_reverted` — worse, moved back at once (auto mode) and the owner told;
+   * `undone` — the owner tapped Undo on the auto-mode notice; `expired` —
+   * too few items within the watch window; `not_watched` — raised or same
+   * rank, or a revert / undo.
    */
-  guard: 'watching' | 'ok' | 'revert_proposed' | 'expired' | 'not_watched';
+  guard: 'watching' | 'ok' | 'revert_proposed' | 'auto_reverted' | 'undone' | 'expired' | 'not_watched';
   guardDecisionId?: string;
   guardCheckedAt?: string;
   guardAfter?: QualityStats;

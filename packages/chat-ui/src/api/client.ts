@@ -26,6 +26,10 @@ import type {
   Message,
   AgentPresence,
   ChatWebsocketEvent,
+  ChannelReadState,
+  UnreadSummary,
+  ChatSearchHit,
+  ChatSearchOptions,
 } from '../types/chat.types';
 import {
   channelFromDTO,
@@ -74,9 +78,33 @@ export interface ChatApiClient {
   createChannel(input: CreateChannelInput): Promise<Channel>;
   /** Create an ad-hoc multi-agent group chat ("拉群"). */
   createHuddle(input: CreateHuddleInput): Promise<Channel>;
+  /**
+   * Private channels (#1400): rename a group chat or team channel, or replace
+   * a group chat's roster. Optional so older transports keep satisfying the
+   * contract; callers must check before use.
+   */
+  renameChannel?(channelId: string, name: string): Promise<Channel>;
+  setHuddleMembers?(channelId: string, memberSessions: string[]): Promise<Channel>;
   listMessages(channelId: string, opts?: { cursor?: string; limit?: number }): Promise<MessagePage>;
   sendMessage(channelId: string, input: SendMessageInput): Promise<Message>;
   getAgentPresence(agentId: string): Promise<AgentPresence>;
+  /**
+   * Owner read state (#1400). Optional so transports that predate it (and the
+   * Cloud portal's relay client until it adds them) keep satisfying the
+   * contract; callers must check before use.
+   *
+   * `markChannelRead` is forward-only (`seq` omitted = everything);
+   * `markChannelUnread` sets the marker to `seq - 1` and may move backward.
+   */
+  markChannelRead?(channelId: string, seq?: number): Promise<ChannelReadState>;
+  markChannelUnread?(channelId: string, seq: number): Promise<ChannelReadState>;
+  /** Total unread plus the channels that have any. */
+  getUnread?(): Promise<UnreadSummary>;
+  /**
+   * Cross-conversation keyword search (#1400). Every whitespace-separated
+   * word must appear; hits come newest first. Optional for the same reason.
+   */
+  searchMessages?(query: string, opts?: ChatSearchOptions): Promise<ChatSearchHit[]>;
   subscribeToChannel(
     channelId: string,
     onEvent: (event: ChatWebsocketEvent) => void,
@@ -300,6 +328,22 @@ export class HttpChatApiClient implements ChatApiClient {
     return channelFromDTO(dto);
   }
 
+  async renameChannel(channelId: string, name: string): Promise<Channel> {
+    const dto = await this.request<ChannelDTO>(`/api/chat/channels/${encodeURIComponent(channelId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    });
+    return channelFromDTO(dto);
+  }
+
+  async setHuddleMembers(channelId: string, memberSessions: string[]): Promise<Channel> {
+    const dto = await this.request<ChannelDTO>(
+      `/api/chat/channels/${encodeURIComponent(channelId)}/members`,
+      { method: 'PUT', body: JSON.stringify({ memberSessions }) },
+    );
+    return channelFromDTO(dto);
+  }
+
   async listMessages(
     channelId: string,
     opts: { cursor?: string; limit?: number } = {},
@@ -390,6 +434,35 @@ export class HttpChatApiClient implements ChatApiClient {
     if (!confirmed.clientMessageId) confirmed.clientMessageId = clientMessageId;
     this.emitLocal(channelId, { type: 'message', channelId, message: confirmed });
     return confirmed;
+  }
+
+  async markChannelRead(channelId: string, seq?: number): Promise<ChannelReadState> {
+    return this.request<ChannelReadState>(
+      `/api/chat/channels/${encodeURIComponent(channelId)}/read`,
+      { method: 'POST', body: JSON.stringify(seq === undefined ? {} : { seq }) },
+    );
+  }
+
+  async markChannelUnread(channelId: string, seq: number): Promise<ChannelReadState> {
+    return this.request<ChannelReadState>(
+      `/api/chat/channels/${encodeURIComponent(channelId)}/unread`,
+      { method: 'POST', body: JSON.stringify({ seq }) },
+    );
+  }
+
+  async getUnread(): Promise<UnreadSummary> {
+    return this.request<UnreadSummary>('/api/chat/unread');
+  }
+
+  async searchMessages(query: string, opts: ChatSearchOptions = {}): Promise<ChatSearchHit[]> {
+    const qs = new URLSearchParams({ q: query });
+    if (opts.channel) qs.set('channel', opts.channel);
+    if (opts.from) qs.set('from', opts.from);
+    if (opts.to) qs.set('to', opts.to);
+    if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+    if (opts.session) qs.set('session', opts.session);
+    const data = await this.request<{ count: number; hits: ChatSearchHit[] }>(`/api/chat/search?${qs.toString()}`);
+    return data.hits;
   }
 
   async getAgentPresence(agentId: string): Promise<AgentPresence> {

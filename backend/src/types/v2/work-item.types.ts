@@ -380,6 +380,56 @@ export function isExplicitlyBlocked(wi: Pick<WorkItem, 'status' | 'blockSource'>
 }
 
 /**
+ * Metadata key holding the ISO 8601 time at which an explicit block lifts on
+ * its own (block-task `until`). Absent for a block that waits for an explicit
+ * unblock.
+ */
+export const WORK_ITEM_BLOCKED_UNTIL_KEY = 'blockedUntil';
+
+/**
+ * The time an explicit block lifts on its own, as epoch milliseconds.
+ *
+ * @param wi - WorkItem (metadata)
+ * @returns The parsed `blockedUntil` time, or null when the block has none or it does not parse
+ *
+ * @example
+ * ```typescript
+ * const until = blockedUntilOf(wi); // 1793090600000 or null
+ * ```
+ */
+export function blockedUntilOf(wi: Pick<WorkItem, 'metadata'>): number | null {
+  const raw = wi.metadata?.[WORK_ITEM_BLOCKED_UNTIL_KEY];
+  if (typeof raw !== 'string') return null;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Whether an explicitly blocked WorkItem's `until` time has passed, so the
+ * block lifts and the item returns to `queued` for the same target.
+ *
+ * Only an explicit block with a `blockedUntil` can be due: a system block, a
+ * waiting_on_human park, or an explicit block without a time is never due.
+ *
+ * @param wi - WorkItem (status, blockSource, metadata)
+ * @param nowMs - The current time (epoch ms); defaults to now
+ * @returns True when the block was given an `until` and that time is not in the future
+ *
+ * @example
+ * ```typescript
+ * if (isBlockedUntilReached(wi)) requeue(wi); // reconciler: the agent asked for this
+ * ```
+ */
+export function isBlockedUntilReached(
+  wi: Pick<WorkItem, 'status' | 'blockSource' | 'metadata'>,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!isExplicitlyBlocked(wi)) return false;
+  const until = blockedUntilOf(wi);
+  return until !== null && until <= nowMs;
+}
+
+/**
  * Whether a WorkItem was parked because its agent is waiting on a human (#815).
  *
  * @param wi - WorkItem (status + blockSource)

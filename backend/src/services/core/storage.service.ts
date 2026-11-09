@@ -48,6 +48,26 @@ export type StorageEvent =
 
 export type StorageListener = (event: StorageEvent) => Promise<void> | void;
 
+/** Options of {@link StorageService.saveProject}. */
+export interface SaveProjectOptions {
+  /** `'replace'`: this write owns `ticketAutopilot` and may change it; otherwise the stored settings are kept */
+  ticketAutopilot?: 'replace';
+  /** Who writes, for the log (default: the calling function, from the stack) */
+  caller?: string;
+}
+
+/**
+ * The calling function of `saveProject`, read from a stack trace.
+ *
+ * @param stack - `new Error().stack` taken inside `saveProject`
+ * @returns A short "function (file:line)" label, or 'unknown'
+ */
+function callerFromStack(stack: string | undefined): string {
+  const frames = (stack ?? '').split('\n').slice(1).map((l) => l.trim()).filter((l) => l.startsWith('at '));
+  const frame = frames.find((l) => !l.includes('saveProject') && !l.includes('storage.service')) ?? '';
+  return frame.replace(/^at /, '').replace(/\(?.*\/([^/]+:\d+):\d+\)?$/, (m, f) => f).trim() || 'unknown';
+}
+
 export class StorageService {
   private static instance: StorageService | null = null;
   private static instanceHome: string | null = null;
@@ -955,52 +975,94 @@ export class StorageService {
     }
   }
 
-  async saveProject(project: Project): Promise<void> {
-    try {
-      const projects = await this.getProjects();
-      const existingIndex = projects.findIndex(p => p.id === project.id);
-      const isUpdate = existingIndex >= 0;
+  /**
+   * Save one project record.
+   *
+   * Writes are serialised and re-read the file inside the lock, and the
+   * stored `ticketAutopilot` settings survive any caller that does not own
+   * them: a record loaded earlier (before an await, or at boot) must not
+   * write an old budget back over the owner's newer one (crewly#1099). Only
+   * the autopilot passes `ticketAutopilot: 'replace'`. Every change to the
+   * autopilot's daily budget is logged with its caller and old → new value.
+   *
+   * @param project - The record to write
+   * @param opts - `ticketAutopilot: 'replace'` lets this write change the autopilot settings; `caller` names who writes (for the log)
+   */
+  async saveProject(project: Project, opts: SaveProjectOptions = {}): Promise<void> {
+    // Captured here, before the lock: inside it the stack no longer shows who called.
+    const callerFromCall = opts.caller ?? callerFromStack(new Error().stack);
+    return withOperationLock(this.projectsFile, async () => {
+      try {
+        const projects = await this.getProjects();
+        const existingIndex = projects.findIndex(p => p.id === project.id);
+        const isUpdate = existingIndex >= 0;
+        const caller = callerFromCall;
+        let toWrite: Project = project;
 
-      if (isUpdate) {
-        projects[existingIndex] = project;
-      } else {
-        projects.push(project);
+        if (isUpdate) {
+          const stored = projects[existingIndex].ticketAutopilot;
+          if (opts.ticketAutopilot !== 'replace') {
+            const { ticketAutopilot: incoming, ...rest } = project;
+            toWrite = stored ? { ...rest, ticketAutopilot: stored } : rest;
+            if (incoming?.dailyBudgetTokens !== stored?.dailyBudgetTokens) {
+              this.logger.warn('Ignored a stale ticketAutopilot budget on project save (kept the stored value)', {
+                projectId: project.id,
+                caller,
+                storedBudgetTokens: stored?.dailyBudgetTokens ?? null,
+                staleBudgetTokens: incoming?.dailyBudgetTokens ?? null,
+              });
+            }
+          }
+          const before = stored?.dailyBudgetTokens ?? null;
+          const after = toWrite.ticketAutopilot?.dailyBudgetTokens ?? null;
+          if (before !== after) {
+            this.logger.info('Ticket autopilot daily budget changed', { projectId: project.id, caller, from: before, to: after });
+          }
+          projects[existingIndex] = toWrite;
+        } else {
+          if (project.ticketAutopilot?.dailyBudgetTokens !== undefined) {
+            this.logger.info('Ticket autopilot daily budget changed', { projectId: project.id, caller, from: null, to: project.ticketAutopilot.dailyBudgetTokens });
+          }
+          projects.push(project);
+        }
+
+        // A1: integrity-guarded write — refuses to wipe out all projects
+        // unless the caller explicitly opts in (delete path uses
+        // allowExplicitDelete).
+        await atomicWriteJsonWithGuard(this.projectsFile, projects, {
+          countOf: (arr) => (Array.isArray(arr) ? arr.length : 0),
+        });
+
+        this.logger.info('Project saved successfully', {
+          projectId: project.id,
+          projectName: project.name,
+          action: isUpdate ? 'updated' : 'created',
+          totalProjects: projects.length,
+          filePath: this.projectsFile,
+        });
+      } catch (error) {
+        this.logger.error('Error saving project', {
+          projectId: project.id,
+          projectName: project.name,
+          error: error instanceof Error ? error.message : String(error),
+          filePath: this.projectsFile,
+        });
+        throw error;
       }
-
-      // A1: integrity-guarded write — refuses to wipe out all projects
-      // unless the caller explicitly opts in (delete path uses
-      // allowExplicitDelete).
-      await atomicWriteJsonWithGuard(this.projectsFile, projects, {
-        countOf: (arr) => (Array.isArray(arr) ? arr.length : 0),
-      });
-
-      this.logger.info('Project saved successfully', {
-        projectId: project.id,
-        projectName: project.name,
-        action: isUpdate ? 'updated' : 'created',
-        totalProjects: projects.length,
-        filePath: this.projectsFile,
-      });
-    } catch (error) {
-      this.logger.error('Error saving project', {
-        projectId: project.id,
-        projectName: project.name,
-        error: error instanceof Error ? error.message : String(error),
-        filePath: this.projectsFile,
-      });
-      throw error;
-    }
+    });
   }
 
   async deleteProject(id: string): Promise<void> {
-    try {
-      const projects = await this.getProjects();
-      const filteredProjects = projects.filter(p => p.id !== id);
-      await atomicWriteFile(this.projectsFile, JSON.stringify(filteredProjects, null, 2));
-    } catch (error) {
-      this.logger.error('Error deleting project', { error: error instanceof Error ? error.message : String(error) });
-      throw error;
-    }
+    return withOperationLock(this.projectsFile, async () => {
+      try {
+        const projects = await this.getProjects();
+        const filteredProjects = projects.filter(p => p.id !== id);
+        await atomicWriteFile(this.projectsFile, JSON.stringify(filteredProjects, null, 2));
+      } catch (error) {
+        this.logger.error('Error deleting project', { error: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
+    });
   }
 
   // File watching

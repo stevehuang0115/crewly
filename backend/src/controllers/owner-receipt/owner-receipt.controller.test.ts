@@ -6,6 +6,7 @@ import express from 'express';
 import request from 'supertest';
 import { createRequest } from '../../types/v2/request.types.js';
 import { OwnerReceiptService, setOwnerReceiptService } from '../../services/v3/owner-receipt/owner-receipt.service.js';
+import { rollupPulls } from '../../services/v3/owner-receipt/owner-pulls-weekly.js';
 import { createOwnerReceiptRouter } from './owner-receipt.routes.js';
 import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
@@ -109,5 +110,72 @@ describe('POST /api/owner-receipt/send', () => {
   it('refuses an agent', async () => {
     expect((await request(app).post('/api/owner-receipt/send').set('X-Agent-Session', 'ella')).status).toBe(403);
     expect(sent).toHaveLength(0);
+  });
+});
+
+describe('GET /api/owner-receipt/pulls', () => {
+  it('returns the weekly rollup and its line', async () => {
+    setOwnerReceiptService(
+      new OwnerReceiptService({
+        listRequests: async () => [],
+        listWorkItems: async () => [],
+        loadTeamIndex: async () => new Map(),
+        loadPullsWeekly: async (now) => rollupPulls([{ at: '2026-09-25T15:00:00Z', kind: 'review', team: 'CE', outcome: 'open' }], now),
+        statePath: null,
+        now: () => NOW,
+      }),
+    );
+    const res = await request(app).get('/api/owner-receipt/pulls');
+    expect(res.status).toBe(200);
+    expect(res.body.data.pulls.thisWeek.byKind.review).toBe(1);
+    expect(res.body.data.text).toContain('*Pulled you in 1 time this week*');
+  });
+
+  it('refuses an agent (it could game the number)', async () => {
+    const res = await request(app).get('/api/owner-receipt/pulls').set('X-Agent-Session', 'crewly-a-sam');
+    expect(res.status).toBe(403);
+  });
+
+  it('503s when the weekly rollup is not wired, or the service is not ready', async () => {
+    expect((await request(app).get('/api/owner-receipt/pulls')).status).toBe(503);
+    setOwnerReceiptService(null);
+    expect((await request(app).get('/api/owner-receipt/pulls')).status).toBe(503);
+  });
+});
+
+describe('GET /api/owner-receipt/spot-check', () => {
+  it('returns the run and its line, with the WorkItem id in the data only', async () => {
+    setOwnerReceiptService(
+      new OwnerReceiptService({
+        listRequests: async () => [],
+        listWorkItems: async () => [],
+        loadTeamIndex: async () => new Map(),
+        loadSpotCheck: async () => ({
+          at: NOW.toISOString(),
+          eligible: 1,
+          sampled: 1,
+          artifactsChecked: 1,
+          skipped: 0,
+          worktreeCleaned: 0,
+          discrepancies: [{ workItemId: 'wi-1', team: 'CE', artifactPath: '/tmp/a.md' }],
+        }),
+        statePath: null,
+        now: () => NOW,
+      }),
+    );
+    const res = await request(app).get('/api/owner-receipt/spot-check');
+    expect(res.status).toBe(200);
+    expect(res.body.data.spotCheck.discrepancies[0].workItemId).toBe('wi-1');
+    expect(res.body.data.text).toContain('1 sampled, 1 discrepancy');
+    expect(res.body.data.text).not.toContain('wi-1');
+  });
+
+  it('503s when not wired, or the service is not ready', async () => {
+    setOwnerReceiptService(
+      new OwnerReceiptService({ listRequests: async () => [], listWorkItems: async () => [], loadTeamIndex: async () => new Map(), statePath: null, now: () => NOW }),
+    );
+    expect((await request(app).get('/api/owner-receipt/spot-check')).status).toBe(503);
+    setOwnerReceiptService(null);
+    expect((await request(app).get('/api/owner-receipt/spot-check')).status).toBe(503);
   });
 });

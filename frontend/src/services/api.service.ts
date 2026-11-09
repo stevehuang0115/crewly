@@ -6,7 +6,7 @@
  */
 
 import axios from 'axios';
-import { Project, Team, ModelTier, TeamModelTierSettings, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, CloudStatus, CloudConnectResult, SessionUsageSummary, TaskUsageSummary, ExpertSummary } from '../types';
+import { Project, Team, ModelTier, TierChangeMode, TeamModelTierSettings, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, CloudStatus, CloudConnectResult, SessionUsageSummary, TaskUsageSummary, ExpertSummary } from '../types';
 import type { CronTask, CreateCronTaskRequest, UpdateCronTaskRequest, TeamAgentStatusFile } from '../types/cron-task.types';
 import type { AuthTokenResponse, UserProfile, LicenseStatus } from '../types/auth.types';
 import type {
@@ -255,11 +255,11 @@ class ApiService {
    * Change "Optimize usage" or members' tiers (owner only).
    *
    * @param teamId - Team id
-   * @param patch - `{ optimizeUsage?, memberTiers?: { memberId: tier | '' } }`
+   * @param patch - `{ optimizeUsage?, tierChangeMode?, memberTiers?: { memberId: tier | '' } }`
    * @returns The new settings
    * @throws Error with the server's message when refused
    */
-  async updateTeamModelTiers(teamId: string, patch: { optimizeUsage?: boolean; memberTiers?: Record<string, ModelTier | ''> }): Promise<TeamModelTierSettings> {
+  async updateTeamModelTiers(teamId: string, patch: { optimizeUsage?: boolean; tierChangeMode?: TierChangeMode; memberTiers?: Record<string, ModelTier | ''> }): Promise<TeamModelTierSettings> {
     try {
       const response = await axios.put<ApiResponse<TeamModelTierSettings>>(`${API_BASE}/teams/${encodeURIComponent(teamId)}/model-tiers`, patch);
       this.invalidateTeamsCache();

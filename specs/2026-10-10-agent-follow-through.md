@@ -30,3 +30,17 @@ where the videos were. Nothing tracked the request.
   queue (`releaseBack`) and an open intent is parked as a WorkItem, so the next start redelivers them.
 
 Off switch: `CREWLY_FOLLOW_THROUGH=off` (guard only).
+
+## Addendum (2026-10-26): a memory-pressure stop is not undone six seconds later
+
+The idle stop and the emergency stop under memory pressure stop an idle agent that owes work to free memory. Three
+wake paths then brought it straight back — the queued-message wake 5 s after it went down, the reconciler's start
+wake for the item it had just released, and the follow-through restart above — so the stop freed nothing and cost a
+cold start and a rebuilt context (Ella 01:02, Vera 03:07 and 03:40, 2026-10-26). The reconciler also wrote the
+released brief into the dying session (HTTP 500).
+
+`services/agent/memory-stop-hold.ts`: both stop paths note the session before the kill. While the machine stays in
+resource *pressure* mode (`ResourceModeService.getMode()`), and for at most `MAX_HOLD_MS` (30 min, a wedge guard),
+the queued-message wake, the periodic queued-wake sweep, the deferred-start retry and the reconciler's start and
+redeliver wakes leave the agent down (`skipped`, not failed; the retry keeps polling and starts it within ~2 min of
+pressure clearing). Any start clears the note (`createAgentSession`): an owner start is never held.

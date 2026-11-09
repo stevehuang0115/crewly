@@ -16,7 +16,8 @@ import {
   getSlackInstanceRegistryService,
   setSlackInstanceRegistryService,
 } from './slack-instance-registry.service.js';
-import { SLACK_CLOUD_CONSTANTS } from '../../constants.js';
+import { NETWORK_STATUS_CONSTANTS, SLACK_CLOUD_CONSTANTS } from '../../constants.js';
+import { NetworkStatusService } from '../core/network-status.service.js';
 
 jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
@@ -138,6 +139,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   setSlackInstanceRegistryService(null);
+  NetworkStatusService.resetInstance();
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
@@ -241,6 +243,21 @@ describe('heartbeat', () => {
     expect(JSON.parse(init.body)).toMatchObject({ deviceName: 'steve-mbp', relayQueueId: 'queue-abc', crewlyVersion: '1.16.0' });
     expect(service.getInstanceId()).toBe('device-1');
     expect(service.getLastHeartbeatAt()).toBe(new Date(1_800_000_000_000).toISOString());
+  });
+
+  it('feeds the offline breaker from the raw fetch error and clears it on the next answer (#1463)', async () => {
+    const cause = Object.assign(new Error('getaddrinfo ENOTFOUND api.crewlyai.com'), { code: 'ENOTFOUND' });
+    fetchMock.mockRejectedValue(Object.assign(new TypeError('fetch failed'), { cause }));
+    const service = makeService();
+    for (let i = 0; i < NETWORK_STATUS_CONSTANTS.OFFLINE_AFTER_FAILURES; i++) {
+      expect(await service.heartbeat()).toBe(false);
+    }
+    expect(NetworkStatusService.getInstance().isOffline()).toBe(true);
+    expect(service.getLastError()).toContain('Cloud unreachable');
+
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: {} }));
+    expect(await service.heartbeat()).toBe(true);
+    expect(NetworkStatusService.getInstance().isOffline()).toBe(false);
   });
 
   it('skips when not signed in to Cloud or before the relay queue exists', async () => {
@@ -523,6 +540,17 @@ describe('routing log', () => {
   it('throws when Cloud refuses', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: false, error: 'nope', code: 'x' }, 500));
     await expect(makeService().routingDecisions({ channel: 'C1', since: new Date(0) })).rejects.toThrow('nope');
+  });
+});
+
+describe('room join result (reporter, crewly#1430)', () => {
+  it('POSTs the outcome to Cloud with our own instance id', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: {} }));
+    await makeService().reportRoomJoin({ slackChannelId: 'C0ABC12345', slackChannelName: 'ce-growth', requesterInstanceId: 'device-2', ok: false, joined: [], rejected: ['wang-lead'], error: 'no_local_members' });
+    const [call] = calls();
+    expect(call.method).toBe('POST');
+    expect(call.url).toBe('https://api.crewlyai.com/api/cloud/slack/rooms/join/result');
+    expect(call.body).toEqual({ slackChannelId: 'C0ABC12345', slackChannelName: 'ce-growth', requesterInstanceId: 'device-2', ok: false, joined: [], rejected: ['wang-lead'], error: 'no_local_members', instanceId: 'device-1' });
   });
 });
 

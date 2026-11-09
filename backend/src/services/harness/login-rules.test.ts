@@ -1,11 +1,12 @@
 /**
- * Tests for the login rules, against terminal output captured on 2026-09-25:
- * Claude Code 2.1.282 `claude setup-token` (space-stripped TUI text, URL
- * wrapped at the terminal width) and codex-cli 0.156.1 `codex login --device-auth`.
+ * Tests for the login rules, against terminal output captured from the real
+ * CLIs: Claude Code `claude auth login` (2.1.302 on 2026-10-17, and the older
+ * space-stripped, wrapped-URL TUI text of 2026-09-25) and codex-cli 0.156.1
+ * `codex login --device-auth`.
  */
 
 import {
-	CLAUDE_SETUP_TOKEN_RULES,
+	CLAUDE_AUTH_LOGIN_RULES,
 	CODEX_DEVICE_AUTH_RULES,
 	evaluateLoginRules,
 	extractUrlCandidates,
@@ -24,10 +25,10 @@ const CLAUDE_URL =
 /** Where the TUI wrapped the URL (right after `scope=user%3`), as in the capture. */
 const WRAP_AT = CLAUDE_URL.indexOf('Ainference');
 
-/** A long-lived token the way `setup-token` prints it (fake value). */
+/** A token-shaped value (fake). Crewly must never capture one. */
 const CLAUDE_TOKEN = `sk-ant-oat01-${'AbCdEf0123456789_-'.repeat(5)}XyZ-AA`;
 
-/** Captured `claude setup-token` screen: spaces stripped by the TUI, URL wrapped. */
+/** Captured Claude sign-in screen: spaces stripped by the TUI, URL wrapped. */
 const CLAUDE_CAPTURE_SPACELESS = [
 	'Openingbrowsertosignin…',
 	'',
@@ -136,15 +137,15 @@ describe('extractWrappedRuns', () => {
 	});
 });
 
-describe('Claude setup-token rules (captured output)', () => {
+describe('Claude auth login rules (captured output)', () => {
 	it('reconstructs the wrapped URL from the space-stripped capture', () => {
-		const match = evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, normalizeTerminalOutput(CLAUDE_CAPTURE_SPACELESS));
+		const match = evaluateLoginRules(CLAUDE_AUTH_LOGIN_RULES, normalizeTerminalOutput(CLAUDE_CAPTURE_SPACELESS));
 		expect(match.url).toBe(CLAUDE_URL);
 		expect(match.url).toContain('scope=user%3Ainference');
 	});
 
 	it('detects the paste prompt in space-stripped text', () => {
-		const match = evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, normalizeTerminalOutput(CLAUDE_CAPTURE_SPACELESS));
+		const match = evaluateLoginRules(CLAUDE_AUTH_LOGIN_RULES, normalizeTerminalOutput(CLAUDE_CAPTURE_SPACELESS));
 		expect(match.needsInput).toBe(true);
 		expect(match.succeeded).toBe(false);
 		expect(match.failureMessage).toBeNull();
@@ -152,75 +153,77 @@ describe('Claude setup-token rules (captured output)', () => {
 	});
 
 	it('handles the normally spaced screen too', () => {
-		const match = evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, normalizeTerminalOutput(CLAUDE_CAPTURE_SPACED));
+		const match = evaluateLoginRules(CLAUDE_AUTH_LOGIN_RULES, normalizeTerminalOutput(CLAUDE_CAPTURE_SPACED));
 		expect(match.url).toBe(CLAUDE_URL);
 		expect(match.needsInput).toBe(true);
 	});
 
 	it('handles ANSI-decorated output with cursor-forward spacing', () => {
 		const raw = `\x1b[2mPaste\x1b[1Ccode\x1b[1Chere\x1b[1Cif\x1b[1Cprompted\x1b[1C>\x1b[0m`;
-		const match = evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, normalizeTerminalOutput(`\x1b[36m${CLAUDE_URL}\x1b[0m\r\n${raw}`));
+		const match = evaluateLoginRules(CLAUDE_AUTH_LOGIN_RULES, normalizeTerminalOutput(`\x1b[36m${CLAUDE_URL}\x1b[0m\r\n${raw}`));
 		expect(match.url).toBe(CLAUDE_URL);
 		expect(match.needsInput).toBe(true);
 	});
 
 	it('does not expose a URL that is cut off mid-chunk', () => {
 		const partial = CLAUDE_CAPTURE_SPACELESS.slice(0, CLAUDE_CAPTURE_SPACELESS.indexOf('Ainference') + 5);
-		expect(evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, normalizeTerminalOutput(partial)).url).toBeNull();
+		expect(evaluateLoginRules(CLAUDE_AUTH_LOGIN_RULES, normalizeTerminalOutput(partial)).url).toBeNull();
 		const upToWrap = CLAUDE_CAPTURE_SPACELESS.slice(0, CLAUDE_CAPTURE_SPACELESS.indexOf('Ainference'));
-		expect(evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, normalizeTerminalOutput(upToWrap)).url).toBeNull();
+		expect(evaluateLoginRules(CLAUDE_AUTH_LOGIN_RULES, normalizeTerminalOutput(upToWrap)).url).toBeNull();
 	});
 
 	it('picks the URL from an OSC 8 hyperlink', () => {
 		const raw = `\x1b]8;;${CLAUDE_URL}\x07sign in\x1b]8;;\x07\r\nPaste code here if prompted >`;
-		expect(evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, normalizeTerminalOutput(raw)).url).toBe(CLAUDE_URL);
+		expect(evaluateLoginRules(CLAUDE_AUTH_LOGIN_RULES, normalizeTerminalOutput(raw)).url).toBe(CLAUDE_URL);
 	});
 
 	it('ignores URLs that are not the authorize URL', () => {
 		const raw = 'See https://docs.claude.com/setup for help\r\nmore\r\n';
-		expect(evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, normalizeTerminalOutput(raw)).url).toBeNull();
+		expect(evaluateLoginRules(CLAUDE_AUTH_LOGIN_RULES, normalizeTerminalOutput(raw)).url).toBeNull();
 	});
 
-	it('treats the printed long-lived token as success and captures it', () => {
-		const after = [
-			'✓Long-livedauthenticationtokencreatedsuccessfully!',
-			'Your OAuth token (valid for 1 year):',
-			CLAUDE_TOKEN,
-			"Store this token securely. You won't be able to see it again.",
-			'Use this token by setting: export CLAUDE_CODE_OAUTH_TOKEN=<token>',
-			'',
-		].join('\r\n');
-		const raw = `${CLAUDE_CAPTURE_SPACELESS}code#state\r\n${after}`;
-		const screen = normalizeTerminalOutput(raw);
-		const promptScreen = normalizeTerminalOutput(after);
-		const match = evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, screen, { promptScreen });
-		expect(match.succeeded).toBe(true);
-		expect(match.secret).toBe(CLAUDE_TOKEN);
-		expect(match.needsInput).toBe(false);
-	});
-
-	it('waits for the token to be complete before capturing it', () => {
-		const partial = `Your OAuth token:\r\n${CLAUDE_TOKEN.slice(0, 40)}`;
-		const match = evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, normalizeTerminalOutput(partial));
-		expect(match.secret).toBeNull();
+	it('matches the real `claude auth login` 2.1.302 screen (OSC 8 link, then the paste prompt)', () => {
+		const url =
+			'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code' +
+			'&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference' +
+			'&code_challenge=KW_bzwx7gJsY8P7RDbSwHc0utLGmC5YnKaBNPf29eOs&code_challenge_method=S256&state=zM8LwRAB_z5iMXg4xwC97QJNSCr7SnchkC2d6j0HqRs';
+		const raw = `Opening browser to sign in…\r\nIf the browser didn't open, visit: \x1b]8;;${url}\x07${url}\x1b]8;;\x07\r\nPaste code here if prompted > `;
+		const match = evaluateLoginRules(CLAUDE_AUTH_LOGIN_RULES, normalizeTerminalOutput(raw));
+		expect(match.url).toBe(url);
+		expect(match.needsInput).toBe(true);
 		expect(match.succeeded).toBe(false);
-		const final = evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, normalizeTerminalOutput(`Your OAuth token:\r\n${CLAUDE_TOKEN}`), { final: true });
-		expect(final.secret).toBe(CLAUDE_TOKEN);
+	});
+
+	it('never reads a credential off the screen: the match has no secret and a printed token is not success', () => {
+		const after = ['Your OAuth token (valid for 1 year):', CLAUDE_TOKEN, ''].join('\r\n');
+		const match = evaluateLoginRules(CLAUDE_AUTH_LOGIN_RULES, normalizeTerminalOutput(`${CLAUDE_CAPTURE_SPACELESS}code#state\r\n${after}`), {
+			promptScreen: normalizeTerminalOutput(after),
+			final: true,
+		});
+		expect(match.succeeded).toBe(false);
+		expect(Object.keys(match)).not.toContain('secret');
+		expect(JSON.stringify(match)).not.toContain(CLAUDE_TOKEN);
+		expect('secretPattern' in CLAUDE_AUTH_LOGIN_RULES).toBe(false);
+	});
+
+	it('counts the login done when the command exits 0 and a real turn verifies it (no screen text needed)', () => {
+		expect(CLAUDE_AUTH_LOGIN_RULES.successOnExitZero).toBe(true);
+		expect(CLAUDE_AUTH_LOGIN_RULES.verifyAfterSuccess).toBe(true);
 	});
 
 	it('reports an invalid code from the output after the input only', () => {
 		const after = 'Invalid code. Please make sure the full code was copied.\r\nPaste code here if prompted > ';
 		const screen = normalizeTerminalOutput(`${CLAUDE_CAPTURE_SPACELESS}bad\r\n${after}`);
-		const match = evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, screen, { promptScreen: normalizeTerminalOutput(after) });
+		const match = evaluateLoginRules(CLAUDE_AUTH_LOGIN_RULES, screen, { promptScreen: normalizeTerminalOutput(after) });
 		expect(match.failureMessage).toBe('Invalid code. Please make sure the full code was copied.');
 		expect(match.needsInput).toBe(true);
 		// Before the input, the same screen shows no failure.
-		const earlier = evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, screen, { promptScreen: normalizeTerminalOutput('') });
+		const earlier = evaluateLoginRules(CLAUDE_AUTH_LOGIN_RULES, screen, { promptScreen: normalizeTerminalOutput('') });
 		expect(earlier.failureMessage).toBeNull();
 	});
 
 	it('reports an OAuth error in space-stripped text', () => {
-		const match = evaluateLoginRules(CLAUDE_SETUP_TOKEN_RULES, normalizeTerminalOutput('OAutherror:access_denied\r\n'));
+		const match = evaluateLoginRules(CLAUDE_AUTH_LOGIN_RULES, normalizeTerminalOutput('OAutherror:access_denied\r\n'));
 		expect(match.failureMessage).toBe('OAutherror:access_denied');
 	});
 });
@@ -243,7 +246,6 @@ describe('Codex device-auth rules (captured output)', () => {
 	it('detects success text', () => {
 		const match = evaluateLoginRules(CODEX_DEVICE_AUTH_RULES, normalizeTerminalOutput(`${CODEX_CAPTURE}Successfully logged in\r\n`));
 		expect(match.succeeded).toBe(true);
-		expect(match.secret).toBeNull();
 	});
 
 	it('detects an expired device code', () => {
@@ -287,7 +289,7 @@ describe('redactSecrets', () => {
 
 describe('getLoginRules', () => {
 	it('finds the rule set per harness and method', () => {
-		expect(getLoginRules('claude-code', 'subscription')).toBe(CLAUDE_SETUP_TOKEN_RULES);
+		expect(getLoginRules('claude-code', 'subscription')).toBe(CLAUDE_AUTH_LOGIN_RULES);
 		expect(getLoginRules('codex-cli', 'device')).toBe(CODEX_DEVICE_AUTH_RULES);
 		expect(getLoginRules('claude-code', 'api_key')).toBeUndefined();
 		expect(getLoginRules('gemini-cli', 'device')).toBeUndefined();

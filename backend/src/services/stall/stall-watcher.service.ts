@@ -121,6 +121,8 @@ export interface StallWatcherDeps {
 	displayName: (session: string) => Promise<string>;
 	/** One plain line to the owner (the owner-alert notifier); false when not sent */
 	notifyOwner: (line: string) => Promise<boolean>;
+	/** Called once after the owner was told an agent's work stalled (who only; the weekly owner-pulls count, #1387) */
+	onOwnerTold?: (agent: string) => void;
 	/** Stamp a ladder step on an open-items commitment, so the open-items sweep does not repeat it */
 	recordPromiseStep: (requestId: string, itemId: string, step: LadderStep, at: Date) => Promise<void>;
 	/** The speaker's teammates (for "X is doing it") */
@@ -338,6 +340,30 @@ export function promiseOwnerLine(lang: OwnerLanguage, input: { name: string; wha
 	}
 	const asked = input.leadName ? `I asked ${input.leadName}` : 'there is no team lead to ask';
 	return `${input.name} said "${input.what}" would come in about ${est}; ${elapsed} later nothing has arrived. ${input.name} has been reminded and ${asked}.`;
+}
+
+/**
+ * Whether an open item is an owner decision asked in prose that has no card
+ * (crewly#1369): it is followed up on the promise ladder.
+ *
+ * @param item - Open item
+ * @returns True for an uncarded owner question with a due time
+ */
+export function isUncardedOwnerQuestion(item: RequestOpenItem): boolean {
+	return item.type === 'question' && item.ownerQuestion === true && !item.decisionId && !!item.due;
+}
+
+/**
+ * The one plain line the owner gets about a question still waiting on him.
+ *
+ * @param lang - Owner's language
+ * @param input - Name, question, time since
+ * @returns The line
+ */
+export function questionOwnerLine(lang: OwnerLanguage, input: { name: string; what: string; elapsedMs: number }): string {
+	const elapsed = durationWords(input.elapsedMs, lang);
+	if (lang === 'zh') return `${input.name} ${elapsed}前问你：「${input.what}」还没有你的回答。回一句就行，或者说「不用了」。`;
+	return `${input.name} asked you ${elapsed} ago: "${input.what}" — there is no answer from you yet. One line is enough, or say "skip".`;
 }
 
 /**
@@ -755,6 +781,11 @@ export class StallWatcherService {
 				return null;
 			}
 			await item.onStep?.('owner', new Date(now)).catch(() => undefined);
+			try {
+				this.deps.onOwnerTold?.(item.agent);
+			} catch {
+				/* a count must never block the ladder */
+			}
 		}
 		ladder.ownerAt = now;
 		this.deps.trace?.({ session: item.agent, summary: `Stall watcher: owner told about ${item.key}`, ...(item.workItemId ? { workItemId: item.workItemId } : {}), data: { reason: 'stall', step: 'owner', key: item.key, dryRun: dry } });
@@ -779,11 +810,17 @@ export class StallWatcherService {
 		for (const request of requests) {
 			if (request.status === 'cancelled' || request.status === 'done') continue;
 			for (const item of request.openItems ?? []) {
-				if (item.type !== 'commitment' || !ACTIVE_OPEN_ITEM_STATUSES.has(item.status) || item.status === 'waiting_owner') continue;
+				if (!ACTIVE_OPEN_ITEM_STATUSES.has(item.status) || item.status === 'waiting_owner') continue;
+				// An owner decision asked in prose with no card waits on an answer the same way (crewly#1369).
+				const question = isUncardedOwnerQuestion(item);
+				if (item.type !== 'commitment' && !question) continue;
 				const madeAt = ms(item.createdAt);
 				const due = ms(item.due);
 				if (madeAt === null || due === null || due <= madeAt) continue;
-				const step = await this.climb(this.promiseLadderItem(request, item, madeAt, due - madeAt, now), now, dry);
+				const ladderItem = question
+					? this.questionLadderItem(request, item, madeAt, due - madeAt, now)
+					: this.promiseLadderItem(request, item, madeAt, due - madeAt, now);
+				const step = await this.climb(ladderItem, now, dry);
 				if (step) result.promises[step] += 1;
 			}
 		}
@@ -836,6 +873,48 @@ export class StallWatcherService {
 			ownerLine: async (lang, leadName) => promiseOwnerLine(lang, { name: await this.name(item.agent), what, estimateMs, elapsedMs, leadName }),
 			onStep: (step, at) => this.deps.recordPromiseStep(request.id, item.id, step, at),
 			...(item.workItemId ? { workItemId: item.workItemId } : {}),
+		};
+	}
+
+	/**
+	 * The ladder item of an uncarded owner question: the agent is asked to
+	 * put it on a card (or record the answer), then the lead, then the owner
+	 * gets the question itself once.
+	 *
+	 * @param request - Its request
+	 * @param item - The owner question
+	 * @param madeAt - When it was asked (ms)
+	 * @param estimateMs - due − asked
+	 * @param now - Epoch ms
+	 * @returns Ladder item
+	 */
+	private questionLadderItem(request: Request, item: RequestOpenItem, madeAt: number, estimateMs: number, now: number): LadderItem {
+		const thread: StallThreadRef | null = request.chatRef ? { channelId: request.chatRef.channelId, threadId: request.chatRef.threadRootId } : null;
+		const what = clip(item.text, C.QUOTE_MAX_CHARS);
+		const elapsedMs = now - madeAt;
+		return {
+			key: `question:${request.id}/${item.id}`,
+			agent: item.agent,
+			madeAt,
+			estimateMs,
+			thread,
+			prior: {
+				...(ms(item.stallNudgedAt) !== null ? { agentAt: ms(item.stallNudgedAt) as number } : {}),
+				...(ms(item.leadNotifiedAt) !== null ? { leadAt: ms(item.leadNotifiedAt) as number } : {}),
+				...(ms(item.ownerNotifiedAt) !== null ? { ownerAt: ms(item.ownerNotifiedAt) as number } : {}),
+			},
+			agentText: async () =>
+				`${C.NUDGE_TAG} You asked the owner "${what}" ${durationWords(elapsedMs)} ago and no answer is on file. ` +
+				'If he answered somewhere else, act on it and say so in that thread. If not, ask it once as a decision card (ask-owner) so he can tap an answer — or drop it if it no longer matters. Do not act on it without an answer.',
+			leadText: async () => {
+				const name = await this.name(item.agent);
+				return (
+					`${C.NUDGE_TAG} ${name} asked the owner "${what}" ${durationWords(elapsedMs)} ago; there is still no answer on file and ${name} was reminded. ` +
+					`Make sure it becomes a decision card or is dropped; nobody acts on it without the owner's answer.`
+				);
+			},
+			ownerLine: async (lang) => questionOwnerLine(lang, { name: await this.name(item.agent), what, elapsedMs }),
+			onStep: (step, at) => this.deps.recordPromiseStep(request.id, item.id, step, at),
 		};
 	}
 

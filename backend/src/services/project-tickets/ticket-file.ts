@@ -205,6 +205,7 @@ function readFields(data: Record<string, unknown>): ProjectTicketFields {
     source: optionalString(data.source, 'source'),
     migratedFrom: optionalString(data.migratedFrom, 'migratedFrom'),
     deferUntil: optionalDate(data.deferUntil),
+    ...(optionalString(data.hold, 'hold') ? { hold: optionalString(data.hold, 'hold') } : {}),
   };
 }
 
@@ -374,6 +375,10 @@ function sameValue(a: unknown, b: unknown): boolean {
  * @param value - New value
  */
 function setField(doc: Document, key: string, value: unknown): void {
+  if (key === 'hold' && (value === null || value === undefined || value === '')) {
+    doc.delete(key);
+    return;
+  }
   if (Array.isArray(value)) {
     doc.set(key, doc.createNode(value, { flow: true }));
   } else {
@@ -494,7 +499,7 @@ export function renderNewTicketFile(content: NewTicketContent): string {
   const doc = new Document({});
   for (const key of OWNED_TICKET_FIELDS) {
     const value = content.fields[key];
-    if ((key === 'migratedFrom' || key === 'deferUntil') && (value === null || value === undefined)) continue;
+    if ((key === 'migratedFrom' || key === 'deferUntil' || key === 'hold') && (value === null || value === undefined)) continue;
     setField(doc, key, value);
   }
   const yamlText = doc.toString({ lineWidth: 0 });

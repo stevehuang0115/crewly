@@ -11,8 +11,6 @@
  *   - initialWorkspaceId  ← `?team=<id>` query param (deep-link from /teams)
  *   - initial conversation ← `?agent=<session>` opens that agent's DM
  *     (deep-link from the Dashboard crew list); the DM is created if needed
- *   - seenBaseline        ← the Chat "seen" record read before the nav badge
- *     marks Chat seen, so the list can show which conversations are new
  *   - directMessagesWorkspace ← the always-present "Direct Messages" rail entry
  *
  * Consolidation host: before mounting the page it ensures the channels the
@@ -52,7 +50,6 @@ import {
   ORCHESTRATOR_SESSION,
   ORCHESTRATOR_LABEL,
 } from '../../utils/team-chat.utils';
-import { readChatSeen, type ChatSeenRecord } from '../../hooks/useChatUnreadCount';
 
 /** POST a chat-v2 ensure endpoint and return the resolved channel id, or null. */
 async function ensureChannel(url: string, body: Record<string, unknown>): Promise<string | null> {
@@ -80,9 +77,6 @@ export function TeamChatRoute(): JSX.Element {
   const [searchParams] = useSearchParams();
   const { teams, loading: teamsLoading } = useTeams();
   const { isCollapsed, collapseSidebar, expandSidebar } = useSidebar();
-  // Read during the first render — before the nav badge's effect marks Chat
-  // seen — so the page still knows what was new when the owner arrived.
-  const [seenBaseline] = useState<ChatSeenRecord>(() => readChatSeen());
 
   // The chat is already a dense 3-panel surface; collapse the app's left nav
   // while on this page to give it room, then restore the user's prior state
@@ -234,7 +228,6 @@ export function TeamChatRoute(): JSX.Element {
       directoryAgents={directoryAgents}
       teams={chatTeams}
       onEnsureDm={onEnsureDm}
-      seenBaseline={seenBaseline}
     />
   );
 }

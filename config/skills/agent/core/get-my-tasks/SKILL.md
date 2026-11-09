@@ -38,7 +38,7 @@ execution:
 
 # Get My Tasks
 
-Retrieve all tasks assigned to your current agent session for a specific project. This includes tasks in `open`, `in_progress`, and `done` states.
+Retrieve the tasks assigned to your current agent session. By default only **open** work comes back (queued, scheduled, proposed, accepted, running, blocked, escalated, done_by_worker, rejected); pass `--all` for finished tasks too. At startup your `## Your Active Work` section already has this — don't call it on top (#857).
 
 ## Parameters
 
@@ -46,6 +46,7 @@ Retrieve all tasks assigned to your current agent session for a specific project
 |------|-----------|----------|-------------|
 | `--session` / `-s` | `sessionName` | Yes | Your agent session name |
 | `--project` / `-p` | `projectPath` | Yes | Absolute path to the current project |
+| `--all` | `all` | No | Include finished tasks (verified / done / failed / cancelled) |
 
 ## Examples — CLI Flags (preferred)
 

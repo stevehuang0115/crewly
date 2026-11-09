@@ -56,6 +56,14 @@ export type ChannelType = 'dm' | 'channel' | 'huddle';
  * surfaces; those rows have an empty `agentSession` and a populated
  * `teamId`.
  */
+/** One agent on a group chat's roster (`type='huddle'`). */
+export interface HuddleMember {
+  /** Agent session name. */
+  sessionName: string;
+  /** ISO 8601 timestamp of when the agent was added, when the server sends it. */
+  joinedAt?: string;
+}
+
 export interface Channel {
   id: string;
   /**
@@ -89,6 +97,59 @@ export interface Channel {
    * rows, always undefined.
    */
   targetMemberId?: string;
+  /** Explicit roster of a group chat (`type='huddle'`); absent for other kinds. */
+  members?: HuddleMember[];
+  /**
+   * The owner's read marker (#1400): messages with `seq <= lastReadSeq` are
+   * read. Absent on servers that predate server-side unread.
+   */
+  lastReadSeq?: number;
+  /** Unread messages past `lastReadSeq` (agent messages only). */
+  unreadCount?: number;
+}
+
+/** A channel's read marker + unread count (REST body, relay RPC result, WS frame). */
+export interface ChannelReadState {
+  channelId: string;
+  lastReadSeq: number;
+  unreadCount: number;
+}
+
+/** `GET /api/chat/unread` / `getUnread`: only channels with unread are listed. */
+export interface UnreadSummary {
+  total: number;
+  channels: ChannelReadState[];
+}
+
+/** Filters of `searchMessages` (`GET /api/chat/search`, #1400). */
+export interface ChatSearchOptions {
+  /** Channel id, or name (with or without `#`) */
+  channel?: string;
+  /** Start, inclusive: a date (`2026-10-09`) or an ISO timestamp */
+  from?: string;
+  /** End, exclusive (a bare date means the whole day) */
+  to?: string;
+  /** Most hits (the server caps it) */
+  limit?: number;
+  /** Search as this agent (its view) instead of everything the owner sees */
+  session?: string;
+}
+
+/** One hit of `searchMessages`: a compact snippet, newest first. */
+export interface ChatSearchHit {
+  id: string;
+  /** ISO timestamp */
+  time: string;
+  channelId: string;
+  /** Channel name as stored (may carry a leading `#`) */
+  channel: string;
+  channelType?: ChannelType;
+  sender: string;
+  /** `user` | `agent` */
+  senderType?: string;
+  /** Flattened snippet (about 300 characters at most) */
+  text: string;
+  threadId: string | null;
 }
 
 /** Body for `POST /api/chat/channels`. */
@@ -268,6 +329,8 @@ export interface MessagePage {
  *                domain-translated `Message`. Optimistic pending records
  *                emitted by the local client before HTTP 201 land here too.
  * - `presence` — agent liveness flip on the bound channel.
+ * - `read_state` — the owner's read marker / unread count for a channel
+ *                changed (read, mark-unread, or a new message raised it).
  * - `pong`     — JSON heartbeat reply from the server. Consumers do not
  *                normally observe this; it is surfaced for tests + custom
  *                liveness UIs.
@@ -277,5 +340,6 @@ export interface MessagePage {
 export type ChatWebsocketEvent =
   | { type: 'message'; channelId: string; message: Message }
   | { type: 'presence'; agentSession: string; status: AgentPresenceStatus; lastSeen?: string }
+  | { type: 'read_state'; channelId: string; lastReadSeq: number; unreadCount: number }
   | { type: 'pong'; ts: number }
   | { type: 'error'; code: string; message: string };

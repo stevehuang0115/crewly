@@ -87,6 +87,20 @@ recipient has hit its daily token cap: the message waits and is delivered
 automatically when the cap resets at midnight or the owner boosts it. Do not
 resend a queued message.
 
+## What the recipient sees
+
+Your message arrives with one header line naming you and how to answer:
+
+```
+[MESSAGE from Atlas (Think Tank) — a colleague, not the owner. Answer with send-message --to think-tank-atlas-b4e166f6; do not post it in an owner thread.]
+Thanks. Two things. …
+```
+
+When you receive such a message, answer it with `send-message --to <that
+session>` (a bare `reply` also goes back to that agent). Never answer it in
+the owner's thread with `reply-channel "@Name …"`: the owner would read a
+conversation that is not for them, and the harness refuses that post.
+
 ## Paused teams
 
 The owner can pause a team temporarily (specs/2026-10-04-team-pause.md). A

@@ -1009,6 +1009,12 @@ export async function startSlackTeamChannels(): Promise<void> {
             const m = getSlackTeamChannelService()?.findBySlackChannelName(name);
             return m ? { id: m.slackChannelId, name: m.slackChannelName ?? name } : null;
           },
+          owesAnswerIn: (agentSession, slackChannelId) => {
+            const watchdog = getOwnerMessageWatchdog();
+            // No watchdog: unknown, so the post is not counted as agent-started.
+            if (!watchdog) return true;
+            return watchdog.owedBy(agentSession).some((e) => e.slackChannelId === slackChannelId);
+          },
         }),
       );
     }
@@ -1094,12 +1100,38 @@ export async function startSlackTeamChannels(): Promise<void> {
     // Another machine's orchestrator put some of our agents in a Slack channel
     // (Cloud-pushed `roomJoin` envelope): link that channel here.
     const joiningRooms = service;
-    getSlackService().roomJoinHandler = (join) =>
-      joiningRooms.joinRoomFromCloud({
+    getSlackService().roomJoinHandler = async (join) => {
+      const outcome = await joiningRooms.joinRoomFromCloud({
         slackChannelId: join.slackChannelId,
         slackChannelName: join.slackChannelName,
         sessions: join.sessions,
       });
+      // The asking machine hears what happened (crewly#1430: a join that failed
+      // for nine days, and nobody knew).
+      if (join.requestedByInstanceId) {
+        await getSlackInstanceRegistryService()
+          ?.reportRoomJoin({ slackChannelId: join.slackChannelId, slackChannelName: join.slackChannelName, requesterInstanceId: join.requestedByInstanceId, ...outcome })
+          .catch((err: unknown) => logger.warn('Room-join result not reported to Cloud', { slackChannel: join.slackChannelId, error: err instanceof Error ? err.message : String(err) }));
+      }
+      return outcome;
+    };
+    // A join we asked another machine for failed there: the orchestrator is
+    // told, in plain words, so the owner is not left waiting on a room that
+    // never formed.
+    getSlackService().roomJoinResultHandler = (result) => {
+      if (result.ok) return;
+      const queue = bootOptions?.messageQueueService;
+      if (!queue) return;
+      const who = [...result.rejected, ...result.joined].join(', ') || 'the agents';
+      queue.enqueue({
+        content:
+          `[ROOM JOIN FAILED] ${who} could not be added to #${result.slackChannelName || result.slackChannelId} on machine ${result.instanceId}` +
+          `${result.error ? ` (${result.error})` : ''}. The owner cannot reach them in that channel. If the owner is waiting on that room, tell them in one plain sentence and hand the work to an agent who is in it.`,
+        conversationId: `room-join-result-${result.slackChannelId}-${Date.now()}`,
+        source: 'cross-machine',
+        sourceMetadata: { fromDevice: result.instanceId, messageType: SLACK_CLOUD_CONSTANTS.ROOM_JOIN_RESULT_EVENT_TYPE },
+      });
+    };
     // Owner messages in Slack that never reached any machine
     // (GET /api/slack/delivery-audit; specs/2026-10-04-room-delivery-audit.md).
     if (!getSlackDeliveryAuditService()) {

@@ -1,7 +1,7 @@
 /**
  * Tests for the ask-owner contract (specs/2026-10-01-decision-cards.md §1).
  */
-import { DecisionContractError, defaultDeadline, isYesNoOptions, readsAsEitherOr, isVagueQuestion, parseOptions, resolveDefault, validateAskOwner, withTicketContext } from './decision-contract.js';
+import { DecisionContractError, defaultDeadline, fitAskToOwnerLanguage, isYesNoOptions, readsAsEitherOr, isVagueQuestion, parseOptions, resolveDefault, validateAskOwner, withTicketContext } from './decision-contract.js';
 
 const NOW = new Date(2026, 9, 1, 10, 30, 0); // Oct 1 2026 10:30 local
 
@@ -139,5 +139,66 @@ describe('withTicketContext', () => {
     expect(withTicketContext('Send the draft to the 3 partners on Monday?', 'Partner email')).toBe('Send the draft to the 3 partners on Monday?');
     expect(withTicketContext('这版可以吗？', undefined)).toBe('这版可以吗？');
     expect(withTicketContext('Partner email ok?', 'Partner email')).toBe('Partner email ok?');
+  });
+});
+
+describe('plain-words lint (crewly#1367)', () => {
+  it('strips ticket ids, PR numbers and GOAL: from the question and keeps the PR for the details line', () => {
+    const ask = validateAskOwner({ ...ok, question: 'CREW-646 · GOAL: Send the partner email on Monday (PR #1138)?' }, NOW);
+    expect(ask.question).toBe('Send the partner email on Monday?');
+    expect(ask.details).toEqual(['PR #1138']);
+  });
+
+  it('refuses a question that is only references, telling the agent to rewrite it in plain words', () => {
+    rejects({ ...ok, question: 'CREW-646 · GOAL: PR #1138, worktree crewly-projects/wt-crew257' }, /Rewrite the question in plain words/);
+  });
+
+  it('a plain question is untouched and has no details', () => {
+    const ask = validateAskOwner(ok, NOW);
+    expect(ask.details).toBeUndefined();
+    expect(ask.merge).toBeUndefined();
+  });
+});
+
+describe('merge cards (crewly#1369 §3)', () => {
+  const merge = { question: 'Merge the Gmail approve-then-send change?', options: ['Merge', 'Not now'], default: 'wait' };
+
+  it('a merge card without runtimeChanges is refused with what to add', () => {
+    rejects(merge, /--runtime-changes/);
+    rejects({ ...merge, context: { requestedBy: 'Ella, Oct 6' } }, /what merging changes at runtime/);
+  });
+
+  it('a merge card with context is accepted and marked', () => {
+    const ask = validateAskOwner({ ...merge, context: { requestedBy: 'Ella, Oct 6', runtimeChanges: 'Starts a Gmail poller at boot', link: 'https://x.test/pull/1' } }, NOW);
+    expect(ask.merge).toBe(true);
+    expect(ask.context).toEqual({ requestedBy: 'Ella, Oct 6', runtimeChanges: 'Starts a Gmail poller at boot', link: 'https://x.test/pull/1' });
+  });
+
+  it('a bad context is refused', () => {
+    rejects({ ...ok, context: 'Ella asked' }, /context must be an object/);
+  });
+});
+
+describe('fitAskToOwnerLanguage (crewly#1367)', () => {
+  const base = () => validateAskOwner({ question: 'Merge the Gmail approve-then-send change?', options: ['Yes, merge', 'Not now'], default: 'wait', context: { runtimeChanges: 'x' } }, NOW);
+
+  it('leaves English / unknown owners alone', () => {
+    expect(fitAskToOwnerLanguage(base(), 'en')).toEqual(base());
+    expect(fitAskToOwnerLanguage(base(), null)).toEqual(base());
+  });
+
+  it('refuses an English question to a Chinese owner', () => {
+    expect(() => fitAskToOwnerLanguage(base(), 'zh')).toThrow(/owner writes Chinese/);
+  });
+
+  it('translates generic buttons by outcome for a Chinese owner', () => {
+    const ask = validateAskOwner({ question: '要不要让 agent 发的 Gmail 先经你同意再发出？', options: ['Yes, merge', 'Not now'], default: 'wait', context: { runtimeChanges: '开机后每 30 秒查一次 Gmail' } }, NOW);
+    expect(ask.merge).toBe(true);
+    expect(fitAskToOwnerLanguage(ask, 'zh').options.map((o) => o.label)).toEqual(['合并', '先不合']);
+  });
+
+  it('refuses an English multi-word button for a Chinese owner', () => {
+    const ask = validateAskOwner({ question: '周一给合作方发邮件吗？', options: ['Send Monday', '先等法务'], default: 'wait' }, NOW);
+    expect(() => fitAskToOwnerLanguage(ask, 'zh')).toThrow(/button "Send Monday" must be in Chinese/);
   });
 });

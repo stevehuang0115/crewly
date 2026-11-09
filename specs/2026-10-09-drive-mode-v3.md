@@ -149,3 +149,37 @@ Transport: a WebSocket to Gemini Live (not WebRTC; there is no ICE state). Detec
 
 - **Persona.** The voice is Crewly, the owner's executive secretary and chief of staff: capable, warm, with personality, natural phrasing and brief acknowledgements, remembers the session, proactive in one short sentence. No invented human name (the product voice card already says "Crewly"). It replies in the language the owner just spoke (Chinese or English).
 - **Facts only; ask the team.** The voice answers only from facts it has (ticket text, agent reports, the status). When the owner wants more detail than those facts give, or asks the same follow-up a second time, it says "I'm not sure — let me ask <who>" and calls `ask_team(target, question)`: the owner's words go verbatim to the owning agent over the Drive channel (with the Drive session id, as any Drive message), the call is logged as `ask_team`, and the answer comes back as a normal queued item framed "<agent> answered your question about "<question>": …", under the topic rules above.
+
+## 14. Meetings P2b: a 1:1 meeting with an agent (crewly#1415)
+
+The owner can hold a voice meeting with one agent. Cloud runs it and the voice speaks as that agent. This machine answers for that agent only. The code is in `services/drive/drive-meeting.service.ts`, `drive-meeting-pack.ts` and `drive-meeting.wiring.ts`. The constants are in `MEETING_CONSTANTS`.
+
+- **Capability.** When the Drive handler runs with a meeting service, it advertises `meeting_pack`. Cloud asks for a pack only from machines that advertise it.
+- **Pack (`op:'meeting_pack'`).** The machine reads `GET machine/packs/:id` → `{agentSession, name, role?, team?, language}`, builds the pack and posts `{instanceId, pack}` back. The pack holds:
+  - the agent's name, role and team;
+  - its newest handover, clipped to 12k characters;
+  - its work and waiting items from the status snapshot;
+  - the last 20 owner↔agent messages, from DMs and threads (14 days);
+  - its decisions settled in the last 30 days;
+  - the agenda;
+  - up to 10 wiki pages, found by BM25 over the team name, the role and the agenda topics.
+- **Clean text.** Every text field is made speakable. Harness tags (`[SLACK-THREAD:…]`, `[Drive mode …]`) are removed, secrets are masked and long text is clipped.
+- **Size.** The pack is kept under about 15k tokens, since it sits in the Live system instruction and is billed on every turn. To fit, the machine drops wiki pages first, then the oldest messages, then cuts the handover.
+- **Agenda.** At most 15 topics `{threadRef, topic, state, lastAt, where, recent}`:
+  - `waiting_on_owner`: an open decision card of this agent. The topic's thread is the card's Slack thread.
+  - `question`: the agent's last message in the thread asks the owner something.
+  - `in_progress`: the owner wrote last, so the agent owes the answer, or the agent said it is on it.
+  - A settled thread is left out. A room thread is on the agenda only when the owner and this agent both spoke in it.
+  - Thread refs are `slack:<conversation>:<thread ts>` for Slack threads (DM or room). Crewly chat threads are `chat:<channel>:<root message id>`. A DM without threads is `chat:<dm channel>`.
+- **Privacy.** The pack and the wiki search use only this agent's own data:
+  - its timeline, its cards and its snapshot rows;
+  - its teams' vaults (`CREWLY_HOME/teams/<teamId>/wiki`) and those teams' project vaults;
+  - never the global wiki or another team's vault. Page visibility follows the agent's role.
+- **Live wiki search (`op:'wiki_search'`).** The machine reads `GET machine/wiki/:id` → `{agentSession, query}`, runs BM25 over the agent's vaults and posts back `{instanceId, hits[≤5 {title, where, text≤700}], ms}`. Measured locally: about 40–90 ms over one team's vaults, and 200–400 ms when a large project vault is included. The relay round trip comes on top of that.
+- **Write-back (a delivery carrying `writeBack {kind, topic, threadRef?|newTopic}`).** No Drive conversation is opened. The text is `From our voice meeting — <Decision|Answer|New task|Note>: <the owner's words>`, and it goes:
+  - to a Slack thread: the agent's own bot posts it in the thread (DM or room). The post is recorded in the Crewly chat channel that mirrors that Slack conversation (rooms: under the thread root). The row is an owner turn (`source: 'cloud-talk', via: 'meeting', slackAlreadyPosted`) and is dispatched to the agent like any owner message.
+  - to a decision card's thread: a `decision` / `answer` first tries to settle the card with the owner's words (`answerInWords(…, 'voice')`). When the words settle nothing, it is posted in the thread as above.
+  - to a Crewly chat thread: it is recorded in that thread and dispatched.
+  - for a new topic: a new top-level message in the agent's Slack DM when its bot is installed, or else a new root in the owner's Crewly chat DM with the agent. The new thread is remembered per session and topic, so the next write-back on that topic goes into the same thread.
+
+  The machine then posts `POST machine/deliveries/:id/written {instanceId, threadRef}`, and Cloud records the thread in the meeting's decisions and to-dos.

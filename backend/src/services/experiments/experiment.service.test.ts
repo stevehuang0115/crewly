@@ -6,8 +6,8 @@
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { ExperimentError, ExperimentService, processWindows, ga4PagePath, metricLabel, resultSummary, statusFilter, ticketLabel, validateMetric, validateTicketLink, type ExperimentServiceDeps } from './experiment.service.js';
-import type { ExperimentMetric, Measurement } from '../../types/experiment.types.js';
+import { ExperimentError, ExperimentService, processWindows, ga4PagePath, metricLabel, resultSummary, statusFilter, supervisionOf, ticketLabel, validateMetric, validateSupervisor, validateTicketLink, type ExperimentServiceDeps } from './experiment.service.js';
+import type { Experiment, ExperimentMetric, Measurement } from '../../types/experiment.types.js';
 import type { DateRange } from './experiment-verdict.js';
 import { TraceStore, setTraceStoreForTesting } from '../trace/trace-store.js';
 import { getTraceContext, setTraceContextForTesting } from '../trace/trace-context.service.js';
@@ -590,6 +590,15 @@ describe('ExperimentService — autopilot scope (specs/2026-10-03-autopilot-expe
     await expect(create(service({ autopilot: undefined }))).rejects.toThrow('Autopilot experiments are not available');
   });
 
+  it('stores a supervisor and validates it (#1026)', async () => {
+    const e = await create(service(), { supervisor: ' think-tank-atlas-b4e166f6 ' });
+    expect(e.supervisor).toBe('think-tank-atlas-b4e166f6');
+    expect((await create(service())).supervisor).toBeUndefined();
+    await expect(create(service(), { supervisor: '../etc' })).rejects.toThrow('supervisor must be an agent session name');
+    await expect(create(service(), { supervisor: 'owner' })).rejects.toThrow('supervisor must be an agent session name');
+    await expect(create(service(), { supervisor: 42 })).rejects.toBeInstanceOf(ExperimentError);
+  });
+
   it('retries a failed outcome baseline without blocking the primary', async () => {
     fetchMetric.mockImplementation(async (m: ExperimentMetric, r: DateRange) => {
       if (m.source === 'gsc') throw new Error('Environment variable SEO_OPS_GOOGLE_CREDENTIALS is not set.');
@@ -736,5 +745,47 @@ describe('ExperimentService — autopilot scope (specs/2026-10-03-autopilot-expe
     await svc.tick();
     expect(notifyOwner.mock.calls.filter((c) => /week 1/.test(c[0].title))).toHaveLength(1);
     expect((await svc.get(e.id))!.autopilot?.checkIns).toBe(1);
+  });
+});
+
+describe('experiment supervision (#1026)', () => {
+  const card = (over: Partial<Experiment>): Experiment =>
+    ({
+      id: 'EXP-1',
+      createdBy: 'owner',
+      status: 'running',
+      autopilot: { projectId: 'p-ce', projectName: 'CE', label: 'feed', outcomes: [], checkIns: 0 },
+      ...over,
+    }) as Experiment;
+
+  it('validateSupervisor: empty = none, session names only', () => {
+    expect(validateSupervisor(undefined)).toBeUndefined();
+    expect(validateSupervisor('')).toBeUndefined();
+    expect(validateSupervisor('ce-owen-ad0320ab')).toBe('ce-owen-ad0320ab');
+    expect(() => validateSupervisor('a b')).toThrow(ExperimentError);
+    expect(() => validateSupervisor('x'.repeat(200))).toThrow(ExperimentError);
+  });
+
+  it('the creator or the supervisor of a planned / running autopilot card reads its project and label', () => {
+    const cards = [card({ createdBy: 'atlas' }), card({ id: 'EXP-2', supervisor: 'kai' })];
+    expect(supervisionOf(cards, 'atlas', 'p-ce')).toEqual({ labels: ['feed'] });
+    expect(supervisionOf(cards, 'kai', 'p-ce')).toEqual({ labels: ['feed'] });
+    expect(supervisionOf([card({ createdBy: 'atlas', status: 'planned' })], 'atlas', 'p-ce')).toEqual({ labels: ['feed'] });
+  });
+
+  it('denies other sessions, other projects, ordinary cards, the owner, and ended cards', () => {
+    expect(supervisionOf([card({ createdBy: 'atlas' })], 'stranger', 'p-ce')).toBeNull();
+    expect(supervisionOf([card({ createdBy: 'atlas' })], 'atlas', 'p-other')).toBeNull();
+    expect(supervisionOf([card({ createdBy: 'atlas', autopilot: undefined })], 'atlas', 'p-ce')).toBeNull();
+    expect(supervisionOf([card({ createdBy: 'owner' })], 'owner', 'p-ce')).toBeNull();
+    expect(supervisionOf([card({ createdBy: 'atlas', status: 'done' })], 'atlas', 'p-ce')).toBeNull();
+    expect(supervisionOf([card({ supervisor: 'atlas', status: 'cancelled' })], 'atlas', 'p-ce')).toBeNull();
+  });
+
+  it('an unlabelled card opens the whole project; labels of several cards add up', () => {
+    const unlabelled = card({ createdBy: 'atlas', autopilot: { projectId: 'p-ce', projectName: 'CE', outcomes: [], checkIns: 0 } });
+    expect(supervisionOf([card({ createdBy: 'atlas' }), unlabelled], 'atlas', 'p-ce')).toEqual({ labels: null });
+    const web = card({ id: 'EXP-2', createdBy: 'atlas', autopilot: { projectId: 'p-ce', projectName: 'CE', label: 'Web', outcomes: [], checkIns: 0 } });
+    expect(supervisionOf([card({ createdBy: 'atlas' }), web], 'atlas', 'p-ce')).toEqual({ labels: ['feed', 'web'] });
   });
 });

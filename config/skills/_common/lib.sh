@@ -200,7 +200,10 @@ _cap_skill_output() {
   fi
 
   local head_chars="${CREWLY_SKILL_OUTPUT_HEAD_CHARS:-4000}"
-  jq -n \
+  # -c: ONE line. Many skills keep only the last line of a response
+  # (`tail -n 1`, because api_call may print a warning first); a pretty-printed
+  # envelope would leave them with a bare "}" (CREW-160).
+  jq -nc \
     --argjson bytes "$bytes" \
     --arg file "$file" \
     --arg head "${body:0:$head_chars}" \

@@ -68,6 +68,8 @@ import { isDriveModeRow } from '../drive/drive-row.utils.js';
 import {
   buildRoomAgentDirectory,
   findPriorRoomAnswer,
+  ownAppCommentAnswer,
+  lastOwnerMessageAt,
   threadOwnerFromSlack,
   type PriorRoomAnswer,
   type SlackThreadOwner,
@@ -77,6 +79,7 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { getOwnerMessageWatchdog, type OwnerMessageTrackInput } from '../messaging/owner-message-watchdog.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { warnUnlessOfflineRepeat } from '../core/network-status.service.js';
 import { getSlackDirectoryService } from './slack-directory.service.js';
 import { SLACK_TEAM_CHANNEL_CONSTANTS, OWNER_EVIDENCE_METADATA, SLACK_THREAD_KEY_CONSTANTS, SLACK_THREAD_CONTEXT_CONSTANTS } from '../../constants.js';
 import { parseSlackThreadKey } from './slack-thread-key.js';
@@ -392,6 +395,26 @@ export function slackChannelNameFor(teamName: string, prefix = ''): string {
   const p = clean(prefix);
   const joined = p ? `${p}-${body}` : body;
   return joined.slice(0, SLACK_TEAM_CHANNEL_CONSTANTS.MAX_CHANNEL_NAME_LENGTH).replace(/-+$/g, '') || 'team';
+}
+
+/**
+ * Whether a Slack thread's owner's machine provably received a room message:
+ * Cloud's delivery facts name it among the machines it pushed to, and Cloud
+ * has not marked that machine as unproven in the room. Without delivery
+ * facts (older Cloud builds) nothing is proven: the caller keeps the room's
+ * rules, so a message is never left with nobody (crewly#1376).
+ *
+ * @param room - Cloud's room presence for the message
+ * @param owner - The thread owner's roster entry
+ * @returns True when the owner's machine has the message
+ */
+export function threadOwnerMachineHasIt(
+  room: { delivery?: Pick<SlackRoomDelivery, 'targets'> },
+  owner: { instanceId: string; verified?: boolean },
+): boolean {
+  const targets = room.delivery?.targets;
+  if (!Array.isArray(targets) || targets.length === 0 || !owner.instanceId) return false;
+  return owner.verified !== false && targets.includes(owner.instanceId);
 }
 
 /**
@@ -753,6 +776,13 @@ export class SlackTeamChannelService {
   private readonly seenInbound = new Map<string, ChatMessageDTO>();
   /** Room messages already handed back to the orchestrator. */
   private readonly orcHandedBack = new Set<string>();
+  /**
+   * Inbound messages being handled now (`channel:ts`). The two event types of
+   * one @ arrive milliseconds apart, and the first is still awaiting teams and
+   * identities when the second checks `seenInbound` — both were recorded and
+   * dispatched (~24 doubled rows a week, 2026-10-22 audit).
+   */
+  private readonly inboundInFlight = new Set<string>();
   /** The last room presence Cloud sent per Slack channel — names for a hand-off. */
   private readonly lastRooms = new Map<string, SlackRoomPresence>();
   /** People (not agents) by lower-cased name → Slack user id, for `@Name` in agent replies. */
@@ -996,7 +1026,9 @@ export class SlackTeamChannelService {
    *
    * Best-effort and idempotent: `conversations.join` on a channel we are
    * already in is a no-op, and a private channel cannot be joined at all —
-   * that one needs a human to invite the bot, so say so.
+   * that one needs a human to invite the bot, so say so. A channel archived
+   * in Slack (`is_archived`) is remembered on the mapping and mentioned once;
+   * it is still tried on later boots so unarchiving it brings it back.
    *
    * @returns When every mapping has been checked
    */
@@ -1004,18 +1036,31 @@ export class SlackTeamChannelService {
     if (!this.deps.slack.isConnected()) return;
     const mappings = (this.store?.mappings ?? []).filter((m) => !isAdhocMapping(m));
     let rejoined = 0;
+    let changed = false;
     for (const mapping of mappings) {
+      const channel = mapping.slackChannelName ?? mapping.slackChannelId;
       try {
         await this.deps.slack.joinChannel(mapping.slackChannelId);
         rejoined += 1;
+        if (mapping.slackArchived) {
+          delete mapping.slackArchived;
+          changed = true;
+          this.logger.info('Team channel is live in Slack again', { channel });
+        }
       } catch (err) {
+        const code = describeSlackError(err).code;
+        if (code === SLACK_TEAM_CHANNEL_CONSTANTS.ARCHIVED_ERROR_CODE) {
+          await this.markSlackArchived(mapping.slackChannelId, channel);
+          continue;
+        }
         this.logger.warn('Could not rejoin a team channel — invite the bot manually if it is private', {
-          channel: mapping.slackChannelName ?? mapping.slackChannelId,
-          error: describeSlackError(err).code,
+          channel,
+          error: code,
         });
       }
     }
     if (rejoined > 0) this.logger.info('Team channel membership checked', { channels: rejoined });
+    if (changed) await this.save();
     await this.inviteOwnerWhereMissing();
   }
 
@@ -1039,12 +1084,35 @@ export class SlackTeamChannelService {
     } catch (err) {
       const code = describeSlackError(err).code;
       if (code === 'already_in_channel') return true;
+      if (code === SLACK_TEAM_CHANNEL_CONSTANTS.ARCHIVED_ERROR_CODE) {
+        // Nothing to join: remember it so the boot rejoin and later invites
+        // stay quiet (the reconcile pass invites before the rejoin has run).
+        await this.markSlackArchived(channelId, channelName);
+        return false;
+      }
       this.logger.warn('Could not invite the owner into a team channel — search for it in Slack and join', {
         channel: channelName,
         error: code,
       });
       return false;
     }
+  }
+
+  /**
+   * Remember that Slack reported a mapped channel archived; said once.
+   *
+   * @param channelId - Slack channel id
+   * @param channelName - For the log
+   * @returns When the store is saved (no-op when already known or unmapped)
+   */
+  private async markSlackArchived(channelId: string, channelName: string): Promise<void> {
+    const mapping = this.store?.mappings.find((m) => m.slackChannelId === channelId);
+    if (!mapping || mapping.slackArchived) return;
+    mapping.slackArchived = true;
+    this.logger.info('Team channel is archived in Slack — leaving it alone; unarchive it or unlink the team to get a fresh one', {
+      channel: channelName,
+    });
+    await this.save();
   }
 
   /**
@@ -1061,7 +1129,11 @@ export class SlackTeamChannelService {
    */
   async inviteOwnerWhereMissing(): Promise<void> {
     if (!this.deps.slack.isConnected() || !this.deps.getOwnerUserId?.()) return;
-    const pending = (this.store?.mappings ?? []).filter((m) => m.autoCreated && !m.ownerInvited && !isAdhocMapping(m));
+    // An archived channel cannot take an invite; it is retried once the
+    // boot rejoin finds it live again and clears the flag.
+    const pending = (this.store?.mappings ?? []).filter(
+      (m) => m.autoCreated && !m.ownerInvited && !m.slackArchived && !isAdhocMapping(m),
+    );
     let changed = false;
     for (const mapping of pending) {
       if (await this.inviteOwner(mapping.slackChannelId, mapping.slackChannelName)) {
@@ -1847,6 +1919,15 @@ export class SlackTeamChannelService {
       this.logger.debug('Repeated copy of a team channel message — not dispatched again', { key: seenKey });
       return { mapping, message: seen, mentions: [], dispatch: null, duplicate: true };
     }
+    if (!handoffTo) {
+      if (this.inboundInFlight.has(seenKey)) {
+        this.logger.debug('Second copy of a team channel message arrived while the first is handled — dropped', { key: seenKey });
+        return { mapping, message: {} as ChatMessageDTO, mentions: [], dispatch: null, duplicate: true };
+      }
+      this.inboundInFlight.add(seenKey);
+      // Held for a while after the first copy is handled: seenInbound covers the rest.
+      setTimeout(() => this.inboundInFlight.delete(seenKey), SLACK_TEAM_CHANNEL_CONSTANTS.INBOUND_IN_FLIGHT_MS).unref?.();
+    }
 
     const channel = this.deps.chat.getChannelForBridge(mapping.chatChannelId);
     if (!channel || channel.archivedAt) {
@@ -2351,6 +2432,29 @@ export class SlackTeamChannelService {
         }
       }
 
+      // An owner message held on a recipient's queue (it is mid-turn) shows
+      // the owner that it is busy, whether or not a placeholder was owed:
+      // Milo answered four messages ten minutes later and the thread showed
+      // nothing meanwhile (2026-10-23, #air-edu-game). Only for a recipient
+      // that owes a reply or the message's only recipient — a room broadcast
+      // must not grow a line per listener.
+      if (this.deps.typing && dispatch?.dispatched && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
+        const dispatchedTo = (dispatch.huddleOutcomes ?? []).filter((o) => o.dispatched);
+        for (const o of dispatchedTo) {
+          if (!o.queued || o.deferred || typingTargets.some((t) => t.session === o.sessionName)) continue;
+          if (o.responseMode !== 'required' && dispatchedTo.length !== 1) continue;
+          if (o.sessionName === CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME) continue;
+          const member = members.find((m) => m.sessionName === o.sessionName);
+          const installed = this.deps.identities?.getInstalled(o.sessionName);
+          const identity = installed
+            ? { botToken: installed.botToken, displayName: member?.name ?? o.sessionName }
+            : { displayName: member?.name ?? o.sessionName, ...slackIdentityFor(member, o.sessionName) };
+          const key = { agentSession: o.sessionName, slackChannelId: message.channelId, threadTs: slackThreadTs };
+          routeGuard?.notePlaceholder(key);
+          await this.bounded(this.deps.typing.begin(key, identity, 'queued', message.ts), null, 'placeholder', message);
+        }
+      }
+
       this.logger.info('Slack team message routed', {
         teamId: mapping.teamId,
         slackChannel: `#${mapping.slackChannelName}`,
@@ -2386,19 +2490,29 @@ export class SlackTeamChannelService {
           this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients, heldBy);
         }
       } else if (!remoteAgent) {
-        // Never a silent no-op: say why nobody got it.
-        this.logger.warn('Slack room message reached nobody on this machine', {
-          teamId: mapping.teamId,
-          slackChannel: `#${mapping.slackChannelName}`,
-          ts: message.ts,
-          planned: planned ? [...planned.keys()] : null,
-          failed: (dispatch?.huddleOutcomes ?? []).filter((o) => !o.dispatched).map((o) => o.sessionName),
-          awakeHere: presence?.state.awakeHere ?? null,
-          awakeElsewhere: presence?.state.awakeElsewhere ?? null,
-          wakeWhenAllAsleep: presence?.state.wakeWhenAllAsleep ?? null,
-          handoffTo,
-          recipients,
-        });
+        if (oneResponder?.pinned?.reason === 'decision-consumed') {
+          // The decision path delivered it to the card's asker; nobody else was
+          // meant to get it. (The WARN below read as a lost message, 2026-10-26.)
+          this.logger.info('Slack room message was a decision answer; its asker has it', {
+            slackChannel: `#${mapping.slackChannelName}`,
+            ts: message.ts,
+            asker: oneResponder.pinned.answeredBy ?? null,
+          });
+        } else {
+          // Never a silent no-op: say why nobody got it.
+          this.logger.warn('Slack room message reached nobody on this machine', {
+            teamId: mapping.teamId,
+            slackChannel: `#${mapping.slackChannelName}`,
+            ts: message.ts,
+            planned: planned ? [...planned.keys()] : null,
+            failed: (dispatch?.huddleOutcomes ?? []).filter((o) => !o.dispatched).map((o) => o.sessionName),
+            awakeHere: presence?.state.awakeHere ?? null,
+            awakeElsewhere: presence?.state.awakeElsewhere ?? null,
+            wakeWhenAllAsleep: presence?.state.wakeWhenAllAsleep ?? null,
+            handoffTo,
+            recipients,
+          });
+        }
         // A message deferred to another machine is watched there, by its
         // owner, only — two machines running the fallback would answer twice.
         // One the decision path consumed, or whose responder runs on another
@@ -2538,7 +2652,8 @@ export class SlackTeamChannelService {
       // stale or retired machine never answers. Every machine judges by the
       // same snapshot (its own agents included). A card's asker is the
       // exception: its machine's decision path takes the reply.
-      const live = !room || room.members.some((m) => localAgentSession(m.agentSession) === localAgentSession(agent.session) && m.awake);
+      const ownerMember = room?.members.find((m) => localAgentSession(m.agentSession) === localAgentSession(agent.session)) ?? null;
+      const live = !room || !!ownerMember?.awake;
       if (live || via === 'card') {
         if (agent.local) return { ...base, pinned: { session: agent.session, answeredBy: agent.session, name: agent.name, reason: 'thread-owner' } };
         // An awake asker's machine answers a card through the decision path —
@@ -2547,6 +2662,22 @@ export class SlackTeamChannelService {
         // asker that is not awake (its machine may be offline).
         const watch = !(via === 'card' && live);
         return { ...base, pinned: { session: null, answeredBy: agent.session, name: agent.name, reason: 'thread-owner', ...(watch ? watchFlags() : {}) } };
+      }
+      // The thread owner is asleep, but its machine provably has the message
+      // (Cloud pushed it there): that machine wakes it, and no agent of
+      // another machine answers by its own room rules (crewly#1376: the Air's
+      // Rex, not on the team, answered an un-@'d owner message in a thread
+      // Atlas on the Mac owned).
+      if (room && ownerMember && threadOwnerMachineHasIt(room, ownerMember)) {
+        if (agent.local && !isSessionPaused(agent.session)) {
+          return { ...base, pinned: { session: agent.session, answeredBy: agent.session, name: agent.name, reason: 'thread-owner' } };
+        }
+        if (!agent.local) {
+          // Waking takes a minute or two: the watcher here only tells the
+          // owner if nothing came, and never hands the message to our agents.
+          const watch = isWatcher || noteOnlyHere ? { watchHere: true as const, watchNoteOnly: true as const } : {};
+          return { ...base, pinned: { session: null, answeredBy: agent.session, name: agent.name, reason: 'thread-owner', ...watch } };
+        }
       }
       return ownsRoom ? base : deferToRoomOwner;
     } catch (err) {
@@ -2674,6 +2805,38 @@ export class SlackTeamChannelService {
   }
 
   /**
+   * The owner thread an agent is about to post into has gone quiet: the
+   * owner last wrote in it longer ago than STALE_OWNER_THREAD_MS. A post
+   * there reads with no context (2026-10-19, Ella's Reddit summary).
+   *
+   * @param input - Conversation and the thread the agent named (message id or Slack thread key)
+   * @param now - Current time (epoch ms)
+   * @returns When the owner last wrote there, or null when the thread is fresh, not a room thread, or the owner never wrote in it
+   */
+  async staleOwnerThread(input: { conversationId: string; thread?: string | null }, now: number = Date.now()): Promise<{ lastOwnerAt: number } | null> {
+    try {
+      await this.load();
+      const mapping = (this.store?.mappings ?? []).find((m) => m.chatChannelId === input.conversationId);
+      const raw = input.thread?.trim();
+      if (!mapping || !raw || !this.deps.chat.listThreadForBridge) return null;
+      let rootId: string | undefined;
+      const named = this.deps.chat.getMessageForBridge(raw);
+      if (named && named.channelId === input.conversationId) rootId = named.threadId ?? named.id;
+      const key = parseSlackThreadKey(raw);
+      if (!rootId && key && key.slackChannelId === mapping.slackChannelId) {
+        rootId = this.deps.chat.findSlackThreadRoot(input.conversationId, key.threadTs)?.id;
+      }
+      if (!rootId) return null;
+      const lastOwnerAt = lastOwnerMessageAt(this.deps.chat.listThreadForBridge(input.conversationId, rootId));
+      if (lastOwnerAt === null || now - lastOwnerAt <= ROOM_RESPONDER_CONSTANTS.STALE_OWNER_THREAD_MS) return null;
+      return { lastOwnerAt };
+    } catch {
+      // A backstop: never block a post because the lookup failed.
+      return null;
+    }
+  }
+
+  /**
    * The reply gate (specs/2026-10-03-one-responder-per-message.md §2): an
    * agent is about to post in a room thread where a different agent already
    * answered the owner's latest message. Reads this machine's huddle thread
@@ -2707,7 +2870,7 @@ export class SlackTeamChannelService {
       const nameFor = (s: string): string | undefined =>
         local.find((m) => m.sessionName === s)?.name ??
         this.lastRooms.get(mapping.slackChannelId)?.members.find((m) => localAgentSession(m.agentSession) === s)?.displayName;
-      return findPriorRoomAnswer(thread, input.agentSession, nameFor);
+      return ownAppCommentAnswer(thread, input.agentSession, nameFor(input.agentSession)) ?? findPriorRoomAnswer(thread, input.agentSession, nameFor);
     } catch {
       // The gate is a backstop: never block a reply because it failed.
       return null;
@@ -3710,6 +3873,31 @@ export class SlackTeamChannelService {
   }
 
   /**
+   * Local agents Cloud's envelope names in a channel: @-mentioned by name
+   * (`mentionedAgentSessions`) or listed as this machine's members of the
+   * room (`room.members`). The orchestrator is never a room member.
+   *
+   * @param message - The inbound message (a Cloud-routed copy)
+   * @param local - Sessions of this machine's team members
+   * @returns Named local sessions, in envelope order
+   */
+  private async localNamedByCloud(message: SlackIncomingMessage, local: readonly string[]): Promise<string[]> {
+    if (message.channelId.startsWith('D')) return [];
+    const me = message.room && this.deps.resolveInstanceId ? await this.deps.resolveInstanceId().catch(() => null) : null;
+    const named: string[] = [];
+    const add = (raw: string): void => {
+      const s = localAgentSession(raw);
+      if (local.includes(s) && !named.includes(s)) named.push(s);
+    };
+    for (const s of message.mentionedAgentSessions ?? []) add(s);
+    // `local` already restricts to this machine's team members (session names are unique across the account); the instance id only guards against a stale snapshot naming the same agent elsewhere.
+    for (const m of message.room?.members ?? []) {
+      if ((!me || m.instanceId === me) && m.verified !== false) add(m.agentSession);
+    }
+    return named;
+  }
+
+  /**
    * The local agent whose own app delivered this copy, if any.
    *
    * A direct message is never a room: an agent's DM is handled by the DM
@@ -3775,6 +3963,9 @@ export class SlackTeamChannelService {
         slackChannel: mapping.slackChannelName ?? message.channelId,
         agents: absent,
       });
+      // In an ad-hoc room a bot that was never invited is invited now, so
+      // the agent's reply can post. One the owner removed stays out.
+      if (isAdhocMapping(mapping)) await this.inviteUninvitedBots(mapping, absent);
     }
     if (seen > 0) return;
 
@@ -3847,6 +4038,12 @@ export class SlackTeamChannelService {
     // nobody has addressed it yet.
     const receiving = await this.localReceivingAgent(message);
     if (receiving && !sessions.includes(receiving)) sessions.push(receiving);
+    // An agent with no Slack app of its own is never @'d by bot id and no
+    // copy ever comes through its app: Cloud's envelope names it instead
+    // (@-mentioned by name, or a member of the room on this machine). Without
+    // this the Lead's machine never had #ce-x-wang-law and dropped every
+    // owner reply routed to it for nine days (2026-10-23, crewly#1430).
+    for (const s of await this.localNamedByCloud(message, candidates.map((c) => c.sessionName))) if (!sessions.includes(s)) sessions.push(s);
     if (sessions.length === 0) return null;
 
     // The master bot is usually not in this channel (private); the name is
@@ -3877,7 +4074,35 @@ export class SlackTeamChannelService {
       huddle: huddle.id,
       agents: sessions,
     });
+    // An @'d agent's bot is usually not in a channel the owner just made.
+    // Private channel: its first post gets `channel_not_found` and the
+    // owner's question goes unanswered (Atlas in #normandy, 2026-10-28). The
+    // team-channel path invites every member's bot; do the same here. The
+    // agent whose own app delivered this copy is a member already.
+    await this.inviteUninvitedBots(
+      mapping,
+      sessions.filter((s) => s !== receiving),
+    );
     return mapping;
+  }
+
+  /**
+   * Invite the installed bots of `sessions` into a room's Slack channel,
+   * skipping any already invited there. A bot the owner later removed is
+   * not re-invited: the invite is remembered on the identity record.
+   *
+   * @param mapping - The room
+   * @param sessions - Agents whose bots should be in the channel
+   */
+  private async inviteUninvitedBots(mapping: SlackTeamChannelMapping, sessions: readonly string[]): Promise<void> {
+    const identities = this.deps.identities;
+    if (!identities || sessions.length === 0) return;
+    for (const session of sessions) {
+      const record = identities.get(session);
+      if (record?.status !== 'installed' || !record.botUserId) continue;
+      if (record.invitedTo.includes(mapping.slackChannelId)) continue;
+      await this.inviteBot(mapping, session, record.botUserId);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -5346,7 +5571,7 @@ export class SlackTeamChannelService {
             result.skipped = message;
             break;
           }
-          this.logger.warn('Could not provision Slack identity', { agent: member.sessionName, error: message });
+          warnUnlessOfflineRepeat(this.logger, 'slack-identity-provision', 'Could not provision Slack identity', { agent: member.sessionName, error: message });
           continue;
         }
       }

@@ -26,8 +26,17 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Message, SendMessageInput } from '../types/chat.types';
+import type { ChannelReadState, Message, SendMessageInput } from '../types/chat.types';
 import { useChatApiClient } from '../context/ChatAPIProvider';
+
+/** Optional hooks into the channel's live stream. */
+export interface UseMessagesOptions {
+  /**
+   * Called when the server reports the owner's read marker / unread count for
+   * this channel changed (read, mark-unread, or a new message raised it).
+   */
+  onReadState?(state: ChannelReadState): void;
+}
 
 export interface UseMessagesResult {
   messages: Message[];
@@ -143,8 +152,14 @@ export function deriveAgentThinking(messages: Message[]): boolean {
   return Boolean(last.clientMessageId);
 }
 
-export function useMessages(channelId: string | null): UseMessagesResult {
+export function useMessages(
+  channelId: string | null,
+  options: UseMessagesOptions = {},
+): UseMessagesResult {
   const client = useChatApiClient();
+  // Latest callback without re-subscribing the socket when the host re-renders.
+  const onReadStateRef = useRef(options.onReadState);
+  onReadStateRef.current = options.onReadState;
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<Error | null>(null);
@@ -198,6 +213,13 @@ export function useMessages(channelId: string | null): UseMessagesResult {
           // Update agentThinking based on the post-reconciliation tail.
           setAgentThinking(deriveAgentThinking(next));
           return next;
+        });
+      }
+      if (event.type === 'read_state') {
+        onReadStateRef.current?.({
+          channelId: event.channelId,
+          lastReadSeq: event.lastReadSeq,
+          unreadCount: event.unreadCount,
         });
       }
       // presence + pong + error are not handled here; useAgentPresence

@@ -23,6 +23,11 @@
  *    a known repo is a candidate, wherever it lives and whatever its branch.
  * 2. It is not locked (`git worktree lock`; Claude Code locks the worktree of
  *    a running subagent).
+ * 2b. It is not the cwd (or a parent of the cwd) of an enabled scheduled
+ *    command in `<CREWLY_HOME>/scheduled-commands.json` (reason
+ *    `scheduled-command`); removing it would silently stop that job. The pass
+ *    reports how many scheduled cwds it read. If the file cannot be read, every
+ *    clean worktree is kept for that pass (`scheduled-probe-failed`).
  * 3. It is not under `<repo>/.crewly/worktrees/` — that directory belongs to
  *    the per-WorkItem worktree feature (#814), which does its own
  *    WorkItem-aware cleanup.
@@ -131,7 +136,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { LOG_ROTATION_CONSTANTS, ORCHESTRATOR_SESSION_NAME, WORKTREE_JANITOR_CONSTANTS } from '../../constants.js';
+import { LOG_ROTATION_CONSTANTS, ORCHESTRATOR_SESSION_NAME, SCHEDULED_COMMANDS, WORKTREE_JANITOR_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { safeReadJson, modifyJsonFile } from '../../utils/file-io.utils.js';
@@ -179,6 +184,8 @@ import {
 	type UnmergedNoticeState,
 	type UnmergedWorktreeFacts,
 } from './worktree-unmerged-notice.js';
+import { findWorktreeHold } from '../project-tickets/ticket-hold-registry.js';
+import type { HeldTicketMatch } from '../project-tickets/ticket-hold.js';
 import { contentLandedSignal, isNonGithubRemote, type LandedRepoState } from './worktree-landed.js';
 import { dirtyStatusLines, reclaimRegenerableDirs } from './worktree-dirty.js';
 import {
@@ -216,6 +223,8 @@ export type WorktreeReason =
 	| 'bare'
 	| 'prunable'
 	| 'locked'
+	| 'scheduled-command'
+	| 'scheduled-probe-failed'
 	| 'managed-by-workitem-worktrees'
 	| 'agent-session-inside'
 	| 'process-inside'
@@ -301,6 +310,8 @@ export interface JanitorRunSummary {
 	wouldRemove: number;
 	/** Worktrees kept */
 	kept: number;
+	/** Number of scheduled-command cwds read for the keep check (null = unreadable) */
+	scheduledCwdsRead?: number | null;
 	/** Bytes freed by deleting regenerable dirs (node_modules, .next, dist, …) from kept worktrees (strip tier) */
 	reclaimedBytes: number;
 	/** Worktrees archived as a patch and removed (archive tier) */
@@ -368,6 +379,8 @@ export interface WorktreeJanitorOptions {
 	listRepoPaths?: () => Promise<string[]>;
 	/** Where Crewly agents and processes are working; null = probe failed (default: sessions + lsof) */
 	listBusyCwds?: () => Promise<BusyCwd[] | null>;
+	/** cwds of enabled scheduled commands; null = could not be read (default: scheduled-commands.json) */
+	listScheduledCwds?: () => Promise<string[] | null>;
 	/** git executable (default `git`) */
 	gitBin?: string;
 	/** gh executable (default `gh`); set to null to never use gh */
@@ -400,6 +413,8 @@ export interface WorktreeJanitorOptions {
 	resolveLeadSessions?: (repoMain: string, worktreePath: string) => Promise<string[]>;
 	/** Unmerged-worktree notice state file (default `<CREWLY_HOME>/unmerged-worktree-notices.json`); null = in memory */
 	unmergedNoticePath?: string | null;
+	/** The held ticket naming a worktree's branch / folder, if any (default: every project's tickets, none under jest; crewly#1369) */
+	findHold?: (branch: string | null, worktreePath: string) => Promise<HeldTicketMatch | null>;
 	/** Debounce before a completion-triggered pass (default COMPLETION_TIDY_DELAY_MS) */
 	tidyDelayMs?: number;
 	/** Environment for the kill switch (default process.env) */
@@ -942,6 +957,7 @@ export class WorktreeJanitorService {
 			removed: 0,
 			wouldRemove: 0,
 			kept: 0,
+			scheduledCwdsRead: null,
 			reclaimedBytes: 0,
 			archived: 0,
 			archivedBytes: 0,
@@ -981,12 +997,14 @@ export class WorktreeJanitorService {
 			const busy = await this.safeBusyCwds();
 			let tierState = await this.readTierState();
 			const existing = new Set<string>();
+			const scheduled = await this.safeScheduledCwds();
+			summary.scheduledCwdsRead = scheduled === null ? null : scheduled.length;
 			for (const repo of repos) {
 				let removedHere = 0;
 				const unmerged: WorktreeOutcome[] = [];
 				for (const entry of repo.entries) {
 					existing.add(canonicalPath(entry.path));
-					const verdict = await this.evaluate(repo, entry, busy, summary.lowDisk, idleOverrideMs);
+					const verdict = await this.evaluate(repo, entry, busy, scheduled, summary.lowDisk, idleOverrideMs);
 					const outcome: WorktreeOutcome = { ...verdict, removed: false, forced: false, branchDeleted: false };
 					if (verdict.decision === 'keep') {
 						tierState = await this.applyTier(repo, entry, outcome, busy, tierState, summary, dryRun);
@@ -1043,7 +1061,7 @@ export class WorktreeJanitorService {
 					? `; not yet armed: would strip ${wouldStrip.length} (${formatBytes(wouldStrip.reduce((n, w) => n + (w.tier?.freedBytes ?? 0), 0))}), archive ${would.length - wouldStrip.length}`
 					: '';
 			this.logger.info(
-				`Worktree janitor: removed ${summary.removed}${summary.archived > 0 ? ` (${summary.archived} archived as patches, ${formatBytes(summary.archivedBytes)})` : ''}, kept ${summary.kept}${reasons ? ` (${reasons})` : ''}${summary.reclaimedBytes > 0 ? `, stripped ${formatBytes(summary.reclaimedBytes)} of node_modules/build output from idle kept worktrees` : ''}${wouldText} across ${summary.repos.length} repo(s) in ${summary.durationMs}ms`,
+				`Worktree janitor: removed ${summary.removed}${summary.archived > 0 ? ` (${summary.archived} archived as patches, ${formatBytes(summary.archivedBytes)})` : ''}, kept ${summary.kept}${reasons ? ` (${reasons})` : ''}${summary.reclaimedBytes > 0 ? `, stripped ${formatBytes(summary.reclaimedBytes)} of node_modules/build output from idle kept worktrees` : ''}${wouldText} across ${summary.repos.length} repo(s) in ${summary.durationMs}ms; ${summary.scheduledCwdsRead == null ? 'scheduled-command cwds unreadable (all clean worktrees kept)' : `${summary.scheduledCwdsRead} scheduled-command cwd(s) read`}`,
 				{ removed: summary.worktrees.filter((w) => w.removed).map((w) => w.path), lowDisk: summary.lowDisk, retentionArmed: summary.retentionArmed },
 			);
 			const sc = summary.scratch;
@@ -1341,7 +1359,9 @@ export class WorktreeJanitorService {
 				};
 				const leads = await (this.opts.resolveLeadSessions ?? defaultResolveLeadSessions)(repo.main, w.path).catch(() => [] as string[]);
 				const targets = leads.length > 0 ? leads : [ORCHESTRATOR_SESSION_NAME];
-				const message = buildUnmergedNotice(facts);
+				const findHold = this.opts.findHold ?? ((this.opts.env ?? process.env).JEST_WORKER_ID ? null : findWorktreeHold);
+				const hold = findHold ? await findHold(w.branch, w.path).catch(() => null) : null;
+				const message = buildUnmergedNotice(facts, hold);
 				let delivered = false;
 				for (const session of targets) {
 					if (await notifier(session, message).catch(() => false)) delivered = true;
@@ -1349,7 +1369,7 @@ export class WorktreeJanitorService {
 				if (delivered) {
 					state = { ...state, [w.path]: now };
 					changed = true;
-					this.logger.info('Told lead about unmerged worktree', { path: w.path, to: targets, commits });
+					this.logger.info('Told lead about unmerged worktree', { path: w.path, to: targets, commits, ...(hold ? { heldBy: hold.hold.heldBy ?? hold.ticketId } : {}) });
 				}
 			}
 			if (changed) await this.writeUnmergedState(pruneUnmergedState(state, now));
@@ -1408,6 +1428,14 @@ export class WorktreeJanitorService {
 		return [...seen.values()];
 	}
 
+	private async safeScheduledCwds(): Promise<string[] | null> {
+		try {
+			return await (this.opts.listScheduledCwds ?? defaultListScheduledCwds)();
+		} catch {
+			return null;
+		}
+	}
+
 	private async safeBusyCwds(): Promise<BusyCwd[] | null> {
 		try {
 			return await (this.opts.listBusyCwds ?? defaultListBusyCwds)();
@@ -1433,6 +1461,7 @@ export class WorktreeJanitorService {
 		repo: RepoContext,
 		entry: PorcelainWorktree,
 		busy: BusyCwd[] | null,
+		scheduled: string[] | null,
 		lowDisk: boolean,
 		idleOverrideMs?: number,
 	): Promise<WorktreeVerdict> {
@@ -1452,6 +1481,10 @@ export class WorktreeJanitorService {
 		if (isPathInside(entry.path, path.join(repo.main, WORKTREE_JANITOR_CONSTANTS.MANAGED_WORKTREE_DIR))) {
 			return keep('managed-by-workitem-worktrees');
 		}
+
+		if (scheduled === null) return keep('scheduled-probe-failed');
+		const sched = scheduled.find((c) => isPathInside(c, entry.path));
+		if (sched) return keep('scheduled-command', sched);
 
 		if (busy === null) return keep('cwd-probe-failed');
 		const hit = busy.find((b) => isPathInside(b.cwd, entry.path));
@@ -1732,4 +1765,15 @@ export async function defaultListBusyCwds(): Promise<BusyCwd[] | null> {
 	if (procs === null) return null;
 	for (const cwd of procs) out.push({ cwd, source: 'process' });
 	return out;
+}
+
+/**
+ * Default scheduled-command probe: the cwds of the enabled entries in
+ * `<CREWLY_HOME>/scheduled-commands.json`.
+ *
+ * @returns Absolute cwds (empty when no config file), or null when the file is unreadable
+ */
+export async function defaultListScheduledCwds(): Promise<string[] | null> {
+	const { readScheduledCommandCwds } = await import('../system/scheduled-commands.service.js');
+	return readScheduledCommandCwds(path.join(getCrewlyHomePath(), SCHEDULED_COMMANDS.CONFIG_FILE));
 }

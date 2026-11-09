@@ -14,8 +14,11 @@ import {
 	bottomRegion,
 	classifyTitle,
 	computeAgentAttention,
+	declineKeystrokes,
 	detectPromptOnScreen,
+	BACKGROUND_AGENT_EVIDENCE,
 } from './agent-attention.js';
+import { AGENT_ATTENTION_CONSTANTS } from '../../constants.js';
 import { PLAN_MODE_PATTERNS } from '../continuation/patterns/waiting-patterns.js';
 
 interface FixtureEntry {
@@ -24,6 +27,7 @@ interface FixtureEntry {
 	title: string;
 	expected: 'waiting_on_human' | 'busy' | 'idle';
 	kind?: string;
+	selfAnswer?: string;
 }
 
 const FIXTURE_DIR = path.join(__dirname, '__fixtures__', 'agent-screens');
@@ -66,6 +70,61 @@ describe('agent attention: captured screen fixtures', () => {
 		if (f.kind) {
 			expect(r.kind).toBe(f.kind);
 		}
+	});
+
+	it.each(fixtures)('$file: selfAnswer is $selfAnswer', (f) => {
+		const r = computeAgentAttention({ screen: f.screen, title: f.title });
+		expect(r.selfAnswer).toBe(f.selfAnswer);
+	});
+
+	describe('background (fork) agents', () => {
+		const byFile = (file: string): string => fixtures.find((f) => f.file === file)!.screen;
+
+		it('a prompt with a fork still running is busy, not idle, and says why', () => {
+			const r = computeAgentAttention({ screen: byFile('claude-idle-background-agent.txt') });
+			expect(r.verdict).toBe('busy');
+			expect(r.evidence).toContain(BACKGROUND_AGENT_EVIDENCE);
+			expect(r.evidence).not.toContain('screen:busy-marker');
+		});
+
+		it('a dialog raised while a fork runs is still waiting_on_human, with the fork noted', () => {
+			const r = computeAgentAttention({ screen: byFile('claude-dangerous-rm.txt') });
+			expect(r.verdict).toBe('waiting_on_human');
+			expect(r.evidence).toContain(BACKGROUND_AGENT_EVIDENCE);
+		});
+
+		it('an idle prompt without the agent panel is not busy', () => {
+			expect(computeAgentAttention({ screen: byFile('claude-idle.txt') }).evidence).not.toContain(BACKGROUND_AGENT_EVIDENCE);
+			expect(detectPromptOnScreen('  ⏺ main\n  ◯ fork\n').busy).toBe(false); // a panel row needs a label
+		});
+	});
+
+	describe('self-answered prompts', () => {
+		const byFile = (file: string): string => fixtures.find((f) => f.file === file)!.screen;
+
+		it("Claude Code's dangerous-rm prompt is a permission prompt the harness declines", () => {
+			const r = computeAgentAttention({ screen: byFile('claude-dangerous-rm.txt') });
+			expect(r).toMatchObject({ verdict: 'waiting_on_human', kind: 'permission', selfAnswer: 'decline' });
+			expect(r.evidence).toEqual(expect.arrayContaining(['screen:permission-prompt', 'screen:dangerous-rm']));
+		});
+
+		it('an ordinary command approval is left to the owner', () => {
+			expect(computeAgentAttention({ screen: byFile('claude-bash-permission.txt') }).selfAnswer).toBeUndefined();
+		});
+
+		it('declineKeystrokes moves from the cursor to the "No" option and confirms', () => {
+			const { DOWN, ENTER } = AGENT_ATTENTION_CONSTANTS.SELF_ANSWER.KEYS;
+			// 1. Yes (selected) / 2. No
+			expect(declineKeystrokes(byFile('claude-dangerous-rm.txt'))).toBe(DOWN + ENTER);
+			// 1. Yes (selected) / 2. Yes, and … / 3. Yes, and … / 4. No
+			expect(declineKeystrokes(byFile('claude-bash-permission.txt'))).toBe(DOWN + DOWN + DOWN + ENTER);
+		});
+
+		it('declineKeystrokes is null without a selected option or without a "No"', () => {
+			expect(declineKeystrokes(byFile('claude-idle.txt'))).toBeNull();
+			expect(declineKeystrokes(byFile('claude-trust-dialog.txt'))).toBeNull();
+			expect(declineKeystrokes('   1. No\n   2. Yes\n')).toBeNull();
+		});
 	});
 
 	it('no fixture contains an unscrubbed path, user or host name', () => {

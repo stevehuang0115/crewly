@@ -279,6 +279,14 @@ describe('SkillsReferenceModule', () => {
 			}
 		});
 
+		it('tells agents to register MCP servers with Crewly, not a runtime CLI', async () => {
+			const out = await module.build(baseConfig);
+
+			expect(out).toContain('POST /api/connectors/remote-mcp');
+			expect(out).toContain('PUT /api/connectors/access/mcp:<id>');
+			expect(out).toContain('claude mcp add');
+		});
+
 		it('names the Crewly Apps skills and the wake marker', async () => {
 			const out = await module.build(baseConfig);
 

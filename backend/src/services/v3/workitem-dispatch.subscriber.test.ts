@@ -17,12 +17,27 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { EventBusService } from '../event-bus/event-bus.service.js';
 import { FreshTaskConversationService } from '../agent/fresh-task-conversation.service.js';
 import { prepareWorkItemHandOver } from '../../controllers/monitoring/terminal.controller.js';
-import { DIRECT_DELIVERY_CONSTANTS } from '../../constants.js';
+import { DIRECT_DELIVERY_CONSTANTS, DISPATCH_WRITE_RETRY_CONSTANTS, TUI_INPUT_GUARD } from '../../constants.js';
 import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../team/team-pause.registry.js';
 import type { Team } from '../../types/index.js';
 
 jest.mock('axios');
+const mockTraceHarness = jest.fn();
+jest.mock('../trace/trace-recorder.js', () => ({
+  ...jest.requireActual('../trace/trace-recorder.js'),
+  traceHarness: (...args: unknown[]) => mockTraceHarness(...args),
+}));
+// Retry waits (CREW-862) would add seconds to every failing write; keep the retries, drop the waits.
+jest.mock('./terminal-write-retry.js', () => {
+  const actual = jest.requireActual('./terminal-write-retry.js');
+  return { ...actual, writeWithRetry: (write: () => Promise<unknown>, onRetry?: never) => actual.writeWithRetry(write, onRetry, async () => undefined) };
+});
 const mockedAxios = axios as jest.Mocked<typeof axios>;
+
+const mockGetTimingBlock = jest.fn<string | null, [string]>(() => null);
+jest.mock('../ai/self-improvement/task-timing.service.js', () => ({
+  getTaskTimingService: () => ({ getTimingBlock: (target: string) => mockGetTimingBlock(target) }),
+}));
 
 jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
@@ -58,6 +73,69 @@ describe('WorkItemDispatchSubscriber', () => {
     WorkItemDispatchSubscriber.resetInstance();
     jest.clearAllMocks();
     mockedAxios.post.mockResolvedValue({ status: 200, data: { success: true } });
+  });
+
+  describe('a refused write is retried, a timed-out one is not, and a lost one stays queued and visible (CREW-862)', () => {
+    const timeoutErr = (): Error => Object.assign(new Error('timeout of 45000ms exceeded'), { code: 'ECONNABORTED' });
+    const refusedErr = (): Error => Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8787'), { code: 'ECONNREFUSED' });
+
+    it('dispatch: a write refused once is delivered on the retry', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      mockedAxios.post.mockRejectedValueOnce(refusedErr());
+      const out = await svc.dispatchOutcome(makeWorkItem({ id: 'wi-t1', target: 'ce-owen' }));
+      expect(out.status).toBe('delivered');
+      expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+    });
+
+    it('dispatch: a write that keeps being refused fails after MAX_ATTEMPTS, frees the key, and is flagged', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      for (let i = 0; i < DISPATCH_WRITE_RETRY_CONSTANTS.MAX_ATTEMPTS; i++) mockedAxios.post.mockRejectedValueOnce(refusedErr());
+      const out = await svc.redispatchOutcome(makeWorkItem({ id: 'wi-t2', target: 'ce-owen' }));
+      expect(out.status).toBe('failed');
+      expect(out.reason).toContain('ECONNREFUSED');
+      expect(mockedAxios.post).toHaveBeenCalledTimes(DISPATCH_WRITE_RETRY_CONSTANTS.MAX_ATTEMPTS);
+      expect(mockTraceHarness).toHaveBeenCalledWith('harness.redelivery', expect.objectContaining({ outcome: 'failed' }));
+      // the item was not marked dispatched: the next push goes out
+      expect(await svc.dispatchTo(makeWorkItem({ id: 'wi-t2', target: 'ce-owen' }))).toBe(true);
+    });
+
+    it('batch: a reminder that keeps being refused is traced as not delivered for every item', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      for (let i = 0; i < DISPATCH_WRITE_RETRY_CONSTANTS.MAX_ATTEMPTS; i++) mockedAxios.post.mockRejectedValueOnce(refusedErr());
+      const wrote = await svc.redispatchMany([
+        makeWorkItem({ id: 'wi-b1', target: 'ce-owen' }),
+        makeWorkItem({ id: 'wi-b2', target: 'ce-owen' }),
+      ]);
+      expect(wrote).toBe(false);
+      const failed = mockTraceHarness.mock.calls.filter(([type, e]) => type === 'harness.redelivery' && e.outcome === 'failed');
+      expect(failed).toHaveLength(2);
+    });
+
+    it('dispatch: a write that TIMES OUT is not retried (it may still be delivering) but the item stays queued and traced', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      mockedAxios.post.mockRejectedValueOnce(timeoutErr());
+      const out = await svc.redispatchOutcome(makeWorkItem({ id: 'wi-t3', target: 'ce-owen' }));
+      expect(out.status).toBe('failed');
+      expect(out.reason).toContain('timeout');
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+      expect(mockTraceHarness).toHaveBeenCalledWith('harness.redelivery', expect.objectContaining({ outcome: 'failed' }));
+      expect(await svc.dispatchTo(makeWorkItem({ id: 'wi-t3', target: 'ce-owen' }))).toBe(true);
+    });
+
+    it('batch: a reminder that TIMES OUT is not retried and is traced as not delivered', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      mockedAxios.post.mockRejectedValueOnce(timeoutErr());
+      expect(await svc.redispatchMany([makeWorkItem({ id: 'wi-b3', target: 'ce-owen' }), makeWorkItem({ id: 'wi-b4', target: 'ce-owen' })])).toBe(false);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('a refused write (HTTP 404) is not retried', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      mockedAxios.post.mockRejectedValueOnce({ response: { status: 404 }, message: 'Request failed with status code 404' });
+      const out = await svc.dispatchOutcome(makeWorkItem({ id: 'wi-t4', target: 'ce-owen' }));
+      expect(out.status).toBe('failed');
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('singleton', () => {
@@ -156,7 +234,7 @@ describe('WorkItemDispatchSubscriber', () => {
     it('an owner-asked brief does not, nor a write that failed', async () => {
       const svc = WorkItemDispatchSubscriber.getInstance();
       await svc.dispatchTo(makeWorkItem({ id: 'wi-asked', target: 'mk-dana' }));
-      mockedAxios.post.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+      mockedAxios.post.mockRejectedValue(new Error('ECONNREFUSED'));
       await svc.dispatchTo(makeWorkItem({ id: 'wi-nightly-2', target: 'mk-dana', triggerId: 'trg-2200' }));
       expect(noted).toEqual([]);
     });
@@ -187,6 +265,20 @@ describe('WorkItemDispatchSubscriber', () => {
       expect((body as { data: string }).data).toContain('wi-1');
       expect((body as { data: string }).data).toContain('poll-tasks');
       expect((config as { headers: { 'X-Agent-Session': string } }).headers['X-Agent-Session']).toBe('WorkItemDispatch');
+    });
+
+    it('waits for the guarded paste instead of giving up after 5 s (#1431)', async () => {
+      // The server answers the write only after the paste landed, which can take
+      // ~37 s. A shorter client timeout records "failed" for a brief that was
+      // still delivered and redispatches it behind the one that landed.
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      await svc.dispatchTo(makeWorkItem({ id: 'wi-slow-paste', target: 'crewly-product-max-358c7cb7' }));
+      const [, , config] = mockedAxios.post.mock.calls[0];
+      const { timeout } = config as { timeout: number };
+      expect(timeout).toBe(TUI_INPUT_GUARD.WRITE_CLIENT_TIMEOUT_MS);
+      expect(timeout).toBeGreaterThan(
+        TUI_INPUT_GUARD.PASTE_PENDING_HOLD_MS + TUI_INPUT_GUARD.PASTE_RENDER_MAX_WAIT_MS + 5_000,
+      );
     });
 
     it('skips WIs without a target', async () => {
@@ -226,7 +318,7 @@ describe('WorkItemDispatchSubscriber', () => {
       const svc = WorkItemDispatchSubscriber.getInstance();
       const wi = makeWorkItem({ id: 'wi-failing' });
 
-      mockedAxios.post.mockRejectedValueOnce(new Error('connection refused'));
+      for (let i = 0; i < DISPATCH_WRITE_RETRY_CONSTANTS.MAX_ATTEMPTS; i++) mockedAxios.post.mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:8787'));
       const first = await svc.dispatchTo(wi);
       expect(first).toBe(false);
 
@@ -234,7 +326,7 @@ describe('WorkItemDispatchSubscriber', () => {
       mockedAxios.post.mockResolvedValueOnce({ status: 200, data: { success: true } });
       const retry = await svc.dispatchTo(wi);
       expect(retry).toBe(true);
-      expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(DISPATCH_WRITE_RETRY_CONSTANTS.MAX_ATTEMPTS + 1);
     });
 
     it('encodes session names with special characters into the URL', async () => {
@@ -367,7 +459,7 @@ describe('WorkItemDispatchSubscriber', () => {
 
     it('a write that gets no response is "failed" and carries the error text', async () => {
       const svc = WorkItemDispatchSubscriber.getInstance();
-      mockedAxios.post.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+      mockedAxios.post.mockRejectedValue(new Error('connect ECONNREFUSED'));
       const out = await svc.redispatchOutcome(makeWorkItem({ id: 'wi-noresp' }));
       expect(out.status).toBe('failed');
       expect(out.reason).toContain('ECONNREFUSED');
@@ -444,7 +536,7 @@ describe('WorkItemDispatchSubscriber', () => {
       const svc = WorkItemDispatchSubscriber.getInstance();
       const a = makeWorkItem({ id: 'wi-a', target: 'sora' });
       const b = makeWorkItem({ id: 'wi-b', target: 'sora' });
-      mockedAxios.post.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+      mockedAxios.post.mockRejectedValue(new Error('ECONNREFUSED'));
 
       expect(await svc.redispatchMany([a, b])).toBe(false);
       // A later plain dispatch of either item must still go through.
@@ -720,6 +812,22 @@ describe('WorkItemDispatchSubscriber', () => {
       const body = mockedAxios.post.mock.calls[0][1] as { data: string };
       expect(body.data).toContain('bash $AGENT_SKILLS_PATH/core/poll-tasks/execute.sh');
       expect(body.data).toContain('"sessionName":"crewly-product-quinn-47ce967d"');
+    });
+
+    it("includes the target's own task-timing summary when it has history", async () => {
+      mockGetTimingBlock.mockImplementation((target) => (target === 'crewly-product-quinn-47ce967d' ? 'Your own task times: revision median 23 min (11 min–60 min, n=12).' : null));
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      await svc.dispatchTo(makeWorkItem({ id: 'wi-eta', target: 'crewly-product-quinn-47ce967d' }));
+      const body = mockedAxios.post.mock.calls[0][1] as { data: string };
+      expect(body.data).toContain('  Your own task times: revision median 23 min');
+      mockGetTimingBlock.mockImplementation(() => null);
+    });
+
+    it('omits the timing summary when the target has no history', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      await svc.dispatchTo(makeWorkItem({ id: 'wi-noeta' }));
+      const body = mockedAxios.post.mock.calls[0][1] as { data: string };
+      expect(body.data).not.toContain('task times');
     });
   });
 

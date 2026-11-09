@@ -3,6 +3,7 @@ import type { ApiContext } from '../types.js';
 import { GitIntegrationService } from '../../services/index.js';
 import { ApiResponse } from '../../types/index.js';
 import { LoggerService } from '../../services/core/logger.service.js';
+import { isValidGitRefName } from '../../utils/git-ref.utils.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('GitController');
 
@@ -97,6 +98,11 @@ export async function createBranch(this: ApiContext, req: Request, res: Response
     const { projectId } = req.params as any;
     const { branchName, switchTo } = req.body as any;
     if (!branchName) { res.status(400).json({ success: false, error: 'Branch name is required' } as ApiResponse); return; }
+    // CREW-967: refuse anything git would not accept as a ref name, or that starts with "-".
+    if (!isValidGitRefName(branchName)) { res.status(400).json({ success: false, error: 'Invalid branch name' } as ApiResponse); return; }
+    if (switchTo !== undefined && switchTo !== null && switchTo !== '' && switchTo !== false && !isValidGitRefName(switchTo)) {
+      res.status(400).json({ success: false, error: 'Invalid start point' } as ApiResponse); return;
+    }
     const projects = await this.storageService.getProjects();
     const project = projects.find(p => p.id === projectId);
     if (!project) { res.status(404).json({ success: false, error: 'Project not found' } as ApiResponse); return; }

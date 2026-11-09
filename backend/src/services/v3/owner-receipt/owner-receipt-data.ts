@@ -265,7 +265,33 @@ function outputTexts(ticket: Request, workItems: readonly WorkItem[]): string[] 
 // ---------------------------------------------------------------------------
 
 /**
- * What happened to a ticket, from its status and WorkItems only.
+ * Whether a ticket was accepted by silence (#813, #1316): nobody objected
+ * before the auto-accept deadline. Read from any of the three marks the
+ * review service leaves — `acceptedBy: 'silence'`, the `auto_accepted` tag,
+ * or the auto-accept discussion note (tickets closed before `acceptedBy`
+ * existed carry only the latter two). An explicit `acceptedBy: 'owner'`
+ * wins over the rest.
+ *
+ * @param ticket - The ticket
+ * @returns True when it closed without the owner's check
+ *
+ * @example
+ * ```typescript
+ * isSilenceAccepted({ ...t, acceptedBy: 'silence' }); // true
+ * isSilenceAccepted({ ...t, acceptedBy: 'owner' });   // false
+ * ```
+ */
+export function isSilenceAccepted(ticket: Request): boolean {
+  if (ticket.acceptedBy) return ticket.acceptedBy === 'silence';
+  if (ticket.tags.includes(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG)) return true;
+  return (ticket.discussion ?? []).some(
+    (d) => d.author === TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_NOTE_AUTHOR && d.text === TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_REASON,
+  );
+}
+
+/**
+ * What happened to a ticket, from its status and WorkItems only. A done
+ * ticket the owner never checked is `auto_accepted`, not `done` (#1316).
  *
  * @param ticket - The ticket
  * @param workItems - Its WorkItems
@@ -273,7 +299,7 @@ function outputTexts(ticket: Request, workItems: readonly WorkItem[]): string[] 
  */
 export function outcomeOf(ticket: Request, workItems: readonly WorkItem[]): ReceiptOutcome {
   if (ticket.status === 'cancelled') return 'dismissed';
-  if (ticket.status === 'done') return 'done';
+  if (ticket.status === 'done') return isSilenceAccepted(ticket) ? 'auto_accepted' : 'done';
   if (ticket.status === 'waiting_confirmation') return ticketNeedsReview(ticket) ? 'to_review' : 'done';
   if (ticket.status === 'blocked' || workItems.some((w) => w.status === 'blocked')) return 'blocked';
   if (!ticket.assignee && workItems.length === 0) return 'unowned';
@@ -650,7 +676,8 @@ export function ownerQuestionOf(text: string | null | undefined): string | null 
 
 /**
  * 「今天做完的」: tickets that became done in the window (not stale-closed, not
- * dismissed, not misrouted), each as its outcome line. Ranked: with
+ * dismissed, not misrouted), each as its outcome line, marked when it closed
+ * by silence ({@link isSilenceAccepted}) so the renderer can say so. Ranked: with
  * deliverables first, real work before plain questions, newest first; at
  * most {@link OWNER_RECEIPT_CONSTANTS.MAX_HIGHLIGHTS}, no two alike.
  *
@@ -678,6 +705,7 @@ function collectHighlights(input: ReceiptInputs, itemsOf: (t: Request) => WorkIt
       summary,
       // Links are what he sent; a file, a PR or an issue is what got made.
       deliverableCount: extractDeliverables(texts).filter((d) => d.kind !== 'link').length,
+      acceptedBySilence: isSilenceAccepted(t),
       completedAt: new Date(at).toISOString(),
       question: t.kind === 'question',
     });

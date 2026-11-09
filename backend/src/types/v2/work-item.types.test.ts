@@ -36,7 +36,10 @@ import {
   isWorkItemDisposed,
   getWorkItemDisposition,
   WORK_ITEM_BLOCK_SOURCES,
+  WORK_ITEM_BLOCKED_UNTIL_KEY,
   isExplicitlyBlocked,
+  blockedUntilOf,
+  isBlockedUntilReached,
 } from './work-item.types.js';
 import type { CreateWorkItemInput, WorkItem, TransitionActorInput } from './work-item.types.js';
 
@@ -749,6 +752,42 @@ describe('WorkItem Types', () => {
         ),
       ).toBe(false);
     });
+  });
+});
+
+describe('blockedUntilOf / isBlockedUntilReached (block-task until)', () => {
+  const NOW = Date.parse('2026-10-27T08:30:00Z');
+  const explicit = (until?: string) => ({
+    status: 'blocked' as const,
+    blockSource: WORK_ITEM_BLOCK_SOURCES.EXPLICIT,
+    metadata: until === undefined ? {} : { [WORK_ITEM_BLOCKED_UNTIL_KEY]: until },
+  });
+
+  it('reads the until time from metadata; none or unparsable gives null', () => {
+    expect(blockedUntilOf(explicit('2026-10-27T08:30:00Z'))).toBe(NOW);
+    expect(blockedUntilOf(explicit())).toBeNull();
+    expect(blockedUntilOf(explicit('tomorrow-ish'))).toBeNull();
+    expect(blockedUntilOf({ metadata: { [WORK_ITEM_BLOCKED_UNTIL_KEY]: 12345 } })).toBeNull();
+  });
+
+  it('is due once the until time is not in the future', () => {
+    expect(isBlockedUntilReached(explicit('2026-10-27T08:30:00Z'), NOW)).toBe(true);
+    expect(isBlockedUntilReached(explicit('2026-10-27T08:29:00Z'), NOW)).toBe(true);
+    expect(isBlockedUntilReached(explicit('2026-10-27T08:31:00Z'), NOW)).toBe(false);
+  });
+
+  it('is never due for an explicit block without a time, a system block, or a waiting_on_human park', () => {
+    expect(isBlockedUntilReached(explicit(), NOW)).toBe(false);
+    expect(isBlockedUntilReached({ status: 'blocked', metadata: { [WORK_ITEM_BLOCKED_UNTIL_KEY]: '2026-10-27T08:00:00Z' } }, NOW)).toBe(false);
+    expect(isBlockedUntilReached({
+      status: 'blocked',
+      blockSource: WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN,
+      metadata: { [WORK_ITEM_BLOCKED_UNTIL_KEY]: '2026-10-27T08:00:00Z' },
+    }, NOW)).toBe(false);
+  });
+
+  it('is never due once the item has left blocked', () => {
+    expect(isBlockedUntilReached({ ...explicit('2026-10-27T08:00:00Z'), status: 'queued' }, NOW)).toBe(false);
   });
 });
 

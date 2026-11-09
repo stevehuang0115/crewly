@@ -53,7 +53,7 @@ import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import type { TeamBudgetGateService } from '../budget/team-budget-gate.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
-import { DIRECT_DELIVERY_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { DIRECT_DELIVERY_CONSTANTS, ORCHESTRATOR_SESSION_NAME, TUI_INPUT_GUARD } from '../../constants.js';
 import { spendCapStopOf } from '../spend/spend-cap.gate.js';
 import { usageLimitOf } from '../runtime-fallback/usage-limit-state.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
@@ -66,6 +66,8 @@ import { traceHarness, workItemTraceMarker } from '../trace/trace-recorder.js';
 import { noteScheduledTurn } from '../slack/slack-auto-working.service.js';
 import { originOfWorkItem } from '../orc/work-item-destination.js';
 import { internalAgentHeaders } from '../core/owner-auth.service.js';
+import { getTaskTimingService } from '../ai/self-improvement/task-timing.service.js';
+import { writeWithRetry } from './terminal-write-retry.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -604,13 +606,25 @@ export class WorkItemDispatchSubscriber {
     const message = this.buildDispatchMessage(workItem, freshNote, worktreeHint);
 
     try {
-      const res = await axios.post(
-        `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(workItem.target)}/write`,
-        { data: message, mode: 'message' },
-        {
-          headers: internalAgentHeaders(SERVICE_NAME),
-          timeout: 5_000,
-        },
+      const target = workItem.target;
+      const res = await writeWithRetry(
+        () => axios.post(
+          `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(target)}/write`,
+          { data: message, mode: 'message' },
+          {
+            headers: internalAgentHeaders(SERVICE_NAME),
+            // Outlives the server's guarded paste (#1431): a 5 s timeout
+            // reported "failed" while the brief was still being delivered.
+            timeout: TUI_INPUT_GUARD.WRITE_CLIENT_TIMEOUT_MS,
+          },
+        ),
+        (attempt, waitMs, err) => this.logger.warn('Dispatch write got no usable answer — trying again', {
+          workItemId: workItem.id,
+          target,
+          attempt,
+          waitMs,
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
       if (isSpendCappedReply(res?.data)) {
         // The cap fired between the check above and the write: the brief is
@@ -752,12 +766,17 @@ export class WorkItemDispatchSubscriber {
   private dropStaleQueuedNotice(workItemId: string, target: string): boolean {
     try {
       const queue = SubAgentMessageQueue.getInstance();
+      const now = Date.now();
       const stale = queue
         .peek(target)
         .filter((m) => (dispatchNoticeWorkItemIds(m.data) ?? []).includes(workItemId))
-        .filter((m) => Date.now() - m.queuedAt >= STALE_QUEUED_NOTICE_MS);
+        .filter((m) => now - m.queuedAt >= STALE_QUEUED_NOTICE_MS)
+        // A notice the queue keeps deferring because the agent is mid-turn had
+        // no chance yet: dropping and redelivering it only queued it twice
+        // behind the same busy agent (Vera, 2026-10-22 22:06–22:12, crewly#1431).
+        .filter((m) => !(m.lastDeferredAt && now - m.lastDeferredAt < STALE_QUEUED_NOTICE_MS));
       if (stale.length === 0) return false;
-      for (const m of stale) queue.remove(target, m.data);
+      for (const m of stale) queue.remove(target, m.data, 'stale dispatch notice');
       this.logger.warn('Stale dispatch notice dropped from the agent queue; redelivering the brief', { workItemId, target, count: stale.length });
       return true;
     } catch {
@@ -893,13 +912,24 @@ export class WorkItemDispatchSubscriber {
     // can clear — and never while other work is running.)
     const message = this.buildBatchDispatchMessage(batch, target);
     try {
-      const res = await axios.post(
-        `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(target)}/write`,
-        { data: message, mode: 'message' },
-        {
-          headers: internalAgentHeaders(SERVICE_NAME),
-          timeout: 5_000,
-        },
+      const res = await writeWithRetry(
+        () => axios.post(
+          `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(target)}/write`,
+          { data: message, mode: 'message' },
+          {
+            headers: internalAgentHeaders(SERVICE_NAME),
+            // Outlives the server's guarded paste (#1431): a 5 s timeout
+            // reported "failed" while the brief was still being delivered.
+            timeout: TUI_INPUT_GUARD.WRITE_CLIENT_TIMEOUT_MS,
+          },
+        ),
+        (attempt, waitMs, err) => this.logger.warn('Batch dispatch write got no usable answer — trying again', {
+          target,
+          count: batch.length,
+          attempt,
+          waitMs,
+          error: err instanceof Error ? err.message : String(err),
+        }),
       );
       if (isSpendCappedReply(res?.data)) {
         this.logger.info('Batch redispatch held by the daily token cap — not delivered', { target, count: batch.length });
@@ -933,12 +963,25 @@ export class WorkItemDispatchSubscriber {
       return true;
     } catch (err) {
       const status = (err as { response?: { status?: number } })?.response?.status;
-      this.logger.debug('Batch dispatch HTTP write failed (non-fatal)', {
+      const errorText = err instanceof Error ? err.message : String(err);
+      // The items stay queued; say so where a person can see it (CREW-862:
+      // this used to be a debug line and no trace, so a lost reminder looked
+      // like no attempt at all).
+      this.logger.warn('Batch dispatch HTTP write failed — the reminder did not reach the agent; items stay queued', {
         target,
         count: batch.length,
         status: status ?? 'no-response',
-        error: err instanceof Error ? err.message : String(err),
+        error: errorText,
       });
+      for (const wi of batch) {
+        traceHarness('harness.redelivery', {
+          workItem: wi,
+          session: target,
+          summary: `Reminder of ${batch.length} queued work items NOT delivered to ${target} (${status ? `write refused (HTTP ${status})` : `write failed (${errorText})`}); still queued: ${wi.title}`,
+          outcome: 'failed',
+          data: { batch: batch.length },
+        });
+      }
       return false;
     }
   }
@@ -1086,6 +1129,7 @@ export class WorkItemDispatchSubscriber {
       ? workItem.title.substring(0, 77) + '...'
       : workItem.title;
     const trace = workItemTraceMarker(workItem);
+    const timing = this.timingBlockFor(workItem.target);
 
     return [
       '',
@@ -1100,9 +1144,26 @@ export class WorkItemDispatchSubscriber {
             `  (branch ${worktreeHint.branch}). cd there before editing; do not edit the shared checkout directly.`,
           ]
         : []),
+      ...(timing ? [`  ${timing}`] : []),
       '  Run poll-tasks to claim:',
       `    bash $AGENT_SKILLS_PATH/core/poll-tasks/execute.sh '{"sessionName":"${workItem.target}"}'`,
       '',
     ].join('\n');
+  }
+
+  /**
+   * The target's own task-timing summary (null without history or on a read
+   * error), so the ETA it gives for this item rests on its own medians.
+   *
+   * @param target - Worker session
+   * @returns Prompt line or null
+   */
+  private timingBlockFor(target: string | undefined): string | null {
+    if (!target) return null;
+    try {
+      return getTaskTimingService().getTimingBlock(target);
+    } catch {
+      return null;
+    }
   }
 }

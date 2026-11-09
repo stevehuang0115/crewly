@@ -10,6 +10,8 @@
 
 import { PEOPLE_CONSTANTS } from '../../constants.js';
 import { connectingPerson, createSharingHandler } from '../connector/grant-sharing.handler.js';
+import { actorFromRequest, recordActivity } from '../../services/activity/activity-log.service.js';
+import { getConnectorUseAudit } from '../../services/connector/connector-use-audit.service.js';
 import type { Request, Response } from 'express';
 import { MICROSOFT_TODO_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
@@ -84,6 +86,8 @@ export function sendMicrosoftTodoError(req: Request, res: Response, err: unknown
         break;
       case PEOPLE_CONSTANTS.NOT_PERMITTED_CODE:
         hint = PEOPLE_CONSTANTS.NOT_PERMITTED_HINT;
+        // Issue #969: Cloud refused the grant for the person this call acts for.
+        getConnectorUseAudit().refused({ connectorId: MICROSOFT_TODO_CONSTANTS.CONNECTOR_ID, actor: actorFromRequest(req), reason: 'grant_not_shared', what: req.path });
         break;
       case CODES.NOT_FOUND:
         hint = 'Check the list name (todo-lists shows them) or the task id (todo-tasks shows them).';
@@ -168,7 +172,9 @@ export async function getConnectUrl(req: Request, res: Response): Promise<void> 
 /** DELETE /api/microsoft-todo/disconnect */
 export async function disconnect(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ success: true, data: await getDeps().tokens.disconnect() });
+    const data = await getDeps().tokens.disconnect();
+    recordActivity({ actor: actorFromRequest(req), action: 'connector.disconnected', target: { type: 'connector', id: 'microsoft-todo' } });
+    res.json({ success: true, data });
   } catch (err) {
     sendMicrosoftTodoError(req, res, err);
   }
@@ -268,4 +274,4 @@ export async function deleteTask(req: Request, res: Response): Promise<void> {
  * with (issue #968). Owner only: an agent is refused.
  * Body `{ authorizedBy?, sharing? }` → `{ authorizedBy, sharing }`.
  */
-export const setSharing = createSharingHandler((_req, change) => getDeps().tokens.setSharing(change), sendMicrosoftTodoError);
+export const setSharing = createSharingHandler((_req, change) => getDeps().tokens.setSharing(change), sendMicrosoftTodoError, 'microsoft-todo');

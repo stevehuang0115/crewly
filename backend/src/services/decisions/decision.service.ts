@@ -19,6 +19,7 @@ import { isAudioOrVideo } from '../../utils/inbound-file-hint.utils.js';
 import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
 import { withQueueMeta, type QueueMessageMeta } from '../messaging/queue-priority.js';
 import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME, ROOM_RESPONDER_CONSTANTS } from '../../constants.js';
+import { isOrchestratorSender } from '../../utils/orchestrator-alias.utils.js';
 import { questionSimilarity } from '../open-items/open-item-card.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { SlackBlock, SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
@@ -28,13 +29,15 @@ import type {
   DecisionAnswerVia,
   DecisionChoice,
   DecisionKind,
+  DecisionLanguage,
   DecisionOption,
   DecisionSensitiveKind,
   DecisionSource,
   DecisionSystemRef,
   OwnerDecision,
 } from '../../types/decision.types.js';
-import { DecisionContractError, eitherOrMessage, isYesNoOptions, readsAsEitherOr, matchOption, parseOptions, resolveDefault, validateAskOwner, withTicketContext } from './decision-contract.js';
+import { DecisionContractError, eitherOrMessage, fitAskToOwnerLanguage, isYesNoOptions, readsAsEitherOr, matchOption, parseOptions, resolveDefault, validateAskOwner, withTicketContext } from './decision-contract.js';
+import { stripInternalRefs } from './decision-wording.js';
 import {
   answerFilesOf,
   canRemind,
@@ -46,8 +49,11 @@ import {
   describeAnswerFiles,
   slackTsAfter,
   waitReminderLine,
+  remindNowLine,
+  sensitiveReaskLine,
   defaultLabel,
   formatWhen,
+  isHeldAction,
   optionLabel,
   parseButtonValue,
   renderOpenCard,
@@ -60,6 +66,7 @@ import {
 } from './decision-card.js';
 import { DecisionStore, PENDING_DECISION_STATUSES } from './decision-store.js';
 import type { TicketThreadStore } from './ticket-thread-store.js';
+import type { ActivityActor, ActivityEntryInput } from '../activity/activity-log.service.js';
 
 /** Thrown for requests the caller must fix (HTTP 4xx). */
 export class DecisionError extends Error {
@@ -138,6 +145,8 @@ export interface DecisionServiceDeps {
   currentWorkItemId?: (session: string) => Promise<string | undefined>;
   /** Deliver a message to an agent (wakes a stopped one); false when it could not */
   deliverToAgent: (session: string, text: string) => Promise<boolean>;
+  /** Append to the activity log (crewly#881): who asked / answered what, and when. Absent = not logged. */
+  recordActivity?: (entry: ActivityEntryInput) => void;
   /**
    * Hold a message the agent could not take now on its persistent queue
    * (delivered when it is next idle or registers; a drop is reported).
@@ -161,6 +170,12 @@ export interface DecisionServiceDeps {
    * (specs/2026-10-02-decision-card-thread-answers.md §3).
    */
   trackedClosed?: (d: OwnerDecision) => Promise<string | null>;
+  /**
+   * Why an ask-owner card is about work a ticket put on hold (the same PR /
+   * branch / worktree), or null when it may go up. A refusal quotes the hold;
+   * a card that only asks whether to close the work passes (crewly#1369).
+   */
+  holdRefusal?: (input: { text: string; context?: string; ticketId?: string }) => Promise<string | null>;
   /** The asking agent's display name ("Owen"), for "so Owen will go with …" */
   displayName?: (session: string) => Promise<string | undefined>;
   /**
@@ -184,6 +199,12 @@ export interface DecisionServiceDeps {
    * null when nothing was handed off. Must not throw.
    */
   handOffChange?: (decision: OwnerDecision) => Promise<string | null>;
+  /**
+   * The language the owner writes in at a Slack place (their own messages
+   * there, else their recent messages anywhere); null when unknown. Cards
+   * from agents follow it (crewly#1367).
+   */
+  ownerLanguage?: (place: { slackChannelId?: string; threadTs?: string } | null) => Promise<DecisionLanguage | null>;
   now?: () => Date;
   logger?: ComponentLogger;
 }
@@ -260,6 +281,9 @@ export interface PrebuiltAsk {
   deadline: Date;
   sensitive?: DecisionSensitiveKind;
   browser?: OwnerDecision['browser'];
+  gmail?: OwnerDecision['gmail'];
+  /** The held reply the owner may post into the room (kind `private_share`) */
+  privateShare?: OwnerDecision['privateShare'];
   /** What the owner would grant (kind `app_collaborator`) */
   appCollaborator?: OwnerDecision['appCollaborator'];
   /** The template the owner would list (kind `app_template`) */
@@ -558,6 +582,19 @@ export class DecisionService {
       ticket = { projectId: ctx.projectId, projectPath: ctx.projectPath, projectName: ctx.projectName, id: ctx.id, title: ctx.title };
     }
     if (!asker) throw new DecisionError(400, 'Who is asking? Run ask-owner from an agent session, or name a --ticket.');
+    // A held ticket's work may only be closed, never merged (crewly#1369).
+    const held = await this.deps
+      .holdRefusal?.({ text: [ask.question, ...(ask.details ?? []), ask.context?.link ?? '', ...ask.options.map((o) => `${o.label} ${o.detail ?? ''}`)].join('\n'), ...(ticket ? { context: ticket.title, ticketId: ticket.id } : {}) })
+      .catch(() => null);
+    if (held) throw new DecisionError(409, held);
+    // The card speaks the owner's language (crewly#1367).
+    const ownerLanguage = await this.ownerLanguageFor(asker, ticket);
+    try {
+      ask = fitAskToOwnerLanguage(ask, ownerLanguage);
+    } catch (err) {
+      if (err instanceof DecisionContractError) throw new DecisionError(400, err.message);
+      throw err;
+    }
     const skipped = await this.findSkipped({ ...(ticket ? { ticket: { projectPath: ticket.projectPath, id: ticket.id } } : {}), asker }, ask.question);
     if (skipped) throw this.alreadySkippedError(skipped);
     if (ticket && isYesNoOptions(ask.options)) {
@@ -575,7 +612,7 @@ export class DecisionService {
       if (recent.length > 0) throw new DecisionError(400, eitherOrMessage(recent[0].id));
     }
     // A short question says nothing on its own phone screen: the ticket title goes in front of it.
-    if (ticket) ask.question = withTicketContext(ask.question, ticket.title);
+    if (ticket) ask.question = withTicketContext(ask.question, stripInternalRefs(ticket.title).text);
     if (!teamId) teamId = await this.deps.teamOf(asker).catch(() => undefined);
     // The same question already waits on an open card of this asker, in the
     // same thread / ticket: that card stands — no second post.
@@ -593,6 +630,10 @@ export class DecisionService {
       defaultKey: ask.defaultKey,
       deadline: ask.deadline.toISOString(),
       ...(ask.sensitive ? { sensitive: ask.sensitive } : {}),
+      ...(ask.context ? { context: ask.context } : {}),
+      ...(ask.details ? { details: ask.details } : {}),
+      ...(ask.merge ? { merge: true } : {}),
+      ...(ownerLanguage ? { ownerLanguage } : {}),
       requestedBy: callerSession ?? 'owner',
       asker,
       ...(ticket ? { ticket } : {}),
@@ -600,6 +641,7 @@ export class DecisionService {
       ...(workItemId ? { workItemId } : {}),
       status: 'open',
     });
+    this.audit(decision, 'decision.asked', callerSession ? { type: 'agent', id: callerSession } : { type: 'owner' });
     if (ticket && ask.ticketId && ask.project) {
       await this.deps
         .markTicketAsked({ ...ticket, asker, teamId }, ask.question, decision.id)
@@ -657,6 +699,7 @@ export class DecisionService {
       status: 'open',
     });
     this.logger.info('System decision asked', { decisionId: decision.id, kind: input.kind, key: input.system.key });
+    this.audit(decision, 'decision.asked', { type: 'system', id: 'crewly' });
     return this.postCard(decision);
   }
 
@@ -692,6 +735,8 @@ export class DecisionService {
       deadline: ask.deadline.toISOString(),
       ...(ask.sensitive ? { sensitive: ask.sensitive } : {}),
       ...(ask.browser ? { browser: ask.browser } : {}),
+      ...(ask.gmail ? { gmail: ask.gmail } : {}),
+      ...(ask.privateShare ? { privateShare: ask.privateShare } : {}),
       ...(ask.appCollaborator ? { appCollaborator: ask.appCollaborator } : {}),
       ...(ask.appTemplate ? { appTemplate: ask.appTemplate } : {}),
       ...(ask.tierChange ? { tierChange: ask.tierChange } : {}),
@@ -708,6 +753,7 @@ export class DecisionService {
       status: 'open',
     });
     this.logger.info('Owner decision asked by Crewly', { decisionId: decision.id, kind: ask.kind, asker: ask.asker });
+    this.audit(decision, 'decision.asked', { type: 'agent', id: ask.asker });
     // One open question card per ticket: a newer question replaces the ticket's older open ones (a
     // reply's own sibling questions, made together, stay).
     const requestId = ask.requestRef?.requestId;
@@ -741,6 +787,38 @@ export class DecisionService {
    * @param id - Decision id
    * @returns The expired decision, or null when it was not pending
    */
+  /**
+   * Append a line to the activity log (crewly#881). Never throws: the log
+   * never breaks the decision it describes.
+   *
+   * @param d - The decision as stored after the step
+   * @param action - `decision.asked` / `.resolved` / `.skipped` / `.defaulted` / `.expired`
+   * @param actor - Who did it
+   * @param note - The answer in words, when there is one
+   */
+  private audit(d: OwnerDecision, action: string, actor: ActivityActor, note?: string): void {
+    try {
+      this.deps.recordActivity?.({
+        actor,
+        action,
+        target: { type: 'decision', id: d.id, name: d.question.slice(0, DECISION_CONSTANTS.QUESTION_MAX_CHARS) },
+        ...(d.requestRef?.requestId ? { requestId: d.requestRef.requestId } : {}),
+        ...(d.workItemId ? { workItemId: d.workItemId } : {}),
+        ...(note ? { note } : {}),
+        after: {
+          status: d.status,
+          asker: d.asker,
+          ...(d.kind ? { kind: d.kind } : {}),
+          ...(d.teamId ? { teamId: d.teamId } : {}),
+          ...(d.chosenKey ? { chosenKey: d.chosenKey } : {}),
+          ...(d.answeredVia ? { answeredVia: d.answeredVia } : {}),
+        },
+      });
+    } catch {
+      // see above
+    }
+  }
+
   async expire(id: string): Promise<OwnerDecision | null> {
     const expired = await this.deps.store.update(id, (cur) =>
       PENDING_DECISION_STATUSES.has(cur.status) ? { status: 'expired', resolvedAt: this.now().toISOString(), remindAt: undefined } : null,
@@ -750,6 +828,7 @@ export class DecisionService {
     if (expired.ticket) await this.logTicket(expired, `owner decision ${expired.id}: expired`, true);
     await this.notifyAsker(expired, null);
     this.logger.info('Owner decision expired', { decisionId: id });
+    this.audit(expired, 'decision.expired', { type: 'system', via: 'deadline' });
     return expired;
   }
 
@@ -879,6 +958,20 @@ export class DecisionService {
     const work = await this.deps.workDestination?.(asker).catch(() => null);
     if (work?.slackChannelId && work.threadTs) return work;
     return null;
+  }
+
+  /**
+   * The owner's language where a new card of `asker` would go (its thread,
+   * else the owner's recent messages). Null when unknown or not wired.
+   *
+   * @param asker - Asking agent
+   * @param ticket - The ticket asked about, if any
+   * @returns `zh` / `en`, or null
+   */
+  private async ownerLanguageFor(asker: string, ticket: OwnerDecision['ticket'] | undefined): Promise<DecisionLanguage | null> {
+    if (!this.deps.ownerLanguage) return null;
+    const place = await this.threadPlace(asker, ticket).catch(() => null);
+    return this.deps.ownerLanguage(place ? { slackChannelId: place.slackChannelId, ...(place.threadTs ? { threadTs: place.threadTs } : {}) } : null).catch(() => null);
   }
 
   /**
@@ -1163,7 +1256,7 @@ export class DecisionService {
    * Every asker whose card stays open is told what the owner posted, once.
    */
   private async applyThreadFiles(candidates: OwnerDecision[], files: DecisionAnswerFile[], user: string): Promise<InteractionOutcome> {
-    const plain = candidates.filter((c) => !c.system && c.kind !== 'browser_action' && !c.sensitive);
+    const plain = candidates.filter((c) => !c.system && !isHeldAction(c) && !c.sensitive);
     const voice = files.some((f) => isAudioOrVideo({ name: f.name, mimetype: f.mimetype ?? '' }));
     const newest = [...plain].sort((x, y) => Date.parse(y.createdAt) - Date.parse(x.createdAt) || idNumber(y.id) - idNumber(x.id))[0];
     const target = newest && (voice || plain.length === 1) ? newest : null;
@@ -1489,8 +1582,8 @@ export class DecisionService {
     if (choice.kind === 'remind' && !canRemind(decision)) {
       return { handled: false, reason: 'remind is not offered on this card', decision };
     }
-    if (choice.kind === 'text' && decision.kind === 'browser_action') {
-      // A held click is approved or not: words that are neither leave it open.
+    if (choice.kind === 'text' && isHeldAction(decision)) {
+      // A held click, email or reply is approved or not: words that are neither leave it open.
       return { handled: false, reason: 'reply is neither yes nor no', decision };
     }
     if (choice.kind === 'remind') {
@@ -1539,6 +1632,7 @@ export class DecisionService {
     await this.notifyAsker(resolved, `${this.answerNote(resolved)}${siblingsLine(siblings)}${handedOff ? ` ${handedOff}` : ''}`, batchNotes, { owner: true });
     this.closeWatchdog(resolved);
     this.logger.info('Owner decision resolved', { decisionId: resolved.id, via, chosen: resolved.chosenKey ?? 'text' });
+    this.audit(resolved, 'decision.resolved', { type: 'owner', ...(user ? { id: user } : {}), via }, answer);
     return { handled: true, reason: 'resolved', decision: resolved };
   }
 
@@ -1560,6 +1654,7 @@ export class DecisionService {
     await this.notifyAsker(skipped, `${this.skipNote(skipped)}${siblingsLine(siblings)}`, batchNotes, { owner: true });
     this.closeWatchdog(skipped);
     this.logger.info('Owner decision skipped', { decisionId: skipped.id, via });
+    this.audit(skipped, 'decision.skipped', { type: 'owner', ...(user ? { id: user } : {}), via });
     return { handled: true, reason: 'skipped', decision: skipped };
   }
 
@@ -1733,7 +1828,7 @@ export class DecisionService {
     const updated = await this.deps.store.update(d.id, (cur) => (cur.status === 'open' && cur.remindAt ? { remindAt: undefined } : null));
     if (!updated) return;
     const owner = this.deps.ownerUserId?.();
-    await this.postInThread(updated, `${owner ? `<@${owner}> ` : ''}Reminder: ${updated.question} — tap an answer on the card above, or reply here.`);
+    await this.postInThread(updated, remindNowLine(updated, owner));
     await this.refreshCard(updated);
   }
 
@@ -1836,6 +1931,7 @@ export class DecisionService {
       cur.status === 'open' ? { status: 'defaulted', chosenKey: cur.defaultKey, answeredVia: 'deadline', resolvedAt: now.toISOString() } : null,
     );
     if (!resolved) return false;
+    this.audit(resolved, 'decision.defaulted', { type: 'system', via: 'deadline' });
     await this.refreshCard(resolved);
     await this.postInThread(resolved, line);
     if (resolved.ticket) await this.logTicket(resolved, `owner decision ${resolved.id}: no answer — default "${defaultLabel(resolved)}" applied`, true);
@@ -1857,10 +1953,7 @@ export class DecisionService {
       const updated = await this.deps.store.update(d.id, (cur) => (cur.status === 'open' && !cur.reaskedAt ? { reaskedAt: now.toISOString() } : null));
       if (!updated) return false;
       const owner = this.deps.ownerUserId?.();
-      await this.postInThread(
-        updated,
-        `${owner ? `<@${owner}> ` : ''}Still need your answer: ${updated.question} This needs your OK (${updated.sensitive}), so I'm not going ahead without it.`,
-      );
+      await this.postInThread(updated, sensitiveReaskLine(updated, owner));
       await this.refreshCard(updated);
       this.logger.info('Sensitive owner decision re-asked', { decisionId: d.id });
       return true;
@@ -2003,7 +2096,7 @@ export class DecisionService {
       else hold();
     }
     // The orchestrator asked on the owner's behalf for a ticket it does not own: tell it too.
-    if (d.requestedBy !== d.asker && d.requestedBy === ORCHESTRATOR_SESSION_NAME) {
+    if (d.requestedBy !== d.asker && isOrchestratorSender(d.requestedBy) && !isOrchestratorSender(d.asker)) {
       await this.deps.deliverToAgent(d.requestedBy, text).catch(() => false);
     }
   }

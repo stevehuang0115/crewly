@@ -94,6 +94,8 @@ export interface ModuleConfig {
 	 */
 	teamTiers?: {
 		optimizeUsage: boolean;
+		/** `approve`: the owner approves each change; `auto`: the lead's changes apply at once (owner can undo). Absent = approve. */
+		changeMode?: 'approve' | 'auto';
 		members: Array<{ name: string; tier: string | null; model: string }>;
 		routingRules: string[];
 	};

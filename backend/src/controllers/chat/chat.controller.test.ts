@@ -37,7 +37,8 @@ import * as path from 'path';
 import * as os from 'os';
 import { createChatRouter } from './chat.routes.js';
 import { getChatService, resetChatService, ChatService } from '../../services/chat/chat.service.js';
-import { setMessageQueueService, clipForOrchestrator, sendChatMessageToOrchestrator, pickCompletionThreads } from './chat.controller.js';
+import { setMessageQueueService, clipForOrchestrator, sendChatMessageToOrchestrator, pickCompletionThreads, agentReportConversationOf } from './chat.controller.js';
+import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 import { getChatV2Service, resetChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
 import { openChatDatabase } from '../../services/chat-v2/sqlite/chat-db.js';
 import { OrcStatusRouterService } from '../../services/orc/orc-status-router.service.js';
@@ -1108,7 +1109,9 @@ describe('Chat Controller', () => {
           .send({ content: 'Here is the full analysis you asked for: …', senderName: 'kai', senderType: 'agent', intent: 'message' });
         expect(response.status).toBe(409);
         expect(response.body.success).toBe(false);
-        expect(response.body.error).toMatch(/^Your message was NOT delivered: .*Run: reply "<your message>"$/);
+        // Was: `Run: reply "<your message>"`, which resolves to the same nowhere.
+        // The refusal now names the explicit ids to pass (message-routing audit 2026-10-18).
+        expect(response.body.error).toMatch(/^Your message was NOT delivered: nothing you were given names where this reply goes.*Run: reply --to <message id from your prompt> "<message>"/);
         expect(enqueue).not.toHaveBeenCalled();
       });
 
@@ -1325,6 +1328,40 @@ describe('Chat Controller', () => {
           .send({ content: 'Nova needs your ChatGPT login', senderName: 'Orchestrator', senderType: 'orchestrator' });
 
         expect(response.body.data.conversationId).toBe(dmId);
+      });
+
+      it('#1387: counts a top-level owner-DM post the orchestrator starts (stale turn, nothing named), and not an answer', async () => {
+        const { onAgentStartedDmPost } = await import('../../services/slack/slack-agent-post.service.js');
+        const seen: Array<{ agent: string }> = [];
+        const off = onAgentStartedDmPost((p) => seen.push(p));
+        const { ORC_REPLY_ROUTE_CONSTANTS } = await import('../../constants.js');
+        const post = (): Promise<unknown> =>
+          request(app)
+            .post('/api/chat/agent-response')
+            .set('X-Agent-Session', ORC)
+            .send({ content: 'Nova needs your ChatGPT login', senderName: 'Orchestrator', senderType: 'orchestrator' });
+        try {
+          const { teamId } = await setupIncident();
+          const { OrcReplyRouteService } = await import('../../services/orc/orc-reply-route.service.js');
+          // The owner last wrote to the orchestrator in a team room.
+          OrcReplyRouteService.getInstance().noteDelivery(ORC, `[CHAT:${teamId}] <UG94JLNGK@Orchestrator>\n\nstatus?`);
+          await post(); // the owner's turn is fresh: this answers it
+          await new Promise((r) => setTimeout(r, 20));
+          expect(seen).toEqual([]);
+
+          const realNow = Date.now;
+          const later = realNow() + ORC_REPLY_ROUTE_CONSTANTS.ORIGIN_TTL_MS + 60_000;
+          jest.spyOn(Date, 'now').mockImplementation(() => later);
+          try {
+            await post(); // hours later, nothing named: the orchestrator is starting it
+            await new Promise((r) => setTimeout(r, 20));
+          } finally {
+            jest.restoreAllMocks();
+          }
+          expect(seen).toEqual([{ agent: ORC, text: 'Nova needs your ChatGPT login' }]);
+        } finally {
+          off();
+        }
       });
 
       it('an explicit cross-post is kept', async () => {
@@ -1692,5 +1729,36 @@ describe('clipForOrchestrator', () => {
     expect(clipped.startsWith('[DONE] xxx')).toBe(true);
     expect(clipped).toContain(`${long.length - 600} more characters`);
     expect(clipped).toContain('conversation conv-1');
+  });
+});
+
+/**
+ * Message-routing audit 2026-10-18: an agent status report that named no
+ * conversation used to land in "the current conversation" (whatever the
+ * owner last used), and the orchestrator answered it there.
+ */
+describe('agentReportConversationOf', () => {
+  const reqOf = (session: string, body: Record<string, unknown> = {}) =>
+    ({ headers: { 'x-agent-session': session }, body } as unknown as import('express').Request);
+
+  it('an agent report with no work item goes to the internal status conversation', async () => {
+    expect(await agentReportConversationOf(reqOf('kai'), 'agent', 'kai')).toBe('system:agent-status');
+  });
+
+  it('the orchestrator and non-agent senders keep the current conversation (null)', async () => {
+    expect(await agentReportConversationOf(reqOf('crewly-orc'), 'agent', 'crewly-orc')).toBeNull();
+    expect(await agentReportConversationOf(reqOf('kai'), 'system', 'kai')).toBeNull();
+  });
+
+  it("a report on a work item the owner asked for goes to that item's owner conversation", async () => {
+    const spy = jest.spyOn(TaskPoolService, 'getInstance').mockReturnValue({
+      getAllItems: async () => [{ id: 'wi-brief', metadata: { origin: { kind: 'owner', conversationId: 'room-brief' } } } as unknown as WorkItem],
+    } as unknown as TaskPoolService);
+    try {
+      expect(await agentReportConversationOf(reqOf('kai', { workItemId: 'wi-brief' }), 'agent', 'kai')).toBe('room-brief');
+      expect(await agentReportConversationOf(reqOf('kai', { workItemId: 'wi-other' }), 'agent', 'kai')).toBe('system:agent-status');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

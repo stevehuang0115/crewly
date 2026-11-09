@@ -34,6 +34,7 @@ import {
   decideDraftSend,
 } from '../../services/whatsapp/whatsapp-draft-gate.js';
 import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
+import { actorFromRequest, recordActivity, type ActivityEntryInput } from '../../services/activity/activity-log.service.js';
 import type { WhatsAppDraft, WhatsAppDraftStatus, WhatsAppOutgoingMessage } from '../../types/whatsapp.types.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('WhatsAppInbox');
@@ -62,6 +63,8 @@ export interface WhatsAppInboxDeps {
    * out its session header is not the owner.
    */
   isOwnerRequest: (req: Request) => boolean;
+  /** Activity log writer (#881): every sent or discarded draft leaves a line */
+  recordActivity: (entry: ActivityEntryInput) => void;
 }
 
 /** Production dependencies. */
@@ -71,6 +74,7 @@ const DEFAULT_DEPS: WhatsAppInboxDeps = {
   getOwnerMessagesSince: (sinceMs, limit) => getChatV2Service().getRecentOwnerMessageContents(sinceMs, limit),
   now: () => Date.now(),
   isOwnerRequest: (req) => isOwnerCaller(req),
+  recordActivity,
 };
 
 /**
@@ -145,6 +149,29 @@ export function createWhatsAppInboxRouter(overrides: Partial<WhatsAppInboxDeps> 
     ...draft,
     recipient: store.getChat(draft.chatId)?.name ?? draft.chatId,
   });
+
+  /**
+   * One activity-log line for a draft: the agent whose session header sent
+   * or dropped it, else the owner credential behind the request. Never throws.
+   *
+   * @param req - Request
+   * @param action - `send.whatsapp` / `send.whatsapp.discarded`
+   * @param draft - The draft
+   * @param after - Extra fields
+   */
+  const logDraft = (req: Request, action: string, draft: WhatsAppDraft, after: Record<string, unknown>): void => {
+    try {
+      const agentSession = readAgentSessionHeader(req);
+      deps.recordActivity({
+        actor: agentSession ? { type: 'agent', id: agentSession, via: 'agent-session' } : actorFromRequest(req),
+        action,
+        target: { type: 'whatsapp-chat', id: draft.chatId, name: deps.getStore().getChat(draft.chatId)?.name ?? draft.chatId },
+        after: { code: draft.code, draftedBy: draft.createdBy ?? 'owner', text: draft.text, ...after },
+      });
+    } catch {
+      // the log never breaks a send
+    }
+  };
 
   /** GET /inbox — chats whose newest message is not the owner's. */
   router.get('/inbox', (req: Request, res: Response, next: NextFunction) => {
@@ -270,6 +297,7 @@ export function createWhatsAppInboxRouter(overrides: Partial<WhatsAppInboxDeps> 
         return;
       }
       logger.info('Draft discarded', { code: draft.code, by: readAgentSessionHeader(req) ?? 'owner' });
+      logDraft(req, 'send.whatsapp.discarded', draft, { status: 'discarded' });
       res.json({ success: true, data: withRecipient(store, store.getDraftById(draft.id) as WhatsAppDraft) });
     } catch (error) {
       next(error);
@@ -337,6 +365,7 @@ export function createWhatsAppInboxRouter(overrides: Partial<WhatsAppInboxDeps> 
       }
       store.markDraftSent(draft.id, deps.now());
       logger.info('Draft sent', { code: draft.code, chatId: draft.chatId, via: decision.via, agentSession });
+      logDraft(req, 'send.whatsapp', draft, { status: 'sent', via: decision.via });
       res.json({
         success: true,
         data: { ...withRecipient(store, store.getDraftById(draft.id) as WhatsAppDraft), via: decision.via },

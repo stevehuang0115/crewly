@@ -37,6 +37,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { BrowserHoldListener, BrowserSession, BrowserSessionService, PendingConfirmation } from './browser-session.service.js';
 import type { ExtensionTabDescriptor } from './browser-bridge.service.js';
 import { HeldActionStore, type HeldBrowserAction, type HeldActionStatus } from './held-action-store.js';
+import { recordActivity } from '../activity/activity-log.service.js';
 
 const APPROVE_KEY = 'a';
 const REJECT_KEY = 'b';
@@ -415,6 +416,12 @@ export class BrowserApprovalService implements BrowserHoldListener, DecisionKind
 		const held = this.deps.sessions.getSession(action.agentSession)?.pending;
 		const live = held?.id === action.pendingId;
 		this.logger.info('Held browser action settled', { pendingId: action.pendingId, agentSession: action.agentSession, outcome, live });
+		recordActivity({
+			actor: outcome === 'approve' || outcome === 'reject' ? { type: 'owner' } : { type: 'system', via: outcome },
+			action: `browser.action.${status[outcome]}`,
+			target: { type: 'browser_action', id: action.pendingId, name: what },
+			after: { status: status[outcome], agentSession: action.agentSession, live },
+		});
 
 		if (outcome === 'approve') {
 			if (!live) {

@@ -318,6 +318,34 @@ assert_contains "the server reply gains the WorkItem id" '"workItemId":"wi-full"
 LINE_COUNT="$(printf '%s\n' "$OUT" | grep -c '"workItemId":"wi-full"' || true)"
 assert_contains "the result is a single line" "1" "$LINE_COUNT"
 
+echo ""
+echo "--- taskKind is forwarded for task timing; the timing line is passed through ---"
+
+STUB_COMPLETE_RESPONSE='{"success":true,"timing":"This was a revision. It took 18 min."}' \
+  run_skill '{"workItemId":"wi-kind","sessionName":"dev-1","summary":"done","taskKind":"revision"}'
+assert_not_contains "taskKind is an accepted field" "does not accept" "$OUT"
+KIND_BODY="$(printf '%s' "$BODIES" | grep 'agentId' | head -1 || true)"
+assert_contains "taskKind rides inside result" "revision" "$(printf '%s' "$KIND_BODY" | jq -r '.result.taskKind // empty')"
+assert_contains "the timing line reaches the agent" '"timing":"This was a revision. It took 18 min."' "$(printf '%s' "$OUT" | tail -1)"
+
+echo ""
+echo "--- Decision record (#875): decisions / notTaken / assumptions ride inside result ---"
+
+run_skill '{"workItemId":"wi-rec","sessionName":"dev-1","summary":"done","decisions":["Kept the v1 schema"],"notTaken":"A new table — needs a migration","assumptions":["Relay is on 1.5.24"]}'
+assert_not_contains "the decision fields are accepted" "does not accept" "$OUT"
+REC_BODY="$(printf '%s' "$BODIES" | grep 'agentId' | head -1 || true)"
+assert_contains "decisions ride inside result" "Kept the v1 schema" "$(printf '%s' "$REC_BODY" | jq -r '.result.decisions[0] // empty')"
+assert_contains "a lone string becomes a one-entry list" "A new table" "$(printf '%s' "$REC_BODY" | jq -r '.result.notTaken | if type == "array" then .[0] else "NOT_A_LIST" end')"
+assert_contains "assumptions ride inside result" "Relay is on 1.5.24" "$(printf '%s' "$REC_BODY" | jq -r '.result.assumptions[0] // empty')"
+
+run_skill '{"workItemId":"wi-rec2","sessionName":"dev-1","summary":"done"}'
+PLAIN_BODY="$(printf '%s' "$BODIES" | grep 'agentId' | head -1 || true)"
+assert_not_contains "no record sent -> no record fields in the body" "decisions" "$PLAIN_BODY"
+
+run_skill '{"workItemId":"wi-rec3","sessionName":"dev-1","summary":"done","decisions":[{"what":"object"}]}'
+assert_contains "a non-string entry is refused by name" "decisions must be a JSON array of strings" "$OUT"
+assert_not_contains "a refused record completes nothing" "agentId" "$BODIES"
+
 rm -rf "$STUB_DIR"
 
 echo ""

@@ -208,7 +208,7 @@ export interface OwnerWatchdogWiringDeps {
   /** Whether the agent's runtime session exists */
   sessionExists: (session: string) => boolean;
   /** User-initiated activation (same path as the dispatcher's activate-on-send) */
-  activate: (session: string) => Promise<{ success: boolean; error?: string }>;
+  activate: (session: string) => Promise<{ success: boolean; error?: string; deferred?: boolean }>;
   /** Orchestrator delivery (its message queue) */
   enqueueForOrchestrator: (input: {
     content: string;
@@ -303,13 +303,16 @@ export async function nudgeAgent(deps: OwnerWatchdogWiringDeps, entry: OwnerMess
     withQueueMeta(s, t, queueMeta, () => deps.sendToAgent(s, t));
   let woke = false;
   if (!deps.sessionExists(session)) {
-    const res = await deps.activate(session).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
+    const res: { success: boolean; error?: string; deferred?: boolean } = await deps.activate(session).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
+    // Waiting for a running-agent slot: the message is queued and goes in when it starts.
+    if (!res.success && res.deferred) return { outcome: 'blocked', reason: 'slot_wait' };
     if (!res.success) return { outcome: 'blocked', reason: 'asleep', detail: res.error ?? 'activation failed' };
     woke = true;
   }
   let result: { success: boolean; error?: string; queued?: boolean } = await sendToAgent(session, text).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
   if (!result.success && !woke && !deps.sessionExists(session)) {
-    const res = await deps.activate(session).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
+    const res: { success: boolean; error?: string; deferred?: boolean } = await deps.activate(session).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
+    if (!res.success && res.deferred) return { outcome: 'blocked', reason: 'slot_wait' };
     if (!res.success) return { outcome: 'blocked', reason: 'asleep', detail: res.error ?? 'activation failed' };
     result = await sendToAgent(session, text).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
   }

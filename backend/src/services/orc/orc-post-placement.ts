@@ -27,6 +27,7 @@ import { ORC_REPLY_ROUTE_CONSTANTS } from '../../constants.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { TurnOrigin } from './orc-reply-route.service.js';
 import { originOfWorkItem, planWorkDestination } from './work-item-destination.js';
+import { formatSlackThreadKey } from '../slack/slack-thread-key.js';
 
 /** Why the placement is what it is. */
 export type OrcPostPlacementVia = 'named-thread' | 'work-item' | 'origin-thread' | 'owner-dm' | 'unchanged';
@@ -125,4 +126,49 @@ export function planOrcPostPlacement(input: OrcPostPlacementInput): OrcPostPlace
 export function findWorkItem(items: WorkItem[], id: string | undefined): WorkItem | null {
   if (!id) return null;
   return items.find((w) => w.id === id) ?? null;
+}
+
+/** What {@link placeOrcPostInDecisionThread} reads. */
+export interface OrcDecisionPlacementDeps {
+  /** The orchestrator's last harness prompt reference, while fresh */
+  promptReference: () => { reference: { decisionId?: string }; marker?: string } | undefined;
+  /** Head of the last message delivered to the orchestrator */
+  lastDelivered: () => string | undefined;
+  /** The decision, with its card's Slack thread */
+  decision: (id: string) => Promise<{ id: string; asker: string; requestedBy?: string; slackChannelId?: string; threadTs?: string } | null>;
+  /** The chat conversation a Slack thread belongs to */
+  conversationOfSlackThread: (slackChannelId: string, threadTs: string) => Promise<{ conversationId: string } | null>;
+}
+
+/**
+ * Where an orchestrator post that answers an owner decision goes: the card's
+ * thread. The decision is the one the post names (`reply --decision D-12`),
+ * else the one the harness just told the orchestrator about, when that
+ * `[DECISION …]` note is the last thing delivered to it and the post is not a
+ * deliberate cross-post. The orchestrator's posts never went through the
+ * agents' reply resolver, so `--decision` was dropped and the answer to D-890
+ * landed at the top of #air-rednote-team, the conversation of its previous
+ * turn (2026-10-19).
+ *
+ * @param input - The decision the post names, whether it is a cross-post, and the orchestrator session
+ * @param deps - Prompt reference, last delivery, decision and thread lookups
+ * @returns Conversation and thread key, or null to place the post as before
+ */
+export async function placeOrcPostInDecisionThread(
+  input: { decisionId?: string; crossPost?: boolean; session: string },
+  deps: OrcDecisionPlacementDeps,
+): Promise<{ conversationId: string; thread: string; decisionId: string } | null> {
+  let id = input.decisionId?.trim().toUpperCase();
+  if (!id && !input.crossPost) {
+    const prompt = deps.promptReference();
+    const current = !!prompt?.marker && (deps.lastDelivered() ?? '').includes(prompt.marker);
+    if (current) id = prompt?.reference.decisionId;
+  }
+  if (!id) return null;
+  const d = await deps.decision(id).catch(() => null);
+  if (!d || !d.slackChannelId || !d.threadTs) return null;
+  if (d.asker !== input.session && d.requestedBy !== input.session) return null;
+  const mapped = await deps.conversationOfSlackThread(d.slackChannelId, d.threadTs).catch(() => null);
+  if (!mapped) return null;
+  return { conversationId: mapped.conversationId, thread: formatSlackThreadKey(d.slackChannelId, d.threadTs), decisionId: d.id };
 }

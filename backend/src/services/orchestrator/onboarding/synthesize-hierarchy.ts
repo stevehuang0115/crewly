@@ -27,6 +27,7 @@
 import {
   recommendTeam,
   type BusinessContext,
+  type CatalogTemplate,
   type TeamRecommendation,
 } from './recommend-team.js';
 import {
@@ -127,6 +128,12 @@ export interface HierarchyPlan {
 export interface SynthesizeOptions {
   /** Max child teams (default {@link DEFAULT_MAX_SUBTEAMS}). */
   readonly maxSubteams?: number;
+  /**
+   * Extra templates (e.g. Crewly Pro) the parent team may be picked from.
+   * Child teams keep the built-in stream mapping: a whole-goal template
+   * would otherwise win every stream and undo the per-stream steering.
+   */
+  readonly catalog?: readonly CatalogTemplate[];
 }
 
 /**
@@ -170,10 +177,11 @@ export function synthesizeHierarchyPlan(
 ): HierarchyPlan {
   const max = Math.max(1, opts.maxSubteams ?? DEFAULT_MAX_SUBTEAMS);
   const streams = detectStreams(ctx).slice(0, max);
+  const catalog = opts.catalog ?? [];
 
   if (streams.length < 2) {
     return {
-      parent: recommendTeam(ctx),
+      parent: recommendTeam(ctx, catalog),
       children: [],
       rationale:
         streams.length === 1
@@ -182,7 +190,7 @@ export function synthesizeHierarchyPlan(
     };
   }
 
-  const parent = recommendTeam(ctx);
+  const parent = recommendTeam(ctx, catalog);
   const children: HierarchyNode[] = streams.map((stream) => ({
     stream,
     recommendation: recommendTeam(focusedContext(ctx, stream)),

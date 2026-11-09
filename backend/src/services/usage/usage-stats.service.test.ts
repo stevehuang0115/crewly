@@ -102,7 +102,7 @@ describe('UsageStatsService', () => {
     ledger.recordUsage('nova', 'nova', 10, 5, '', undefined, { timestamp: at(2, 14).toISOString(), runtime: 'codex-cli' });
     const r = await svc().query(7, ['model']);
     const byKey = new Map(r.groups.model!.map((x) => [x.key, x]));
-    expect(byKey.get('claude-opus-5-5')).toMatchObject({ label: 'claude-opus-5-5', total: 16_500, meta: { family: 'Claude Opus', runtime: 'claude-code', rate: 'family' } });
+    expect(byKey.get('claude-opus-5-5')).toMatchObject({ label: 'claude-opus-5-5', total: 16_500, meta: { family: 'Claude Opus', runtime: 'claude-code', rate: 'exact' } });
     expect(byKey.get('deepseek/deepseek-chat')).toMatchObject({ label: 'deepseek-chat', total: 3_500, meta: { family: 'DeepSeek', runtime: 'crewly-agent', rate: 'exact' } });
     expect(byKey.get('gpt-6-sol')?.meta).toMatchObject({ family: 'GPT', runtime: 'codex-cli' });
     expect(byKey.get('(unknown-model)')).toMatchObject({ label: 'Unknown model', total: 30, events: 2, meta: { family: 'Unknown', rate: 'default' } });

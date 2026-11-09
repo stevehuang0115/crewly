@@ -105,6 +105,14 @@ const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;'
 
 /** Posts room-owned app comments into their room and relays the room's answers back. */
 export class AppCommentRoomService {
+  /**
+   * Comments whose room thread got an agent's answer since the owner last
+   * wrote in it (`appId/commentId`). A resolve note on one of them stays in the
+   * app: the lead's "research sent (8 screenshots)" after the teammate had
+   * posted the work was one more line for the owner (2026-10-22 audit).
+   */
+  private readonly answered = new Set<string>();
+
   constructor(private readonly deps: AppCommentRoomDeps) {}
 
   private log(level: 'info' | 'warn', msg: string, meta?: Record<string, unknown>): void {
@@ -279,6 +287,7 @@ export class AppCommentRoomService {
   }
 
   private async postInThread(chat: RoomChatApi, room: ResolvedRoom, link: CommentSlackLink, change: AppChange, roomText: string, slackText: string): Promise<void> {
+    this.answered.delete(`${link.appId}/${link.commentId}`);
     let slackTs: string | null = null;
     if (link.channel && link.threadTs && this.deps.slackPost && !this.deps.slackOff?.()) {
       try {
@@ -330,18 +339,25 @@ export class AppCommentRoomService {
    * An agent replied with app-comments: write it into the room thread as that
    * agent (the room's Slack mirror posts it as the agent's bot).
    *
+   * @param note - It is the note a resolve posts first: skipped when the
+   *   thread already has an agent's answer since the owner last wrote
    * @returns True when the comment has a room thread (handled here)
    */
-  async agentReplied(appId: string, commentId: string, agent: string, text: string): Promise<boolean> {
+  async agentReplied(appId: string, commentId: string, agent: string, text: string, note = false): Promise<boolean> {
     await this.deps.links.load();
     const link = this.deps.links.linkOf(appId, commentId);
     if (!link?.room || !link.chatChannelId || !link.chatRootId) return false;
+    if (note && this.answered.has(`${appId}/${commentId}`)) return true;
     this.agentRow(link, agent, text);
+    this.answered.add(`${appId}/${commentId}`);
     return true;
   }
 
   /**
-   * An agent resolved / reopened with app-comments: one line in the room thread.
+   * An agent resolved / reopened with app-comments. A reopen is one line in
+   * the room thread; a resolve is handled without one (its reply already said
+   * it is done; the owner read "✅ Resolved in the app." as one more post,
+   * 2026-10-19 audit).
    *
    * @returns True when the comment has a room thread
    */
@@ -349,7 +365,7 @@ export class AppCommentRoomService {
     await this.deps.links.load();
     const link = this.deps.links.linkOf(appId, commentId);
     if (!link?.room || !link.chatChannelId || !link.chatRootId) return false;
-    this.agentRow(link, agent, action === 'resolve' ? '✅ Resolved in the app.' : '↩️ Reopened in the app.');
+    if (action === 'reopen') this.agentRow(link, agent, '↩️ Reopened in the app.');
     return true;
   }
 
@@ -389,6 +405,7 @@ export class AppCommentRoomService {
     if (!text) return false;
     try {
       await this.deps.relayAgentReply(link.appId, link.commentId, dto.senderId, text);
+      this.answered.add(`${link.appId}/${link.commentId}`);
       return true;
     } catch (err) {
       this.log('warn', 'Agent room reply could not be added to the app comment', { appId: link.appId, error: err instanceof Error ? err.message : String(err) });

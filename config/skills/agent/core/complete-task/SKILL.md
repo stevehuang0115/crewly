@@ -49,11 +49,17 @@ Mark a task as complete with a summary of the work done. If the task has an outp
 | `evidence` | Yes* | Array of evidence entries — see **Evidence contract** below. *Required: refused without it (400 `evidence_required`), except a review `verdict` |
 | `absoluteTaskPath` | No | **Legacy (V1).** Still accepted so older callers keep working, but it does NOT identify a WorkItem |
 | `output` | No | Structured output object (required if task has an output schema) |
+| `decisions` | No | Array of short strings: the key decisions you made — see **Decision record** below |
+| `notTaken` | No | Array of short strings: options you considered and did not take, each with the reason |
+| `assumptions` | No | Array of short strings: what you relied on without checking |
+| `taskKind` | No | What kind of task this was (`revision`, `new-build`, `new-capability`, `research`, `review`, or your own kebab-case word). Used for task timing; without it the kind named in `report-progress`, then the title, decides |
 | ~~`skipGates`~~ | **Rejected** | **Not supported.** This endpoint runs no quality gates, so there is nothing to skip. Passing it is a hard error. Use the `check-quality-gates` skill for gates. |
 
 **Any other field is an error.** The skill accepts only the fields in this table plus `verdict`/`feedback`/`checks` (reviews) and `taskId`/`artifacts`/`testResults`/`structured` (verification requests). An unknown field (for example `projectPath`, `skipGates`, `force`) stops the call before anything is sent, and the error names the field. Put extra results inside `output`.
 
-On success the skill prints **one JSON line** that always names the `workItemId`, plus the server's reply (`success`, `message`, any `warning`).
+On success the skill prints **one JSON line** that always names the `workItemId`, plus the server's reply (`success`, `message`, any `warning`, and `timing`).
+
+`timing` is how long this task took from claim to completion, against your ETA and your own median for that kind, e.g. `This was a 'revision'. You estimated 60 min; it took 18 min. Your median for 'revision' is 23 min (n=12).` When the gap is over 1.5x it asks you to record a learning (`record-learning`) if you see why. The record is kept automatically; you do not need to do anything else.
 
 ### Which WorkItem gets completed
 
@@ -62,14 +68,16 @@ Resolution order:
 1. `workItemId`, if you pass it — always wins.
 2. Otherwise, ONLY when you named no task (no `workItemId`, no `taskId`): a lookup of the WorkItem currently `running` against your
    `sessionName` (`GET /api/task-pool/items?status=running&target=<session>`).
+   It is used only when exactly ONE item is running. With several, the skill
+   refuses (non-zero exit) and lists their ids: pass `workItemId` with one.
 3. If you passed `taskId` without `workItemId`, the skill
    refuses (non-zero exit): it never substitutes your running item for an id you named.
 4. If nothing resolves, the skill exits non-zero with an error naming the
    session it searched. It never reports success without completing something.
 
 Pass `workItemId` whenever you know it — the lookup in step 2 depends on the
-pool state at that instant and cannot disambiguate two concurrently running
-items for one session.
+pool state at that instant, and with two running items it refuses rather
+than guess.
 
 ## Evidence contract (#873)
 
@@ -87,6 +95,21 @@ naming the bad entry. A completion with no evidence is refused with 400
 `evidence_required` and nothing is completed (#1312).
 A review verdict (`verdict` set) needs no evidence.
 
+## Decision record (#875)
+
+Evidence shows the work exists; the record shows how you got there. Send any
+of `decisions`, `notTaken`, `assumptions` as arrays of short strings (one
+sentence each). The reviewer sees them in the Verify item under "Worker's
+record" and checks that they hold — a wrong assumption or a road not taken
+for a bad reason is a reason to send the work back, even when every test
+passes. Leave a field out when there is nothing to say; an empty list is fine.
+
+```json
+"decisions":["Kept the v1 schema; the new field goes in metadata"],
+"notTaken":["A new table — needs a migration the owner has not approved"],
+"assumptions":["The relay runs 1.5.24 in production (checked the compose file, not the container)"]
+```
+
 ## Example
 
 ```bash
@@ -98,6 +121,11 @@ bash config/skills/agent/core/complete-task/execute.sh '{"workItemId":"wi-abc123
 ```bash
 bash config/skills/agent/core/complete-task/execute.sh '{"workItemId":"wi-abc123","sessionName":"dev-1","summary":"Login form done; e2e blocked","evidence":[{"type":"blocked","step":"npx playwright test","reason":"staging auth server returns 503"}]}'
 ```
+
+If the task is not finished because it can only proceed at a known time (a
+data window that has not closed, a deploy that has to settle), do not complete
+it: block it with the `block-task` skill and its `until` parameter. The item
+comes back to you when the time has passed.
 
 ### Letting the skill resolve your running WorkItem
 

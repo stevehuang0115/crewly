@@ -947,15 +947,41 @@ export function reportOwnerThreadBlocking(agent: string, event: SentinelEvent): 
   void s.noteBlocking(agent, event).catch(() => undefined);
 }
 
+/** An agent's Slack post, as reported by {@link reportOwnerThreadAgentPost}. */
+export type AgentSlackPost = SlackThreadRef & { agent: string; text: string; interim?: boolean };
+
+const agentPostListeners = new Set<(post: AgentSlackPost) => void>();
+
+/**
+ * Listen to every agent Slack post made on this machine, with its author
+ * (crewly#1376: the owner completion report needs to know who posted).
+ *
+ * @param listener - Called once per post; must not throw (errors are swallowed)
+ * @returns Unsubscribe
+ */
+export function onAgentSlackPost(listener: (post: AgentSlackPost) => void): () => void {
+  agentPostListeners.add(listener);
+  return () => {
+    agentPostListeners.delete(listener);
+  };
+}
+
 /**
  * Report an agent's Slack post, if the sentinel runs. Never throws.
  *
  * @param input - Who, where, what
  */
-export function reportOwnerThreadAgentPost(input: SlackThreadRef & { agent: string; text: string; interim?: boolean }): void {
+export function reportOwnerThreadAgentPost(input: AgentSlackPost): void {
   // The follow-through guard sees every agent post, including those in threads
   // the sentinel does not watch (a decision card's thread, 2026-10-10).
   reportAgentPostForFollowThrough({ agent: input.agent, text: input.text, ...(input.interim ? { interim: true } : {}) });
+  for (const listener of agentPostListeners) {
+    try {
+      listener(input);
+    } catch {
+      /* best-effort */
+    }
+  }
   try {
     instance?.noteAgentPost(input);
   } catch {

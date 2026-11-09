@@ -23,7 +23,14 @@ import {
 	requireClaudeAccountName,
 	runtimeTarget,
 } from './claude-accounts.js';
+import { resetClaudeNativeLoginCache, setCachedClaudeNativeLogin } from './claude-native-login.js';
 import { HarnessCredentialsStore } from './harness-credentials.store.js';
+
+/** Put a token where an older Crewly saved it (there is no setter any more). */
+function seedLegacyAccount(store: HarnessCredentialsStore, account: string, token: string): void {
+	const current = store.read();
+	store.write({ ...current, claudeAccounts: { ...(current.claudeAccounts ?? {}), [account]: { oauthToken: token, updatedAt: 'then' } } });
+}
 
 describe('claude-accounts', () => {
 	let home: string;
@@ -36,7 +43,10 @@ describe('claude-accounts', () => {
 		credentials = new HarnessCredentialsStore(path.join(crewlyHome, 'harness-credentials.json'));
 	});
 
-	afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
+	afterEach(() => {
+		fs.rmSync(home, { recursive: true, force: true });
+		resetClaudeNativeLoginCache();
+	});
 
 	describe('names and targets', () => {
 		it('accepts simple lower-case names and refuses reserved or unsafe ones', () => {
@@ -77,32 +87,52 @@ describe('claude-accounts', () => {
 			expect(listClaudeAccounts({ crewlyHome, credentials })).toEqual([]);
 			fs.mkdirSync(claudeAccountConfigDir('work', crewlyHome), { recursive: true });
 			fs.mkdirSync(claudeAccountConfigDir('Not-Valid', crewlyHome), { recursive: true });
-			credentials.setClaudeAccountToken('b', 'tok-b');
+			seedLegacyAccount(credentials, 'b', 'tok-b');
 			expect(listClaudeAccounts({ crewlyHome, credentials })).toEqual(['b', 'work']);
 		});
 
-		it('is signed in with a stored token or a credentials file', () => {
+		it('is signed in by Claude Code\'s own state: a credentials file, or what `claude auth status` said (a keychain login leaves no file)', () => {
 			expect(isClaudeAccountSignedIn('work', { crewlyHome, credentials })).toBe(false);
-			credentials.setClaudeAccountToken('work', 'tok');
-			expect(isClaudeAccountSignedIn('work', { crewlyHome, credentials })).toBe(true);
 			const dir = claudeAccountConfigDir('manual', crewlyHome);
 			fs.mkdirSync(dir, { recursive: true });
 			fs.writeFileSync(path.join(dir, '.credentials.json'), '{}');
 			expect(isClaudeAccountSignedIn('manual', { crewlyHome, credentials })).toBe(true);
+			setCachedClaudeNativeLogin('keychain', true);
+			expect(isClaudeAccountSignedIn('keychain', { crewlyHome, credentials })).toBe(true);
+			setCachedClaudeNativeLogin('keychain', false);
+			expect(isClaudeAccountSignedIn('keychain', { crewlyHome, credentials })).toBe(false);
+		});
+
+		it('an account that only has a token an older Crewly saved still counts as signed in, until the token is deleted', () => {
+			seedLegacyAccount(credentials, 'work', 'tok');
+			expect(isClaudeAccountSignedIn('work', { crewlyHome, credentials })).toBe(true);
+			credentials.clearClaudeAccount('work');
+			expect(isClaudeAccountSignedIn('work', { crewlyHome, credentials })).toBe(false);
+			fs.mkdirSync(claudeAccountConfigDir('manual', crewlyHome), { recursive: true });
+			fs.writeFileSync(path.join(claudeAccountConfigDir('manual', crewlyHome), '.credentials.json'), '{}');
 			expect(describeClaudeAccounts({ crewlyHome, credentials })).toEqual([
-				{ name: 'manual', target: 'claude-code@manual', signedIn: true, configDir: dir },
-				{ name: 'work', target: 'claude-code@work', signedIn: true, configDir: claudeAccountConfigDir('work', crewlyHome) },
+				{ name: 'manual', target: 'claude-code@manual', signedIn: true, configDir: claudeAccountConfigDir('manual', crewlyHome) },
 			]);
 		});
 
-		it('builds the env: its config dir and token, default credentials blanked', () => {
-			credentials.setClaudeAccountToken('work', 'tok-w');
+		it('selects the account by config dir only: no token in the env once the account is signed in natively', () => {
+			expect(claudeAccountEnv('work', { crewlyHome, credentials })).toEqual({
+				CLAUDE_CONFIG_DIR: claudeAccountConfigDir('work', crewlyHome),
+				CLAUDE_CODE_OAUTH_TOKEN: '',
+				ANTHROPIC_API_KEY: '',
+			});
+		});
+
+		it('during the transition, an account that still has a saved token gets it (and no other account does)', () => {
+			seedLegacyAccount(credentials, 'work', 'tok-w');
 			expect(claudeAccountEnv('work', { crewlyHome, credentials })).toEqual({
 				CLAUDE_CONFIG_DIR: claudeAccountConfigDir('work', crewlyHome),
 				CLAUDE_CODE_OAUTH_TOKEN: 'tok-w',
 				ANTHROPIC_API_KEY: '',
 			});
 			expect(claudeAccountEnv('none', { crewlyHome, credentials }).CLAUDE_CODE_OAUTH_TOKEN).toBe('');
+			credentials.clearClaudeAccount('work');
+			expect(claudeAccountEnv('work', { crewlyHome, credentials }).CLAUDE_CODE_OAUTH_TOKEN).toBe('');
 		});
 
 		it('creates a dir with the owner\'s settings and first-run answers, no credentials', () => {
@@ -136,7 +166,7 @@ describe('claude-accounts', () => {
 		});
 
 		it('removes the token and the dir', () => {
-			credentials.setClaudeAccountToken('work', 'tok');
+			seedLegacyAccount(credentials, 'work', 'tok');
 			fs.mkdirSync(claudeAccountConfigDir('work', crewlyHome), { recursive: true });
 			removeClaudeAccount('work', { crewlyHome, credentials });
 			expect(credentials.getClaudeAccountToken('work')).toBeNull();

@@ -1,6 +1,6 @@
 {
   "name": "crewly",
-  "version": "1.20.362",
+  "version": "1.24.0",
   "type": "module",
   "description": "Multi-agent orchestration platform for AI coding teams — coordinates Claude Code, Gemini CLI, and Codex agents with a real-time web dashboard",
   "workspaces": [
@@ -70,6 +70,7 @@
     "typecheck": "tsc --noEmit",
     "check:input-guard": "node dist/cli/cli/src/index.js doctor --input-guard --build dist",
     "check:oss-boundary": "npx tsx backend/src/scripts/check-oss-boundary.ts",
+    "check:rule-metadata": "npx tsx backend/src/scripts/check-rule-metadata.ts",
     "preinstall": "node dist/cli/cli/src/scripts/check-native-toolchain.js 2>/dev/null || true",
     "postinstall": "([ ! -f dist/cli/cli/src/scripts/ensure-node-pty.js ] || node dist/cli/cli/src/scripts/ensure-node-pty.js) && (npm rebuild better-sqlite3 2>/dev/null || true) && (node dist/cli/cli/src/scripts/check-native-toolchain.js || true)",
     "prepublishOnly": "npm run build"

@@ -59,6 +59,12 @@ jest.mock('../../services/settings/settings.service.js', () => ({
     getSettings: mockGetSettings,
   })),
 }));
+// Activity log (crewly#881): the handlers append who changed what; the log itself is tested next to it.
+const mockRecordActivity = jest.fn();
+jest.mock('../../services/activity/activity-log.service.js', () => {
+  const actual = jest.requireActual('../../services/activity/activity-log.service.js') as Record<string, unknown>;
+  return { ...actual, recordActivity: (...args: unknown[]) => mockRecordActivity(...args), actorFromRequest: () => ({ type: 'owner', via: 'api-token' }) };
+});
 
 describe('Teams Handlers', () => {
   let mockApiContext: ApiContext;
@@ -430,6 +436,35 @@ describe('Teams Handlers', () => {
       mockRequest.body = { reasoningEffort: 'Very High' };
       await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
       expect(responseMock.status).toHaveBeenCalledWith(400);
+    });
+
+    it('updateTeamMember writes who changed which fields to the activity log (crewly#881)', async () => {
+      mockRecordActivity.mockClear();
+      const team: Team = {
+        id: 'team-1', name: 'T', members: [{
+          id: 'm1', name: 'Max', sessionName: 'max', role: 'developer', systemPrompt: 'p', runtimeType: 'claude-code',
+          agentStatus: 'inactive', workingStatus: 'idle', modelId: 'sonnet',
+          createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        }], projectIds: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+      mockStorageService.getTeams.mockResolvedValue([team]);
+      mockRequest.params = { teamId: 'team-1', memberId: 'm1' };
+      mockRequest.body = { modelId: 'opus' };
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(mockRecordActivity).toHaveBeenCalledTimes(1);
+      expect(mockRecordActivity.mock.calls[0][0]).toEqual({
+        actor: { type: 'owner', via: 'api-token' },
+        action: 'team.member.updated',
+        target: { type: 'member', id: 'm1', name: 'Max' },
+        before: { modelId: 'sonnet' },
+        after: { modelId: 'opus' },
+      });
+
+      // A 404 writes nothing.
+      mockRecordActivity.mockClear();
+      mockRequest.params = { teamId: 'team-1', memberId: 'nope' };
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(mockRecordActivity).not.toHaveBeenCalled();
     });
 
     it('updateTeamMember dedicates an agent to a person, clears it, and refuses agents and bad ids (issue #968)', async () => {

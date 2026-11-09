@@ -19,6 +19,15 @@ const api = vi.hoisted(() => ({
   stopTeam: vi.fn(),
 }));
 vi.mock('@/services/api.service', () => ({ apiService: api }));
+const teamPackages = vi.hoisted(() => ({
+  downloadTeamPackage: vi.fn(),
+  readTeamPackageFile: vi.fn(),
+  importTeamPackage: vi.fn(),
+}));
+vi.mock('@/services/team-export.service', async () => {
+  const actual = await vi.importActual<typeof import('@/services/team-export.service')>('@/services/team-export.service');
+  return { ...actual, ...teamPackages };
+});
 vi.mock('../services/websocket.service', () => ({ webSocketService: { on: vi.fn(), off: vi.fn() } }));
 vi.mock('@/utils/error-handling', () => ({ logSilentError: vi.fn() }));
 vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ getAccessToken: () => 'tok' }) }));
@@ -193,6 +202,38 @@ describe('Teams list', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(api.deleteTeam).toHaveBeenCalledWith('t1'));
     await waitFor(() => expect(screen.queryByText('Frontend Crew')).not.toBeInTheDocument());
+  });
+
+  it('exports a team from the row menu and says what the file holds (#880)', async () => {
+    teamPackages.downloadTeamPackage.mockResolvedValue({
+      fileName: 'crewly-team-frontend-crew-2026-10-25.json',
+      pkg: { version: '1.1', exportedAt: 'x', team: { id: 't1', name: 'Frontend Crew', members: [{}, {}] }, prompts: { a: '1' }, norms: {}, cronTasks: [], portability: { redactions: 1, scanClean: true, connectors: ['slack'], strippedFields: [] } },
+    });
+    renderTeams();
+    await screen.findByText('Frontend Crew');
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for Frontend Crew' }));
+    fireEvent.click(screen.getByText('Export team…'));
+    await waitFor(() => expect(teamPackages.downloadTeamPackage).toHaveBeenCalledWith('t1'));
+    expect(await screen.findByText('Saved crewly-team-frontend-crew-2026-10-25.json')).toBeInTheDocument();
+    expect(screen.getByText(/2 members, 1 prompt, 0 norms, 0 schedules\. Secrets masked: 1; final scan clean\. Reconnect after import: slack\./)).toBeInTheDocument();
+  });
+
+  it('imports a package from the toolbar and reloads the list (#880)', async () => {
+    const pkg = { version: '1.1', exportedAt: 'x', team: { id: 't7', name: 'Imported Crew' } };
+    teamPackages.readTeamPackageFile.mockResolvedValue(pkg);
+    teamPackages.importTeamPackage.mockResolvedValue({ team: { id: 't7', name: 'Imported Crew' }, promptsImported: 1, normsImported: 0, cronTasksImported: 2, connectorsToReconnect: ['google-workspace'] });
+    renderTeams();
+    await screen.findByText('Frontend Crew');
+    api.getTeams.mockResolvedValue([...teams, team('t7', 'Imported Crew')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Import team package' }));
+    const file = new File(['{}'], 'crewly-team-imported.json', { type: 'application/json' });
+    fireEvent.change(screen.getByTestId('team-import-input'), { target: { files: [file] } });
+    await waitFor(() => expect(teamPackages.importTeamPackage).toHaveBeenCalledWith(pkg));
+    expect(teamPackages.readTeamPackageFile).toHaveBeenCalledWith(file);
+    await waitFor(() => expect(api.getTeams).toHaveBeenLastCalledWith(true));
+    expect(await screen.findByText('Imported Crew', { selector: 'span' })).toBeInTheDocument();
+    expect(screen.getByText('Imported Imported Crew')).toBeInTheDocument();
+    expect(screen.getByText(/1 prompt, 0 norms, 2 schedules\. Members are inactive until you start them\. Reconnect on this machine: google-workspace/)).toBeInTheDocument();
   });
 
   it('creates a team through the controlled modal', async () => {

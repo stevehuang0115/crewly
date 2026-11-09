@@ -15,10 +15,20 @@
  *     ticket thread binding) or decision card's thread;
  *  3. the referenced work item's origin / destination;
  *  4. validated hints (agent-supplied conversation / thread ids);
- *  5. the reference the harness last prompted the agent about, when newer
+ *  5. the sender of the agent's latest input, when that was another
+ *     agent's message (crewly#1375) — never the owner's last thread;
+ *  6. the reference the harness last prompted the agent about, when newer
  *     than its last owner turn;
- *  6. the agent's turn origin / current work;
- *  7. the agent's owner DM.
+ *  7. the route of the input the agent is answering (message-route.ts): the
+ *     owner message it was given last (its turn origin), the route a
+ *     delegated result carries back, or the work item a dispatch handed
+ *     over; with no such input, the agent's one live work item.
+ *
+ * Nothing else. There is no guess (message-routing audit 2026-10-18, R2):
+ * not the newest owner turn when the input was something else, not the
+ * newest of several work items, not the owner DM, not a channel's top
+ * level. When nothing names the destination the reply is refused with the
+ * ids that would work.
  *
  * Pure decision logic; collaborators are injected
  * (`reply-destination.wiring.ts` wires the real ones).
@@ -31,8 +41,10 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { parseTicketNumber } from '../../types/v2/ticket.types.js';
 import { formatSlackThreadKey, parseSlackThreadKey } from '../slack/slack-thread-key.js';
 import type { TurnOrigin } from './orc-reply-route.service.js';
+import type { TurnTrigger } from '../trace/turn-trigger.js';
 import { hasReference, type PromptReference, type ReplyReference } from './agent-prompt-reference.service.js';
-import { currentWorkItemOf, originOfWorkItem, planWorkDestination, type WorkDestination } from './work-item-destination.js';
+import { leadReportOf, originOfWorkItem, planWorkDestination, type WorkDestination } from './work-item-destination.js';
+import { describeRoute, replyCommandFor, type MessageRoute } from './message-route.js';
 
 export type { ReplyReference } from './agent-prompt-reference.service.js';
 
@@ -54,8 +66,10 @@ export type ReplyDestinationSource =
   | 'work-item'
   | 'hint'
   | 'prompt'
+  | 'agent-message'
   | 'turn-origin'
   | 'current-work'
+  | 'route'
   | 'owner-dm';
 
 /** Where the message goes. */
@@ -108,6 +122,52 @@ export interface ResolverDecision {
   teamId?: string;
 }
 
+/**
+ * The agent's latest input, as far as routing cares: the owner, another
+ * agent (with its session), a harness dispatch of work, or anything else.
+ */
+export interface LatestInput {
+  kind: 'owner' | 'agent' | 'dispatch' | 'result' | 'other';
+  /** Sending agent, for `agent` and `result` */
+  sender?: string;
+  /** When it was delivered (epoch ms) */
+  at: number;
+  /** Conversation of an owner message */
+  conversationId?: string;
+  /** Slack thread key of an owner message, when it named one */
+  thread?: string;
+  /** The work item a dispatch hands over, or a result is about */
+  workItemId?: string;
+  /** The route an agent message or a result carries (what the chain answers) */
+  route?: MessageRoute;
+}
+
+/**
+ * What the resolver needs to know about an agent's latest input, from its
+ * turn trigger.
+ *
+ * @param trigger - The session's current turn trigger, or null
+ * @returns The latest input, or null when unknown
+ */
+export function latestInputOf(trigger: TurnTrigger | null): LatestInput | null {
+  if (!trigger) return null;
+  const route = trigger.route ? { route: trigger.route } : {};
+  switch (trigger.triggerKind) {
+    case 'owner_message':
+      return { kind: 'owner', at: trigger.at, ...(trigger.conversationId ? { conversationId: trigger.conversationId } : {}), ...(trigger.thread ? { thread: trigger.thread } : {}) };
+    case 'agent_message':
+      return trigger.sender ? { kind: 'agent', sender: trigger.sender, at: trigger.at, ...route } : { kind: 'other', at: trigger.at };
+    case 'delegated_result':
+      return { kind: 'result', at: trigger.at, ...(trigger.sender ? { sender: trigger.sender } : {}), ...(trigger.workItemId ? { workItemId: trigger.workItemId } : {}), ...route };
+    // New work the harness handed over; a reminder or a redelivery nag is not.
+    case 'dispatch':
+    case 'scheduled':
+      return { kind: 'dispatch', at: trigger.at, ...(trigger.workItemId ? { workItemId: trigger.workItemId } : {}) };
+    default:
+      return { kind: 'other', at: trigger.at };
+  }
+}
+
 /** Collaborators. */
 export interface ReplyResolverDeps {
   /** A chat-v2 message by id */
@@ -150,6 +210,12 @@ export interface ReplyResolverDeps {
    * any of them or for the turn origin, so it is not guessed.
    */
   surfacedOwnerConversations?(session: string): string[];
+  /**
+   * The agent's latest input (turn-trigger tracker). A bare reply after
+   * another agent's message goes back to that agent; an owner turn origin
+   * older than a dispatch is not guessed (crewly#1375). Omitted: unknown.
+   */
+  latestInput?(session: string): LatestInput | null;
   /** Clock (epoch ms) */
   now(): number;
 }
@@ -391,11 +457,17 @@ export async function validateHints(
         ignored,
       };
     }
+    // Work delegated into this thread (the delegate is not in the room): the
+    // thread named by its chat id is the same Slack thread as its key (#1109).
+    if (msg && (!conv || msg.channelId === conv)) {
+      const delegated = await delegatedSlackThread(session, parseSlackThreadKey(threadOfMessage(msg, deps.slackChannelOfConversation(msg.channelId))), deps);
+      if (delegated) return { destination: delegated, ignored };
+    }
     ignored.push({ hint: `thread ${rawThread}`, why: !msg ? 'no such message' : msg.channelId !== conv && conv ? `that message is not in conversation ${conv}` : 'you are not in its conversation' });
     // A thread that is ANOTHER conversation's message contradicts the
     // conversation: neither is used. An unknown id only loses the thread.
     if (conv && msg) {
-      ignored.push({ hint: `conversation ${conv}`, why: 'its thread is in another conversation' });
+      ignored.push({ hint: `conversation ${conv}`, why: msg.channelId === conv ? 'you are not in that conversation' : 'its thread is in another conversation' });
       return { destination: null, ignored };
     }
     if (!conv) return { destination: null, ignored };
@@ -403,12 +475,84 @@ export async function validateHints(
 
   if (conv) {
     if (await deps.ownsConversation(session, conv)) {
+      // The thread comes only from the owner message the agent is answering
+      // (`origin` is passed only then), never from its last owner thread in
+      // that conversation (message-routing audit 2026-10-18, R2).
       const thread = origin?.conversationId === conv ? origin.slackThreadKey ?? origin.chatThreadId : undefined;
-      return { destination: { kind: 'conversation', conversationId: conv, ...(thread ? { thread } : {}), source: 'hint', reason: 'named its own conversation' }, ignored };
+      if (!thread && needsThread(deps.slackChannelOfConversation(conv))) {
+        ignored.push({ hint: `conversation ${conv}`, why: 'it is a Slack channel, no usable thread was named, and the message you are answering is not in it; name the thread with --thread <[SLACK-THREAD:…] key or message id>' });
+        return { destination: null, ignored };
+      }
+      return { destination: { kind: 'conversation', conversationId: conv, ...(thread ? { thread } : {}), source: 'hint', reason: thread ? 'named the conversation of the owner message it answers' : 'named its own conversation' }, ignored };
     }
+    // Not in the room, but the current work was delegated into one of its
+    // Slack threads: that thread, never the room's top level (2026-10-18:
+    // Kai's PDF for Steve's #daily-info thread was posted top level).
+    const workThread = await currentWorkThreadIn(session, conv, deps);
+    const delegated = await delegatedSlackThread(session, workThread, deps);
+    if (delegated) return { destination: delegated, ignored };
     ignored.push({ hint: `conversation ${conv}`, why: 'not a conversation you are in' });
   }
   return { destination: null, ignored };
+}
+
+/**
+ * The Slack thread a non-member may post in because its open work was
+ * delegated into it (#1109), as a destination.
+ *
+ * @param session - Agent
+ * @param key - The thread, if known
+ * @param deps - Collaborators
+ * @returns The Slack destination, or null when the thread was not delegated to the agent
+ */
+async function delegatedSlackThread(
+  session: string,
+  key: { slackChannelId: string; threadTs: string } | null,
+  deps: ReplyResolverDeps,
+): Promise<ReplyDestination | null> {
+  if (!key || !deps.delegatedThread) return null;
+  if (!(await deps.delegatedThread(session, key.slackChannelId, key.threadTs).catch(() => false))) return null;
+  const keyText = formatSlackThreadKey(key.slackChannelId, key.threadTs);
+  const reason = `Slack thread ${keyText} was delegated to you`;
+  return { kind: 'work', destination: { kind: 'slack', target: key.slackChannelId, threadTs: key.threadTs, reason }, source: 'hint', reason };
+}
+
+/**
+ * The Slack thread of a conversation the agent's open work came from (an
+ * owner origin in that conversation with a Slack thread). Only when that is
+ * ONE thread: with two pieces of work from different threads of the room,
+ * the newest is not a safe guess, and the caller fails loudly instead.
+ *
+ * @param session - Agent
+ * @param conversationId - chat-v2 conversation
+ * @param deps - Collaborators
+ * @returns The thread, or null when there is none or more than one
+ */
+async function currentWorkThreadIn(session: string, conversationId: string, deps: ReplyResolverDeps): Promise<{ slackChannelId: string; threadTs: string } | null> {
+  const items = await deps.poolItems().catch(() => [] as WorkItem[]);
+  const threads = new Map<string, { slackChannelId: string; threadTs: string }>();
+  for (const wi of items) {
+    if (wi.target !== session || !OPEN_WORK_STATUSES.has(wi.status)) continue;
+    const origin = originOfWorkItem(wi);
+    if (origin?.kind !== 'owner' || origin.conversationId !== conversationId || !origin.slackChannelId || !origin.threadTs) continue;
+    threads.set(formatSlackThreadKey(origin.slackChannelId, origin.threadTs), { slackChannelId: origin.slackChannelId, threadTs: origin.threadTs });
+  }
+  return threads.size === 1 ? [...threads.values()][0] : null;
+}
+
+/** Work an agent still owes an answer for. */
+const OPEN_WORK_STATUSES: ReadonlySet<WorkItem['status']> = new Set<WorkItem['status']>(['queued', 'proposed', 'accepted', 'running', 'blocked', 'escalated']);
+
+/**
+ * Whether a post into a conversation must name a thread: a Slack channel
+ * (not a DM). A chat-only conversation or a Slack DM takes a post at its
+ * top level.
+ *
+ * @param slackChannelId - The conversation's Slack channel, or null
+ * @returns True for a Slack channel
+ */
+function needsThread(slackChannelId: string | null): boolean {
+  return !!slackChannelId && /^[CG]/.test(slackChannelId);
 }
 
 /**
@@ -445,10 +589,14 @@ export async function resolveReplyDestination(input: ReplyResolveInput, deps: Re
   }
 
   const origin = deps.turnOrigin(session);
+  const latest = deps.latestInput?.(session) ?? null;
+  // The owner message the agent is answering: its turn origin, only while
+  // that message is the latest input naming what the agent answers.
+  const answered = answeredOwnerOrigin(origin, latest);
 
   // 4. Hints the harness can stand behind.
   if (input.hints && (input.hints.conversationId || input.hints.thread)) {
-    const v = await validateHints(session, input.hints, origin, deps);
+    const v = await validateHints(session, input.hints, answered, deps);
     ignoredHints.push(...v.ignored);
     if (v.destination) return { destination: v.destination, ignoredHints };
     // An explicit --thread / --conversation that names nothing this agent may
@@ -463,7 +611,14 @@ export async function resolveReplyDestination(input: ReplyResolveInput, deps: Re
     };
   }
 
-  // 5. What the harness last prompted the agent about — only when the agent
+  // 5. The latest input was another agent's message: the answer goes back to
+  // that agent (agent-to-agent), never into the owner's last thread
+  // (crewly#1375: Pia's answer to Atlas landed in the owner's video thread).
+  if (latest?.kind === 'agent' && latest.sender && latest.sender !== session) {
+    return { destination: await answerToAgent(session, latest, origin, deps), ignoredHints };
+  }
+
+  // 6. What the harness last prompted the agent about — only when the agent
   // owes the owner nothing and that prompt is the last thing it was given:
   // a bare answer to a 10:00 owner question must not land in the thread of
   // a 10:02 TKT-150 nudge (and close its promise).
@@ -472,65 +627,246 @@ export async function resolveReplyDestination(input: ReplyResolveInput, deps: Re
     if (d && d.kind !== 'unresolved') return { destination: { ...d, source: 'prompt', reason: `the harness prompted you about it (${d.reason})` } as ReplyDestination, ignoredHints };
   }
 
-  // 6–7 guess from the turn origin / work / DM. An owner message from
-  // another conversation shown mid-turn makes that guess unsafe: the answer
-  // to it landed in the turn origin's thread (Ella, 2026-10-06).
-  const guessed = await guessDestination(input, deps, origin, prompt);
+  // 7. The route of the input being answered. An owner message from another
+  // conversation shown mid-turn makes even that unsafe: the answer to it
+  // landed in the turn origin's thread (Ella, 2026-10-06).
+  const routed = await fromLatestInput(input, deps, origin, answered, latest);
   const pending = deps.surfacedOwnerConversations?.(session) ?? [];
-  const guessedConv = guessed.destination.kind === 'conversation' ? guessed.destination.conversationId : undefined;
-  const others = [...new Set(pending.filter((c) => c !== guessedConv))];
-  if (others.length > 0 && guessed.destination.kind !== 'unresolved') {
-    const options = [...(guessedConv ? [guessedConv] : []), ...others];
+  const routedConv = routed.kind === 'conversation' ? routed.conversationId : undefined;
+  const others = [...new Set(pending.filter((c) => c !== routedConv))];
+  if (others.length > 0 && routed.kind !== 'unresolved') {
+    const options = [...(routedConv ? [routedConv] : []), ...others];
     return {
       destination: {
         kind: 'unresolved',
         reason: `more than one owner conversation is waiting on you (${options.join(', ')}) — say which one this reply is for`,
-        fix: `reply --conversation ${others[0]} "<your message>"  (or --conversation ${guessedConv ?? '<id>'} for the conversation your turn started in)`,
+        fix: `reply --conversation ${others[0]} --thread <its thread> "<your message>"  (or ${answered ? `--conversation ${answered.conversationId}${answered.slackThreadKey ?? answered.chatThreadId ? ` --thread ${answered.slackThreadKey ?? answered.chatThreadId}` : ''}` : '--conversation <id> --thread <thread>'} for the message your turn started with)`,
       },
       ignoredHints,
     };
   }
-  return { ...guessed, ignoredHints: [...ignoredHints, ...guessed.ignoredHints] };
+  return { destination: routed, ignoredHints };
 }
 
 /**
- * Steps 6–7 of {@link resolveReplyDestination}: turn origin / current work,
- * then the owner DM.
+ * The owner's turn origin, when the owner message behind it is the latest
+ * input that names what the agent answers. Otherwise the origin is just
+ * "the agent's last owner thread", which says nothing about this reply.
+ *
+ * @param origin - The agent's turn origin
+ * @param latest - Its latest routed input
+ * @returns The origin, or undefined
  */
-async function guessDestination(
-  input: ReplyResolveInput,
-  deps: ReplyResolverDeps,
+export function answeredOwnerOrigin(origin: TurnOrigin | undefined, latest: LatestInput | null): TurnOrigin | undefined {
+  if (!origin || latest?.kind !== 'owner') return undefined;
+  if (latest.conversationId && latest.conversationId !== origin.conversationId) return undefined;
+  return origin;
+}
+
+/**
+ * Whether a route is the replying agent's own: an owner conversation it is in,
+ * or a work item targeted at it. A message from another agent that carries
+ * such a route is about the replier's own request, so a bare reply could be
+ * meant for that agent or for the owner.
+ *
+ * @param session - Replying agent
+ * @param route - The route the message carries
+ * @param deps - Collaborators
+ * @returns True when the route is the replier's
+ */
+async function isOwnRoute(session: string, route: MessageRoute, deps: ReplyResolverDeps): Promise<boolean> {
+  if (route.kind === 'owner') return deps.ownsConversation(session, route.conversationId).catch(() => false);
+  const wi = await deps.workItem(route.workItemId).catch(() => null);
+  return wi?.target === session;
+}
+
+/**
+ * Step 5 of {@link resolveReplyDestination}: the answer to another agent's
+ * message goes back to that agent — unless the agent also owes the owner an
+ * answer, holds work whose answer goes elsewhere, or the message is about the
+ * agent's own request (its route): then a bare reply could mean either, and
+ * the agent is told to name it.
+ *
+ * @param session - Replying agent
+ * @param latest - The other agent's message (the latest input)
+ * @param origin - The replying agent's owner turn origin, if any
+ * @param deps - Collaborators
+ * @returns The sender as destination, or `unresolved` with both commands
+ */
+async function answerToAgent(
+  session: string,
+  latest: LatestInput,
   origin: TurnOrigin | undefined,
-  prompt: PromptReference | undefined,
-): Promise<ReplyResolution> {
-  const { session } = input;
-  const ignoredHints: IgnoredHint[] = [];
-  // 6. Turn origin / current work.
+  deps: ReplyResolverDeps,
+): Promise<ReplyDestination> {
+  const sender = latest.sender as string;
+  const toAgent = `send-message --to ${sender} "<your answer>"  (to answer ${sender})`;
+  const ownRoute = latest.route && (await isOwnRoute(session, latest.route, deps)) ? latest.route : undefined;
+  if (ownRoute) {
+    return {
+      kind: 'unresolved',
+      reason: `your latest message is from ${sender} (another agent) about ${describeRoute(ownRoute)}, which you answer — say whether this reply is for ${sender} or for the owner`,
+      fix: `${toAgent}, or ${replyCommandFor(ownRoute)}  (the consolidated answer for the owner)`,
+    };
+  }
+  const forOwner = origin
+    ? `reply --conversation ${origin.conversationId}${origin.slackThreadKey ?? origin.chatThreadId ? ` --thread ${origin.slackThreadKey ?? origin.chatThreadId}` : ''} "<message>"`
+    : 'reply --to <message id from the owner\'s message> "<message>"';
+  const pendingOwner = deps.owesOwner(session) || (deps.surfacedOwnerConversations?.(session) ?? []).length > 0;
+  if (pendingOwner) {
+    return {
+      kind: 'unresolved',
+      reason: `your latest message is from ${sender} (another agent, not the owner), and you also owe the owner an answer — say which one this reply is for`,
+      fix: `${toAgent}, or ${forOwner}  (to answer the owner)`,
+    };
+  }
   const items = await deps.poolItems().catch(() => [] as WorkItem[]);
-  const workItem = currentWorkItemOf(items, session);
-  const planned = planWorkDestination({ workItem, ownerOrigin: origin, now: deps.now() });
+  for (const workItem of liveItemsOf(items, session)) {
+    if (!originOfWorkItem(workItem)) continue;
+    const planned = planWorkDestination({ workItem, now: deps.now() });
+    if (!(planned.kind === 'agent' && planned.sessionName === sender)) {
+      return {
+        kind: 'unresolved',
+        reason: `your latest message is from ${sender} (another agent), but you are also on work item ${workItem.id} whose answer goes elsewhere — say which one this reply is for`,
+        fix: `${toAgent}, or reply --work-item ${workItem.id} "<message>"  (for the work item)`,
+      };
+    }
+  }
+  const reason = `answering ${sender}'s message (another agent, not the owner)`;
+  return { kind: 'work', destination: { kind: 'agent', sessionName: sender, reason }, source: 'agent-message', reason };
+}
+
+/** Statuses in which a work item is live work of its target. */
+const LIVE_STATUSES: ReadonlySet<WorkItem['status']> = new Set<WorkItem['status']>(['running', 'accepted']);
+
+/**
+ * The agent's live work items (running / accepted), oldest first.
+ *
+ * @param items - Pool items
+ * @param session - Agent
+ * @returns Its live items
+ */
+export function liveItemsOf(items: readonly WorkItem[], session: string): WorkItem[] {
+  return items
+    .filter((w) => w.target === session && LIVE_STATUSES.has(w.status))
+    .sort((a, b) => (Date.parse(a.startedAt ?? a.createdAt) || 0) - (Date.parse(b.startedAt ?? b.createdAt) || 0));
+}
+
+/**
+ * Where a work item's answer goes, refusing the places that are not a
+ * destination it names: a work item with no origin, or an owner origin with
+ * no place, is not posted at a channel's top level.
+ *
+ * @param wi - Work item
+ * @param session - Replying agent
+ * @param deps - Collaborators
+ * @returns The destination, or `unresolved`
+ */
+function destinationOfWorkItem(wi: WorkItem, session: string, deps: Pick<ReplyResolverDeps, 'now'>): ReplyDestination {
+  const noPlace: ReplyDestination = {
+    kind: 'unresolved',
+    reason: `work item ${wi.id} names no conversation or thread to answer in`,
+    fix: 'reply --to <owner message id> "<message>", or reply --conversation <id> --thread <thread> "<message>"',
+  };
+  const origin = originOfWorkItem(wi);
+  if (!origin) return noPlace;
+  const planned = planWorkDestination({ workItem: wi, now: deps.now() });
   if (planned.kind === 'owner-origin') {
     const o = planned.origin;
     const thread = o.slackThreadKey ?? o.chatThreadId;
-    const fromOwner = o === origin;
-    return {
-      destination: { kind: 'conversation', conversationId: o.conversationId, ...(thread ? { thread } : {}), source: fromOwner ? 'turn-origin' : 'current-work', reason: planned.reason },
-      ignoredHints,
-    };
+    return { kind: 'conversation', conversationId: o.conversationId, ...(thread ? { thread } : {}), source: 'current-work', reason: planned.reason };
   }
-  const isScheduled = !!workItem && originOfWorkItem(workItem)?.kind === 'trigger';
-  if (planned.kind !== 'new-top-level' || isScheduled) {
-    return { destination: { kind: 'work', destination: planned, source: 'current-work', reason: planned.reason }, ignoredHints };
+  if (planned.kind === 'agent' && planned.sessionName === session) return noPlace;
+  // A top-level post only for work whose origin says so: a scheduled task, or
+  // team work its lead reports in the team channel (crewly#1371).
+  if (planned.kind === 'new-top-level' && origin.kind !== 'trigger' && !leadReportOf(wi)) return noPlace;
+  return { kind: 'work', destination: planned, source: 'current-work', reason: planned.reason };
+}
+
+/**
+ * Where a route goes.
+ *
+ * @param session - Replying agent
+ * @param route - The route
+ * @param deps - Collaborators
+ * @returns The destination (source `route`), or `unresolved`
+ */
+export async function resolveRoute(session: string, route: MessageRoute, deps: ReplyResolverDeps): Promise<ReplyDestination> {
+  if (route.kind === 'work-item') {
+    const wi = await deps.workItem(route.workItemId).catch(() => null);
+    if (!wi) return { kind: 'unresolved', reason: `there is no work item ${route.workItemId}`, fix: 'reply --to <owner message id> "<message>"' };
+    const d = destinationOfWorkItem(wi, session, deps);
+    return d.kind === 'unresolved' ? d : ({ ...d, source: 'route', reason: `the request this answers (${describeRoute(route)}): ${d.reason}` } as ReplyDestination);
+  }
+  const v = await validateHints(session, { conversationId: route.conversationId, ...(route.thread ? { thread: route.thread } : {}) }, undefined, deps);
+  if (v.destination) return { ...v.destination, source: 'route', reason: `the request this answers (${describeRoute(route)})` } as ReplyDestination;
+  return {
+    kind: 'unresolved',
+    reason: `the request this answers is ${describeRoute(route)}, and you cannot post there (${v.ignored.map((i) => `${i.hint}: ${i.why}`).join('; ') || 'not a conversation you are in'})`,
+    fix: 'send the answer to the agent who asked you (send-message --to <agent>), so it answers the owner',
+  };
+}
+
+/**
+ * Step 7 of {@link resolveReplyDestination}: the route of the latest input
+ * that names what the agent answers. Never a guess: when that input names no
+ * place, the agent is told which ids would work.
+ *
+ * @param input - Agent
+ * @param deps - Collaborators
+ * @param origin - Its turn origin
+ * @param answered - Its turn origin when the owner message behind it is the input answered
+ * @param latest - Its latest routed input
+ * @returns The destination, or `unresolved`
+ */
+async function fromLatestInput(
+  input: ReplyResolveInput,
+  deps: ReplyResolverDeps,
+  origin: TurnOrigin | undefined,
+  answered: TurnOrigin | undefined,
+  latest: LatestInput | null,
+): Promise<ReplyDestination> {
+  const { session } = input;
+  const items = await deps.poolItems().catch(() => [] as WorkItem[]);
+  const live = liveItemsOf(items, session);
+  const options = [
+    ...live.map((w) => `reply --work-item ${w.id} "<message>"  (${JSON.stringify(w.title.slice(0, 60))})`),
+    ...(origin ? [`reply --conversation ${origin.conversationId}${origin.slackThreadKey ?? origin.chatThreadId ? ` --thread ${origin.slackThreadKey ?? origin.chatThreadId}` : ''} "<message>"  (the owner's last message to you)`] : []),
+  ];
+  const refuse = (reason: string): ReplyDestination => ({
+    kind: 'unresolved',
+    reason,
+    fix: options.length > 0 ? options.join('; or ') : 'reply --to <message id from your prompt> "<message>" (or --work-item <id> / --ticket <id>)',
+  });
+
+  if (latest?.kind === 'owner') {
+    if (!answered) return refuse('Crewly does not know which thread the owner message you are answering is in');
+    const thread = answered.slackThreadKey ?? answered.chatThreadId;
+    return { kind: 'conversation', conversationId: answered.conversationId, ...(thread ? { thread } : {}), source: 'turn-origin', reason: 'answering the owner message you were given last' };
   }
 
-  // 7. The owner DM; a team-channel top-level post only when there is none.
-  if (!input.noOwnerDm) {
-    const dm = await deps.ownerDm(session).catch(() => null);
-    if (dm) return { destination: { kind: 'conversation', conversationId: dm, source: 'owner-dm', reason: `${planned.reason} — your DM with the owner` }, ignoredHints };
-    return { destination: { kind: 'work', destination: planned, source: 'current-work', reason: `${planned.reason} (no owner DM)` }, ignoredHints };
+  if (latest?.kind === 'result') {
+    const sender = latest.sender ?? 'your delegate';
+    if (!latest.route) {
+      return refuse(`your latest message is ${sender}'s result for work you delegated, and nothing names where the answer goes (you delegated it while answering no owner message or work item)`);
+    }
+    return resolveRoute(session, latest.route, deps);
   }
-  return {
-    destination: { kind: 'unresolved', reason: planned.reason, fix: fixCommand(prompt?.reference) },
-    ignoredHints,
-  };
+
+  if (latest?.kind === 'dispatch' && latest.workItemId) {
+    const wi = await deps.workItem(latest.workItemId).catch(() => null);
+    if (!wi) return refuse(`the work item you were handed (${latest.workItemId}) is not in the pool`);
+    // An owner message delivered before the dispatch is still unanswered:
+    // a bare reply could be for either (crewly#1375).
+    if (origin && origin.receivedAt < latest.at && deps.owesOwner(session)) {
+      return refuse(`a dispatch came in after the owner's message in conversation ${origin.conversationId}, and you still owe the owner an answer — say which one this reply is for`);
+    }
+    return destinationOfWorkItem(wi, session, deps);
+  }
+
+  // Nothing names what this reply answers: only the agent's ONE live work
+  // item is unambiguous. Several are never resolved to the newest.
+  if (live.length === 1) return destinationOfWorkItem(live[0], session, deps);
+  if (live.length > 1) return refuse(`you have ${live.length} live work items and your latest input names none of them — say which one this reply is for`);
+  return refuse('nothing you were given names where this reply goes (no owner message, work item or agent message you are answering)');
 }

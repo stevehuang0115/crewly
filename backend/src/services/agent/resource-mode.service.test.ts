@@ -7,7 +7,9 @@ import { RESOURCE_MODE_CONSTANTS, ResourceModeService, memoryIsTightFor, type Ru
 import { getDefaultSettings } from '../../types/settings.types.js';
 
 const calm = { usedPercent: 40, freeMB: 8000, totalMB: 16384 };
-const tight = { usedPercent: 60, freeMB: 8000, totalMB: 16384, swapUsedPercent: 93 };
+const tight = { usedPercent: 60, freeMB: 1500, totalMB: 16384, swapUsedPercent: 93 };
+/** The 2026-10-26 reading: swap near full, 6 GB free, kernel calm — a healthy Mac. */
+const swapOnly = { usedPercent: 62, freeMB: 6223, totalMB: 16384, swapUsedPercent: 93.9, pressureElevated: false };
 
 function make(running: RunningAgent[], owners: string[] = [], max = 2) {
 	const svc = ResourceModeService.getInstance();
@@ -65,10 +67,18 @@ describe('mode transitions', () => {
 		expect(svc.stats()).toMatchObject({ resourceMode: 'pressure' });
 	});
 
-	it('memoryIsTightFor uses swap and OS pressure', () => {
+	it('memoryIsTightFor uses swap (with low free memory) and OS pressure', () => {
 		expect(memoryIsTightFor(calm)).toBe(false);
 		expect(memoryIsTightFor({ ...calm, pressureElevated: true })).toBe(true);
 		expect(memoryIsTightFor(tight)).toBe(true);
+	});
+
+	it('swap fill alone is not tight: a full swap file with 6 GB free and a calm kernel is a healthy Mac (2026-10-26)', () => {
+		expect(memoryIsTightFor(swapOnly)).toBe(false);
+		// Just under twice the free floor: swap counts again.
+		expect(memoryIsTightFor({ ...swapOnly, freeMB: 2047 })).toBe(true);
+		// The kernel's own flag still wins on its own.
+		expect(memoryIsTightFor({ ...swapOnly, pressureElevated: true })).toBe(true);
 	});
 });
 
@@ -564,6 +574,24 @@ describe('owner threads (specs/2026-10-08-owner-thread-sentinel.md)', () => {
 		expect(await svc.requestStart('new', false)).toBe(true);
 		expect(stopped).toEqual(['kai']);
 		expect(told).toEqual(['kai']);
+	});
+
+	it('passes each agent\'s idle time, so a soft keep can lapse after SOFT_KEEP_MAX_IDLE_MS (Ella, 2026-10-19)', async () => {
+		const svc = ResourceModeService.getInstance();
+		const stopped: string[] = [];
+		const seen: Array<[string, number]> = [];
+		let list = [agent('atlas', RESOURCE_MODE_CONSTANTS.SOFT_KEEP_MAX_IDLE_MS + 60_000)];
+		svc.setDeps({
+			limits: async () => ({ maxRunning: 1, idleTimeoutMinutes: 10 }),
+			listRunning: async () => list,
+			hasOwnerMessage: () => false,
+			owesOwnerThread: (n, idleMs) => { seen.push([n, idleMs]); return idleMs < RESOURCE_MODE_CONSTANTS.SOFT_KEEP_MAX_IDLE_MS; },
+			stopAgent: async (n) => { stopped.push(n); list = list.filter((r) => r.sessionName !== n); },
+		});
+		await enter(svc);
+		expect(await svc.requestStart('new', false)).toBe(true);
+		expect(seen[0]?.[1]).toBeGreaterThanOrEqual(RESOURCE_MODE_CONSTANTS.SOFT_KEEP_MAX_IDLE_MS);
+		expect(stopped).toEqual(['atlas']);
 	});
 
 	it('never frees a slot from an owing agent: the waiter waits (Pia, 2026-10-12)', async () => {

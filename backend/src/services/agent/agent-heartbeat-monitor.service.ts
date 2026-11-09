@@ -42,6 +42,7 @@ import type { ISessionBackend } from '../session/session-backend.interface.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import { isInProcessRuntimeActive } from './crewly-agent/in-process-runtime-registry.js';
 import { isPlannedRelaunch } from './planned-relaunch.registry.js';
+import { getRestoreQueue } from './restore-queue.js';
 import { createSessionCommandHelper } from '../session/session-command-helper.js';
 
 /**
@@ -282,8 +283,9 @@ export class AgentHeartbeatMonitorService {
 					continue;
 				}
 
-				// Being relaunched on purpose (runtime fallback switching runtimes):
-				// its session is briefly gone or silent — not a ghost, not dead.
+				// Being relaunched (runtime fallback switching runtimes) or stopped
+				// on purpose (idle timeout, owner stop): its session is briefly gone
+				// or silent — not a ghost, not dead.
 				if (isPlannedRelaunch(member.sessionName)) {
 					const state = this.agentStates.get(member.sessionName);
 					if (state) {
@@ -293,8 +295,23 @@ export class AgentHeartbeatMonitorService {
 					continue;
 				}
 
+				// Still in the boot restore queue (one launch every 15 s, so the
+				// last of five starts well after the startup grace period): its
+				// session does not exist yet by design — not a ghost (2026-10-25).
+				if (getRestoreQueue().isRestoring(member.sessionName)) {
+					continue;
+				}
+
 				if (!this.sessionBackend.sessionExists(member.sessionName)) {
 					this.agentStates.delete(member.sessionName);
+
+					// The teams were read before this loop. A deliberate stop (idle
+					// stop under memory pressure, an owner stop) tears the session
+					// down first and writes `inactive` a moment later — re-read
+					// before calling it a ghost, or every such stop logs a false one.
+					if (!(await this.isStillActiveInStorage(member.sessionName))) {
+						continue;
+					}
 
 					// Mark agent as inactive in storage so API reflects reality
 					try {
@@ -461,6 +478,24 @@ export class AgentHeartbeatMonitorService {
 	 * @param memberId - Team member ID to check
 	 * @returns Milliseconds since last API activity, or 0 if unknown
 	 */
+	/**
+	 * Whether storage still says this agent is active, read fresh.
+	 *
+	 * @param sessionName - Agent session
+	 * @returns True when active; true as well when storage cannot be read, so
+	 *   a storage hiccup keeps the ghost handling of before
+	 */
+	private async isStillActiveInStorage(sessionName: string): Promise<boolean> {
+		if (!this.storageService) return false;
+		try {
+			const teams = await this.storageService.getTeams();
+			const member = teams.flatMap((t) => t.members || []).find((m) => m.sessionName === sessionName);
+			return member?.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE;
+		} catch {
+			return true;
+		}
+	}
+
 	private async getApiIdleTimeMs(memberId: string): Promise<number> {
 		try {
 			const heartbeat = await AgentHeartbeatService.getInstance().getAgentHeartbeat(memberId);

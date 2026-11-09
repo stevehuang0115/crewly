@@ -14,6 +14,13 @@
  *   POST /api/cloud/talk/session/:sid/replies {instanceId, conversationId, agentSession, text, interim?, ack?, recap?, nextStep?}
  * Machine → Cloud (its status snapshot, specs/2026-10-09-drive-mode-v3.md):
  *   PUT  /api/cloud/instances/:instanceId/briefing {snapshot}
+ * Meetings P2b (crewly#1415, a 1:1 voice meeting with one agent):
+ *   op `meeting_pack` → GET  machine/packs/:id?instanceId=   → {agentSession, name, role?, team?, language}
+ *                      POST machine/packs/:id {instanceId, pack}
+ *   op `wiki_search`  → GET  machine/wiki/:id?instanceId=    → {agentSession, query}
+ *                      POST machine/wiki/:id {instanceId, hits, ms}
+ *   a delivery with `writeBack` → write it into its thread, then
+ *                      POST machine/deliveries/:id/written {instanceId, threadRef?}
  *
  * @module services/drive/drive-cloud.contract
  */
@@ -23,11 +30,50 @@ import { DRIVE_CONSTANTS } from '../../constants.js';
 /** What the owner can talk to. */
 export type DriveTargetKind = 'agent' | 'team' | 'channel';
 
+/** What a Drive mode push asks for. */
+export type DriveRelayOp = 'deliver' | 'end' | 'recall' | 'warm' | 'refresh' | 'log' | 'meeting_pack' | 'wiki_search';
+
+const OPS: readonly DriveRelayOp[] = ['deliver', 'end', 'recall', 'warm', 'refresh', 'log', 'meeting_pack', 'wiki_search'];
+/** Ops that name the thing to fetch. */
+const OPS_WITH_ID: readonly DriveRelayOp[] = ['deliver', 'recall', 'refresh', 'meeting_pack', 'wiki_search'];
+
+/**
+ * A meeting thread: `slack:<Slack conversation>:<thread ts>` or
+ * `chat:<chat-v2 channel id>[:<thread root message id>]`.
+ */
+export const MEETING_THREAD_REF = /^(?:slack:[A-Za-z0-9]{5,24}:\d{6,12}(?:\.\d{1,8})?|chat:[A-Za-z0-9_.@:-]{1,300})$/;
+
+/** Where a meeting write-back goes (a delivery's `writeBack`). */
+export interface DriveWriteBack {
+  kind: 'decision' | 'answer' | 'task' | 'note';
+  /** The agenda topic, in words */
+  topic: string;
+  /** The thread it belongs to; absent = a new topic (start a thread) */
+  threadRef?: string;
+  /** A new topic's name */
+  newTopic?: string;
+}
+
+/** What to build a meeting pack for. */
+export interface DriveMeetingPackFetch {
+  agentSession: string;
+  name: string;
+  role?: string;
+  team?: string;
+  language: string;
+}
+
+/** A live wiki search. */
+export interface DriveWikiFetch {
+  agentSession: string;
+  query: string;
+}
+
 /** A Drive mode push. */
 export interface DriveRelayData {
   v: 1;
   kind: 'drive';
-  op: 'deliver' | 'end' | 'recall' | 'warm' | 'refresh' | 'log';
+  op: DriveRelayOp;
   sessionId: string;
   id?: string;
   instanceId: string;
@@ -40,6 +86,8 @@ export interface DriveDeliveryFetch {
   conversationId: string;
   target: { kind: DriveTargetKind; name: string; agentSession: string; team?: string; slackChannelId?: string; members?: string[] };
   text: string;
+  /** A meeting write-back (P2b): write it into its thread instead of opening a Drive conversation */
+  writeBack?: DriveWriteBack;
 }
 
 /** A recall request. */
@@ -74,10 +122,11 @@ export function parseDriveRelayData(payload: unknown): DriveRelayData | null {
   const op = p['op'];
   const sessionId = str(p['sessionId']);
   const instanceId = str(p['instanceId']);
-  if ((op !== 'deliver' && op !== 'end' && op !== 'recall' && op !== 'warm' && op !== 'refresh' && op !== 'log') || !sessionId || !DRIVE_CONSTANTS.SESSION_ID_PATTERN.test(sessionId) || !instanceId) return null;
+  const known = OPS.find((o) => o === op);
+  if (!known || !sessionId || !DRIVE_CONSTANTS.SESSION_ID_PATTERN.test(sessionId) || !instanceId) return null;
   const id = str(p['id']);
-  if ((op === 'deliver' || op === 'recall' || op === 'refresh') && !id) return null;
-  return { v: 1, kind: 'drive', op, sessionId, instanceId, ...(id ? { id } : {}) };
+  if (OPS_WITH_ID.includes(known) && !id) return null;
+  return { v: 1, kind: 'drive', op: known, sessionId, instanceId, ...(id ? { id } : {}) };
 }
 
 /**
@@ -108,11 +157,13 @@ export function parseDeliveryFetch(data: unknown): DriveDeliveryFetch | null {
   const agentSession = str(t['agentSession']);
   if ((kind !== 'agent' && kind !== 'team' && kind !== 'channel') || !id || !sessionId || !conversationId || !text || !agentSession) return null;
   const members = Array.isArray(t['members']) ? (t['members'] as unknown[]).filter((m): m is string => typeof m === 'string') : undefined;
+  const writeBack = parseWriteBack(d['writeBack']);
   return {
     id,
     sessionId,
     conversationId,
     text,
+    ...(writeBack ? { writeBack } : {}),
     target: {
       kind,
       name: str(t['name']) ?? agentSession,
@@ -153,4 +204,54 @@ export function parseStateFetch(data: unknown): DriveStateFetch | null {
   const warm = Array.isArray(d['warm']) ? (d['warm'] as unknown[]).filter((s): s is string => typeof s === 'string' && !!s.trim()).slice(0, DRIVE_CONSTANTS.MAX_WARM) : [];
   const until = typeof d['warmUntil'] === 'string' ? Date.parse(d['warmUntil']) : NaN;
   return { ended: d['ended'] === true, conversations, warm, warmUntil: warm.length && Number.isFinite(until) ? until : 0 };
+}
+
+/**
+ * A delivery's meeting write-back, or null.
+ *
+ * @param raw - `writeBack` of a delivery
+ * @returns Write-back or null
+ */
+export function parseWriteBack(raw: unknown): DriveWriteBack | null {
+  const w = obj(raw);
+  if (!w) return null;
+  const kind = (['decision', 'answer', 'task', 'note'] as const).find((k) => k === w['kind']) ?? 'note';
+  const topic = str(w['topic'])?.trim().slice(0, 200) ?? '';
+  const threadRef = typeof w['threadRef'] === 'string' && MEETING_THREAD_REF.test(w['threadRef']) ? w['threadRef'] : undefined;
+  const newTopic = str(w['newTopic'])?.trim().slice(0, 200);
+  if (!topic && !threadRef && !newTopic) return null;
+  return { kind, topic: topic || newTopic || 'Meeting', ...(threadRef ? { threadRef } : newTopic ? { newTopic } : {}) };
+}
+
+/**
+ * Cloud's pack request, or null.
+ *
+ * @param data - `data` of the response
+ * @returns Request or null
+ */
+export function parseMeetingPackFetch(data: unknown): DriveMeetingPackFetch | null {
+  const d = obj(data);
+  const agentSession = str(d?.['agentSession']);
+  if (!d || !agentSession) return null;
+  return {
+    agentSession,
+    name: str(d['name']) ?? agentSession,
+    ...(str(d['role']) ? { role: d['role'] as string } : {}),
+    ...(str(d['team']) ? { team: d['team'] as string } : {}),
+    language: str(d['language']) ?? 'en',
+  };
+}
+
+/**
+ * Cloud's wiki search request, or null.
+ *
+ * @param data - `data` of the response
+ * @returns Request or null
+ */
+export function parseWikiFetch(data: unknown): DriveWikiFetch | null {
+  const d = obj(data);
+  const agentSession = str(d?.['agentSession']);
+  const query = str(d?.['query']);
+  if (!agentSession || !query) return null;
+  return { agentSession, query: query.trim().slice(0, 300) };
 }

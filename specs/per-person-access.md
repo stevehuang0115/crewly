@@ -96,3 +96,43 @@ update" and is disabled.
 4. Owner identity unified on `owner` (OSS + Cloud).
 5. Dedicated agents no longer drop agent @-mentions.
 6. "Usable by" against auth 1.9.0 shows "Requires a Cloud update".
+
+## Audit log of connector use (#969, 2026-10-26)
+
+The owner can answer "who used which grant, acting for whom, when, and was it allowed" from Settings › Activity (filter `connector.use.`). Two actions, written by `backend/src/services/connector/connector-use-audit.service.ts` through the activity log (#881):
+
+- `connector.use.refused` — written every time. `after.reason` is `role_not_allowed` (the role gate in `requireConnectorAccess`, the remote MCP proxy, the Zoho draft route; `after.allowedRoles` lists the owner's allowlist) or `grant_not_shared` (Crewly Cloud answered `not_permitted` for the person the call acts for; Google carries `after.authorizedBy` and the product in `after.what`). The actor is the agent the role decision was made for (`caller.session`), the person in `after.actingFor` / `after.actingForRole` comes from the acting-for context.
+- `connector.use.allowed` — one Drive search is one call, so an allowed use is written once per actor, connection and person per hour (`ACTIVITY_LOG_CONSTANTS.USE_ALLOWED_WINDOW_MS`); the note says further uses in that hour are not logged. The in-memory window map is capped at `USE_KEYS_MAX` keys (oldest dropped) and is empty after a restart. The remote MCP proxy and Zoho draft log allowed uses without a person (they do not run under the acting-for context).
+
+Not covered yet (still open on #969): tagging memory and wiki writes with the person they came from, and the audience check on sharing them.
+
+## Private-sourced wiki pages (#969, 2026-10-26)
+
+What an agent reads through a person's grant is that person's data. A wiki page written from it is readable by that person and the owner only, whatever the vault's role `visibility` says.
+
+- **Tracker** (`services/people/private-source.service.ts`): the connector role gate notes every allowed use as `(session, person, connector, at)`. A use counts for `PEOPLE_CONSTANTS.PRIVATE_SOURCE_WINDOW_MS` (20 min) — the backend has no turn boundary, so the window stands in for one. In memory; empty after a restart; at most `PRIVATE_SOURCE_SESSIONS_MAX` sessions.
+- **Tagging** (`WikiIngestService.writePage`): a page write whose `callerSession` read for anyone inside the window gets frontmatter `visible_to_people: [<person ids>]`, unioned with the page's existing list and with an explicit `visibleToPeople` on the request. The list only grows: a later append from a public source never reopens the page. `log.md` entries have no frontmatter and are not tagged.
+- **Reading** (`isVisibleTo(fm, viewerRole, viewerPerson)`): a page with `visible_to_people` is hidden from any `viewerPerson` not on the list; `undefined` (the owner's dashboard, an unknown session) and `owner` read everything; the role list still applies to a listed person. `viewerPerson` comes from `viewerPersonOf(session)` = the session's acting-for person (`owner` → undefined) on `POST /api/wiki/query`, memory recall's BM25 wiki search, and the meeting wiki search. The dashboard's own search routes carry no viewer and show everything to the owner.
+- **Owner-only instance**: every turn acts for `owner`, so pages get `visible_to_people: [owner]` and every reader is the owner — no visible change until a member appears.
+
+Not covered: recall from another machine.
+
+## Private-sourced replies: the audience check (#969, 2026-10-26)
+
+A reply an agent writes shortly after reading someone's grant draws on that person's data, so it does not go where other people read.
+
+- **Where** (`services/orc/reply-audience.ts`, called from `deliverReply` after the destination resolver and before any post): when the private-source tracker has people other than `owner` for the session and the resolved destination is a shared place, the reply is moved to the agent's owner DM (`source: 'owner-dm'`), opened with `_Held from #room: this draws on Alice's data, which only you and they may see. Say "share it" and I will post it there._`. With no owner DM the reply is held and the agent gets the reason and what to do (`held: true`, never a silent drop).
+- **Shared place**: a chat-v2 conversation that is not a `dm` (or unknown to chat-v2) and mirrors no Slack DM; a Slack channel thread, ticket thread or new top-level post. **Private**: the owner DM, a Slack DM, an internal message to another agent (`kind: 'agent'`).
+- **Audit**: `connector.private_output.redirected` (target = the owner DM) or `connector.private_output.held`, both with `after.people` and `after.heldFrom`, under Settings › Activity filter `connector.private_output.`.
+- **Owner-only instance**: the tracker only ever holds `owner`, so nothing changes. The deps are optional (`ReplyDeliveryDeps.audience`); tests without them see the old behaviour.
+- **Sharing** (`reply --share`, `DeliverReplyInput.share`): the owner's word in the agent's DM is the approval. When the owner wrote in that DM within `TURN_TRIGGER_CONSTANTS.OWNER_ANSWER_WINDOW_MS` (`ownerAskedRecently`), a reply sent with `--share` skips the check, posts to the shared place and is logged as `connector.private_output.shared` (`after.people`, `after.sharedTo`). Without a recent owner message `--share` is ignored (warn) and the reply is redirected as usual. The redirected delivery carries `heldFrom`; `POST /api/chat/reply` returns it with a `note` telling the agent to re-run the reply with `--share` once the owner says so.
+- **The card** (`services/orc/private-share-decisions.ts`, decision kind `private_share`): after the DM copy lands, the agent's own bot posts a decision card under it in the owner DM — *Share Owen's reply in #ce? It draws on Alice's data, which only you and they may see.* with the reply quoted (first 400 characters), options **Share** (post it there as written, once) and **Keep private** (default, applied unanswered after 24 h). The DM note then says *Tap Share on the card below, or say "share it" here*. A Share runs `postHeldReply` (the delivery path with the audience check skipped — the tap is the approval) and logs `connector.private_output.shared` with `after.decisionId`; the agent gets `[PRIVATE] The owner shared your reply …; nothing more to send`. Keep private logs `connector.private_output.kept` and tells the agent not to post it another way; the deadline default wakes nobody. One open card per agent + place + text (a re-post reuses it). Held-action rules (`HELD_ACTION_KINDS` in `decision-card.ts`): no snooze or skip, words that are neither yes nor no leave it open, the default counts as safe. With Slack down or no decision service, no card is raised and the words-only path stands.
+- Not covered: a decision card in the room itself (the card is in the DM; the room never learns a reply was held), and a colleague re-posting an internal message it received.
+
+## Private-sourced project memory (#969, 2026-10-26)
+
+The same rule for the project memory files outside the wiki (`memory/` patterns, decisions, gotchas).
+
+- **Tagging** (`MemoryService.rememberForProject`): a project-scope `remember` whose session read for anyone inside the tracker window writes the entry with `visibleToPeople: [<person ids>]`. On a dedup hit the existing entry's list is unioned with the new one (`mergePeople`); a later public write of the same entry never clears it. Relationships carry no tag (component names, no agent attribution).
+- **Reading** (`ProjectMemoryService.searchAll(projectPath, query, { person })`): an entry with `visibleToPeople` is hidden from any `person` not on the list (`personMayView`); the owner (no `person`, or `owner`) sees everything. Memory recall passes `viewerPersonOf(agentId)`. `generateProjectContext` (the session-start context block) and the raw `getPatterns`/`getDecisions`/`getGotchas` readers are unfiltered: they serve the agent's own project, not a cross-person query.
+

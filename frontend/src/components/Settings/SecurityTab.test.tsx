@@ -8,8 +8,8 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
-import { SecurityTab, itemLink, itemMeta } from './SecurityTab';
-import { securityService, type ApprovalActivity, type ActivityItem } from '../../services/security.service';
+import { SecurityTab, itemLink, itemMeta, outboundSummary } from './SecurityTab';
+import { securityService, type ApprovalActivity, type ActivityItem, type OutboundTool } from '../../services/security.service';
 
 vi.mock('../../services/security.service', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/security.service')>()),
@@ -38,6 +38,7 @@ function activity(over: Partial<ApprovalActivity> = {}): ApprovalActivity {
     runtimeTerms: { asked: 1, accepted: 1, declined: 0, waiting: 0 },
     whatsapp: { tracked: false, note: 'Not set up.' },
     gmail: { tracked: true, counts: { waiting: 0 } },
+    outbound: OUTBOUND,
     items: [
       item({ id: 'D-1', category: 'sensitive', sensitive: 'publish', title: 'Publish the post?', answer: 'Yes, publish', requestId: 'r-1' }),
       item({ id: 'D-2', title: 'Deploy now?', outcome: 'waiting' }),
@@ -47,6 +48,18 @@ function activity(over: Partial<ApprovalActivity> = {}): ApprovalActivity {
     ...over,
   };
 }
+
+/** Eight outbound tools (not seven: the recent list has seven, and both have a Show all button): five held, two as the owner, one with nothing in the way. */
+const OUTBOUND: OutboundTool[] = [
+  { skill: 'gmail-send', surface: 'Gmail', reaches: 'people', gate: 'draft', note: 'Leaves a draft; only the owner sends it.' },
+  { skill: 'marketplace/gmail', surface: 'Gmail', reaches: 'people', gate: 'draft', note: 'The send action saves a draft.' },
+  { skill: 'whatsapp-send', surface: 'WhatsApp', reaches: 'people', gate: 'owner_word', note: 'Only after 「发 W<n>」.' },
+  { skill: 'docs-write', surface: 'Google Docs', reaches: 'owner', gate: 'as_owner', note: 'Writes as the owner, at once.' },
+  { skill: 'sheets-write', surface: 'Google Sheets', reaches: 'owner', gate: 'as_owner', note: 'Writes rows as the owner, at once.' },
+  { skill: 'remote-browser', surface: 'Chrome (extension)', reaches: 'public', gate: 'owner_card', note: 'Sends and posts are held on a card.' },
+  { skill: 'chrome-attach', surface: 'Chrome (local, CDP)', reaches: 'public', gate: 'none', note: 'The extension guard does not see it.' },
+  { skill: 'zoho-draft', surface: 'Zoho Mail', reaches: 'people', gate: 'draft', note: 'Saves a draft; agents cannot send Zoho mail.' },
+];
 
 const renderTab = () =>
   render(
@@ -104,6 +117,39 @@ describe('SecurityTab', () => {
     expect(await screen.findByText(/backend down/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('Nothing was asked or held in the last 7 days.')).toBeInTheDocument();
+  });
+});
+
+describe('SecurityTab outbound tools (#894)', () => {
+  it('lists the tools that reach outside with their holds, six then Show all, and sums them up', async () => {
+    renderTab();
+    const section = await screen.findByTestId('security-outbound');
+    expect(screen.getByTestId('security-outbound-summary')).toHaveTextContent('5 held until you act · 2 act as you · 1 with nothing in the way');
+    const gmail = within(section).getByTestId('outbound-gmail-send');
+    expect(gmail).toHaveTextContent('Gmail · gmail-send');
+    expect(gmail).toHaveTextContent('Leaves a draft; only the owner sends it.');
+    expect(gmail).toHaveTextContent('Draft only');
+    expect(within(section).getByTestId('outbound-marketplace-gmail')).toHaveTextContent('Draft only');
+    expect(within(section).getByTestId('outbound-whatsapp-send')).toHaveTextContent('Your word');
+    expect(within(section).getByTestId('outbound-docs-write')).toHaveTextContent('Acts as you');
+    expect(within(section).getByTestId('outbound-remote-browser')).toHaveTextContent('Card');
+    // The seventh and eighth rows are behind Show all.
+    expect(screen.queryByTestId('outbound-chrome-attach')).not.toBeInTheDocument();
+    fireEvent.click(within(section).getByRole('button', { name: 'Show all 8' }));
+    expect(screen.getByTestId('outbound-chrome-attach')).toHaveTextContent('Nothing in the way');
+    expect(screen.getByTestId('outbound-zoho-draft')).toHaveTextContent('Draft only');
+  });
+
+  it('shows no section when the backend sends no list (an older backend)', async () => {
+    svc.approvals.mockResolvedValue({ ...activity(), outbound: undefined as unknown as OutboundTool[] });
+    renderTab();
+    await screen.findByTestId('count-asked');
+    expect(screen.queryByTestId('security-outbound')).not.toBeInTheDocument();
+  });
+
+  it('sums the gates', () => {
+    expect(outboundSummary(OUTBOUND)).toBe('5 held until you act · 2 act as you · 1 with nothing in the way');
+    expect(outboundSummary([])).toBe('0 held until you act · 0 act as you · 0 with nothing in the way');
   });
 });
 

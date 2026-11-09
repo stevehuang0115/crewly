@@ -10,6 +10,7 @@ export { EmptyTerminalState } from './EmptyTerminalState';
 export { ProjectsSummary } from './ProjectsSummary';
 export { TeamsSummary } from './TeamsSummary';
 export { WaitingOnYouCard } from './WaitingOnYouCard';
+export { OwnerPullsCard } from './OwnerPullsCard';
 
 // Export types
 export type * from './types';

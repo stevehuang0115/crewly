@@ -43,15 +43,25 @@ describe('RecoveryModule', () => {
 		const result = await module.build(baseConfig);
 
 		expect(result).toContain('## Session Recovery Protocol (MANDATORY)');
-		expect(result).toContain('### Step 1: Recall previous knowledge');
-		expect(result).toContain('### Step 1.5: Read your active work');
-		expect(result).toContain('### Step 2: Load your full context');
-		expect(result).toContain('### Step 3: Check for pending tasks');
-		expect(result).toContain('### Step 4: Register yourself as active');
-		expect(result).toContain('### Step 5: Assess and report');
+		expect(result).toContain('### Step 1: Load your context (one memory search)');
+		expect(result).toContain('### Step 2: Read your active work');
+		expect(result).toContain('### Step 3: Register yourself as active');
+		expect(result).toContain('### Step 4: Assess and report');
 	});
 
-	it('should reference get-my-active-work skill in Step 1.5 (issue #395)', async () => {
+	it('runs one memory search at startup: get-my-context with the startup context, no separate recall (#857)', async () => {
+		const result = await module.build(baseConfig);
+
+		expect(result).not.toContain('core/recall/execute.sh');
+		expect(result).toContain('core/get-my-context/execute.sh');
+		expect(result).toContain(`"context":"${baseConfig.role} session startup, recent tasks, unfinished work, blockers, key decisions"`);
+		// Task history is not fetched on top of the active-work briefing.
+		expect(result).not.toContain('core/get-my-tasks/execute.sh');
+		expect(result).toContain('read-task');
+		expect(result).toContain('workingNotes');
+	});
+
+	it('should reference get-my-active-work skill in Step 2 (issue #395)', async () => {
 		const result = await module.build(baseConfig);
 
 		expect(result).toContain('core/get-my-active-work/execute.sh');
@@ -74,17 +84,17 @@ describe('RecoveryModule', () => {
 		expect(result).toMatch(/Run this skill now if that section says it was \*\*not injected\*\*/);
 	});
 
-	it('points Step 1 at the Standing Answers section before recall (#816 part B)', async () => {
+	it('points Step 1 at the Standing Answers section before the context search (#816 part B)', async () => {
 		const result = await module.build(baseConfig);
 		const step1 = result.slice(result.indexOf('### Step 1:'), result.indexOf('### Step 1.5'));
 		expect(step1).toContain('`## Standing Answers` section appears above');
-		expect(step1.indexOf('Standing Answers')).toBeLessThan(step1.indexOf('core/recall/execute.sh'));
+		expect(step1.indexOf('Standing Answers')).toBeLessThan(step1.indexOf('core/get-my-context/execute.sh'));
 	});
 
-	it('should include recall command with correct parameters', async () => {
+	it('should carry the startup search in the get-my-context command (#857)', async () => {
 		const result = await module.build(baseConfig);
 
-		expect(result).toContain('core/recall/execute.sh');
+		expect(result).not.toContain('core/recall/execute.sh');
 		expect(result).toContain(`"agentId":"${baseConfig.sessionName}"`);
 		expect(result).toContain(`"context":"${baseConfig.role} session startup`);
 		expect(result).toContain(`"projectPath":"${baseConfig.projectPath}"`);
@@ -116,8 +126,8 @@ describe('RecoveryModule', () => {
 	it('should use agentSkillsPath for commands', async () => {
 		const result = await module.build(baseConfig);
 
-		expect(result).toContain(`bash ${baseConfig.agentSkillsPath}/core/recall`);
 		expect(result).toContain(`bash ${baseConfig.agentSkillsPath}/core/get-my-context`);
+		expect(result).toContain(`bash ${baseConfig.agentSkillsPath}/core/get-my-active-work`);
 	});
 
 	it('should use projectRoot when projectPath is undefined', async () => {
@@ -149,12 +159,12 @@ describe('RecoveryModule', () => {
 		expect(result).toContain('```');
 	});
 
-	it('should include workingNotes recovery instruction in Step 3', async () => {
+	it('should include workingNotes recovery instruction in Step 2 (read-task, #857)', async () => {
 		const result = await module.build(baseConfig);
 
 		expect(result).toContain('workingNotes');
-		expect(result).toContain('previous working state');
-		expect(result).toContain('Resume from there');
+		expect(result).toContain('read-task');
+		expect(result).toContain('resume from there');
 	});
 
 	describe('fragment loading', () => {

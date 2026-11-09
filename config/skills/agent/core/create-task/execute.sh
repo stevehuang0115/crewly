@@ -32,6 +32,10 @@ Options:
                         Should carry Goal + Expected Outcome + Eval Criteria. Max 16384 bytes.
   --request-id   | -R   Ticket this task is for: the id (or TKT-123) from the
                         [TICKET:TKT-123 <id>] line of the message you are working on
+  --thread             Owner thread the task answers (Slack thread key from your
+                        prompt). A task you assign to yourself inherits no owner
+                        thread: name it here, or its result goes nowhere public
+  --conversation       Owner conversation the task answers (chat-v2 id)
   --json         | -j   Raw JSON payload (same as legacy)
   --help         | -h   Show this help
 EOF_USAGE
@@ -48,6 +52,8 @@ OWNER=""
 DESCRIPTION=""
 BRIEF=""
 REQUEST_ID=""
+OWNER_THREAD=""
+OWNER_CONVERSATION=""
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -97,6 +103,14 @@ while [[ $# -gt 0 ]]; do
       REQUEST_ID="$2"
       shift 2
       ;;
+    --thread)
+      OWNER_THREAD="$2"
+      shift 2
+      ;;
+    --conversation)
+      OWNER_CONVERSATION="$2"
+      shift 2
+      ;;
     --json|-j)
       INPUT_JSON="$2"
       shift 2
@@ -141,6 +155,8 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$DESCRIPTION" ] && DESCRIPTION=$(printf '%s' "$INPUT" | jq -r '.description // empty')
   [ -z "$BRIEF" ] && BRIEF=$(printf '%s' "$INPUT" | jq -r '.briefMarkdown // .brief // empty')
   [ -z "$REQUEST_ID" ] && REQUEST_ID=$(printf '%s' "$INPUT" | jq -r '.requestId // empty')
+  [ -z "$OWNER_THREAD" ] && OWNER_THREAD=$(printf '%s' "$INPUT" | jq -r '.thread // .ownerThread // empty')
+  [ -z "$OWNER_CONVERSATION" ] && OWNER_CONVERSATION=$(printf '%s' "$INPUT" | jq -r '.conversation // .conversationId // .ownerConversation // empty')
 fi
 
 # Apply defaults
@@ -212,12 +228,16 @@ WORK_ITEM=$(jq -n \
   --arg description "$DESCRIPTION" \
   --arg briefMarkdown "$BRIEF" \
   --arg requestId "$REQUEST_ID" \
+  --arg ownerThread "$OWNER_THREAD" \
+  --arg ownerConversation "$OWNER_CONVERSATION" \
   '{
     title: $title,
     type: "delegate",
     owner: $owner,
     target: (if $target == "" then null else $target end),
-    metadata: { projectPath: $projectPath, milestone: $milestone, priority: $priority }
+    metadata: ({ projectPath: $projectPath, milestone: $milestone, priority: $priority }
+      + (if $ownerThread != "" then {ownerThread: $ownerThread} else {} end)
+      + (if $ownerConversation != "" then {ownerConversation: $ownerConversation} else {} end))
   }
   + (if $description != "" then {description: $description} else {} end)
   + (if $briefMarkdown != "" then {briefMarkdown: $briefMarkdown} else {} end)
@@ -226,6 +246,12 @@ WORK_ITEM=$(jq -n \
 
 if [ -n "$OUTPUT_SCHEMA" ] && [ "$OUTPUT_SCHEMA" != "" ]; then
   WORK_ITEM=$(printf '%s' "$WORK_ITEM" | jq --argjson schema "$OUTPUT_SCHEMA" '.metadata += {outputSchema: $schema}')
+fi
+
+# A task with no owner place answers no owner thread: say so (message-routing
+# audit 2026-10-18: a self-assigned task no longer borrows your last one).
+if [ -z "$OWNER_THREAD" ] && [ -z "$OWNER_CONVERSATION" ] && [ -z "$REQUEST_ID" ]; then
+  echo "Note: no --thread / --conversation given — this task answers no owner thread unless it is delegated from your current work. Pass --thread <key> to tie it to the owner's request." >&2
 fi
 
 api_call POST "/task-pool/add" "$WORK_ITEM"

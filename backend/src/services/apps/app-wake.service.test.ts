@@ -12,9 +12,11 @@ import type { AppRegistryEntry, AppsRegistryService } from './apps-registry.serv
 import type { AppChange, AppCommentThread } from './app-wake-message.js';
 import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
 
+const logSpy = { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() };
 jest.mock('../core/logger.service.js', () => ({
-  LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }) }) },
+  LoggerService: { getInstance: () => ({ createComponentLogger: () => logSpy }) },
 }));
+import { NetworkStatusService } from '../core/network-status.service.js';
 
 const ID = '28au74d9cj';
 const ID2 = 'xyzabcdefg';
@@ -391,6 +393,30 @@ describe('AppWakeService', () => {
     expect(cloud.calls).toHaveLength(0);
   });
 
+  it('offline, failing apps warn once per throttle window instead of once per app per pass (#1466)', async () => {
+    registry.add(ID);
+    registry.add(ID2);
+    cloud.failFor.set(ID, new AppsCloudError(502, 'network', 'Could not reach Crewly Apps (TypeError)'));
+    cloud.failFor.set(ID2, new AppsCloudError(502, 'network', 'Could not reach Crewly Apps (TypeError)'));
+    const net = NetworkStatusService.getInstance();
+    const cause = Object.assign(new Error('getaddrinfo ENOTFOUND api.crewlyai.com'), { code: 'ENOTFOUND' });
+    for (let i = 0; i < 3; i++) net.recordFailure('relay', Object.assign(new TypeError('fetch failed'), { cause }));
+    expect(net.isOffline()).toBe(true);
+    logSpy.warn.mockClear();
+    logSpy.debug.mockClear();
+    try {
+      await svc.tick();
+      const warns = logSpy.warn.mock.calls.filter((c) => c[0] === 'Polling app changes failed');
+      const debugs = logSpy.debug.mock.calls.filter((c) => String(c[0]).startsWith('Polling app changes failed'));
+      expect(warns).toHaveLength(1);
+      expect(debugs).toHaveLength(1);
+      expect(svc.appBackoff(ID)).toMatchObject({ failures: 1 });
+      expect(svc.appBackoff(ID2)).toMatchObject({ failures: 1 });
+    } finally {
+      NetworkStatusService.resetInstance();
+    }
+  });
+
   it('backs off per app: a failing app waits, the others keep polling', async () => {
     registry.add(ID);
     registry.add(ID2);
@@ -735,6 +761,70 @@ describe('AppWakeService — nothing stalls delivery (2026-10-05, 科技晨报)'
     await jest.advanceTimersByTimeAsync(30_000 + 5 * MIN + 30_000 + 90_000 + 1000);
     expect(toElla()).toHaveLength(1);
     expect(deliver.mock.calls.filter(([s, t]) => s === null && String(t).includes('stalled'))).toHaveLength(1);
+  });
+
+  it('owner changes to an app whose publisher is no longer on this machine go to the orchestrator once, naming it, and the cursor moves on (2026-10-25: AZ星球)', async () => {
+    svc.stop();
+    svc = new AppWakeService({
+      client: cloud,
+      registry: registry as unknown as AppsRegistryService,
+      deliver,
+      resolveAgent,
+      isRunning: (s) => running.has(s),
+      isLocalAgent: async (s) => s !== 'dev-ella',
+      skillsPath: '/skills/agent',
+    });
+    registry.add(ID);
+    cloud.push(ID, ownerData());
+    cloud.push(ID, ownerData('eggs', 'set'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    for (let i = 0; i < 3; i++) await jest.advanceTimersByTimeAsync(CREWLY_APPS_CONSTANTS.WAKE_RETRY_MAX_MS);
+
+    expect(deliver.mock.calls.filter(([s]) => s === 'dev-ella')).toHaveLength(0);
+    const orc = deliver.mock.calls.filter(([s]) => s === null);
+    expect(orc).toHaveLength(1);
+    expect(orc[0][1]).toContain('whose agent is no longer on this machine');
+    expect(orc[0][1]).toContain('Its publisher dev-ella is not an agent on this machine any more');
+    expect(orc[0][1]).toContain('Data changes by the owner (2)');
+    expect(orc[0][2]).toMatchObject({ activate: false });
+    expect(registry.apps.get(ID)?.cursor).toBe(2);
+    expect(svc.pendingKeys()).toHaveLength(0);
+  });
+
+  it('a publisher that is on the roster is still woken when isLocalAgent is wired', async () => {
+    svc.stop();
+    svc = new AppWakeService({
+      client: cloud,
+      registry: registry as unknown as AppsRegistryService,
+      deliver,
+      resolveAgent,
+      isRunning: (s) => running.has(s),
+      isLocalAgent: async (s) => s === 'dev-ella',
+      skillsPath: '/skills/agent',
+    });
+    registry.add(ID);
+    cloud.push(ID, ownerData());
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver.mock.calls.filter(([s]) => s === 'dev-ella')).toHaveLength(1);
+    expect(deliver.mock.calls.filter(([s]) => s === null)).toHaveLength(0);
+  });
+
+  it('gives up after WAKE_MAX_FAILURES, tells the orchestrator once more, and stops retrying (2026-10-22: 48 retries for a gone agent)', async () => {
+    registry.add(ID);
+    deliver.mockImplementation(async (s: string | null) => s === null);
+    cloud.push(ID, ownerData());
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000); // try 1
+    for (let i = 0; i < CREWLY_APPS_CONSTANTS.WAKE_MAX_FAILURES + 2; i++) await jest.advanceTimersByTimeAsync(CREWLY_APPS_CONSTANTS.WAKE_RETRY_MAX_MS);
+    const toElla = deliver.mock.calls.filter(([s]) => s === 'dev-ella').length;
+    expect(toElla).toBe(CREWLY_APPS_CONSTANTS.WAKE_MAX_FAILURES);
+    expect(svc.pendingKeys()).toHaveLength(0);
+    const orc = deliver.mock.calls.filter(([s]) => s === null);
+    expect(orc).toHaveLength(2);
+    expect(orc[1][1]).toContain('gave up delivering changes');
+    expect(orc[1][1]).toContain(`after ${CREWLY_APPS_CONSTANTS.WAKE_MAX_FAILURES} tries`);
   });
 
   it('a delivery that never settles times out, is retried, and the cursor then moves on', async () => {

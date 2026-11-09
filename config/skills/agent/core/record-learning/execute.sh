@@ -22,6 +22,8 @@ AGENT_ID=""
 AGENT_ROLE=""
 PROJECT_PATH=""
 LEARNING=""
+CORRECTION_CLASS=""
+RELATED_TASK=""
 STRICT=0
 SKIP_PREFLIGHT=0
 
@@ -53,6 +55,14 @@ while [[ $# -gt 0 ]]; do
       LEARNING="$(cat "$2")"
       shift 2
       ;;
+    --class)
+      CORRECTION_CLASS="$2"
+      shift 2
+      ;;
+    --task)
+      RELATED_TASK="$2"
+      shift 2
+      ;;
     --strict)
       STRICT=1
       shift
@@ -67,7 +77,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --help|-h)
       cat <<'EOF'
-Usage: execute.sh --agent <id> --role <role> --project <path> --learning '<text>' [--strict] [--no-preflight]
+Usage: execute.sh --agent <id> --role <role> --project <path> --learning '<text>' [--class <slug>] [--task <id>] [--strict] [--no-preflight]
+
+  --class <slug>  This learning is a correction of kind <slug> (e.g. git-add-all).
+                  The second time a class is recorded, the team lead gets a
+                  WorkItem asking for a check in code instead of more prose (#810).
+  --task <id>     Ticket / WorkItem the learning came from.
 
 Karpathy-lite preflight rules (see SKILL.md):
   1. [[Entity]] opener (HARD)
@@ -113,6 +128,8 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$AGENT_ROLE" ] && AGENT_ROLE=$(printf '%s' "$INPUT" | jq -r '.agentRole // empty')
   [ -z "$PROJECT_PATH" ] && PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
   [ -z "$LEARNING" ] && LEARNING=$(printf '%s' "$INPUT" | jq -r '.learning // empty')
+  [ -z "$CORRECTION_CLASS" ] && CORRECTION_CLASS=$(printf '%s' "$INPUT" | jq -r '.correctionClass // empty')
+  [ -z "$RELATED_TASK" ] && RELATED_TASK=$(printf '%s' "$INPUT" | jq -r '.relatedTask // empty')
   if [ "$STRICT" -eq 0 ]; then
     JSON_STRICT=$(printf '%s' "$INPUT" | jq -r '.strict // empty')
     [ "$JSON_STRICT" = "true" ] && STRICT=1
@@ -176,12 +193,17 @@ export _LRN_ROLE="$AGENT_ROLE"
 export _LRN_PROJECT="$PROJECT_PATH"
 export _LRN_CONTENT="$LEARNING"
 export _LRN_STRICT="$STRICT"
+export _LRN_CLASS="$CORRECTION_CLASS"
+export _LRN_TASK="$RELATED_TASK"
 
 if [ "$STRICT" -eq 1 ]; then
   BODY=$(jq -n '{agentId: env._LRN_AGENT, agentRole: env._LRN_ROLE, projectPath: env._LRN_PROJECT, learning: env._LRN_CONTENT, strict: true}')
 else
   BODY=$(jq -n '{agentId: env._LRN_AGENT, agentRole: env._LRN_ROLE, projectPath: env._LRN_PROJECT, learning: env._LRN_CONTENT}')
 fi
-unset _LRN_AGENT _LRN_ROLE _LRN_PROJECT _LRN_CONTENT _LRN_STRICT
+# Optional fields: a correction class (ladder, #810) and the task it came from.
+[ -n "$CORRECTION_CLASS" ] && BODY=$(printf '%s' "$BODY" | jq '. + {correctionClass: env._LRN_CLASS}')
+[ -n "$RELATED_TASK" ] && BODY=$(printf '%s' "$BODY" | jq '. + {relatedTask: env._LRN_TASK}')
+unset _LRN_AGENT _LRN_ROLE _LRN_PROJECT _LRN_CONTENT _LRN_STRICT _LRN_CLASS _LRN_TASK
 
 api_call POST "/memory/record-learning" "$BODY"

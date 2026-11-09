@@ -74,6 +74,10 @@ export class SchemaLoaderService {
    */
   isFrozenPath(schema: VaultSchema, relativePath: string): boolean {
     const normalized = relativePath.replace(/^[/\\]+/, '');
+    // The owner's folder (#914 P2) is frozen in every vault, listed or not:
+    // its rules page is human-owned and no automated path may touch it.
+    const owner = WIKI_KB_CONSTANTS.OWNER_FOLDER;
+    if (normalized === owner || normalized.startsWith(`${owner}/`)) return true;
     return schema.hardcoded.some((folder) => {
       // Match either exact folder or anything beneath it.
       const folderName = folder.path.replace(/[/\\]+$/, '');

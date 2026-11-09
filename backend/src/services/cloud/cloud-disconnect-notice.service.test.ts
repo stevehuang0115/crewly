@@ -127,6 +127,7 @@ describe('CloudDisconnectNoticeService', () => {
 			cancel: (handle) => {
 				scheduled = scheduled.filter((e) => e !== handle);
 			},
+			lastSleep: () => null,
 			...patch,
 		});
 		service.start();
@@ -381,6 +382,38 @@ describe('CloudDisconnectNoticeService', () => {
 		expect(dm!.sent).toHaveLength(1);
 		// The live login run was reused, not restarted.
 		expect(startLogin).toHaveBeenCalledTimes(1);
+		service.stop();
+	});
+
+	// 2026-11-06: a Mac asleep 21:36–21:51 ET DMed "lost its connection to
+	// Crewly Cloud (unreachable)" on wake, seconds before the relay was back.
+	it('Cloud silence that began before a sleep is not told right after the wake', async () => {
+		health = { state: 'error', lastContactAt: T0, startedAt: T0 - HOUR, authRejected: false };
+		now = T0 + 16 * MIN;
+		const sleep = { sleptAt: T0 + 20_000, wokeAt: T0 + 15 * MIN + 50_000 };
+		const service = makeService({ lastSleep: () => sleep });
+		await service.tick();
+		expect(dm!.sent).toHaveLength(0);
+		expect(readNoticeState(stateFile)).toBeNull();
+		// Still unreachable a full threshold after the wake: now it is told.
+		now = sleep.wokeAt + 16 * MIN;
+		await service.tick();
+		expect(dm!.sent).toHaveLength(1);
+		service.stop();
+	});
+
+	it('while the machine is offline no DM is attempted; the next check after it is back sends it', async () => {
+		let offline = true;
+		const service = makeService({ isOffline: () => offline });
+		health = { state: 'error', lastContactAt: T0 - 10 * 60_000, startedAt: T0 - 60 * 60_000, authRejected: false };
+		now = T0 + 60 * 60_000;
+		await service.tick();
+		expect(dm!.sent).toHaveLength(0);
+		expect(readNoticeState(stateFile)).toMatchObject({ lastNotifiedAt: null });
+		expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('offline'), expect.anything());
+		offline = false;
+		await service.tick();
+		expect(dm!.sent).toHaveLength(1);
 		service.stop();
 	});
 

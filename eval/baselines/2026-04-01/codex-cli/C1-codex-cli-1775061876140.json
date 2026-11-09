@@ -1,0 +1,47 @@
+{
+  "taskId": "C1",
+  "runtime": "codex-cli",
+  "startedAt": "2026-04-01T16:43:22.031Z",
+  "completedAt": "2026-04-01T16:44:36.140Z",
+  "durationSeconds": 74.109,
+  "completionType": "agent_done",
+  "verificationResults": [
+    {
+      "name": "typescript",
+      "passed": true,
+      "output": "",
+      "exitCode": 0
+    },
+    {
+      "name": "tests",
+      "passed": true,
+      "output": "> c1-extract-constants-fixture@1.0.0 test\n> vitest run\n\n\n RUN  v3.2.4 eval/runs/C1-codex-cli-1775061788707\n\n ✓ src/services/connection.service.test.ts (6 tests) 11ms\n ✓ src/config/constants.test.ts (5 tests) 8ms\n\n Test Files  2 passed (2)\n      Tests  11 passed (11)\n   Start at  12:44:33\n   Duration  1.40s (transform 498ms, setup 0ms, collect 503ms, tests 19ms, environment 0ms, prepare 278ms)",
+      "exitCode": 0
+    },
+    {
+      "name": "no_hardcoded_ports",
+      "passed": true,
+      "output": "0",
+      "exitCode": 1
+    },
+    {
+      "name": "constants_exist",
+      "passed": true,
+      "output": "exists",
+      "exitCode": 0
+    }
+  ],
+  "scores": {
+    "d1Correctness": 100,
+    "d2CodeQuality": 85,
+    "d3Reasoning": 75,
+    "d4Autonomy": 100,
+    "d5ContextMgmt": 100,
+    "d6Collaboration": 0,
+    "d7CostEfficiency": 100
+  },
+  "overallScore": 88,
+  "toolCallCount": 8,
+  "estimatedCostUsd": 0.09950399999999998,
+  "logPath": "eval/results/codex-cli-v2/logs/C1-codex-cli-1775061868743.log"
+}

@@ -73,10 +73,20 @@ describe('LazyAntiPatternsModule', () => {
 
 		it('should emit exactly seven anti-pattern bullets', async () => {
 			const out = await module.build(baseConfig);
-			const blockMatch = out.match(/You are failing the task if you:\n([\s\S]*)$/);
+			const blockMatch = out.match(/You are failing the task if you:\n([\s\S]*?)(?:\n\n|$)/);
 			expect(blockMatch).not.toBeNull();
 			const bullets = (blockMatch![1].match(/^- /gm) || []).length;
 			expect(bullets).toBe(7);
+		});
+
+		it('adds the three don\'t-repeat rules after the anti-patterns (#857)', async () => {
+			const out = await module.build(baseConfig);
+			const tail = out.split("You are wasting the task's budget if you:\n")[1];
+			expect(tail).toBeDefined();
+			expect((tail.match(/^- /gm) || []).length).toBe(3);
+			expect(tail).toContain('already retrieved in this session');
+			expect(tail).toContain('near-duplicate script');
+			expect(tail).toContain('nothing has changed since it last ran');
 		});
 
 		// 7 anti-patterns covered, verbatim per spec lines 386-401:

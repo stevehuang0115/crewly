@@ -846,10 +846,52 @@ describe('SlackService', () => {
           expect(mockUploadV2.mock.calls[1][0].channel_id).toBe('C123');
         });
 
-        it('keeps the plain upload for files that are not images', async () => {
+        it('posts a PDF under the agent name in the thread as its permalink (Kai, 2026-10-18)', async () => {
+          mockUploadV2.mockResolvedValue({
+            ok: true,
+            files: [{ ok: true, files: [{ id: 'F-pdf', permalink: 'https://x.slack.com/files/U1/F-pdf/report.pdf' }] }],
+          });
+          const post = (service as any).client.chat.postMessage as jest.Mock;
+          post.mockResolvedValue({ ts: '1.3' });
+
+          const result = await service.uploadFile({
+            channelId: 'C123',
+            filePath: __filename,
+            filename: 'report.pdf',
+            title: 'Harness2 assessment',
+            initialComment: 'One page',
+            threadTs: '111.222',
+            persona,
+          });
+
+          expect(result.fileId).toBe('F-pdf');
+          expect(mockUploadV2).toHaveBeenCalledTimes(1);
+          expect(mockUploadV2.mock.calls[0][0].channel_id).toBeUndefined();
+          expect(post.mock.calls[0][0]).toEqual(
+            expect.objectContaining({
+              channel: 'C123',
+              thread_ts: '111.222',
+              username: 'Milo',
+              icon_emoji: ':computer:',
+              text: 'One page\n<https://x.slack.com/files/U1/F-pdf/report.pdf|Harness2 assessment>',
+            }),
+          );
+        });
+
+        it('falls back to the plain upload in the same thread when the private upload has no permalink', async () => {
+          mockUploadV2.mockResolvedValueOnce({ files: [{ id: 'F-private' }] }).mockResolvedValueOnce({ files: [{ id: 'F-plain' }] });
+
+          const result = await service.uploadFile({ channelId: 'C123', filePath: __filename, filename: 'report.pdf', threadTs: '111.222', persona });
+
+          expect(result.fileId).toBe('F-plain');
+          expect(mockUploadV2.mock.calls[1][0]).toEqual(expect.objectContaining({ channel_id: 'C123', thread_ts: '111.222' }));
+          expect((service as any).client.chat.postMessage).not.toHaveBeenCalled();
+        });
+
+        it('keeps the plain upload for a file when no persona is known', async () => {
           mockUploadV2.mockResolvedValue({ files: [{ id: 'F-pdf' }] });
 
-          const result = await service.uploadFile({ channelId: 'C123', filePath: __filename, filename: 'report.pdf', persona });
+          const result = await service.uploadFile({ channelId: 'C123', filePath: __filename, filename: 'report.pdf' });
 
           expect(result.fileId).toBe('F-pdf');
           expect(mockUploadV2.mock.calls[0][0].channel_id).toBe('C123');
@@ -1783,6 +1825,28 @@ describe('SlackService', () => {
       const ts = await service.sendMessage({ channelId: 'C1', text: 'hi' });
       expect(ts).toBe('9.9');
       expect(service.getStatus().messagesSent).toBe(1);
+    });
+
+    it('hands a Cloud room-join RESULT envelope to its handler and routes nothing (crewly#1430)', async () => {
+      const cloudService = new SlackService();
+      await cloudService.initialize({ ...cloudConfig, allowedUserIds: ['U123'] });
+      const handler = jest.fn().mockResolvedValue(undefined);
+      cloudService.roomJoinResultHandler = handler;
+      const emitted: unknown[] = [];
+      cloudService.on('message', (m) => emitted.push(m));
+      const roomJoinResult = { slackChannelId: 'C0ABC12345', slackChannelName: 'ce-growth', instanceId: 'inst-air', ok: false, joined: [], rejected: ['wang-lead'], error: 'no_local_members' };
+      const result = cloudService.handleCloudEnvelope({
+        eventId: 'roomjoinresult-1',
+        slackTeamId: 'T1',
+        apiAppId: '',
+        source: 'master',
+        roomJoinResult,
+        event: { type: 'crewly_room_join_result', channel: 'C0ABC12345' } as never,
+        receivedAt: new Date().toISOString(),
+      });
+      expect(result).toBeNull();
+      expect(emitted).toHaveLength(0);
+      expect(handler).toHaveBeenCalledWith(roomJoinResult);
     });
 
     it('hands a Cloud room-join envelope to the handler and routes nothing', async () => {

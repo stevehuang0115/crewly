@@ -2,7 +2,8 @@ jest.mock('../core/logger.service.js', () => ({
 	LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), debug: jest.fn(), warn: jest.fn(), error: jest.fn() }) }) },
 }));
 
-import { DEFERRED_START_RETRY_CONSTANTS, resetDeferredStartRetries, scheduleDeferredStartRetry } from './deferred-start-retry.js';
+import { DEFERRED_START_RETRY_CONSTANTS, resetDeferredStartRetries, scheduleDeferredStartRetry, sweepWakeDue } from './deferred-start-retry.js';
+import { SUB_AGENT_QUEUE_CONSTANTS } from '../../constants.js';
 
 /** Fake clock: each pause moves time forward, so the loop's time bound holds without real waiting. */
 let t = 0;
@@ -87,5 +88,19 @@ describe('scheduleDeferredStartRetry', () => {
 		await scheduleDeferredStartRetry('max', { activate, hasPending: () => true, hold: () => 'held', sleep, now });
 		expect(activate).not.toHaveBeenCalled();
 		expect(t).toBeGreaterThanOrEqual(DEFERRED_START_RETRY_CONSTANTS.MAX_TOTAL_MS);
+	});
+});
+
+describe('sweepWakeDue (periodic queued-wake sweep backoff)', () => {
+	const step = SUB_AGENT_QUEUE_CONSTANTS.QUEUED_WAKE_SWEEP_MS;
+	it('wakes an agent the sweep has not woken yet', () => {
+		expect(sweepWakeDue(undefined, 0)).toBe(true);
+	});
+	it('doubles the gap after each wake that did not bring the agent up, up to the cap', () => {
+		expect(sweepWakeDue({ count: 1, at: 0 }, step - 1)).toBe(false);
+		expect(sweepWakeDue({ count: 1, at: 0 }, step)).toBe(true);
+		expect(sweepWakeDue({ count: 3, at: 0 }, 4 * step - 1)).toBe(false);
+		expect(sweepWakeDue({ count: 3, at: 0 }, 4 * step)).toBe(true);
+		expect(sweepWakeDue({ count: 20, at: 0 }, SUB_AGENT_QUEUE_CONSTANTS.QUEUED_WAKE_SWEEP_MAX_BACKOFF_MS)).toBe(true);
 	});
 });

@@ -1,0 +1,41 @@
+{
+  "taskId": "B1",
+  "runtime": "gemini-cli",
+  "startedAt": "2026-04-01T16:43:19.702Z",
+  "completedAt": "2026-04-01T16:44:41.982Z",
+  "durationSeconds": 82.28,
+  "completionType": "agent_done",
+  "verificationResults": [
+    {
+      "name": "typescript",
+      "passed": true,
+      "output": "",
+      "exitCode": 0
+    },
+    {
+      "name": "tests",
+      "passed": true,
+      "output": "> b1-health-endpoint-fixture@1.0.0 test\n> vitest run\n\n\n RUN  v3.2.4 eval/runs/B1-gemini-cli-1775061786218\n\n ✓ src/routes/health.route.test.ts (2 tests) 16ms\n ✓ src/app.test.ts (1 test) 132ms\n\n Test Files  2 passed (2)\n      Tests  3 passed (3)\n   Start at  12:44:39\n   Duration  1.39s (transform 377ms, setup 0ms, collect 364ms, tests 148ms, environment 0ms, prepare 308ms)",
+      "exitCode": 0
+    },
+    {
+      "name": "health_exists",
+      "passed": true,
+      "output": "src/app.ts:3: * The agent needs to add a /health route here.\nsrc/app.ts:7:import { healthHandler } from './routes/health.route.js';\nsrc/app.ts:19:app.get('/health', healthHandler);\nsrc/routes/health.route.ts:21:export const healthHandler = (req: Request, res: Response) => {\nsrc/routes/health.route.ts:39:  const status: 'healthy' | 'degraded' = (memoryStatus === 'ok' && eventLoopStatus === 'ok') ? 'healthy' : 'degraded';",
+      "exitCode": 0
+    }
+  ],
+  "scores": {
+    "d1Correctness": 100,
+    "d2CodeQuality": 85,
+    "d3Reasoning": 67,
+    "d4Autonomy": 100,
+    "d5ContextMgmt": 100,
+    "d6Collaboration": 0,
+    "d7CostEfficiency": 100
+  },
+  "overallScore": 86,
+  "toolCallCount": 12,
+  "estimatedCostUsd": 0.009267599999999999,
+  "logPath": "eval/results/gemini-cli-v2/logs/B1-gemini-cli-1775061875277.log"
+}

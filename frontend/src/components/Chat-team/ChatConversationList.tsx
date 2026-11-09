@@ -9,7 +9,9 @@
  * the first few; channels and group chats: unread, the open one and those
  * with messages in the last week (the first three when none is) — and the
  * rest behind "N more". The Find
- * button searches every conversation, folded or not.
+ * button searches every conversation, folded or not, and (when the page wires
+ * `onSearchMessages`) offers to search message text across all of them
+ * (#1400).
  *
  * Built on the chat-ui row/group types but rendered here, so the shared
  * `ConversationListPanel` (also used by the Cloud portal) is unchanged.
@@ -44,12 +46,16 @@ export interface ChatConversationListProps {
   onSelectConversation(row: ConversationRow): void;
   /** Whether a row has messages the owner has not seen */
   isUnread(row: ConversationRow): boolean;
+  /** Unread message count of a row (server-side read state); shown as a count instead of a dot */
+  unreadCountOf?(row: ConversationRow): number;
   isPinned(row: ConversationRow): boolean;
   onTogglePin(row: ConversationRow): void;
   /** "New group chat" */
   onNewGroup(): void;
   /** "New channel" (agents from any team, matched to Slack); hidden when absent */
   onNewChannel?(): void;
+  /** Search message text across every conversation for the Find words; hidden when absent */
+  onSearchMessages?(query: string): void;
   /** Shown when there is no conversation at all */
   emptyState?: React.ReactNode;
   /** Agent session that is always visible in DMs (the orchestrator) */
@@ -127,10 +133,12 @@ export function ChatConversationList({
   activeConversationId,
   onSelectConversation,
   isUnread,
+  unreadCountOf,
   isPinned,
   onTogglePin,
   onNewGroup,
   onNewChannel,
+  onSearchMessages,
   emptyState,
   alwaysShowSession,
   now,
@@ -168,6 +176,7 @@ export function ChatConversationList({
     row,
     active: row.id === activeConversationId,
     unread: isUnread(row),
+    unreadCount: unreadCountOf?.(row) ?? 0,
     pinned: isPinned(row),
     onSelect: onSelectConversation,
     onTogglePin,
@@ -227,17 +236,30 @@ export function ChatConversationList({
 
       <div className="chat-scrollbar flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-2.5 pb-4 pt-1">
         {q ? (
-          results.length === 0 ? (
-            <p className="px-2.5 text-[13px] text-text-2" role="status">No conversations match your search.</p>
-          ) : (
-            <ul role="list" className="m-0 list-none p-0" data-testid="conv-search-results">
-              {results.map((r) => (
-                <li key={r.id}>
-                  <Row {...rowProps(r)} />
-                </li>
-              ))}
-            </ul>
-          )
+          <div className="flex flex-col gap-2">
+            {results.length === 0 ? (
+              <p className="px-2.5 text-[13px] text-text-2" role="status">No conversations match your search.</p>
+            ) : (
+              <ul role="list" className="m-0 list-none p-0" data-testid="conv-search-results">
+                {results.map((r) => (
+                  <li key={r.id}>
+                    <Row {...rowProps(r)} />
+                  </li>
+                ))}
+              </ul>
+            )}
+            {onSearchMessages && (
+              <button
+                type="button"
+                onClick={() => onSearchMessages(query.trim())}
+                className="flex items-center gap-2 rounded-[var(--crewly-radius-sm)] px-2.5 py-2 text-left text-[13px] text-primary transition-colors hover:bg-surface-hover"
+                data-testid="conv-search-messages"
+              >
+                <Search size={14} className="shrink-0" />
+                <span className="truncate">Search messages for “{query.trim()}”</span>
+              </button>
+            )}
+          </div>
         ) : ordered.length === 0 ? (
           <div className="px-2.5 py-6 text-[13px] text-text-2" role="status">
             {emptyState ?? 'No conversations yet.'}
@@ -291,6 +313,7 @@ function Row({
   row,
   active,
   unread,
+  unreadCount,
   pinned,
   onSelect,
   onTogglePin,
@@ -298,6 +321,7 @@ function Row({
   row: ConversationRow;
   active: boolean;
   unread: boolean;
+  unreadCount: number;
   pinned: boolean;
   onSelect(row: ConversationRow): void;
   onTogglePin(row: ConversationRow): void;
@@ -327,7 +351,18 @@ function Row({
           </span>
         )}
         <span className="min-w-0 flex-1 truncate">{isChannel ? row.title.replace(/^#+\s*/, '') : row.title}</span>
-        {unread && <span aria-label="unread" className="h-2 w-2 shrink-0 rounded-full bg-primary" data-testid={`conv-unread-${row.id}`} />}
+        {unread &&
+          (unreadCount > 0 ? (
+            <span
+              aria-label={`${unreadCount} unread`}
+              className="min-w-[18px] shrink-0 rounded-full bg-primary px-1.5 text-center text-[11px] font-bold leading-[18px] text-white"
+              data-testid={`conv-unread-${row.id}`}
+            >
+              {unreadCount > 99 ? '99+' : unreadCount}
+            </span>
+          ) : (
+            <span aria-label="unread" className="h-2 w-2 shrink-0 rounded-full bg-primary" data-testid={`conv-unread-${row.id}`} />
+          ))}
       </button>
       <button
         type="button"

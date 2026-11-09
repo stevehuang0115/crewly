@@ -26,6 +26,8 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { SLA_TRACKER_ID_PATTERN } from './workitem-dispatch.subscriber.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
 import { resolveCurrentSession } from '../../utils/session-resolve.utils.js';
+import { memberAgentId } from '../../utils/member-session-name.utils.js';
+import { isOwnerStopped } from '../agent/owner-stopped.registry.js';
 import { pickTeamLead } from '../../utils/team.utils.js';
 import type { Team } from '../../types/index.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
@@ -80,6 +82,10 @@ export interface AutoClaimResult {
 
 export class AgentAutoClaimService {
   private static instance: AgentAutoClaimService | null = null;
+  /** How often the same owner-stopped target is logged as held (ms) */
+  private static readonly OWNER_HELD_LOG_REPEAT_MS = 60 * 60 * 1000;
+  /** Target → last time its queued work was logged as held by the owner's stop */
+  private readonly ownerHeldLoggedAt = new Map<string, number>();
 
   private readonly logger: ComponentLogger;
   private pollingTimer: ReturnType<typeof setInterval> | null = null;
@@ -464,6 +470,49 @@ export class AgentAutoClaimService {
   }
 
   /**
+   * Of the given targets, those whose member the owner stopped (the stop
+   * button / `dropoutReason: 'manual'`, or the in-memory owner-stopped
+   * registry). Their queued work is left where it is; each is logged at most
+   * once per {@link OWNER_HELD_LOG_REPEAT_MS}.
+   *
+   * @param targets - Target session names of queued items
+   * @returns The held targets
+   */
+  async ownerHeldTargets(targets: readonly string[]): Promise<Set<string>> {
+    const held = new Set<string>();
+    const unique = [...new Set(targets.filter(Boolean))];
+    if (unique.length === 0) return held;
+    let teams: Team[] = [];
+    try {
+      const { StorageService } = await import('../core/storage.service.js');
+      teams = await StorageService.getInstance().getTeams();
+    } catch {
+      return held;
+    }
+    const now = Date.now();
+    for (const target of unique) {
+      const resolved = resolveCurrentSession(target, teams);
+      const team = resolved ? teams.find((t) => t.id === resolved.teamId) : undefined;
+      const member = team?.members?.find((m) => m.id === resolved?.memberId);
+      if (!team || !member) continue;
+      const agentId = memberAgentId(team.name, member);
+      const stopped = member.dropoutReason === 'manual' || isOwnerStopped(agentId) || isOwnerStopped(target);
+      if (!stopped) continue;
+      held.add(target);
+      const last = this.ownerHeldLoggedAt.get(target) ?? 0;
+      if (now - last >= AgentAutoClaimService.OWNER_HELD_LOG_REPEAT_MS) {
+        this.ownerHeldLoggedAt.set(target, now);
+        this.logger.info('Queued work waits: the owner stopped its agent (start it again, or pause the schedule)', {
+          sessionName: target,
+          team: team.name,
+          member: member.name,
+        });
+      }
+    }
+    return held;
+  }
+
+  /**
    * Re-point orphaned queued items at an agent that exists: the member's
    * current session (matched by member-id suffix), else the lead of the team
    * whose trigger created the item. The trigger is fixed too, so the next
@@ -495,6 +544,14 @@ export class AgentAutoClaimService {
       let next: string | null = null;
       let reason = '';
       const resolved = resolveCurrentSession(wi.target, teams);
+      if (resolved && !resolved.renamed) {
+        // The target IS a current member, only not running (a stopped member
+        // has no session name, so the health map never listed it). Nothing to
+        // re-point: hand it to the wake path as it is.
+        placed.set(wi.id, wi.target);
+        this.logger.debug('Queued item targets an offline member; waking it', { workItemId: wi.id, target: wi.target });
+        continue;
+      }
       if (resolved?.renamed) {
         next = resolved.sessionName;
         reason = 'renamed_member';
@@ -608,7 +665,10 @@ export class AgentAutoClaimService {
         const response = await axios.get(`${getLocalApiBaseUrl()}/api/teams`);
         for (const team of response.data?.data ?? []) {
           for (const member of team.members ?? []) {
-            knownSessions.add(member.sessionName);
+            // A stopped member has no session name; its permanent agent id
+            // is what triggers and queued items target.
+            if (member.sessionName) knownSessions.add(member.sessionName);
+            if (member.agentId) knownSessions.add(member.agentId);
             if (member.agentStatus === 'active' || member.agentStatus === 'starting') {
               activeSessions.add(member.sessionName);
             }
@@ -646,6 +706,19 @@ export class AgentAutoClaimService {
         // Agent doesn't exist in any team → orphaned task
         orphanedItems.push(wi);
       }
+    }
+
+    // A member the owner stopped is neither woken nor reported as gone: its
+    // queued work waits until the owner starts it again or pauses the
+    // schedule. The stop button clears the session name and sets
+    // `dropoutReason: 'manual'` (which, unlike the in-memory registry,
+    // survives a restart); before this check such a member looked like an
+    // agent "that no longer exists" and the orchestrator was alerted on every
+    // fire and every boot (Evership / Eve, 2026-10-26).
+    const held = await this.ownerHeldTargets([...agentsToWake, ...orphanedItems.map((wi) => wi.target as string)]);
+    if (held.size > 0) {
+      for (const session of held) agentsToWake.delete(session);
+      orphanedItems = orphanedItems.filter((wi) => !held.has(wi.target as string));
     }
 
     // Self-heal before asking anyone: a target that is "unknown" is usually a
@@ -730,20 +803,14 @@ export class AgentAutoClaimService {
         continue;
       }
       try {
-        // Find team and member ID for this session
+        // Find team and member ID for this session. A stopped member has no
+        // session name, so the lookup also goes by agent id / member-id suffix.
         const axios = (await import('axios')).default;
         const teamsResp = await axios.get(`${getLocalApiBaseUrl()}/api/teams`);
-        let teamId: string | null = null;
-        let memberId: string | null = null;
-
-        for (const team of teamsResp.data?.data ?? []) {
-          const member = (team.members ?? []).find((m: { sessionName: string }) => m.sessionName === session);
-          if (member) {
-            teamId = team.id;
-            memberId = member.id;
-            break;
-          }
-        }
+        const apiTeams = (teamsResp.data?.data ?? []) as Team[];
+        const resolved = resolveCurrentSession(session, apiTeams);
+        const teamId: string | null = resolved?.teamId ?? null;
+        const memberId: string | null = resolved?.memberId ?? null;
 
         if (teamId && memberId) {
           // Name the work this wake is for. A dormant team needs the owner's

@@ -12,6 +12,10 @@
  *    that is not done or cancelled,
  *  - it announced a background run (a render, a sub-agent) that is still
  *    expected (the stall watcher's record, crewly#1363).
+ * The two waiting-on-a-teammate reasons (open delegation, open ticket it
+ * created) lapse once the agent has been idle for SOFT_KEEP_MAX_IDLE_MS: the
+ * teammate's report wakes it again, and an idle waiter must not hold a slot
+ * for hours (2026-10-19: Owen and Sam held two of six slots this way).
  * Delegations that carry no `delegatedBy` stamp (other skills, the owner's
  * own tasks) cannot be seen; those agents are only protected by the rules above.
  *
@@ -20,6 +24,7 @@
 
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
 import { PENDING_WORK_STATUSES } from './idle-detection.service.js';
+import { RESOURCE_MODE_CONSTANTS } from './resource-mode.service.js';
 
 /** WorkItem statuses in which a delegation is still open (a worker's "done" awaits verification). */
 const OPEN_DELEGATION_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>([
@@ -55,10 +60,11 @@ export interface ProtectionSources {
  * Build the `protectedReason` dependency of ResourceMode.
  *
  * @param sources - WorkItem and ticket readers
- * @returns Function returning an English reason, or null when the agent may be stopped
+ * @returns Function `(sessionName, idleMs?)` returning an English reason, or null when the agent may be stopped
  */
-export function createProtectedReason(sources: ProtectionSources): (sessionName: string) => Promise<string | null> {
-	return async (sessionName) => {
+export function createProtectedReason(sources: ProtectionSources): (sessionName: string, idleMs?: number) => Promise<string | null> {
+	return async (sessionName, idleMs) => {
+		const waitingCounts = idleMs === undefined || idleMs < RESOURCE_MODE_CONSTANTS.SOFT_KEEP_MAX_IDLE_MS;
 		const messages = sources.queuedMessageCount?.(sessionName) ?? 0;
 		if (messages > 0) return `${messages} message(s) are queued for it`;
 		const run = sources.backgroundRunReason?.(sessionName);
@@ -69,13 +75,13 @@ export function createProtectedReason(sources: ProtectionSources): (sessionName:
 		const delegated = items.find(
 			(wi) => wi.metadata?.delegatedBy === sessionName && wi.target !== sessionName && OPEN_DELEGATION_STATUSES.has(wi.status),
 		);
-		if (delegated) return `it is waiting on work item ${delegated.id} that it delegated to ${delegated.target ?? 'a teammate'}`;
+		if (delegated && waitingCounts) return `it is waiting on work item ${delegated.id} that it delegated to ${delegated.target ?? 'a teammate'}`;
 		if (sources.listTickets) {
 			const tickets = await sources.listTickets(sessionName);
 			const owned = tickets.find((t) => t.assignee === sessionName && OWNED_TICKET_STATUSES.has(t.status));
 			if (owned) return `it owns open ticket ${owned.id} (${owned.status})`;
 			const requested = tickets.find((t) => t.source === `agent:${sessionName}` && t.assignee !== sessionName && !FINISHED_TICKET_STATUSES.has(t.status));
-			if (requested) return `it is waiting on ticket ${requested.id} (${requested.status}) that it created for ${requested.assignee ?? 'a teammate'}`;
+			if (requested && waitingCounts) return `it is waiting on ticket ${requested.id} (${requested.status}) that it created for ${requested.assignee ?? 'a teammate'}`;
 		}
 		return null;
 	};

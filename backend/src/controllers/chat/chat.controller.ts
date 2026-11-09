@@ -8,6 +8,8 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
+import { AgentPromptReferenceService } from '../../services/orc/agent-prompt-reference.service.js';
+import { placeOrcPostInDecisionThread } from '../../services/orc/orc-post-placement.js';
 import {
   getChatService,
   MessageValidationError,
@@ -21,7 +23,7 @@ import {
 // architecture, only the import surface.
 import { sanitizeMessages, sanitizeMessage } from '../../services/chat/chat-sanitizer.service.js';
 import { getChatHighlightsService } from '../../services/chat/chat-highlights.service.js';
-import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING, OWNER_EVIDENCE_METADATA, SLACK_TYPING_CONSTANTS, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING, MESSAGE_ROUTE_CONSTANTS, OWNER_EVIDENCE_METADATA, SLACK_TYPING_CONSTANTS, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
 import { extractSlackThreadKeys, formatSlackThreadKey, parseSlackThreadKey } from '../../services/slack/slack-thread-key.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { getBoardActivity } from '../../services/board/board-activity.tracker.js';
@@ -902,6 +904,23 @@ export function pickCompletionThreads<T extends { channelId: string; threadTs: s
 }
 
 /**
+ * Collaborators of {@link placeOrcPostInDecisionThread} for the orchestrator.
+ * The decision and thread lookups load the reply resolver only when a decision is named.
+ *
+ * @returns The deps
+ */
+function orcDecisionPlacementDeps(): import('../../services/orc/orc-post-placement.js').OrcDecisionPlacementDeps {
+  let loaded: Promise<import('../../services/orc/reply-destination-resolver.js').ReplyResolverDeps> | null = null;
+  const resolver = () => (loaded ??= import('../../services/orc/reply-destination.wiring.js').then(async (m) => (await m.defaultReplyDeliveryDeps()).resolver));
+  return {
+    promptReference: () => AgentPromptReferenceService.getInstance().get(ORCHESTRATOR_SESSION_NAME),
+    lastDelivered: () => OrcReplyRouteService.getInstance().getLastDelivered(ORCHESTRATOR_SESSION_NAME),
+    decision: async (id) => (await resolver()).decision(id),
+    conversationOfSlackThread: async (slackChannelId, threadTs) => (await resolver()).conversationOfSlackThread(slackChannelId, threadTs),
+  };
+}
+
+/**
  * Conversation and thread of an orchestrator post (see
  * `services/orc/orc-post-placement.ts`). Looks up the work item and the
  * orchestrator's owner DM lazily; never throws (a failed lookup leaves the
@@ -1041,7 +1060,21 @@ export async function agentResponse(
     const isOrchestratorPost = agentHeader && !headerContradictsSender
       ? agentHeader === ORCHESTRATOR_SESSION_NAME
       : senderType === 'orchestrator' || isOrcName(String(senderName));
-    if (isOrchestratorPost) {
+    // An answer to an owner decision goes in the card's thread (D-890, 2026-10-19).
+    const decisionPlace = isOrchestratorPost && !isAgentStatusMarker(String(content))
+      ? await placeOrcPostInDecisionThread(
+          { session: ORCHESTRATOR_SESSION_NAME, crossPost: req.body?.crossPost === true, ...(typeof req.body?.decisionId === 'string' && req.body.decisionId ? { decisionId: req.body.decisionId } : {}) },
+          orcDecisionPlacementDeps(),
+        ).catch(() => null)
+      : null;
+    if (decisionPlace) {
+      if (decisionPlace.conversationId !== conversationId) {
+        logger.info('Orchestrator answer to a decision placed in the card thread', { decisionId: decisionPlace.decisionId, requestedConversationId: conversationId, conversationId: decisionPlace.conversationId });
+      }
+      resolvedConversationId = decisionPlace.conversationId;
+      conversationIdWasExplicit = true;
+      slackThreadKey = decisionPlace.thread;
+    } else if (isOrchestratorPost) {
       const route = OrcReplyRouteService.getInstance().resolveConversationReply(
         ORCHESTRATOR_SESSION_NAME,
         typeof conversationId === 'string' && conversationId ? conversationId : undefined,
@@ -1081,6 +1114,14 @@ export async function agentResponse(
         conversationIdWasExplicit = true;
       }
       if (placement.slackThread) slackThreadKey = placement.slackThread;
+      // #1387: nothing named the place, no work item and no fresh owner turn: the
+      // orchestrator is starting this top-level DM post itself, so it is an
+      // agent-started pull like a member's.
+      if (placement.via === 'owner-dm' && !placement.slackThread && !isAgentStatusMarker(String(content)) && !ORC_STATUS_FORWARDING.STATUS_SHAPED.test(String(content))) {
+        void import('../../services/slack/slack-agent-post.service.js')
+          .then((m) => m.reportAgentStartedDmPost({ agent: ORCHESTRATOR_SESSION_NAME, text: String(content ?? '') }))
+          .catch(() => undefined);
+      }
     }
 
     // An agent's message to a person (anything that is not a status line)
@@ -1108,6 +1149,7 @@ export async function agentResponse(
         content: String(content),
         interim: req.body?.interim === true,
         ...(req.body?.addsNew === true ? { addsNew: true } : {}),
+        ...(req.body?.share === true ? { share: true } : {}),
         ...(reference ? { reference } : {}),
         ...(conversationId || req.body?.slackThread
           ? {
@@ -1141,12 +1183,21 @@ export async function agentResponse(
     }
 
     if (!resolvedConversationId) {
-      const current = await chatService.getCurrentConversation();
-      if (current) {
-        resolvedConversationId = current.id;
+      // A team member's report that names no conversation is about its work
+      // item, never "whatever conversation is current" (message-routing audit
+      // 2026-10-18): the orchestrator's answer to it went into that unrelated
+      // conversation. Orchestrator and system posts keep the current one.
+      const agentReportConversation = await agentReportConversationOf(req, String(senderType || 'agent'), String(senderName ?? ''));
+      if (agentReportConversation) {
+        resolvedConversationId = agentReportConversation;
       } else {
-        const newConversation = await chatService.createNewConversation('Agent Chat');
-        resolvedConversationId = newConversation.id;
+        const current = await chatService.getCurrentConversation();
+        if (current) {
+          resolvedConversationId = current.id;
+        } else {
+          const newConversation = await chatService.createNewConversation('Agent Chat');
+          resolvedConversationId = newConversation.id;
+        }
       }
     }
 
@@ -1330,7 +1381,19 @@ export async function agentResponse(
       // counter, the nudges never aged out.
       let deliveryOwed = false;
       try {
-        if (conversationIdWasExplicit) {
+        // crewly#1371: team work the orchestrator delegated for the owner is
+        // reported by the team lead in the team channel — the orchestrator
+        // owes no delivery in its own thread.
+        const { leadReportForStatus } = await import('../../services/orc/team-lead-report.wiring.js');
+        const leadReported = conversationIdWasExplicit
+          ? !!(await leadReportForStatus({
+              sender: agentHeader && !headerContradictsSender ? agentHeader : String(senderName),
+              ...(typeof req.body?.workItemId === 'string' && req.body.workItemId ? { workItemId: req.body.workItemId } : {}),
+            }))
+          : false;
+        if (leadReported) {
+          logger.info('Skipping delivery tracking — the team lead reports this work to the owner', { senderName, conversationId: resolvedConversationId });
+        } else if (conversationIdWasExplicit) {
           const { OrcDeliveryEnforcerService } = await import(
             '../../services/orc/orc-delivery-enforcer.service.js'
           );
@@ -1491,6 +1554,39 @@ export async function getConversations(
   } catch (error) {
     next(error);
   }
+}
+
+/**
+ * The conversation a team member's status report belongs to when it names
+ * none: the owner conversation of the work item it reports on, else the
+ * agent-status system conversation. Null for the orchestrator and for
+ * non-agent senders (they keep the current conversation).
+ *
+ * @param req - The agent-response request (body.workItemId)
+ * @param senderType - Declared sender type
+ * @param senderName - Declared sender name
+ * @returns A conversation id, or null
+ */
+export async function agentReportConversationOf(req: Request, senderType: string, senderName: string): Promise<string | null> {
+  if (senderType !== 'agent') return null;
+  const { isOrchestratorSender } = await import('../../services/orc/orc-delivery-enforcer.service.js');
+  if (isOrchestratorSender(senderName)) return null;
+  const header = readAgentSessionHeader(req);
+  if (header && isOrchestratorSender(header)) return null;
+  const workItemId = typeof req.body?.workItemId === 'string' ? req.body.workItemId : '';
+  if (workItemId) {
+    try {
+      const { TaskPoolService } = await import('../../services/task-pool/task-pool.service.js');
+      const { originOfWorkItem } = await import('../../services/orc/work-item-destination.js');
+      const items = await TaskPoolService.getInstance().getAllItems();
+      const wi = items.find((i) => i.id === workItemId);
+      const origin = wi ? originOfWorkItem(wi) : null;
+      if (origin?.kind === 'owner' && origin.conversationId) return origin.conversationId;
+    } catch {
+      // Fall through to the status conversation.
+    }
+  }
+  return MESSAGE_ROUTE_CONSTANTS.AGENT_STATUS_CONVERSATION_ID;
 }
 
 /**
@@ -1965,5 +2061,7 @@ export async function handleGetHighlights(
 export function clipForOrchestrator(content: string, conversationId: string): string {
   const max = ORC_STATUS_FORWARDING.MAX_FORWARD_CHARS;
   if (content.length <= max) return content;
-  return `${content.slice(0, max)}… [${content.length - max} more characters — full report in conversation ${conversationId}]`;
+  // An internal conversation (`system:…`) holds no copy of the report.
+  const where = conversationId.startsWith('system:') ? 'ask the sender for the full report' : `full report in conversation ${conversationId}`;
+  return `${content.slice(0, max)}… [${content.length - max} more characters — ${where}]`;
 }

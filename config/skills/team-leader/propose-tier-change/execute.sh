@@ -1,8 +1,9 @@
 #!/bin/bash
 # propose-tier-change — a team lead proposes model-tier changes and task
 # routing rules for its team (crewly#1173). Proposals collect in a draft;
-# --submit sends ONE owner card with all of them. Nothing changes until the
-# owner taps Apply. See specs/2026-10-08-model-tiers.md.
+# --submit sends ONE owner card with all of them (approve mode; nothing changes
+# until the owner taps Apply), or applies them at once and sends the owner one
+# notice with Undo (auto mode). See specs/2026-10-08-model-tiers.md.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
@@ -12,7 +13,7 @@ print_usage() {
 Usage:
   bash execute.sh --member "Ella" --tier weak --reason "only polls the inbox and sorts tickets"
   bash execute.sh --routing "polling / formatting / sorting -> Ella"
-  bash execute.sh --submit          Send the draft to the owner (one card). With nothing proposed, closes the review.
+  bash execute.sh --submit          Submit the draft: one owner card (approve mode) or apply now + one notice (auto mode). With nothing proposed, closes the review.
   bash execute.sh --clear           Drop the draft without sending it.
   bash execute.sh '{"member":"Ella","tier":"weak","reason":"..."}'
 Tiers: strong (hard reasoning, design, review), mid (normal work), weak (routine: polling, checks, formatting, sorting, triage).

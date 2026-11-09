@@ -213,7 +213,7 @@ as an `experiment.event`. The owner-facing result no longer prints the trace.
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/traces?since=<ISO>&type=<rootKind>&limit=` | `{ traces: TraceIndexEntry[], writeFailures }`, newest first |
+| `GET /api/traces?since=<ISO>&until=<ISO>&type=<rootKind>&limit=&metrics=0\|1&stallMinutes=&autopilotProject=&day=&label=` | `{ traces: TraceIndexEntry[], writeFailures }`, newest first. `since` / `until` bound `updatedAt` (a closed window; 400 when `until` is before `since`, #1472). With metrics (the default) at most 100 rows, each with a `TraceMetricsSummary` whose `stallMsByCause` splits stalled time by cause |
 | `GET /api/traces/by-ref?workItemId=…\|ticketId=…\|requestId=…\|decisionId=…\|experimentId=…` | `{ traceId, root }` or 404 |
 | `GET /api/traces/:id?offset=&limit=` | `{ root, events, total, offset, limit, truncated }` |
 | `POST /api/traces` `{ kind: 'goal'\|'experiment', summary, refs? }` | `{ traceId }` (201) |

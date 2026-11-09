@@ -2,7 +2,7 @@
  * Model tiers and "Optimize usage" (crewly#1173, specs/2026-10-08-model-tiers.md):
  *
  * - `GET  /api/teams/:id/model-tiers` — toggle, tier maps, members' tiers, review state.
- * - `PUT  /api/teams/:id/model-tiers` — owner: `{ optimizeUsage?, tierModels?, memberTiers? }`.
+ * - `PUT  /api/teams/:id/model-tiers` — owner: `{ optimizeUsage?, tierChangeMode?, tierModels?, memberTiers? }`.
  * - `POST /api/teams/:id/model-tiers/review` — owner or the team's lead: start a review now.
  * - `POST /api/teams/model-tiers/proposals` — the lead's `propose-tier-change` skill
  *   (`{ member, tier, reason }` | `{ routing }` | `{ submit: true }` | `{ clear: true }`).
@@ -16,6 +16,7 @@ import { getModelTierService, ModelTierError, type ModelTierService } from '../.
 import { isOwnerCaller, readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { isTeamLead } from '../../utils/team.utils.js';
 import { StorageService } from '../../services/core/storage.service.js';
+import { actorFromRequest, recordActivity } from '../../services/activity/activity-log.service.js';
 
 /** The running service, or a 503. */
 function serviceOr503(res: Response): ModelTierService | null {
@@ -51,7 +52,7 @@ export async function getTeamModelTiers(req: Request, res: Response): Promise<vo
 /**
  * PUT /api/teams/:id/model-tiers — owner only.
  *
- * @param req - Body `{ optimizeUsage?, tierModels?, memberTiers? }`
+ * @param req - Body `{ optimizeUsage?, tierChangeMode? ('approve' | 'auto'), tierModels?, memberTiers? }`
  * @param res - 200 `{ success, data }`; 400 invalid; 401/403 not the owner
  */
 export async function updateTeamModelTiers(req: Request, res: Response): Promise<void> {
@@ -60,7 +61,10 @@ export async function updateTeamModelTiers(req: Request, res: Response): Promise
   if (!s) return;
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    res.json({ success: true, data: await s.updateSettings(req.params.id, { optimizeUsage: body.optimizeUsage, tierModels: body.tierModels, memberTiers: body.memberTiers }) });
+    const changes = { optimizeUsage: body.optimizeUsage, tierChangeMode: body.tierChangeMode, tierModels: body.tierModels, memberTiers: body.memberTiers };
+    const data = await s.updateSettings(req.params.id, changes);
+    recordActivity({ actor: actorFromRequest(req), action: 'team.model_tiers.updated', target: { type: 'team', id: req.params.id }, after: JSON.parse(JSON.stringify(changes)) as Record<string, unknown> });
+    res.json({ success: true, data });
   } catch (err) {
     fail(res, err);
   }

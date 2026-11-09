@@ -1,5 +1,5 @@
 {
- "_about": "Shaped on the owner's ticket data of 2026-09-28 (receipt sent 21:00 EDT = 2026-09-29T01:00:50Z): the shapes are real — 待验收 tickets from 9/26 that nudges never closed (TKT-004/017/029/031/051), an answer recorded from another team (TKT-017, TKT-051), a ticket addressed to an agent on another machine but answered by Atlas (TKT-095), unassigned tickets Owen answered (TKT-093/094), follow-up answers that had become tickets (TKT-071/084), a running ticket idle for 3 days (TKT-053), and August test-leak Requests. Texts are paraphrased and scrubbed of personal details.",
+ "_about": "Shaped on the owner's ticket data of 2026-09-28 (receipt sent 21:00 EDT = 2026-09-29T01:00:50Z): the shapes are real — 待验收 tickets from 9/26 that nudges never closed (TKT-004/017/029/031/051), an answer recorded from another team (TKT-017, TKT-051), a ticket addressed to an agent on another machine but answered by Atlas (TKT-095), unassigned tickets Owen answered (TKT-093/094), follow-up answers that had become tickets (TKT-071/084), a running ticket idle for 3 days (TKT-053), a ticket accepted by silence earlier that day (TKT-090, #1316: closed with no word from the owner), and August test-leak Requests. Texts are paraphrased and scrubbed of personal details.",
  "window": {
   "from": "2026-09-28T04:00:00.000Z",
   "to": "2026-09-29T01:00:50.931Z",
@@ -385,6 +385,54 @@
    "submitCount": 1,
    "nudgeCount": 0,
    "result": "英文版好了，照 v10 译的，没加新内容，约 2,600 字符（LinkedIn 上限 3,000）。今天周一，可以直接复制发：\n\nYour team uses AI every day."
+  },
+  {
+   "id": "tkt-090",
+   "sourceConversationItemId": "slackch-C0TEST1-1790500090.000100",
+   "title": "落地页文案再改一版，价格往前放",
+   "description": "落地页文案再改一版，价格往前放",
+   "status": "done",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "content",
+   "tags": [
+    "ticket",
+    "slack-channel",
+    "auto_accepted"
+   ],
+   "createdAt": "2026-09-27T13:20:00.000Z",
+   "updatedAt": "2026-09-28T14:05:00.000Z",
+   "completedAt": "2026-09-28T14:05:00.000Z",
+   "ticketNumber": 90,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST1-1790500090.000100",
+    "threadRef": "slack:C0TEST1:1790500090.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "crewly-marketing-ella",
+   "reply": {
+    "at": "2026-09-27T14:00:00.000Z",
+    "by": "crewly-marketing-ella",
+    "messageId": "m-90",
+    "excerpt": "落地页文案改好了，价格挪到了第二屏，按你上次说的。\n稿子在 .crewly/marketing/landing-v3.md"
+   },
+   "submittedAt": "2026-09-27T14:00:30.000Z",
+   "submitCount": 1,
+   "nudgeCount": 2,
+   "result": "落地页文案改好了，价格挪到了第二屏，按你上次说的。\n稿子在 .crewly/marketing/landing-v3.md",
+   "acceptedBy": "silence",
+   "discussion": [
+    {
+     "at": "2026-09-28T14:05:00.000Z",
+     "author": "crewly",
+     "text": "auto-accepted: no objection",
+     "ref": "auto-accept-2026-09-28T14:05:00.000Z"
+    }
+   ]
   },
   {
    "id": "tkt-093",

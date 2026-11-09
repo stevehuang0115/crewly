@@ -18,19 +18,32 @@
  * consulted: a backend launched from inside an agent shell inherits that
  * agent's URL, which points at a different instance.
  *
+ * The host is an IP literal, never `localhost`. Node resolves every hostname
+ * (`localhost` included) with `getaddrinfo` on the libuv threadpool; during
+ * the 2026-10-26 Wi-Fi drop the pool was full of hanging Cloud lookups, so
+ * the reconciler's own `…/members/start` and the dispatcher's
+ * `/api/terminal/:name/write` calls to this very process timed out for
+ * twenty minutes ("fetch failed" after 10 s, axios 45 s). An IP literal
+ * skips the lookup, so a self-call never waits on DNS.
+ *
  * @module utils/local-api-url
  */
 
+import { isIP } from 'net';
 import { WEB_CONSTANTS } from '../constants.js';
 
-/** Host agents use to reach the backend on the same machine. */
-const LOCAL_API_HOST = 'localhost';
+/** Loopback IPv4 literal: reaches a server bound to `0.0.0.0`, `::` (dual-stack) or `localhost` */
+const LOOPBACK_HOST = '127.0.0.1';
+/** Bind addresses that mean "every interface" — loopback reaches them */
+const WILDCARD_BIND_HOSTS = new Set(['0.0.0.0', '::']);
 
 /** Largest valid TCP port. */
 const MAX_TCP_PORT = 65535;
 
 /** Port recorded by the running server, or null before it is known. */
 let runningPort: number | null = null;
+/** The host self-calls use, derived from the bind host at construction */
+let runningHost: string | null = null;
 
 /**
  * Parse a port value, rejecting anything that is not an integer in 1..65535.
@@ -44,18 +57,48 @@ export function parsePort(value: unknown): number | null {
 }
 
 /**
- * Record the port this server listens on. Called once by the server with its
- * resolved `webPort` (from `-p` / `WEB_PORT` / default).
+ * Record the port (and bind host) this server listens on, at construction.
  *
- * @param port - The listen port
- * @throws {Error} When the port is not a valid TCP port
+ * @param port - The resolved listen port
+ * @param bindHost - The address the server binds to; a specific IP literal
+ *   becomes the self-call host, anything else (wildcard, hostname, absent)
+ *   means loopback
+ * @throws Error when the port is not a valid TCP port
  */
-export function setLocalApiPort(port: number): void {
+export function setLocalApiPort(port: number, bindHost?: string): void {
   const parsed = parsePort(port);
   if (parsed === null) {
     throw new Error(`Invalid Crewly API port: ${String(port)}`);
   }
   runningPort = parsed;
+  runningHost = selfCallHost(bindHost);
+}
+
+/**
+ * The host self-calls and agents use for a server bound to `bindHost`: an IP
+ * literal always (no DNS lookup, see the module note), so a specific bind
+ * address is used as is (IPv6 bracketed) and a wildcard or hostname bind
+ * (`0.0.0.0`, `::`, `localhost`) is reached over `127.0.0.1`.
+ *
+ * @param bindHost - The server's bind address, if any
+ * @returns Host part of the base URL
+ */
+export function selfCallHost(bindHost: string | undefined): string {
+  const host = (bindHost ?? '').trim();
+  if (host === '' || WILDCARD_BIND_HOSTS.has(host)) return LOOPBACK_HOST;
+  const family = isIP(host);
+  if (family === 4) return host;
+  if (family === 6) return `[${host}]`;
+  return LOOPBACK_HOST;
+}
+
+/**
+ * Host part of this instance's API URL.
+ *
+ * @returns An IP literal (IPv6 bracketed)
+ */
+export function getLocalApiHost(): string {
+  return runningHost ?? LOOPBACK_HOST;
 }
 
 /**
@@ -69,14 +112,14 @@ export function getLocalApiPort(): number {
 }
 
 /**
- * Base URL of this instance's API, e.g. `http://localhost:8797` — the value
+ * Base URL of this instance's API, e.g. `http://127.0.0.1:8797` — the value
  * agents receive as `CREWLY_API_URL`. Paths are appended by the caller
  * (`${getLocalApiBaseUrl()}/api/teams`).
  *
  * @returns The base URL without a trailing slash
  */
 export function getLocalApiBaseUrl(): string {
-  return `http://${LOCAL_API_HOST}:${getLocalApiPort()}`;
+  return `http://${getLocalApiHost()}:${getLocalApiPort()}`;
 }
 
 /**
@@ -84,4 +127,5 @@ export function getLocalApiBaseUrl(): string {
  */
 export function resetLocalApiPortForTesting(): void {
   runningPort = null;
+  runningHost = null;
 }

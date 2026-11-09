@@ -367,6 +367,56 @@ describe('ProjectTicketWorkflowService', () => {
       expect(await wf.syncTicket(project.path, s.ticket.id)).toBe('done');
     });
 
+    describe('routine nudge (#1034)', () => {
+      const nudges = () => [...pool.items.values()].filter((w) => w.metadata?.kind === 'ticket_routine_nudge');
+      const wfWith = (triggers: unknown[]) =>
+        new ProjectTicketWorkflowService({
+          tickets,
+          pool,
+          directory: { getTeams: async () => teams, getProjects: async () => [project, other] },
+          listTriggers: () => triggers as never,
+          logger: quiet(),
+        });
+
+      it('a verified result naming a cadence sends ONE nudge to the lead', async () => {
+        const s = await started();
+        pool.set(s.workItem.id, { status: 'verified', result: { summary: 'Audit done. Add at least 1 new card per day.' } });
+        expect(await wf.syncTicket(project.path, s.ticket.id)).toBe('done');
+        const sent = nudges();
+        expect(sent).toHaveLength(1);
+        expect(sent[0].target).toBe('app-lead');
+        expect(sent[0].briefMarkdown).toContain('schedule-followup --cron');
+        expect(sent[0].briefMarkdown).toContain('--max-fires');
+        expect((await wf.get('p1', s.ticket.id)).log.some((l) => l.includes('routine nudge sent to app-lead'))).toBe(true);
+        // A second sync of the same done ticket does nothing.
+        expect(await wf.syncTicket(project.path, s.ticket.id)).toBe('unchanged');
+        expect(nudges()).toHaveLength(1);
+      });
+
+      it('no cadence means no nudge', async () => {
+        const s = await started();
+        pool.set(s.workItem.id, { status: 'verified', result: { summary: 'Updated the export and fixed the header row.' } });
+        await wf.syncTicket(project.path, s.ticket.id);
+        expect(nudges()).toHaveLength(0);
+      });
+
+      it('a trigger that names the ticket suppresses the nudge', async () => {
+        const s = await started();
+        const w = wfWith([{ status: 'active', name: `${s.ticket.id}-routine`, action: {} }]);
+        pool.set(s.workItem.id, { status: 'verified', output: { plan: '每天一条' } });
+        expect(await w.syncTicket(project.path, s.ticket.id)).toBe('done');
+        expect(nudges()).toHaveLength(0);
+      });
+
+      it('a trigger for another ticket does not suppress it', async () => {
+        const s = await started();
+        const w = wfWith([{ status: 'active', name: 'ZZ-9-routine', action: {} }]);
+        pool.set(s.workItem.id, { status: 'verified', output: { plan: 'check every Monday' } });
+        await w.syncTicket(project.path, s.ticket.id);
+        expect(nudges()).toHaveLength(1);
+      });
+    });
+
     it('a cancel that denies the work was done still returns the ticket (#1125)', async () => {
       const s = await started();
       pool.set(s.workItem.id, { status: 'cancelled', cancelReason: 'not done, scope changed' });

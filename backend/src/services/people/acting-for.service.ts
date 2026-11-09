@@ -335,3 +335,21 @@ export function actingForHeaders(actor: Actor | null = currentActor()): Record<s
 export function actorCacheSuffix(actor: Actor | null = currentActor()): string {
 	return actor ? `\0${actor.id}` : '';
 }
+
+/**
+ * The person an agent session acts for, as a reader of the wiki (#969).
+ * The owner's dashboard and an unknown session read as the owner, who sees
+ * every page, so they yield undefined.
+ *
+ * @param session - Agent session name, if any
+ * @returns Person id, or undefined for the owner
+ */
+export function viewerPersonOf(session?: string | null): string | undefined {
+	if (!session) return undefined;
+	try {
+		const id = getActingFor().actorFor(session).id;
+		return id === PEOPLE_CONSTANTS.OWNER_ID ? undefined : id;
+	} catch {
+		return undefined;
+	}
+}

@@ -293,6 +293,21 @@ describe('EventBusService', () => {
       expect(mockQueueService.enqueue).toHaveBeenCalledTimes(1);
     });
 
+    it('appends the orchestrator note only for the orchestrator (crewly#1371)', () => {
+      const note = 'No owner post needed — Ella reports it in #marketing; do not post it in your thread with the owner.';
+      eventBus.subscribe(createTestSubscriptionInput());
+      eventBus.subscribe(createTestSubscriptionInput({ subscriberSession: 'ella' }));
+      eventBus.publish(createTestEvent({ orchestratorNote: note }));
+      jest.advanceTimersByTime(5000);
+
+      const contents = mockQueueService.enqueue.mock.calls.map((c: any[]) => c[0]);
+      expect(contents).toHaveLength(2);
+      const toOrc = contents.find((c: any) => !c.targetSession || c.targetSession === 'crewly-orc');
+      const toLead = contents.find((c: any) => c.targetSession === 'ella');
+      expect(toOrc.content).toContain(note);
+      expect(toLead.content).not.toContain('No owner post needed');
+    });
+
     it('should use custom message template when provided', () => {
       eventBus.subscribe(createTestSubscriptionInput({
         messageTemplate: 'Hey! {memberName} on {sessionName} went {newValue}',

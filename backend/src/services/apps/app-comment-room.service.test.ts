@@ -194,15 +194,17 @@ describe('AppCommentRoomService', () => {
     expect(rows).toHaveLength(0);
   });
 
-  it('an agent\'s app-comments reply / resolve is written into the room thread as that agent (the Slack mirror posts it as its bot)', async () => {
+  it('an agent\'s app-comments reply / reopen is written into the room thread as that agent (the Slack mirror posts it as its bot)', async () => {
     const svc = make();
     expect(await svc.agentReplied(APP, 'c1', KAI, 'no thread yet')).toBe(false);
     await svc.deliver({ appId: APP, appName: 'A', room: ROOM_REF, comments: [change('add', thread())] });
     expect(await svc.agentReplied(APP, 'c1', KAI, 'Fixed the date')).toBe(true);
     expect(await svc.statusChanged(APP, 'c1', KAI, 'resolve')).toBe(true);
+    expect(await svc.statusChanged(APP, 'c1', KAI, 'reopen')).toBe(true);
+    // A resolve adds no row: the reply already said it is done (2026-10-19 audit).
     expect(rows.slice(1).map((r) => [r.senderType, r.senderId, r.threadId, r.content, (r.metadata as { source: string }).source])).toEqual([
       ['agent', KAI, 'm1', 'Fixed the date', 'app-comment'],
-      ['agent', KAI, 'm1', '✅ Resolved in the app.', 'app-comment'],
+      ['agent', KAI, 'm1', '↩️ Reopened in the app.', 'app-comment'],
     ]);
   });
 
@@ -219,6 +221,19 @@ describe('AppCommentRoomService', () => {
     expect(await svc.onChatMessage(dto({ channelId: 'elsewhere' }))).toBe(false);
     expect(relayed).toHaveLength(1);
   });
+  it('a resolve note stays in the app when a teammate already answered in the room thread (2026-10-22 audit)', async () => {
+    const svc = make();
+    await svc.deliver({ appId: APP, appName: 'A', room: ROOM_REF, comments: [change('add', thread())] });
+    // No answer yet: the note is the answer, so it is shown.
+    expect(await svc.agentReplied(APP, 'c2', KAI, 'no thread', true)).toBe(false);
+    const sage = { id: 'y', channelId: 'huddle-brief', senderType: 'agent', senderId: 'sage', content: 'Shared 1.jpg', threadId: 'm1', metadata: {} } as unknown as ChatMessageDTO;
+    expect(await svc.onChatMessage(sage)).toBe(true);
+    expect(await svc.agentReplied(APP, 'c1', KAI, 'Research sent (8 screenshots)', true)).toBe(true);
+    // A plain reply still shows.
+    expect(await svc.agentReplied(APP, 'c1', KAI, 'One more thing')).toBe(true);
+    expect(rows.slice(1).map((r) => r.content)).toEqual(['One more thing']);
+  });
+
   describe('voice comments (SPEC §16)', () => {
     const AUDIO = { kind: 'audio', blobId: 'abcdefgh12345678', mime: 'audio/webm', durationMs: 42_000, size: 9000 };
     const FILE = '/h/.crewly/tmp/app-comment-audio/28au74d9cj-abcdefgh12345678.webm';

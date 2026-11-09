@@ -84,7 +84,7 @@ export async function listRemoteMcp(): Promise<RemoteMcpServerView[]> {
  * @param input - Name, pasted URL, preset
  * @returns The stored server and when it applies
  */
-export async function addRemoteMcp(input: { label: string; url: string; provider: string }): Promise<{ server: RemoteMcpServerView; note?: string; authorize?: RemoteMcpAuthorizeLink | { error: string } }> {
+export async function addRemoteMcp(input: { label: string; url: string; provider: string; headers?: Record<string, string> }): Promise<{ server: RemoteMcpServerView; note?: string; authorize?: RemoteMcpAuthorizeLink | { error: string } }> {
   const body = await parse<{ data: RemoteMcpServerView; authorize?: RemoteMcpAuthorizeLink | { error: string } }>(await fetch(BASE, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

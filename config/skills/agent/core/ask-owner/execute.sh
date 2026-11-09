@@ -12,7 +12,9 @@ Usage:
   bash execute.sh --question "Send the partner email on Monday?" \
     --option "Send Monday — after the review call" --option "Hold — wait for legal" \
     --default "Hold" [--deadline 2026-10-02T12:00] [--ticket APP-12 --project P] \
-    [--sensitive email|publish|deploy|spend]
+    [--sensitive email|publish|deploy|spend] \
+    [--requested-by "Ella, Oct 6"] [--owner-last-said "…"] [--runtime-changes "…"] [--link URL]
+                                       --runtime-changes is required when the card asks to merge a PR.
   bash execute.sh --withdraw D-7 [--reason "posted by mistake"]
                                        Withdraw a card you no longer need, or one posted by mistake
                                        (--cancel is the same). The Slack card closes and loses its buttons.
@@ -24,6 +26,7 @@ EOF_USAGE
 }
 
 QUESTION=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; TICKET=""; PROJECT=""; CANCEL=""; REASON=""; STATUS_ID=""; MINE=""
+CONTEXT_JSON="{}"
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   J="$1"; shift
@@ -36,7 +39,10 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   PROJECT=$(printf '%s' "$J" | jq -r '.project // empty')
   CANCEL=$(printf '%s' "$J" | jq -r '.cancel // .withdraw // empty')
   REASON=$(printf '%s' "$J" | jq -r '.reason // empty')
+  CONTEXT_JSON=$(printf '%s' "$J" | jq -c 'if (.context|type) == "object" then .context else {} end')
 fi
+
+add_context() { CONTEXT_JSON=$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$CONTEXT_JSON"); }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -48,6 +54,10 @@ while [[ $# -gt 0 ]]; do
     --sensitive)    [ $# -ge 2 ] || error_exit "--sensitive requires a value"; SENSITIVE="$2"; shift 2 ;;
     --ticket|--id)  [ $# -ge 2 ] || error_exit "--ticket requires a value"; TICKET="$2"; shift 2 ;;
     --project|-p)   [ $# -ge 2 ] || error_exit "--project requires a value"; PROJECT="$2"; shift 2 ;;
+    --requested-by)    [ $# -ge 2 ] || error_exit "--requested-by requires a value"; add_context requestedBy "$2"; shift 2 ;;
+    --owner-last-said) [ $# -ge 2 ] || error_exit "--owner-last-said requires a value"; add_context ownerLastSaid "$2"; shift 2 ;;
+    --runtime-changes) [ $# -ge 2 ] || error_exit "--runtime-changes requires a value"; add_context runtimeChanges "$2"; shift 2 ;;
+    --link)            [ $# -ge 2 ] || error_exit "--link requires a value"; add_context link "$2"; shift 2 ;;
     --cancel|--withdraw) [ $# -ge 2 ] || error_exit "$1 requires a decision id"; CANCEL="$2"; shift 2 ;;
     --mine)         MINE=1; shift ;;
     --reason)       [ $# -ge 2 ] || error_exit "--reason requires a value"; REASON="$2"; shift 2 ;;
@@ -89,12 +99,13 @@ fi
 
 require_param "question" "$QUESTION"
 BODY=$(jq -n --arg q "$QUESTION" --argjson o "$OPTIONS_JSON" --arg d "$DEFAULT_OPT" --arg dl "$DEADLINE" \
-  --arg s "$SENSITIVE" --arg t "$TICKET" --arg p "$PROJECT" \
+  --arg s "$SENSITIVE" --arg t "$TICKET" --arg p "$PROJECT" --argjson c "$CONTEXT_JSON" \
   '{question: $q, options: $o}
    + (if $d != "" then {default: $d} else {} end)
    + (if $dl != "" then {deadline: $dl} else {} end)
    + (if $s != "" then {sensitive: $s} else {} end)
    + (if $t != "" then {ticket: $t} else {} end)
-   + (if $p != "" then {project: $p} else {} end)')
+   + (if $p != "" then {project: $p} else {} end)
+   + (if ($c | length) > 0 then {context: $c} else {} end)')
 api_call POST "/decisions" "$BODY" \
   | jq '{success, decision: (.data | {id, asker, status, deadline, posted: (.card != null), postError, reused: (.reused // false)})}'

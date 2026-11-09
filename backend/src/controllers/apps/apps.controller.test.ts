@@ -377,7 +377,9 @@ describe('Crewly Apps controller', () => {
     expect(service.getComment).toHaveBeenCalledWith(ID, 'c1', { agentSession: 'dev-ella' });
     const r = await request(app).post(`/api/apps/${ID}/comments/c1/replies`).set(agent).send({ text: 'Done' }).expect(201);
     expect(r.body).toEqual({ success: true, data: { id: 'c1', replies: [{}] } });
-    expect(service.replyComment).toHaveBeenCalledWith(ID, 'c1', 'Done', { agentSession: 'dev-ella' });
+    expect(service.replyComment).toHaveBeenCalledWith(ID, 'c1', 'Done', { agentSession: 'dev-ella' }, false);
+    await request(app).post(`/api/apps/${ID}/comments/c1/replies`).set(agent).send({ text: 'Done', note: true }).expect(201);
+    expect(service.replyComment).toHaveBeenLastCalledWith(ID, 'c1', 'Done', { agentSession: 'dev-ella' }, true);
     await request(app).post(`/api/apps/${ID}/comments/c1/resolve`).set(agent).expect(200);
     expect(service.setCommentStatus).toHaveBeenLastCalledWith(ID, 'c1', 'resolve', { agentSession: 'dev-ella' });
     await request(app).post(`/api/apps/${ID}/comments/c1/reopen`).set(agent).expect(200);

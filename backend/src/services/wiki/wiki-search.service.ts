@@ -92,6 +92,8 @@ export interface WikiSearchFilters {
   includeSuperseded?: boolean;
   /** Role of the reader; pages whose `visibility` excludes it are dropped. Undefined = owner (sees all). */
   viewerRole?: string;
+  /** Person the reader acts for; pages `visible_to_people` others are dropped (#969). Undefined = owner. */
+  viewerPerson?: string;
   /** Include `_proposed/` pages (default false). */
   includeProposed?: boolean;
 }
@@ -516,7 +518,7 @@ export class WikiSearchService {
           content = await fs.readFile(absPath, 'utf8');
           const { frontmatter } = parsePage(content);
           if (frontmatter.superseded_by && !filters.includeSuperseded) return null;
-          if (!isVisibleTo(frontmatter, filters.viewerRole)) return null;
+          if (!isVisibleTo(frontmatter, filters.viewerRole, filters.viewerPerson)) return null;
         }
       } catch {
         // unreadable — fall through with filename tokens only

@@ -112,6 +112,7 @@ describe('v2ChannelToLegacy', () => {
     archivedAt: null,
     agentPresence: { status: 'online', lastSeenAt: null },
     type: 'dm',
+    lastReadSeq: 0, unreadCount: 0,
   };
 
   it('maps lastMessageAt → updatedAt ISO', () => {

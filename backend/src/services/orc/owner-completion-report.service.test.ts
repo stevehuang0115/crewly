@@ -192,7 +192,7 @@ describe('OwnerCompletionReportService', () => {
     const [where, agent, line] = postFallback.mock.calls[0];
     expect(where).toMatchObject({ kind: 'app-comment', commentId: 'QMSjXIhFanDw' });
     expect(agent).toBe('lyra');
-    expect(line).toBe('Lyra finished Evidence for the three-stage map, Case against and Draft ready; the details will follow here.\n— sent by Crewly');
+    expect(line).toBe('Lyra finished Evidence for the three-stage map, Case against and Draft ready.\n— sent by Crewly');
     expect(line).not.toContain('ops/marketing/drafts/zengming.md');
     expect(line).not.toContain('Results:');
     expect(svc.activeRecords).toHaveLength(0);
@@ -239,7 +239,7 @@ describe('OwnerCompletionReportService', () => {
     await svc.tick();
     expect(ownerLanguage).toHaveBeenCalledWith(expect.objectContaining({ kind: 'owner', slackChannelId: 'C0MKT' }), expect.objectContaining({ kind: 'slack' }));
     const line = postFallback.mock.calls[0][2];
-    expect(line).toBe('Ella 做完了排期里 5 张卡的文案和教程页的录屏，细节稍后补在这里。\n— 由 Crewly 代发');
+    expect(line).toBe('Ella 做完了排期里 5 张卡的文案和教程页的录屏。\n— 由 Crewly 代发');
     expect(line).not.toMatch(/https?:|\.md|\.mp4|MB|h264|Results:|cards|rec\b/);
   });
 
@@ -252,7 +252,7 @@ describe('OwnerCompletionReportService', () => {
     await svc.tick();
     now += C.NUDGE_GRACE_MS;
     await svc.tick();
-    expect(postFallback.mock.calls[0][2]).toBe('ella finished Weekly numbers; the details will follow here.\n— sent by Crewly');
+    expect(postFallback.mock.calls[0][2]).toBe('ella finished Weekly numbers.\n— sent by Crewly');
   });
 
   it('a record written before crewly#1357 at stage "reminded" still ends with the one plain line', async () => {
@@ -275,7 +275,7 @@ describe('OwnerCompletionReportService', () => {
     now += 1;
     await second.tick();
     expect(postFallback).toHaveBeenCalledTimes(1);
-    expect(postFallback.mock.calls[0][2]).toMatch(/^Lyra finished .*; the details will follow here\.\n— sent by Crewly$/);
+    expect(postFallback.mock.calls[0][2]).toMatch(/^Lyra finished .*\.\n— sent by Crewly$/);
     expect(deliver).toHaveBeenCalledTimes(1);
   });
 
@@ -400,6 +400,95 @@ describe('OwnerCompletionReportService', () => {
     expect(deliver).toHaveBeenCalledTimes(1);
   });
 
+  describe('a teammate or delegatee posted the work in the owner thread before closing its item (crewly#1376)', () => {
+    /** Atlas received the owner's request; Sage built the PDF, posted it at T0+20 and closed its item at T0+30. */
+    const ATLAS_ORIGIN: OwnerOrigin = { kind: 'owner', receivedBy: 'atlas', slackChannelId: 'C0C30RWA17W', threadTs: '1792277474.023779' };
+    const chain = (): WorkItem[] => [
+      item('pdf', { origin: ATLAS_ORIGIN, target: 'sage', title: 'Website-plan PDF built and posted in Steve thread with summary', at: T0, startedAt: iso(T0 + MIN), doneAt: T0 + 30 * MIN }),
+    ];
+    const runOut = async (svc: OwnerCompletionReportService): Promise<void> => {
+      now = T0 + 31 * MIN;
+      await svc.tick();
+      now += C.SETTLE_MS;
+      await svc.tick();
+      now += C.NUDGE_GRACE_MS;
+      await svc.tick();
+    };
+
+    it('the delegatee\'s post (also when made as the shared Crewly app on its behalf) is the report: no nudge, no fallback', async () => {
+      const svc = make();
+      items = chain();
+      now = T0 + 20 * MIN;
+      svc.noteSlackAnswer('C0C30RWA17W', '1792277474.023779', 'sage');
+      await runOut(svc);
+      expect(deliver).not.toHaveBeenCalled();
+      expect(postFallback).not.toHaveBeenCalled();
+      expect(svc.activeRecords).toHaveLength(0);
+    });
+
+    it('a teammate of the responsible agent counts too, from the work start', async () => {
+      const svc = make({ teammatesOf: async (s) => (s === 'atlas' ? ['atlas', 'sage', 'mira'] : []) });
+      items = chain();
+      now = T0 + 20 * MIN;
+      svc.noteSlackAnswer('C0C30RWA17W', '1792277474.023779', 'mira');
+      await runOut(svc);
+      expect(deliver).not.toHaveBeenCalled();
+      expect(postFallback).not.toHaveBeenCalled();
+    });
+
+    it('a chat-v2 row by the delegatee counts as well', async () => {
+      const svc = make();
+      items = [item('c', { origin: { kind: 'owner', receivedBy: 'atlas', conversationId: 'conv-1' }, target: 'sage', at: T0, startedAt: iso(T0), doneAt: T0 + 30 * MIN })];
+      now = T0 + 20 * MIN;
+      svc.noteChatAnswer('conv-1', undefined, 'sage');
+      await runOut(svc);
+      expect(deliver).not.toHaveBeenCalled();
+    });
+
+    it('the responsible agent\'s own post well after the work started was its delivery: no empty "done" line (Owen, 2026-10-19)', async () => {
+      const svc = make();
+      items = chain();
+      now = T0 + 20 * MIN;
+      svc.noteSlackAnswer('C0C30RWA17W', '1792277474.023779', 'atlas');
+      await runOut(svc);
+      expect(postFallback).not.toHaveBeenCalled();
+      expect(svc.activeRecords).toHaveLength(0);
+    });
+
+    it('negative: the responsible agent\'s own "on it", an outsider\'s post, or a post before the work started do not count', async () => {
+      const svc = make({ teammatesOf: () => ['atlas', 'sage'] });
+      items = chain();
+      now = T0 + 30_000; // before Sage started
+      svc.noteSlackAnswer('C0C30RWA17W', '1792277474.023779', 'sage');
+      now = T0 + 5 * MIN;
+      svc.noteSlackAnswer('C0C30RWA17W', '1792277474.023779', 'atlas');
+      svc.noteSlackAnswer('C0C30RWA17W', '1792277474.023779', 'rex'); // another team, another machine
+      await runOut(svc);
+      expect(deliver).toHaveBeenCalledTimes(1);
+      expect(postFallback).toHaveBeenCalledTimes(1);
+      expect(postFallback.mock.calls[0][2]).not.toMatch(/details/);
+    });
+
+    it('a zh owner gets one plain zh line without the English title or "details later"', async () => {
+      const svc = make({ ownerLanguage: async () => 'zh' });
+      items = chain();
+      await runOut(svc);
+      const line = postFallback.mock.calls[0][2];
+      expect(line).toBe('atlas 把你要的事做完了。\n— 由 Crewly 代发');
+      expect(line).not.toMatch(/Website-plan|细节稍后/);
+    });
+
+    it('authors survive a restart', async () => {
+      const first = make();
+      items = chain();
+      now = T0 + 20 * MIN;
+      first.noteSlackAnswer('C0C30RWA17W', '1792277474.023779', 'sage');
+      first.stop();
+      await runOut(make());
+      expect(postFallback).not.toHaveBeenCalled();
+    });
+  });
+
   it('more work joining while settling restarts the wait; nothing is asked while work is open', async () => {
     const svc = make();
     items = [item('kai', { at: T0, doneAt: T0 + 5 * MIN })];
@@ -507,5 +596,97 @@ describe('OwnerCompletionReportService', () => {
   it('a failing pool read never throws out of tick', async () => {
     const svc = make({ listItems: async () => Promise.reject(new Error('disk')) });
     await expect(svc.tick()).resolves.toBeUndefined();
+  });
+});
+
+describe('team work the orchestrator delegated is reported by the team lead (crewly#1371)', () => {
+  const ORC_DM: OwnerOrigin = { kind: 'owner', receivedBy: ORCHESTRATOR_SESSION_NAME, slackChannelId: 'D0ORC', threadTs: '1792000000.000100' };
+  const MKT = { lead: 'ella', leadName: 'Ella', worker: 'luna', workerName: 'Luna', teamId: 'team-mkt', teamName: 'Marketing', slackChannelId: 'C0MKTTEAM', channelName: 'marketing' };
+  const OPS = { lead: 'atlas', leadName: 'Atlas', worker: 'atlas', workerName: 'Atlas', teamId: 'team-ops', teamName: 'Ops', slackChannelId: 'C0OPSTEAM', channelName: 'ops' };
+
+  let dir: string;
+  let now: number;
+  let items: WorkItem[];
+  let deliver: jest.Mock<Promise<boolean>, [string, string]>;
+  let postFallback: jest.Mock<Promise<boolean>, [ReportPlace, string, string]>;
+
+  const make = (over: Partial<OwnerCompletionReportDeps> = {}): OwnerCompletionReportService =>
+    new OwnerCompletionReportService({
+      crewlyHome: dir,
+      listItems: async () => items,
+      deliver,
+      resolvePlace: async (o) => ({ kind: 'slack', slackChannelId: o.slackChannelId!, threadTs: o.threadTs, label: 'Slack thread' }),
+      postFallback,
+      now: () => now,
+      logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() } as never,
+      ...over,
+    });
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-report-lead-'));
+    now = T0 - MIN;
+    deliver = jest.fn(async (_s: string, _t: string) => true);
+    postFallback = jest.fn(async (_p: ReportPlace, _a: string, _t: string) => true);
+    // One orc DM thread, four items across two teams (the 2026-10-17 incident).
+    items = [
+      item('tut', { origin: ORC_DM, target: 'luna', title: 'Re-word the tutorial', at: T0, doneAt: T0 + 5 * MIN, metadata: { leadReport: MKT } }),
+      item('tut:verify', { origin: ORC_DM, target: 'ella', type: 'review', at: T0 + 4 * MIN, doneAt: T0 + 5 * MIN, metadata: { verifyOf: 'tut', leadReport: MKT } }),
+      item('backup', { origin: ORC_DM, target: 'atlas', title: 'Rotate backups', at: T0 + MIN, doneAt: T0 + 6 * MIN, metadata: { leadReport: OPS } }),
+    ];
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('one owner thread splits into one chain per team, each the lead\'s', () => {
+    const chains = collectOwnerChains(items, {});
+    expect(chains.map((c) => [c.key, c.responsible])).toEqual([
+      ['slack:D0ORC:1792000000.000100#team:team-mkt', 'ella'],
+      ['slack:D0ORC:1792000000.000100#team:team-ops', 'atlas'],
+    ]);
+    expect(chains[0].leadReport).toMatchObject({ channelName: 'marketing' });
+  });
+
+  it('unstamped orc work in the same thread stays the orchestrator\'s (existing behaviour)', () => {
+    items.push(item('own', { origin: ORC_DM, target: 'sam', at: T0 + 2 * MIN }));
+    const chains = collectOwnerChains(items, {});
+    expect(chains.find((c) => c.key === 'slack:D0ORC:1792000000.000100')?.responsible).toBe(ORCHESTRATOR_SESSION_NAME);
+  });
+
+  it('nudges the lead (not the orc) to post in the team channel, then posts the fallback there as the lead', async () => {
+    const svc = make({ ownerLanguage: async () => 'zh' as const });
+    now = T0 + 7 * MIN;
+    await svc.tick();
+    now += C.SETTLE_MS;
+    await svc.tick();
+    expect(deliver.mock.calls.map((c) => c[0]).sort()).toEqual(['atlas', 'ella']);
+    const ask = deliver.mock.calls.find((c) => c[0] === 'ella')![1];
+    expect(ask).toContain('[OWNER REPORT DUE] Luna finished work the owner approved');
+    expect(ask).toContain('in #marketing; the orchestrator does not relay it');
+    expect(ask).toContain('(Chinese)');
+    expect(ask).toContain('https://slack.com/archives/D0ORC/p1792000000000100');
+    expect(ask).toContain('No ticket or work item ids, no status lines');
+    expect(ask).toContain('reply --work-item tut ');
+    const own = deliver.mock.calls.find((c) => c[0] === 'atlas')![1];
+    expect(own).toContain('[OWNER REPORT DUE] You finished work');
+
+    now += C.NUDGE_GRACE_MS;
+    await svc.tick();
+    expect(postFallback).toHaveBeenCalledTimes(2);
+    const [where, as, line] = postFallback.mock.calls.find((c) => c[1] === 'ella')!;
+    expect(where).toEqual({ kind: 'slack', slackChannelId: 'C0MKTTEAM', label: '#marketing' });
+    expect(as).toBe('ella');
+    expect(line).toBe('Luna 把你批准的事做完了。\n批准的对话：https://slack.com/archives/D0ORC/p1792000000000100\n— 由 Crewly 代发');
+    expect(postFallback.mock.calls.every((c) => (c[0] as { slackChannelId: string }).slackChannelId !== 'D0ORC')).toBe(true);
+  });
+
+  it('a post in the orc thread does not count; the lead\'s reply --work-item does — even before its record exists', async () => {
+    const svc = make();
+    now = T0 + 6 * MIN + 30_000;
+    expect(svc.noteWorkItemReply('backup')).toBe(0); // Atlas reported before the scan picked the chain up
+    now = T0 + 7 * MIN;
+    svc.noteSlackAnswer('D0ORC', '1792000000.000100'); // the orc posted in its thread
+    await svc.tick();
+    now += C.SETTLE_MS;
+    await svc.tick();
+    expect(deliver.mock.calls.map((c) => c[0])).toEqual(['ella']);
   });
 });

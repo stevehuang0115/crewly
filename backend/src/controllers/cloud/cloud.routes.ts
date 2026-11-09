@@ -12,6 +12,7 @@
  * - GET  /devices              - Get device list from CloudSync (or fallback to legacy)
  * - GET  /templates            - Fetch premium templates (requires connection)
  * - GET  /license/verify       - Verify license and return tier + features
+ * - POST /chrome-store-click/:source - Count an install-button click in Cloud feature usage (no-op when signed out)
  * - POST /send                 - Send a message to another device via Cloud Sync
  * - GET  /google/start         - Redirect to Google OAuth consent screen
  * - GET  /google/callback      - Handle Google OAuth callback, issue JWT, redirect to frontend
@@ -38,6 +39,7 @@ import {
   verifyLicense,
   mobilePair,
   cloudSearch,
+  recordChromeStoreClick,
 } from './cloud.controller.js';
 import {
   cloudGoogleStart,
@@ -74,6 +76,8 @@ export function createCloudRouter(): Router {
   // Cloud web search for agents: the backend calls Cloud with its own token
   // (agents never hold Cloud credentials). Owner or badge-identified agent.
   router.post('/search', cloudSearch);
+  // Install-button click counter: reported to Cloud when signed in, otherwise a no-op.
+  router.post('/chrome-store-click/:source', recordChromeStoreClick);
 
   // Device-code pairing — the owner approves on crewlyai.com (usually from a
   // phone); this backend polls and connects by itself. Owner-only.

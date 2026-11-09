@@ -7,13 +7,14 @@
 #
 # Usage: execute.sh --channel <chatChannelId> --path <file> [--name <n>]
 #                   [--title <t>] [--comment <c>] [--thread <messageId>]
+#                   [--work-item <id>] [--ticket <id>] [--to <messageId>]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/../../../_common/lib.sh"
 
-CHANNEL=""; FILE_PATH=""; NAME=""; TITLE=""; COMMENT=""; THREAD=""; TICKET=""; TO=""
+CHANNEL=""; FILE_PATH=""; NAME=""; TITLE=""; COMMENT=""; THREAD=""; TICKET=""; TO=""; WORK_ITEM=""
 
 usage() {
   cat <<'USAGE'
@@ -27,6 +28,7 @@ attach-file — send a file into your Slack channel
   --thread <id>    The thread the file belongs to ([SLACK-THREAD:<key>] key, or a chat thread id)
   --ticket <id>    The ticket the file is for (TKT-187 / CE-7) — Crewly finds its thread (no --channel needed)
   --to <id>        The message the file answers (from your prompt) — no --channel needed
+  --work-item <id> The work item the file delivers ([CREWLY-DISPATCH] id) — Crewly posts it in that work's thread (no --channel needed)
 USAGE
 }
 
@@ -40,13 +42,14 @@ while [ $# -gt 0 ]; do
     --thread|-t)  THREAD="${2:-}"; shift 2 ;;
     --ticket)     TICKET="${2:-}"; shift 2 ;;
     --to)         TO="${2:-}"; shift 2 ;;
+    --work-item|--workitem) WORK_ITEM="${2:-}"; shift 2 ;;
     -h|--help)    usage; exit 0 ;;
     *) unknown_arg_exit "$1" ;;
   esac
 done
 
-if { [ -z "$CHANNEL" ] && [ -z "$TICKET" ] && [ -z "$TO" ]; } || [ -z "$FILE_PATH" ]; then
-  echo '{"error":"Missing required parameter: --path, and --channel (or --ticket / --to)"}' >&2
+if { [ -z "$CHANNEL" ] && [ -z "$TICKET" ] && [ -z "$TO" ] && [ -z "$WORK_ITEM" ]; } || [ -z "$FILE_PATH" ]; then
+  echo '{"error":"Missing required parameter: --path, and --channel (or --work-item / --ticket / --to)"}' >&2
   usage >&2
   exit 1
 fi
@@ -65,10 +68,12 @@ BODY=$(jq -cn \
   --arg threadId "$THREAD" \
   --arg ticket "$TICKET" \
   --arg to "$TO" \
+  --arg workItemId "$WORK_ITEM" \
   '{filePath: $filePath}
    + (if $channelId != "" then {channelId: $channelId} else {} end)
    + (if $ticket   != "" then {ticket: $ticket}     else {} end)
    + (if $to       != "" then {to: $to}             else {} end)
+   + (if $workItemId != "" then {workItemId: $workItemId} else {} end)
    + (if $filename != "" then {filename: $filename} else {} end)
    + (if $title    != "" then {title: $title}       else {} end)
    + (if $comment  != "" then {comment: $comment}   else {} end)

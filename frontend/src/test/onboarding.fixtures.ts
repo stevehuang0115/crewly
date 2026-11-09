@@ -25,12 +25,16 @@ export function makeChecklist(done: ChecklistStepId[] = [], overrides: Partial<O
     { id: 'first_task', done: is('first_task'), detail: { sentAt: null, ownerMessageSeen: is('first_task'), pending: false } },
     { id: 'cloud', done: is('cloud'), detail: { connected: is('cloud'), tier: is('cloud') ? 'free' : null, tokenPageSignInUrl: TOKEN_PAGE_URL } },
     { id: 'slack', done: is('slack'), detail: { connected: is('slack'), cloudConnected: is('cloud') } },
+    { id: 'chrome', done: is('chrome'), optional: true, detail: { connected: is('chrome') } },
   ];
+  // Optional steps are listed but never counted (as the backend does).
+  const required = steps.filter((s) => !('optional' in s));
+  const requiredDone = required.filter((s) => s.done).length;
   return {
     steps,
-    doneCount: done.length,
-    total: steps.length,
-    allDone: done.length === steps.length,
+    doneCount: requiredDone,
+    total: required.length,
+    allDone: requiredDone === required.length,
     dismissed: false,
     dismissedAt: null,
     ...overrides,

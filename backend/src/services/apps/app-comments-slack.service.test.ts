@@ -103,7 +103,7 @@ describe('AppCommentsSlackService', () => {
     expect(posts).toHaveLength(1);
   });
 
-  it('agent reply, resolve and reopen go into the thread; unknown comments are ignored', async () => {
+  it('agent reply and reopen go into the thread, a resolve posts nothing; unknown comments are ignored', async () => {
     const svc = make();
     await svc.mirrorOwnerComments('ella', 'app1', 'A', [addChange()]);
     await svc.agentReplied('app1', 'c1', 'ella', 'Done in v5 <b>');
@@ -114,7 +114,6 @@ describe('AppCommentsSlackService', () => {
     expect(posts.slice(1).map((p) => [p.agentSession, p.threadTs, p.text])).toEqual([
       ['ella', '100.1', 'Done in v5 &lt;b&gt;'],
       ['ella', '100.1', '*KAI:* me too'],
-      ['ella', '100.1', '✅ Resolved by ELLA.'],
       ['ella', '100.1', '↩️ Reopened by ELLA.'],
     ]);
   });
@@ -131,6 +130,26 @@ describe('AppCommentsSlackService', () => {
       await flush();
       expect(relayed).toEqual([['app1', 'c1', 'ok, darker', 'UOWNER']]);
       expect(handled).toContain('D1:100.1');
+    });
+
+    // The DM path adds 👀 from the agent's bot; this path consumes the
+    // message first, so the owner saw no sign Ella got "Weee呢？" (2026-11-08).
+    it('marks the consumed reply as seen by the agent who owns the thread', async () => {
+      const seen: string[] = [];
+      const svc = make({ markSeen: async (a, c, t) => { seen.push(`${a}:${c}:${t}`); } });
+      await svc.mirrorOwnerComments('ella', 'app1', 'A', [addChange()]);
+      expect(svc.interceptInbound(msg())).toBe(true);
+      await flush();
+      expect(seen).toEqual(['ella:D1:200.1']);
+    });
+
+    it('still relays the reply when the seen-reaction fails', async () => {
+      const svc = make({ markSeen: async () => { throw new Error('missing_scope'); } });
+      await svc.mirrorOwnerComments('ella', 'app1', 'A', [addChange()]);
+      expect(svc.interceptInbound(msg())).toBe(true);
+      await flush();
+      expect(relayed).toEqual([['app1', 'c1', 'ok, darker', 'UOWNER']]);
+      expect(posts).toHaveLength(1); // no "couldn't add that reply" notice
     });
 
     it('leaves everything else to normal routing', async () => {

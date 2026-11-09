@@ -266,9 +266,15 @@ async function defaultProvisionTeam(
   const { StorageService } = await import('../../core/storage.service.js');
   const { getCrewlyHomePath } = await import('../../core/crewly-home.utils.js');
 
+  const { CloudClientService } = await import('../../cloud/cloud-client.service.js');
+
+  // Pass the real plan: without it every tier-gated template is refused as
+  // if the user were on free.
   const result = TemplateService.getInstance().createTeamFromTemplate(
     recommendation.templateId,
     teamName,
+    undefined,
+    CloudClientService.getInstance().getTier(),
   );
   if (!result) return null;
 

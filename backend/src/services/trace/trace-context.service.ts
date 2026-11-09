@@ -30,7 +30,7 @@ import { PTY_CONSTANTS, TRACE_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { createSessionProjectResolver } from './session-projects.js';
 import { getTraceStore, type TraceStore } from './trace-store.js';
-import { cleanTraceData, extractTextRefs, parseTraceMarkers, safeSummary } from './trace-markers.js';
+import { agentSenderName, cleanTraceData, extractTextRefs, isAgentAuthoredChat, parseTraceMarkers, safeSummary } from './trace-markers.js';
 import {
 	isTraceId,
 	newTraceId,
@@ -47,6 +47,7 @@ import { getAgentAskLedger } from '../messaging/agent-ask-ledger.service.js';
 /** How a delivered message reached the turn. */
 export type DeliveryKind =
 	| 'owner_message'
+	| 'agent_message'
 	| 'dispatch'
 	| 'redelivery'
 	| 'status'
@@ -140,7 +141,7 @@ export function classifyDelivery(text: string): DeliveryKind {
 	if (/\[DECISION\b/.test(text)) return 'decision';
 	if (/\[FOLLOW-UP\b/.test(text)) return 'follow_up';
 	if (/^\s*\[SYSTEM\b|\[EVENT:/.test(text)) return 'system';
-	if (CHAT_PREFIX.test(text)) return 'owner_message';
+	if (CHAT_PREFIX.test(text)) return isAgentAuthoredChat(text) ? 'agent_message' : 'owner_message';
 	return 'system';
 }
 
@@ -537,11 +538,12 @@ export class TraceContext {
 			const next = traceId ?? traces[0];
 			this.setCurrent(session, next, now, traces.filter((id) => id !== next));
 			this.pending.delete(session);
+			const sender = trigger.sender ?? (kind === 'agent_message' ? agentSenderName(text) : undefined);
 			const actor: TraceActor = kind === 'owner_message'
 				? { kind: 'owner' }
-				: trigger.sender
-					? { kind: 'agent', session: trigger.sender }
-					: { kind: 'system' };
+				: sender
+					? { kind: 'agent', session: sender }
+					: { kind: kind === 'agent_message' ? 'agent' : 'system' };
 			for (const id of traces) {
 				this.record({
 					traceId: id,
@@ -630,6 +632,7 @@ export class TraceContext {
 /** Human labels of delivery kinds (summaries). */
 const DELIVERY_LABELS: Record<DeliveryKind, string> = {
 	owner_message: 'Owner message',
+	agent_message: 'Agent message',
 	dispatch: 'Work item brief',
 	redelivery: 'Work item redelivery',
 	status: 'Status report',

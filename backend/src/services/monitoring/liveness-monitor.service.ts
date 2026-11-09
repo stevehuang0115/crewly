@@ -10,9 +10,11 @@
  *
  * - **stall**: two of its ticks more than GAP_ALERT_MS apart on the
  *   MONOTONIC clock — the event loop was blocked or the process was
- *   stopped. A gap only the wall clock shows is the computer sleeping
- *   (macOS's monotonic clock does not advance in sleep): logged, no DM —
- *   every lid-close would otherwise alarm the owner;
+ *   stopped. A gap the computer slept through is logged, no DM — every
+ *   lid-close would otherwise alarm the owner. Sleep is seen two ways: the
+ *   monotonic clock did not advance (Linux), or the kernel's last sleep
+ *   covers the gap (macOS, where Node's monotonic clock keeps running in
+ *   sleep — see utils/mac-sleep.utils);
  * - **crash**: the previous process ended through an uncaught exception or
  *   an unhandled rejection (recorded on its way out), however quickly it
  *   came back;
@@ -33,6 +35,7 @@ import * as path from 'path';
 import { LIVENESS_MONITOR_CONSTANTS as C } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { atomicWriteFileSync } from '../../utils/file-io.utils.js';
+import { gapExplainedBySleep, readMacLastSleep, type SleepWindow } from '../../utils/mac-sleep.utils.js';
 
 /** What `liveness.json` holds. */
 export interface LivenessRecord {
@@ -88,10 +91,12 @@ export interface LivenessMonitorDeps {
 	/** Time zone for the times in the alert (tests); machine-local by default */
 	timeZone?: string;
 	/**
-	 * Monotonic clock in ms (default `performance.now()`); on macOS it does
-	 * not advance while the computer sleeps.
+	 * Monotonic clock in ms (default `performance.now()`). It does not
+	 * advance in sleep on Linux; on macOS it does (mach_continuous_time).
 	 */
 	monoNow?: () => number;
+	/** The computer's last sleep (default: macOS kernel sleep/wake times; null elsewhere) */
+	lastSleep?: () => SleepWindow | null;
 }
 
 /**
@@ -214,10 +219,13 @@ export class LivenessMonitorService {
 		const now = this.now();
 		const mono = this.mono();
 		if (this.lastTickAt !== null && this.lastTickMono !== null && now - this.lastTickAt > C.GAP_ALERT_MS) {
-			if (mono - this.lastTickMono > C.GAP_ALERT_MS) {
-				this.raise({ kind: 'stalled', from: this.lastTickAt, to: now });
+			const gap = { from: this.lastTickAt, to: now };
+			const slept = mono - this.lastTickMono <= C.GAP_ALERT_MS
+				|| gapExplainedBySleep(gap, (this.deps.lastSleep ?? readMacLastSleep)(), C.GAP_ALERT_MS);
+			if (!slept) {
+				this.raise({ kind: 'stalled', ...gap });
 			} else {
-				// Wall clock jumped, monotonic did not: the computer slept. Not an outage of Crewly's making.
+				// The computer slept through the gap. Not an outage of Crewly's making.
 				this.logger.info('The computer was asleep — no ticks for a while (not alerting)', {
 					from: new Date(this.lastTickAt).toISOString(),
 					to: new Date(now).toISOString(),

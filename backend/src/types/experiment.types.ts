@@ -160,6 +160,12 @@ export interface Experiment {
   ticket?: ExperimentTicketLink;
   /** Agent session (or `owner`) that created it — its prediction is recorded under this session */
   createdBy: string;
+  /**
+   * Agent session that watches the run without directing it (#1026). It and
+   * the creator get read-only access to an autopilot card's project stats,
+   * runs and traces while the card is planned or running.
+   */
+  supervisor?: string;
   /** Confidence recorded on the prediction (0..1) */
   confidence: number;
   status: ExperimentStatus;
@@ -192,6 +198,15 @@ export interface Experiment {
   /** Autopilot scope: the card measures a period of autopilot work (specs/2026-10-03-autopilot-experiments.md) */
   autopilot?: ExperimentAutopilotScope;
   timeline: ExperimentEvent[];
+}
+
+/**
+ * What an experiment supervisor may read of one autopilot project (#1026):
+ * `labels` null = the whole project, else only traces with one of these
+ * labels (lowercase).
+ */
+export interface ExperimentSupervision {
+  labels: string[] | null;
 }
 
 /** Persisted store. */

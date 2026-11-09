@@ -30,7 +30,11 @@
  *    machine stores a copy as `~/.crewly/drive-logs/<date>-<sessionId>.md` +
  *    `.jsonl` (see drive-log.store.ts), readable by a local Claude Code;
  *  - two-phase answers (v3): the delivered words ask for `reply --drive
- *    --ack` within seconds, then the full result.
+ *    --ack` within seconds, then the full result;
+ *  - meetings (P2b, crewly#1415, `deps.meeting`): `meeting_pack` builds the
+ *    pack for a 1:1 meeting with one agent, `wiki_search` searches its wiki
+ *    live, and a delivery carrying `writeBack` is written into the thread it
+ *    belongs to (drive-meeting.service.ts) and reported back as written.
  *
  * Nothing the owner or the agents say is written to this machine's server
  * logs; the session log above is a separate file, kept 30 days.
@@ -38,7 +42,7 @@
  * @module services/drive/drive-agent.service
  */
 
-import { DRIVE_CONSTANTS } from '../../constants.js';
+import { DRIVE_CONSTANTS, MEETING_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { clip, speakable } from '../briefing/briefing.utils.js';
 import { getDriveLogStore, type DriveLogStore } from './drive-log.store.js';
@@ -46,11 +50,14 @@ import type { OwnerTurnMark } from '../briefing/briefing-cards.js';
 import type { IncomingMessage } from '../cloud/cloud-sync.types.js';
 import { isDriveModeRow } from './drive-row.utils.js';
 import { messagesToOwner, pickRecall, type RecallFeedMessage } from './drive-recall.js';
+import type { DriveMeetingService } from './drive-meeting.service.js';
 import {
   parseDeliveryFetch,
   parseDriveRelayData,
+  parseMeetingPackFetch,
   parseRecallFetch,
   parseStateFetch,
+  parseWikiFetch,
   type DriveDeliveryFetch,
   type DriveRelayData,
   type DriveTargetKind,
@@ -108,7 +115,8 @@ export interface DriveAgentDeps {
   /**
    * Record the owner's words as an owner turn and deliver them: the agent's
    * DM (agent / team lead), or the room of a team channel (a new thread on
-   * the first turn, then that thread). Text carries the Drive mode note.
+   * the first turn, then that thread). `text` (with the Drive mode note) goes
+   * to the agent; `ownerText` (the owner's words alone) is what the chat shows.
    */
   deliverOwnerTurn: (input: {
     kind: DriveTargetKind;
@@ -117,6 +125,7 @@ export interface DriveAgentDeps {
     channelId?: string;
     threadId?: string;
     text: string;
+    ownerText: string;
   }) => Promise<{ channelId: string; threadId?: string }>;
   /** Record an agent's spoken answer in its conversation (chat-v2, kept off Slack) */
   recordAgentTurn: (input: { agentSession: string; channelId: string; threadId?: string; text: string; interim: boolean; sessionId: string }) => Promise<void>;
@@ -143,20 +152,25 @@ export interface DriveAgentDeps {
   refreshStatus?: () => Promise<void>;
   /** Where session logs are kept (default: `~/.crewly/drive-logs`) */
   logStore?: DriveLogStore;
+  /** 1:1 meetings (P2b): pack, live wiki search and write-backs; absent = not offered */
+  meeting?: Pick<DriveMeetingService, 'buildPack' | 'searchWiki' | 'writeBack'>;
   fetchImpl?: (input: string, init: RequestInit) => Promise<Response>;
   now?: () => Date;
   logger?: ComponentLogger;
 }
 
 let active = false;
+let meetingActive = false;
 
 /**
  * Capabilities to advertise to Cloud (heartbeat and uploads).
  *
- * @returns `['drive_message']` while the handler runs, else `[]`
+ * @returns `['drive_message']` while the handler runs (plus `meeting_pack`
+ *   when it builds meeting packs), else `[]`
  */
 export function driveCapabilities(): string[] {
-  return active ? [C.CAPABILITY] : [];
+  if (!active) return [];
+  return meetingActive ? [C.CAPABILITY, MEETING_CONSTANTS.CAPABILITY] : [C.CAPABILITY];
 }
 
 /** The machine side of Drive mode — see module docs. */
@@ -165,6 +179,8 @@ export class DriveAgentService {
   private readonly now: () => Date;
   private readonly fetchImpl: (input: string, init: RequestInit) => Promise<Response>;
   private readonly inFlight = new Set<string>();
+  /** Conversations whose recap is being posted now (`sessionId/conversationId`) */
+  private readonly recapping = new Set<string>();
   private readonly listener = (msg: IncomingMessage): void => {
     void this.handle(msg);
   };
@@ -185,6 +201,7 @@ export class DriveAgentService {
     this.started = true;
     this.deps.source?.on('message', this.listener);
     active = true;
+    meetingActive = !!this.deps.meeting;
   }
 
   /** Unsubscribe. */
@@ -193,6 +210,7 @@ export class DriveAgentService {
     this.started = false;
     this.deps.source?.off('message', this.listener);
     active = false;
+    meetingActive = false;
   }
 
   /**
@@ -216,6 +234,8 @@ export class DriveAgentService {
       else if (data.op === 'warm') await this.warm(data, instanceId);
       else if (data.op === 'refresh') await this.deps.refreshStatus?.();
       else if (data.op === 'log') await this.saveLog(data, instanceId);
+      else if (data.op === 'meeting_pack') await this.meetingPack(data, instanceId);
+      else if (data.op === 'wiki_search') await this.wikiSearch(data, instanceId);
       else await this.end(data, instanceId);
       return 'done';
     } catch (error) {
@@ -234,7 +254,47 @@ export class DriveAgentService {
     const raw = await this.cloudGet(`/${data.sessionId}/machine/deliveries/${encodeURIComponent(data.id as string)}?instanceId=${encodeURIComponent(instanceId)}`);
     const d = parseDeliveryFetch(raw);
     if (!d) throw new Error('Cloud sent a malformed delivery');
+    if (d.writeBack && this.deps.meeting) {
+      await this.writeBack(d, instanceId);
+      return;
+    }
     await this.deliverFetched(d);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Meetings (P2b)
+  // ---------------------------------------------------------------------------
+
+  /** A meeting outcome: written into its thread (no Drive conversation), then reported to Cloud. */
+  private async writeBack(d: DriveDeliveryFetch, instanceId: string): Promise<void> {
+    if (this.deps.agentExists && !(await this.deps.agentExists(d.target.agentSession))) {
+      throw new Error(`No agent ${d.target.agentSession} on this machine`);
+    }
+    const meeting = this.deps.meeting as NonNullable<DriveAgentDeps['meeting']>;
+    const out = await meeting.writeBack({ sessionId: d.sessionId, agentSession: d.target.agentSession, text: d.text, writeBack: d.writeBack as NonNullable<DriveDeliveryFetch['writeBack']> });
+    await this.cloudPost(`/${d.sessionId}/machine/deliveries/${encodeURIComponent(d.id)}/written`, { instanceId, ...(out.threadRef ? { threadRef: out.threadRef } : {}) });
+    this.logger.info('Meeting write-back written', { sessionId: d.sessionId, kind: d.writeBack?.kind, via: out.via, newThread: !d.writeBack?.threadRef });
+  }
+
+  /** `op:'meeting_pack'`: build the agent's pack and post it. */
+  private async meetingPack(data: DriveRelayData, instanceId: string): Promise<void> {
+    if (!this.deps.meeting) return;
+    const path = `/${data.sessionId}/machine/packs/${encodeURIComponent(data.id as string)}`;
+    const req = parseMeetingPackFetch(await this.cloudGet(`${path}?instanceId=${encodeURIComponent(instanceId)}`));
+    if (!req) throw new Error('Cloud sent a malformed pack request');
+    if (this.deps.agentExists && !(await this.deps.agentExists(req.agentSession))) throw new Error(`No agent ${req.agentSession} on this machine`);
+    const pack = await this.deps.meeting.buildPack(req);
+    await this.cloudPost(path, { instanceId, pack });
+  }
+
+  /** `op:'wiki_search'`: search the agent's wiki and post the hits. */
+  private async wikiSearch(data: DriveRelayData, instanceId: string): Promise<void> {
+    if (!this.deps.meeting) return;
+    const path = `/${data.sessionId}/machine/wiki/${encodeURIComponent(data.id as string)}`;
+    const req = parseWikiFetch(await this.cloudGet(`${path}?instanceId=${encodeURIComponent(instanceId)}`));
+    if (!req) throw new Error('Cloud sent a malformed wiki search');
+    const { hits, ms } = await this.deps.meeting.searchWiki(req);
+    await this.cloudPost(path, { instanceId, hits, ms });
   }
 
   /**
@@ -254,6 +314,7 @@ export class DriveAgentService {
       ...(d.target.slackChannelId ? { slackChannelId: d.target.slackChannelId } : {}),
       ...(existing ? { channelId: existing.channelId, ...(existing.threadId ? { threadId: existing.threadId } : {}) } : {}),
       text: ownerTurnText(d.sessionId, d.target.kind, d.target.name, d.text),
+      ownerText: d.text,
     });
     const at = this.now().toISOString();
     const conv = await this.deps.store.update(
@@ -348,6 +409,19 @@ export class DriveAgentService {
   }
 
   private async recap(conv: DriveLocalConversation, agentSession: string, text: string): Promise<{ conversationId: string; closed: boolean }> {
+    // A second `--recap` while the first is still posting (a retried call) is the
+    // same recap: the owner got the same recap 2–3 times seconds apart (2026-10-22 audit).
+    const key = `${conv.sessionId}/${conv.conversationId}`;
+    if (this.recapping.has(key)) return { conversationId: conv.conversationId, closed: true };
+    this.recapping.add(key);
+    try {
+      return await this.postRecapOnce(conv, agentSession, text);
+    } finally {
+      this.recapping.delete(key);
+    }
+  }
+
+  private async postRecapOnce(conv: DriveLocalConversation, agentSession: string, text: string): Promise<{ conversationId: string; closed: boolean }> {
     const nextStep = !NOTHING_PENDING.test(text);
     const posted = await this.deps.postRecap({ conversation: conv, agentSession, text, nextStep });
     await this.forward(conv, agentSession, text, { recap: true, nextStep }).catch((err) => {
@@ -426,13 +500,16 @@ export class DriveAgentService {
     (this.deps.keepWarm ?? getDriveKeepWarm()).end(data.sessionId);
     const wanted = new Set(state.conversations.map((c) => c.conversationId));
     const local = (await this.deps.store.list()).filter((c) => c.sessionId === data.sessionId && wanted.has(c.conversationId) && !c.closedAt && !c.recapAskedAt);
-    for (const c of local) {
-      const ok = await this.deps.notifyAgent(c.agentSession, recapRequest(c)).catch(() => false);
+    // One recap per agent: an agent that answered for itself and for its team posted two recaps to the owner (2026-10-22).
+    const byAgent = new Map<string, DriveLocalConversation[]>();
+    for (const c of local) byAgent.set(c.agentSession, [...(byAgent.get(c.agentSession) ?? []), c]);
+    for (const [agentSession, cs] of byAgent) {
+      const ok = await this.deps.notifyAgent(agentSession, recapRequest(cs)).catch(() => false);
       if (!ok) {
-        this.logger.warn('Drive mode: could not ask for a recap', { sessionId: c.sessionId, conversationId: c.conversationId, agent: c.agentSession });
+        this.logger.warn('Drive mode: could not ask for a recap', { sessionId: data.sessionId, conversationIds: cs.map((c) => c.conversationId), agent: agentSession });
         continue;
       }
-      await this.deps.store.update(c.sessionId, c.conversationId, (cur) => (cur ? { ...cur, recapAskedAt: this.now().toISOString() } : null), this.now().getTime());
+      for (const c of cs) await this.deps.store.update(c.sessionId, c.conversationId, (cur) => (cur ? { ...cur, recapAskedAt: this.now().toISOString() } : null), this.now().getTime());
     }
   }
 
@@ -506,19 +583,26 @@ export function ownerTurnText(sessionId: string, kind: DriveTargetKind, name: st
 }
 
 /**
- * The harness note asking an agent for its recap.
+ * The harness note asking an agent for its recap: one recap however many
+ * of the session's conversations the agent answered (its own, its team's).
  *
- * @param c - Conversation
+ * @param conv - The agent's conversation(s) in the session
  * @returns Note text
  */
-export function recapRequest(c: DriveLocalConversation): string {
-  const where = c.kind === 'channel' ? c.targetName : c.kind === 'team' ? `your DM with the owner (for the ${c.targetName} team)` : 'your DM with the owner';
-  const transcript = c.turns
-    .slice(-12)
-    .map((t) => `${t.from === 'owner' ? 'Owner' : t.name}: ${clip(t.text, 400)}`)
+export function recapRequest(conv: DriveLocalConversation | readonly DriveLocalConversation[]): string {
+  const cs = Array.isArray(conv) ? (conv as readonly DriveLocalConversation[]) : [conv as DriveLocalConversation];
+  const c = cs[0];
+  const placeOf = (x: DriveLocalConversation): string => (x.kind === 'channel' ? x.targetName : x.kind === 'team' ? `your DM with the owner (for the ${x.targetName} team)` : 'your DM with the owner');
+  const where = placeOf(c);
+  const transcript = cs
+    .flatMap((x) => x.turns.map((t) => ({ ...t, label: cs.length > 1 && x.kind === 'team' ? ` (as the ${x.targetName} team)` : '' })))
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+    .slice(-12 * cs.length)
+    .map((t) => `${t.from === 'owner' ? 'Owner' : t.name}${t.label}: ${clip(t.text, 400)}`)
     .join('\n');
+  const several = cs.length > 1 ? ` You answered in ${cs.length} conversations of it (${cs.map((x) => (x.kind === 'team' ? `for the ${x.targetName} team` : x.kind === 'channel' ? x.targetName : 'as yourself')).join(', ')}): ONE recap covers them all.` : '';
   return [
-    `[Drive mode ended · session ${c.sessionId}] The owner ended the Drive mode conversation with you. Post ONE recap now, for reading:`,
+    `[Drive mode ended · session ${c.sessionId}] The owner ended the Drive mode conversation with you.${several} Post ONE recap now, for reading:`,
     `reply --drive ${c.sessionId} --recap "Drive mode recap — you said …; I did / answered …; next: … (or: nothing pending / waiting on X)"`,
     `It is posted in ${where}. After it the conversation is closed: no follow-ups or nudges unless the recap names a next step.`,
     '',

@@ -36,6 +36,7 @@ import type {
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { NetworkStatusService, warnUnlessOfflineRepeat } from '../core/network-status.service.js';
 import { SLACK_CLOUD_CONSTANTS } from '../../constants.js';
 import { SlackIdentityCloudError, type IdentityCloudClient } from './slack-agent-identity.service.js';
 
@@ -172,7 +173,7 @@ export class SlackCloudConfigService {
       await this.apply(fetched);
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
-      this.logger.warn('Cloud Slack config refresh failed — keeping cached copy', {
+      warnUnlessOfflineRepeat(this.logger, 'slack-cloud-config', 'Cloud Slack config refresh failed — keeping cached copy', {
         error: this.lastError,
         cached: !!this.config,
       });
@@ -450,6 +451,7 @@ export class SlackCloudConfigService {
         headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal,
       });
+      NetworkStatusService.getInstance().recordSuccess('slack-cloud-config');
       const text = await res.text();
       let parsed: { success?: boolean; data?: unknown; error?: string; code?: string; details?: { workspaces?: unknown } } = {};
       try {
@@ -489,6 +491,8 @@ export class SlackCloudConfigService {
       return parsed.data;
     } catch (err) {
       if (err instanceof SlackIdentityCloudError) throw err;
+      // Raw fetch error: the only place the DNS/route code is still visible.
+      NetworkStatusService.getInstance().recordFailure('slack-cloud-config', err);
       const message = err instanceof Error ? err.message : String(err);
       throw new SlackIdentityCloudError(502, 'network', `Cloud unreachable: ${message}`);
     } finally {

@@ -12,3 +12,4 @@ export { RoleEditor } from './RoleEditor';
 export { SkillsTab } from './SkillsTab';
 export { CloudDevicesTab } from './CloudDevicesTab';
 export { SecurityTab } from './SecurityTab';
+export { ActivityTab } from './ActivityTab';

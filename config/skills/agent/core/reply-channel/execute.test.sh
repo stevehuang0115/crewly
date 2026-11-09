@@ -42,10 +42,16 @@ class H(BaseHTTPRequestHandler):
         }
         with open(LOG_PATH, 'w') as f:
             f.write(json.dumps(log))
-        self.send_response(201)
+        if '@Atlas' in body:
+            # R6: an agents-only post in an owner thread goes to the agent privately.
+            self.send_response(200)
+            reply = {'success': True, 'data': {'deliveredPrivately': True, 'to': ['tt-atlas-1'], 'note': 'Not posted in the owner thread'}}
+        else:
+            self.send_response(201)
+            reply = {'success': True, 'data': {'id': 'm-stub-123', 'channelId': 'chan-xyz'}}
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        self.wfile.write(json.dumps({'success': True, 'data': {'id': 'm-stub-123', 'channelId': 'chan-xyz'}}).encode('utf-8'))
+        self.wfile.write(json.dumps(reply).encode('utf-8'))
     def do_GET(self):
         # Channel lookup by name (reply-channel --channel '#name').
         if self.path.startswith('/api/channels/%23tech-brief'):
@@ -197,6 +203,13 @@ if printf '%s' "$LOG" | grep -q '\\"files\\"'; then
 else
   PASS=$((PASS + 1)); echo "  ✓ a plain reply carries no files list"
 fi
+
+echo "test: an agents-only post delivered privately says it was not posted (R6)"
+: > "$STUB_LOG"
+OUT=$(run_skill --channel chan-xyz --content "@Atlas the numbers" 2>&1 || true)
+assert_contains "reports posted:false" "$OUT" '"posted":false'
+assert_contains "reports deliveredPrivately" "$OUT" '"deliveredPrivately":true'
+assert_contains "names the agent it went to" "$OUT" 'tt-atlas-1'
 
 echo
 echo "========================================"

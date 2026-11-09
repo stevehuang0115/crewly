@@ -22,6 +22,11 @@ tags:
   - owner
   - external
   - tone
+# Rule metadata (#877): what this rule prevents, where seen, when to re-test
+prevents: "Owner-facing messages leaked task ids, session names and tier codes, gave a status with no decision/reason/impact, and asked the owner questions the agent could decide (P0 plan 2026-05-03, decision 6)"
+seenOn: "claude-code, model not recorded (2026-05)"
+reviewBy: 2027-01-31
+source: https://github.com/stevehuang0115/crewly/pull/413
 ---
 
 # Owner-Facing Communication Standard

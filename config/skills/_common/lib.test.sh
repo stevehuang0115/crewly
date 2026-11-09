@@ -231,6 +231,8 @@ RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=1000 bash "$TEMP_DIR/skills/fake-skill/ex
 assert_eq "api_call: oversized body -> truncated=true" "true" "$(printf '%s' "$RESULT" | jq -r '.truncated')"
 assert_eq "api_call: envelope bytes == real byte count" "$(printf '%s' "$BIG" | LC_ALL=C wc -c | tr -d ' ')" "$(printf '%s' "$RESULT" | jq -r '.bytes')"
 assert_contains "api_call: envelope hint present" "pass --full or read the file" "$(printf '%s' "$RESULT" | jq -r '.hint')"
+assert_eq "api_call: envelope is a single line (tail -n 1 safe)" "1" "$(printf '%s\n' "$RESULT" | wc -l | tr -d ' ')"
+assert_eq "api_call: last line of envelope still parses" "true" "$(printf '%s\n' "$RESULT" | tail -n 1 | jq -r '.truncated')"
 assert_eq "api_call: head is the first 4000 chars" "${BIG:0:4000}" "$(printf '%s' "$RESULT" | jq -r '.head')"
 CAP_FILE=$(printf '%s' "$RESULT" | jq -r '.file')
 assert_contains "api_call: file lands under CREWLY_HOME/tmp/skill-output" "$CAP_DIR/fake-skill-" "$CAP_FILE"

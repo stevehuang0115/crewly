@@ -35,6 +35,7 @@ import { gzipSync } from 'zlib';
 import { randomUUID } from 'crypto';
 import { CLOUD_TALK_CONSTANTS, CONVERSATION_SYNC_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { NetworkStatusService, warnUnlessOfflineRepeat } from '../core/network-status.service.js';
 import { ownerVisibleContent } from '../chat-v2/ticket-line.utils.js';
 import type {
   BackfillCursor,
@@ -604,8 +605,10 @@ export class ConversationCloudSyncService {
         signal: AbortSignal.timeout(C.REQUEST_TIMEOUT_MS),
       });
     } catch (error) {
+      NetworkStatusService.getInstance().recordFailure('conversation-sync', error);
       return { ok: false, status: 0, code: null, message: error instanceof Error ? error.message : String(error) };
     }
+    NetworkStatusService.getInstance().recordSuccess('conversation-sync');
     const parsed = (await response.json().catch(() => null)) as unknown;
     if (response.ok) return { ok: true, response: parseIngestResponse(parsed) };
     return {
@@ -652,7 +655,12 @@ export class ConversationCloudSyncService {
       const delay = Math.min(C.BACKOFF_INITIAL_MS * 2 ** (this.failures - 1), C.BACKOFF_MAX_MS);
       this.pausedUntil = this.now() + delay;
       if (this.failures === 1 || delay === C.BACKOFF_MAX_MS) {
-        this.logger.warn('Conversation upload failed; will retry', { status, code, error: outcome.message, retryInMs: delay });
+        warnUnlessOfflineRepeat(this.logger, 'conversation-sync', 'Conversation upload failed; will retry', {
+          status,
+          code,
+          error: outcome.message,
+          retryInMs: delay,
+        });
       }
       this.wake(delay);
     }

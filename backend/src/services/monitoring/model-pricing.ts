@@ -33,6 +33,13 @@ export interface ModelRate {
 	cacheRead: number;
 	/** USD per token written to the prompt cache */
 	cacheWrite: number;
+	/**
+	 * A second rate card for long prompts, when the model has one (Claude
+	 * Haiku 5.5: 5x above 100K prompt tokens). It applies to a round-trip
+	 * whose prompt (fresh input + cache reads + cache writes) is larger than
+	 * `aboveTokens`.
+	 */
+	longPrompt?: { aboveTokens: number; rate: Omit<ModelRate, 'longPrompt'> };
 }
 
 /** A {@link ModelRate} plus how confidently it was matched to the model. */
@@ -58,33 +65,60 @@ function perMillion(input: number, output: number, cacheRead: number, cacheWrite
 	};
 }
 
-/** Opus-class list price (USD per 1M tokens). */
-export const OPUS_TIER = perMillion(15, 75, 1.5, 18.75);
-/** Sonnet-class list price (USD per 1M tokens). */
-export const SONNET_TIER = perMillion(3, 15, 0.3, 3.75);
-/** Haiku-class list price (USD per 1M tokens), 4.5 generation. */
-export const HAIKU_TIER = perMillion(1, 5, 0.1, 1.25);
+/**
+ * Opus-class list price (USD per 1M tokens) of the 4.6–5 generation; also
+ * the rate for an unlisted opus model.
+ */
+export const OPUS_TIER = perMillion(5, 25, 0.5, 6.25);
+/** Claude Opus 5.5: cheaper than Opus 5, and cache reads are 0.05x input. */
+export const OPUS_5_5_TIER = perMillion(4, 20, 0.2, 5);
+/** Opus 4.0/4.1 and older, before the 4.6 price cut. */
+const OPUS_LEGACY_TIER = perMillion(15, 75, 1.5, 18.75);
+/**
+ * Sonnet-class list price (USD per 1M tokens) of the 5 / 5.5 generation;
+ * also the rate for an unlisted sonnet model.
+ */
+export const SONNET_TIER = perMillion(2, 10, 0.2, 2.5);
+/** Sonnet 4.x list price. */
+const SONNET_4_TIER = perMillion(3, 15, 0.3, 3.75);
+/**
+ * Claude Haiku 5.5 (USD per 1M tokens) for prompts up to 100K tokens; a
+ * longer prompt is billed at 5x. Also the rate for an unlisted haiku model.
+ */
+export const HAIKU_TIER: ModelRate = {
+	...perMillion(0.1, 0.5, 0.01, 0.125),
+	longPrompt: { aboveTokens: 100_000, rate: perMillion(0.5, 2.5, 0.05, 0.625) },
+};
+/** Haiku 4.5 list price. */
+const HAIKU_4_5_TIER = perMillion(1, 5, 0.1, 1.25);
+/**
+ * Claude Fable 5.1 (USD per 1M tokens); cache reads are 0.025x input. Also
+ * the rate for an unlisted fable model.
+ */
+export const FABLE_TIER = perMillion(10, 50, 0.25, 12.5);
 
 /**
  * Per-model rates, keyed by the exact model id the runtime reports.
- *
- * `fable` models are priced at the opus tier. That is an assumption, not a
- * published figure — it is the closest tier by capability, and pricing a
- * frontier model at the sonnet default understates it roughly fivefold, which
- * is the more damaging error for a dashboard whose job is to surface runaway
- * spend. Costs for these models resolve with `source: 'family'` so the UI can
- * label them estimated.
+ * Source: Anthropic first-party API list prices (checked 2026-10-21).
  */
 const EXACT_RATES: Record<string, ModelRate> = {
+	'claude-fable-5-1': FABLE_TIER,
+	'claude-mythos-5-1': FABLE_TIER,
+	// Fable 5 has the same token prices, but cache reads at $1, not $0.25.
+	'claude-fable-5': perMillion(10, 50, 1, 12.5),
+	'claude-opus-5-5': OPUS_5_5_TIER,
 	'claude-opus-5': OPUS_TIER,
 	'claude-opus-4-8': OPUS_TIER,
+	'claude-opus-4-7': OPUS_TIER,
 	'claude-opus-4-6': OPUS_TIER,
-	'claude-opus-4-20250514': OPUS_TIER,
+	'claude-opus-4-20250514': OPUS_LEGACY_TIER,
+	'claude-sonnet-5-5': SONNET_TIER,
 	'claude-sonnet-5': SONNET_TIER,
-	'claude-sonnet-4-6': SONNET_TIER,
-	'claude-sonnet-4-20250514': SONNET_TIER,
-	'claude-haiku-4-5-20251001': HAIKU_TIER,
-	'claude-haiku-4-5': HAIKU_TIER,
+	'claude-sonnet-4-6': SONNET_4_TIER,
+	'claude-sonnet-4-20250514': SONNET_4_TIER,
+	'claude-haiku-5-5': HAIKU_TIER,
+	'claude-haiku-4-5-20251001': HAIKU_4_5_TIER,
+	'claude-haiku-4-5': HAIKU_4_5_TIER,
 	// The 4.0 generation of Haiku was a quarter of the 4.5 price.
 	'claude-haiku-4-20250506': perMillion(0.25, 1.25, 0.025, 0.3125),
 	// DeepSeek, used by the in-process crewly-agent runtime.
@@ -95,7 +129,8 @@ const EXACT_RATES: Record<string, ModelRate> = {
 /** Substring → tier, tried in order when no exact id matches. */
 const FAMILY_RATES: ReadonlyArray<readonly [string, ModelRate]> = [
 	['opus', OPUS_TIER],
-	['fable', OPUS_TIER],
+	['fable', FABLE_TIER],
+	['mythos', FABLE_TIER],
 	['sonnet', SONNET_TIER],
 	['haiku', HAIKU_TIER],
 	['deepseek', perMillion(0.27, 1.1, 0.07, 0.27)],
@@ -123,7 +158,7 @@ const FAMILY_RATES: ReadonlyArray<readonly [string, ModelRate]> = [
  * @example
  * ```typescript
  * const rate = resolveRate('claude-opus-5');   // source: 'exact'
- * const guess = resolveRate('claude-fable-5-1'); // source: 'family'
+ * const guess = resolveRate('claude-opus-9');   // source: 'family'
  * ```
  */
 export function resolveRate(model: string): ResolvedModelRate {
@@ -154,7 +189,8 @@ export interface TokenSplit {
 /**
  * Computes the cache-aware cost of one or more model round-trips.
  *
- * @param split - The four token counts; pass 0 for any the runtime omits
+ * @param split - The four token counts of ONE round-trip (the long-prompt
+ *   rate card is chosen from its prompt size); pass 0 for any the runtime omits
  * @param model - Model id as the runtime reported it
  * @returns Cost in USD, and whether the rate was an exact match
  *
@@ -170,11 +206,13 @@ export function calculateCost(
 	split: TokenSplit,
 	model: string,
 ): { cost: number; estimated: boolean; rateSource: ResolvedModelRate['source'] } {
-	const rate = resolveRate(model);
+	const resolved = resolveRate(model);
+	const prompt = split.input + split.cacheRead + split.cacheWrite;
+	const rate = resolved.longPrompt && prompt > resolved.longPrompt.aboveTokens ? resolved.longPrompt.rate : resolved;
 	const cost =
 		split.input * rate.input +
 		split.output * rate.output +
 		split.cacheRead * rate.cacheRead +
 		split.cacheWrite * rate.cacheWrite;
-	return { cost, estimated: rate.source !== 'exact', rateSource: rate.source };
+	return { cost, estimated: resolved.source !== 'exact', rateSource: resolved.source };
 }

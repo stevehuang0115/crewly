@@ -14,7 +14,8 @@ import type { AgentEvent } from '../../types/event-bus.types.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { parseRuntimeTokens } from '../monitoring/runtime-token-parser.service.js';
 import { getSettingsService } from '../settings/settings.service.js';
-import { computeAgentAttention } from './agent-attention.js';
+import { computeAgentAttention, declineKeystrokes, BACKGROUND_AGENT_EVIDENCE, type AttentionResult } from './agent-attention.js';
+import type { AgentRegistrationService } from '../agent/agent-registration.service.js';
 import { markWaiting, clearWaiting, getWaiting } from './agent-attention-registry.js';
 import { EscalationRouterService } from '../v3/escalation-router.service.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
@@ -87,6 +88,9 @@ export class ActivityMonitorService {
   private crewlyHome: string;
   private teamWorkingStatusFile: string;
   private eventBusService: EventBusService | null = null;
+  private agentRegistrationService: AgentRegistrationService | null = null;
+  /** Sessions whose prompt the harness declined, by poll time (ms). */
+  private selfAnsweredAt = new Map<string, number>();
   /** Tracks when each session entered in_progress (epoch ms) */
   private stuckCommandDetector: AntigravityStuckCommandDetector;
   private busyTransitionTimestamps: Map<string, number> = new Map();
@@ -171,6 +175,17 @@ export class ActivityMonitorService {
    *
    * @param service - The EventBusService instance
    */
+  /**
+   * Inject the registration service used to tell an agent what the harness
+   * did about a prompt it answered on the agent's behalf (queued until the
+   * agent is idle, like any other message).
+   *
+   * @param service - Agent registration service
+   */
+  setAgentRegistrationService(service: AgentRegistrationService): void {
+    this.agentRegistrationService = service;
+  }
+
   setEventBusService(service: EventBusService): void {
     this.eventBusService = service;
   }
@@ -327,19 +342,24 @@ export class ActivityMonitorService {
    * @param backend - Session backend to read screen and title from
    * @param identity - Agent identity for the event
    * @param now - ISO timestamp of this poll
+   * @returns The attention verdict for this poll (its evidence tells the
+   *   caller about background agents), or null when the screen could not be read
    */
   private async evaluateAttention(
     backend: ISessionBackend,
     identity: { teamId: string; teamName: string; memberId: string; memberName: string; sessionName: string },
     now: string,
-  ): Promise<void> {
+  ): Promise<AttentionResult | null> {
     try {
       const screen = backend.captureOutput(identity.sessionName, AGENT_ATTENTION_CONSTANTS.CAPTURE_LINES);
       const title = backend.getTerminalTitle?.(identity.sessionName) ?? '';
       const result = computeAgentAttention({ screen, title });
       if (result.verdict !== 'waiting_on_human' || !result.kind) {
         await this.clearAttention(identity.sessionName, identity, now);
-        return;
+        return result;
+      }
+      if (result.selfAnswer && this.selfAnswerPrompt(backend, identity.sessionName, screen, result, now)) {
+        return result;
       }
       const isNew = markWaiting({
         sessionName: identity.sessionName,
@@ -348,7 +368,7 @@ export class ActivityMonitorService {
         evidence: result.evidence,
         ...(result.titleLabel ? { titleLabel: result.titleLabel } : {}),
       });
-      if (!isNew) return;
+      if (!isNew) return result;
       this.logger.warn('Agent is waiting on a human (blocked on a prompt)', {
         sessionName: identity.sessionName,
         kind: result.kind,
@@ -364,12 +384,75 @@ export class ActivityMonitorService {
         evidence: result.evidence,
         ...(result.titleLabel ? { titleLabel: result.titleLabel } : {}),
       });
+      return result;
     } catch (error) {
       this.logger.warn('waiting_on_human evaluation failed (non-fatal)', {
         sessionName: identity.sessionName,
         error: error instanceof Error ? error.message : String(error),
       });
+      return null;
     }
+  }
+
+  /**
+   * Answer a prompt the harness knows how to answer, instead of waiting for
+   * a human who is not at this machine.
+   *
+   * Today that is Claude Code's "Dangerous rm operation" prompt, which bypass
+   * mode does not skip: the harness moves the selector to "No" and confirms
+   * (nothing is deleted), then queues a message telling the agent to re-run
+   * with absolute paths. The decline is remembered per session; while the
+   * screen is still being redrawn the caller skips the usual escalation, and
+   * if the prompt is still there after `RETRY_AFTER_MS` the escalation to the
+   * owner proceeds as before.
+   *
+   * @param backend - Session backend holding the agent's PTY
+   * @param sessionName - Agent session
+   * @param screen - The captured screen the verdict was computed from
+   * @param result - The waiting_on_human verdict with `selfAnswer` set
+   * @param now - ISO timestamp of this poll
+   * @returns true when the caller should not escalate on this poll
+   */
+  private selfAnswerPrompt(
+    backend: ISessionBackend,
+    sessionName: string,
+    screen: string,
+    result: AttentionResult,
+    now: string,
+  ): boolean {
+    const nowMs = Date.parse(now);
+    const declinedAt = this.selfAnsweredAt.get(sessionName);
+    if (declinedAt !== undefined) {
+      if (nowMs - declinedAt < AGENT_ATTENTION_CONSTANTS.SELF_ANSWER.RETRY_AFTER_MS) return true;
+      this.selfAnsweredAt.delete(sessionName);
+      this.logger.warn('Self-answered prompt is still on screen; escalating to the owner', {
+        sessionName,
+        kind: result.kind,
+        evidence: result.evidence,
+      });
+      return false;
+    }
+    const keys = declineKeystrokes(screen);
+    const session = backend.getSession(sessionName);
+    if (!keys || !session) return false;
+    session.write(keys);
+    this.selfAnsweredAt.set(sessionName, nowMs);
+    this.logger.info('Declined a prompt on the agent\'s behalf (no human at this machine)', {
+      sessionName,
+      kind: result.kind,
+      evidence: result.evidence,
+    });
+    if (this.agentRegistrationService) {
+      void this.agentRegistrationService
+        .sendMessageToAgent(sessionName, AGENT_ATTENTION_CONSTANTS.SELF_ANSWER.DANGEROUS_RM_MESSAGE)
+        .catch((error: unknown) => {
+          this.logger.warn('Could not tell the agent about the declined prompt', {
+            sessionName,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    }
+    return true;
   }
 
   /**
@@ -391,6 +474,7 @@ export class ActivityMonitorService {
     identity: { teamId: string; teamName: string; memberId: string; memberName: string; sessionName: string },
     now: string,
   ): Promise<void> {
+    this.selfAnsweredAt.delete(sessionName);
     const cleared = clearWaiting(sessionName);
     if (!cleared) return;
     this.logger.info('Agent is no longer waiting on a human', { sessionName, kind: cleared.kind, since: cleared.since });
@@ -748,11 +832,13 @@ export class ActivityMonitorService {
                 continue;
               }
 
-              // waiting_on_human (#815): is the agent blocked on a prompt?
-              await this.evaluateAttention(backend, {
+              // waiting_on_human (#815): is the agent blocked on a prompt? The same
+              // screen read says whether a background (fork) agent is still running.
+              const attention = await this.evaluateAttention(backend, {
                 teamId: team.id, teamName: team.name, memberId: member.id, memberName: member.name, sessionName: member.sessionName,
               }, now);
               attentionChecked.add(member.sessionName);
+              const backgroundWork = attention?.evidence.includes(BACKGROUND_AGENT_EVIDENCE) ?? false;
 
               // Antigravity can hang on a finished "Running command..." spinner: Escape un-sticks it.
               if (effectiveRuntimeType(member.sessionName, member.runtimeType ?? '') === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
@@ -775,14 +861,17 @@ export class ActivityMonitorService {
                 }
               }
 
-              // A silent screen mid-turn (long tool call, long tool input) is not idle.
+              // A silent screen mid-turn (long tool call, long tool input) is not idle,
+              // and neither is a prompt with a background (fork) agent still running:
+              // the runtime reports no turn then, but stopping the agent kills the fork.
               const memberMidTurn = this.isRuntimeMidTurn(member.sessionName);
-              let newWorkingStatus: WorkingStatus = outputChanged || memberMidTurn ? 'in_progress' : 'idle';
+              let newWorkingStatus: WorkingStatus = outputChanged || memberMidTurn || backgroundWork ? 'in_progress' : 'idle';
 
               // Auto-reset: if in_progress for longer than MAX_IN_PROGRESS_MS, force idle
-              // (never while the runtime reports a turn — see the orchestrator branch)
+              // (never while the runtime reports a turn — see the orchestrator branch —
+              // or a background agent is running; a long render is not a stuck spinner)
               const memberKey = member.sessionName;
-              if (newWorkingStatus === 'in_progress' && !memberMidTurn) {
+              if (newWorkingStatus === 'in_progress' && !memberMidTurn && !backgroundWork) {
                 let busySince = this.busyTransitionTimestamps.get(memberKey);
                 if (!busySince) {
                   // Seed timestamp when status is already in_progress but no transition was

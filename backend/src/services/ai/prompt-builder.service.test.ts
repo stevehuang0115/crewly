@@ -1557,7 +1557,7 @@ Decompose and delegate.`;
 	});
 
 	describe('buildSessionRecoverySection', () => {
-		it('should generate session recovery section with recall and get-my-context commands', () => {
+		it('should generate session recovery section with one get-my-context search and no separate recall (#857)', () => {
 			const result = service.buildSessionRecoverySection(
 				'crewly-product-sam',
 				'developer',
@@ -1565,28 +1565,29 @@ Decompose and delegate.`;
 			);
 
 			expect(result).toContain('Session Recovery Protocol (MANDATORY)');
-			expect(result).toContain('recall/execute.sh');
+			expect(result).not.toContain('core/recall/execute.sh');
+			expect(result).not.toContain('core/get-my-tasks/execute.sh');
 			expect(result).toContain('get-my-context/execute.sh');
 			expect(result).toContain('"agentId":"crewly-product-sam"');
 			expect(result).toContain('"agentRole":"developer"');
 			expect(result).toContain('"projectPath":"/test/project"');
+			expect(result).toContain('"context":"developer session startup, recent tasks, unfinished work, blockers, key decisions"');
 		});
 
-		it('should include all recovery steps including Step 1.5 (issue #395)', () => {
+		it('should include all recovery steps including the active-work step (issue #395)', () => {
 			const result = service.buildSessionRecoverySection(
 				'test-agent',
 				'qa',
 				'/projects/app'
 			);
 
-			expect(result).toContain('Step 1: Recall previous knowledge');
-			expect(result).toContain('Step 1.5: Read your active work');
-			expect(result).toContain('Step 2: Load your full context');
+			expect(result).toContain('Step 1: Load your context (one memory search)');
+			expect(result).toContain('Step 2: Read your active work');
 			expect(result).toContain('Step 3: Register yourself as active');
 			expect(result).toContain('Step 4: Assess and report');
 		});
 
-		it('should reference get-my-active-work skill in Step 1.5 (issue #395)', () => {
+		it('should reference get-my-active-work skill in Step 2 (issue #395)', () => {
 			const result = service.buildSessionRecoverySection(
 				'test-agent',
 				'developer',
@@ -1619,8 +1620,8 @@ Decompose and delegate.`;
 				'/custom/root'
 			);
 
-			expect(result).toContain('/custom/root/config/skills/agent/core/recall/execute.sh');
 			expect(result).toContain('/custom/root/config/skills/agent/core/get-my-context/execute.sh');
+			expect(result).toContain('/custom/root/config/skills/agent/core/get-my-active-work/execute.sh');
 		});
 
 		it('should include role in the recall context query', () => {
@@ -1948,6 +1949,9 @@ describe('buildModuleConfigFromTeamMember — WIRE-1 wiring', () => {
 		expect(on.teamTiers?.optimizeUsage).toBe(true);
 		expect(on.teamTiers?.routingRules).toEqual(['polling -> Ella']);
 		expect(on.teamTiers?.members.find((m) => m.name === 'Ella')).toEqual({ name: 'Ella', tier: 'weak', model: 'haiku' });
+		expect(on.teamTiers?.changeMode).toBe('approve');
+		const auto = buildModuleConfigFromTeamMember(member, { ...team, tierChangeMode: 'auto' }, makeRuntime());
+		expect(auto.teamTiers?.changeMode).toBe('auto');
 	});
 
 	it('resolves orgRole=team-lead for canDelegate=true members', () => {
@@ -3280,7 +3284,11 @@ describe('Pipeline Dogfood Amendments (spec 2026-05-05) — §5.1', () => {
 				const orcPromptPath = path.join(repoRoot, 'config', 'roles', 'orchestrator', 'prompt.md');
 				const orcPrompt = fs.readFileSync(orcPromptPath, 'utf8');
 				const lineCount = orcPrompt.split('\n').length;
-				expect(lineCount).toBeLessThanOrEqual(1806);
+				// 1806 → 1809 (1808 lines + the trailing newline split): #1374
+				// (team lead reports orc-delegated work to the owner) added two
+				// owner-requested lines; re-pinned so the guard is honest again
+				// (it had been red on main since then).
+				expect(lineCount).toBeLessThanOrEqual(1809);
 			});
 
 			it('owner-facing SOP file exists at the canonical path with the expected id and title', () => {

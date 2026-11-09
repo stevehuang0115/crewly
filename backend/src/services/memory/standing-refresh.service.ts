@@ -45,7 +45,6 @@ import { atomicWriteJson, ensureDir, safeReadJson } from '../../utils/file-io.ut
 import {
 	StandingAnswersService,
 	invalidationKey,
-	PROJECT_STANDING_PAGES,
 	AGENT_STANDING_PAGE,
 	type StandingLocation,
 	type StandingPageDef,
@@ -199,9 +198,14 @@ export class StandingRefreshService {
 			);
 			const itemsById = new Map(items.map((wi) => [wi.id, wi]));
 
+			// Built-in pages plus the project's custom questions (#914 P2). The
+			// owner rules page is human-owned: never raise a refresh for it.
+			const projectDefs = await Promise.all(
+				[...new Set(projects)].map(async (projectPath) => ({ projectPath, defs: (await this.service.listProjectPageDefs(projectPath)).filter((d) => !d.ownerOnly) })),
+			);
 			const candidates: Array<{ def: StandingPageDef; loc: StandingLocation; key: string }> = [
-				...[...new Set(projects)].flatMap((projectPath) =>
-					PROJECT_STANDING_PAGES.map((def) => ({ def, loc: { projectPath }, key: `project:${projectPath}:${def.id}` })),
+				...projectDefs.flatMap(({ projectPath, defs }) =>
+					defs.map((def) => ({ def, loc: { projectPath }, key: `project:${projectPath}:${def.id}` })),
 				),
 				...[...new Set(agents)].map((sessionName) => ({
 					def: AGENT_STANDING_PAGE,

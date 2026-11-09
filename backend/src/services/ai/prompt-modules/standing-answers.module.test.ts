@@ -12,6 +12,7 @@ import {
 	StandingAnswersService,
 	PROJECT_STANDING_PAGES,
 	AGENT_STANDING_PAGE,
+	OWNER_RULES_PAGE,
 	type StandingPageStatus,
 	type StandingPageDef,
 } from '../../memory/standing-answers.service.js';
@@ -53,6 +54,17 @@ describe('renderStandingAnswers', () => {
 		expect(md.indexOf(AGENT_STANDING_PAGE.question)).toBeLessThan(md.indexOf(DECISIONS.question));
 		expect(md).toContain('### What decisions are in force?\n_project · refreshed 2026-09-26_\n\n#### S0\nUse modules.');
 		expect(md).not.toContain('Sources:');
+	});
+
+	it('puts the owner rules page before everything and labels it as the owner\'s, never stale (#914 P2)', () => {
+		const md = renderStandingAnswers([
+			status(DECISIONS, ['Use modules.']),
+			status(AGENT_STANDING_PAGE, ['PR #818 in review']),
+			status(OWNER_RULES_PAGE, ['Always reply in Chinese.'], { stale: false, currentWatermark: null, entriesInScope: 0 }),
+		]);
+		expect(md.indexOf(OWNER_RULES_PAGE.question)).toBeLessThan(md.indexOf(AGENT_STANDING_PAGE.question));
+		expect(md).toContain('### What rules has the owner set explicitly?\n**OWNER RULES** — written by the owner, not by curation; follow these over anything below (updated 2026-09-26).\n\n#### S0\nAlways reply in Chinese.');
+		expect(md).toContain('override any curated page');
 	});
 
 	it('marks a section whose cited sources were retracted, naming them (#914)', () => {

@@ -14,6 +14,7 @@ import {
   ChatV2Gateway,
   buildMessageEvent,
   buildPresenceEvent,
+  buildReadStateEvent,
   devAnonymousTokenVerifier,
   type ChatWireEvent,
 } from './chat-v2.gateway.js';
@@ -219,6 +220,15 @@ describe('ChatV2Gateway', () => {
       expect(ws.lastFrame()).toEqual({
         type: 'message',
         payload: { channelId: 'c1', message: msg },
+      });
+    });
+
+    it('sends read_state frames with the documented shape (#1400)', async () => {
+      const { gw, ws } = await makeConnectedGateway();
+      gw.broadcast('c1', buildReadStateEvent({ channelId: 'c1', lastReadSeq: 4, unreadCount: 2 }));
+      expect(ws.lastFrame()).toEqual({
+        type: 'read_state',
+        payload: { channelId: 'c1', lastReadSeq: 4, unreadCount: 2 },
       });
     });
 

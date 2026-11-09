@@ -168,6 +168,31 @@ describe('CloudDevicesTab', () => {
     expect(writeText).toHaveBeenCalledWith('fd41df2b-aaaa');
   });
 
+  it('offers a one-click install when no browser extension is connected (new tab, tagged devices-empty), and not when one is', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    mockFetch({ connected: true, proxyConnected: false, instances: [] });
+    const { unmount } = renderTab();
+    const button = await screen.findByTestId('devices-install-extension');
+    expect(button).toHaveTextContent('Install Crewly in Chrome');
+    fireEvent.click(button);
+    expect(open).toHaveBeenCalledWith(
+      'https://chromewebstore.google.com/detail/crewly-in-chrome/mekcefkcdgefjhadkcbkdpmilcaekhnc?utm_source=crewly-app&utm_medium=devices-empty&utm_campaign=chrome-ext-usage',
+      '_blank',
+      'noopener,noreferrer',
+    );
+    unmount();
+
+    mockFetch({
+      connected: true,
+      proxyConnected: true,
+      instances: [{ instanceId: 'fd41df2b-aaaa', instanceName: 'Chrome (macOS)', lastSeenAt: new Date().toISOString() }],
+    });
+    renderTab();
+    expect(await screen.findByText('Chrome (macOS)')).toBeInTheDocument();
+    expect(screen.queryByTestId('devices-install-extension')).not.toBeInTheDocument();
+    open.mockRestore();
+  });
+
   it('keeps the Cloud address under Connection details', async () => {
     mockFetch({ connected: true });
     renderTab();

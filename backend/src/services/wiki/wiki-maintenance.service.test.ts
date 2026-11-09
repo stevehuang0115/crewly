@@ -9,14 +9,16 @@ import { WikiMaintenanceService } from './wiki-maintenance.service.js';
 import type { WikiLogRotationService } from './wiki-log-rotation.service.js';
 import type { WikiLogCompileService } from './wiki-log-compile.service.js';
 import type { WikiQueueDrainService } from './wiki-queue-drain.service.js';
+import type { WikiKnowledgeGapsService } from './wiki-knowledge-gaps.service.js';
 import { WIKI_LOG_CONSTANTS } from '../../constants.js';
 
 function fakes() {
-  const calls = { drain: 0, rotate: [] as string[][], compile: [] as string[][] };
+  const calls = { drain: 0, rotate: [] as string[][], compile: [] as string[][], gaps: [] as string[][] };
   const drain = { drain: jest.fn(async () => { calls.drain++; return { pending: 0, tooYoung: 0, noVault: 0, filed: 0, skipped: 0, failed: 0, deferred: 0, dryRun: false }; }) } as unknown as WikiQueueDrainService;
   const rotation = { rotateAll: jest.fn(async (vaults: string[]) => { calls.rotate.push(vaults); return []; }) } as unknown as WikiLogRotationService;
   const compile = { compileAll: jest.fn(async (vaults: string[]) => { calls.compile.push(vaults); return []; }) } as unknown as WikiLogCompileService;
-  return { calls, drain, rotation, compile };
+  const gaps = { compileAll: jest.fn(async (vaults: string[]) => { calls.gaps.push(vaults); return []; }) } as unknown as WikiKnowledgeGapsService;
+  return { calls, drain, rotation, compile, gaps };
 }
 
 describe('WikiMaintenanceService', () => {
@@ -42,6 +44,7 @@ describe('WikiMaintenanceService', () => {
     expect(first.daily?.vaults).toEqual(vaults);
     expect(f.calls.rotate).toEqual([vaults]);
     expect(f.calls.compile).toEqual([vaults]);
+    expect(f.calls.gaps).toEqual([vaults]);
 
     clock += 60 * 60 * 1000;
     const second = await svc.tick();
@@ -78,6 +81,7 @@ describe('WikiMaintenanceService', () => {
     await svc.tick();
     expect(f.drain.drain).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true }));
     expect(f.rotation.rotateAll).toHaveBeenCalledWith(vaults, expect.objectContaining({ dryRun: true }));
+    expect(f.gaps.compileAll).toHaveBeenCalledWith(vaults, expect.objectContaining({ dryRun: true }));
     expect(f.compile.compileAll).toHaveBeenCalledWith(vaults, expect.objectContaining({ dryRun: true }));
     expect(svc.isDailyDue()).toBe(true);
   });

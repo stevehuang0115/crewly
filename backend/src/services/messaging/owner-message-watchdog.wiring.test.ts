@@ -267,6 +267,11 @@ describe('nudgeAgent', () => {
     expect(d.sent).toHaveLength(0);
   });
 
+  it('a start deferred by the running-agent cap → blocked (slot_wait), not asleep (2026-10-19 Dex)', async () => {
+    const d = deps({ sessionExists: () => false, activate: async () => ({ success: false, error: 'cap reached', deferred: true }) });
+    await expect(nudgeAgent(d, entry(), 10)).resolves.toEqual({ outcome: 'blocked', reason: 'slot_wait' });
+  });
+
   it('a reminder the agent\'s queue took (busy, or input held) is reported as queued, not delivered (2026-10-08 Ella)', async () => {
     const d = deps({ sendToAgent: async () => ({ success: true, queued: true }) });
     await expect(nudgeAgent(d, entry(), 10)).resolves.toEqual({ outcome: 'sent', queued: true });

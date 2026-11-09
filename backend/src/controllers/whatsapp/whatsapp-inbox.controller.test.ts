@@ -42,6 +42,7 @@ describe('WhatsApp inbox routes', () => {
   let ownerMessages: Array<{ at: number; text: string }>;
   let sender: { isConnected: jest.Mock; sendMessage: jest.Mock };
   let getOwnerMessagesSince: jest.Mock;
+  let activity: jest.Mock;
   /** Whether a header-less caller presents the owner's API token */
   let ownerTokenOk = true;
   let app: express.Express;
@@ -54,6 +55,7 @@ describe('WhatsApp inbox routes', () => {
     getOwnerMessagesSince = jest.fn((since: number) =>
       ownerMessages.filter((m) => m.at >= since).sort((a, b) => b.at - a.at).map((m) => m.text),
     );
+    activity = jest.fn();
     app = express();
     app.use(ownerUnlessAgentForTests);
     app.use(express.json());
@@ -65,6 +67,7 @@ describe('WhatsApp inbox routes', () => {
         getOwnerMessagesSince,
         now: () => now,
         isOwnerRequest: () => ownerTokenOk,
+        recordActivity: activity,
       }),
     );
     app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -228,6 +231,14 @@ describe('WhatsApp inbox routes', () => {
       const again = await request(app).post('/api/whatsapp/drafts/W1/discard');
       expect(again.status).toBe(409);
       expect((await request(app).post('/api/whatsapp/drafts/W9/discard')).status).toBe(404);
+      // One activity line for the discard, by the agent that dropped it (#881).
+      expect(activity).toHaveBeenCalledTimes(1);
+      expect(activity.mock.calls[0][0]).toMatchObject({
+        actor: { type: 'agent', id: 'crewly-orc' },
+        action: 'send.whatsapp.discarded',
+        target: { type: 'whatsapp-chat', id: ANN, name: 'Ann' },
+        after: { code: 'W1', draftedBy: 'crewly-orc', status: 'discarded' },
+      });
     });
 
     describe('POST /drafts/:id/send — the gate', () => {
@@ -239,6 +250,14 @@ describe('WhatsApp inbox routes', () => {
         expect(res.body.data).toMatchObject({ status: 'sent', sentAt: T0 + 5000, via: 'owner' });
         expect(sender.sendMessage).toHaveBeenCalledWith({ to: ANN, text: 'Yes, 8 works!' });
         expect(getOwnerMessagesSince).not.toHaveBeenCalled();
+        // The send is on the activity log as the owner's (#881).
+        expect(activity).toHaveBeenCalledTimes(1);
+        expect(activity.mock.calls[0][0]).toMatchObject({
+          actor: { type: 'owner' },
+          action: 'send.whatsapp',
+          target: { type: 'whatsapp-chat', id: ANN, name: 'Ann' },
+          after: { code: d.code, draftedBy: 'crewly-orc', text: 'Yes, 8 works!', status: 'sent', via: 'owner' },
+        });
       });
 
       it('a header-less caller without the owner token is refused (an agent leaving out its session header is not the owner)', async () => {
@@ -274,6 +293,7 @@ describe('WhatsApp inbox routes', () => {
         expect(res.body.data.via).toBe('owner_confirmation');
         expect(sender.sendMessage).toHaveBeenCalledTimes(1);
         expect(getOwnerMessagesSince).toHaveBeenCalledWith(T0, WHATSAPP_CONSTANTS.OWNER_CONFIRM_SCAN_LIMIT);
+        expect(activity).toHaveBeenCalledWith(expect.objectContaining({ actor: { type: 'agent', id: 'crewly-orc', via: 'agent-session' }, action: 'send.whatsapp', after: expect.objectContaining({ via: 'owner_confirmation' }) }));
       });
 
       it('agent: a confirmation that predates the draft does not count', async () => {

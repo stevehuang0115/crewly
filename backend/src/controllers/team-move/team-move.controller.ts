@@ -30,6 +30,7 @@ import { TeamMoveCloudError } from '../../services/team-move/team-move-cloud.cli
 import { getTeamMoveDriver, type TeamMoveDriver } from '../../services/team-move/team-move-driver.service.js';
 import { fetchMachines, updateHints, type MachineView } from '../../services/team-move/team-move-machines.js';
 import { isMoveId } from '../../services/team-move/team-move-journal.js';
+import { actorFromRequest, recordActivity } from '../../services/activity/activity-log.service.js';
 
 /** How recent the owner's "yes" must be when the orchestrator starts a move. */
 export const MOVE_APPROVAL_LOOKBACK_MS = 30 * 60 * 1000;
@@ -195,6 +196,7 @@ export function createTeamMovesRouter(deps: Partial<TeamMoveControllerDeps> = {}
         skipFlagged: body['skipFlagged'] === true,
         carryChanges: body['carryChanges'] === true,
       });
+      recordActivity({ actor: actorFromRequest(req), action: 'team.move.started', target: { type: 'team', id: resolved.teamId }, after: { target: resolved.targetName, targetInstanceId: resolved.targetInstanceId, moveId: started.moveId } });
       res.status(202).json({ success: true, data: { moveId: started.moveId, target: resolved.targetName } });
     } catch (error) {
       sendError(res, error);

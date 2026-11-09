@@ -111,6 +111,7 @@ describe('chat-v2/types', () => {
         agentPresence: { status: 'offline', lastSeenAt: null },
         type: 'channel',
         teamId: 't-1',
+        lastReadSeq: 0, unreadCount: 0,
       };
       const _msgDto: ChatMessageDTO = {
         id: 'm-1',

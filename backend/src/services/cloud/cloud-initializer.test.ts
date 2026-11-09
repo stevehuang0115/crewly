@@ -207,6 +207,90 @@ describe('CloudInitializer', () => {
 		expect(client.getToken()).toBeTruthy();
 	});
 
+	describe('refresh token rotation on startup (1.20.372 regression)', () => {
+		const realFetch = global.fetch;
+		const jwtWithExp = (expMs: number): string =>
+			`eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ type: 'refresh', exp: Math.floor(expMs / 1000) })).toString('base64url')}.s`;
+		const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+		let refreshBodies: Array<{ refreshToken: string; rotate?: boolean }>;
+
+		/** Cloud: /api/cloud/refresh answers with `body`; every other call (relay-token validate) fails quietly. */
+		function mockCloud(body: Record<string, unknown>): void {
+			refreshBodies = [];
+			global.fetch = jest.fn(async (url: unknown, init?: { body?: string }) => {
+				if (String(url).includes('/api/cloud/refresh')) {
+					refreshBodies.push(JSON.parse(String(init?.body)));
+					return { ok: true, status: 200, json: async () => body, text: async () => '' } as unknown as Response;
+				}
+				return { ok: false, status: 500, json: async () => ({}), text: async () => '' } as unknown as Response;
+			}) as unknown as typeof fetch;
+		}
+
+		/** The refresh token inside the last config written to "disk". */
+		function lastWrittenRefreshToken(): string | undefined {
+			const fsp = jest.requireMock('fs/promises');
+			const calls = (fsp.writeFile as jest.Mock).mock.calls;
+			return (JSON.parse(calls[calls.length - 1][1]) as { refreshToken?: string }).refreshToken;
+		}
+
+		afterEach(() => {
+			global.fetch = realFetch;
+		});
+
+		it('(a) expired access token + near-expiry refresh token: the client and the persisted config both hold the successor', async () => {
+			const stale = jwtWithExp(Date.now() + 2 * 86_400_000);
+			mockCloud({ success: true, accessToken: 'fresh-access', refreshToken: 'successor-rt' });
+			mockReadConfig.mockReturnValue(
+				cfgRead({ cloudUrl: 'https://api.crewlyai.com', token: 'expired-access-token', tier: 'pro', connectedAt: '2026-03-20T00:00:00Z', refreshToken: stale }),
+			);
+
+			const result = await initializeCloudIfConfigured();
+			await flush();
+
+			expect(result).toMatchObject({ attempted: true, success: true });
+			expect(refreshBodies).toHaveLength(1);
+			expect(refreshBodies[0]).toMatchObject({ refreshToken: stale, rotate: true });
+			const client = CloudClientService.getInstance();
+			expect(client.getRefreshToken()).toBe('successor-rt');
+			expect(lastWrittenRefreshToken()).toBe('successor-rt');
+		});
+
+		it('(b) the hourly refresh after that startup uses the successor and keeps it', async () => {
+			const stale = jwtWithExp(Date.now() + 2 * 86_400_000);
+			mockCloud({ success: true, accessToken: 'fresh-access', refreshToken: 'successor-rt' });
+			mockReadConfig.mockReturnValue(
+				cfgRead({ cloudUrl: 'https://api.crewlyai.com', token: 'expired-access-token', tier: 'pro', connectedAt: '2026-03-20T00:00:00Z', refreshToken: stale }),
+			);
+			await initializeCloudIfConfigured();
+			await flush();
+
+			mockCloud({ success: true, accessToken: 'hourly-access' });
+			const client = CloudClientService.getInstance();
+			expect(await client.tryRefreshToken()).toBe(true);
+			await flush();
+
+			expect(refreshBodies).toHaveLength(1);
+			expect(refreshBodies[0].refreshToken).toBe('successor-rt');
+			expect(client.getRefreshToken()).toBe('successor-rt');
+			expect(lastWrittenRefreshToken()).toBe('successor-rt');
+		});
+
+		it('(c) no rotation (refresh token far from expiry): the old behaviour is unchanged', async () => {
+			const far = jwtWithExp(Date.now() + 25 * 86_400_000);
+			mockCloud({ success: true, accessToken: 'fresh-access' });
+			mockReadConfig.mockReturnValue(
+				cfgRead({ cloudUrl: 'https://api.crewlyai.com', token: 'expired-access-token', tier: 'pro', connectedAt: '2026-03-20T00:00:00Z', refreshToken: far }),
+			);
+
+			await initializeCloudIfConfigured();
+			await flush();
+
+			expect(refreshBodies[0].rotate).toBeUndefined();
+			expect(CloudClientService.getInstance().getRefreshToken()).toBe(far);
+			expect(lastWrittenRefreshToken()).toBe(far);
+		});
+	});
+
 	it('should log hasRefreshToken correctly when refreshToken is present', async () => {
 		const config = {
 			cloudUrl: 'https://api.crewlyai.com',

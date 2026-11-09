@@ -128,13 +128,11 @@ export async function installItem(item: MarketplaceItem): Promise<MarketplaceOpe
     // Determine if this is a GitHub-sourced skill (directory path, not a .tar.gz)
     const isGitHubSource = assetPath.startsWith('config/skills/') && !assetPath.endsWith('.tar.gz');
 
-    if (isGitHubSource) {
-      // Download individual skill files from GitHub raw content
-      return await installFromGitHub(item, installPath, assetPath);
-    }
-
-    // Archive-based install (local assets or premium CDN)
-    const downloadResult = await downloadAndExtractAsset(item, installPath, assetPath);
+    // Download individual skill files from GitHub raw content, or extract
+    // the archive (local assets or premium CDN). Neither touches the manifest.
+    const downloadResult = isGitHubSource
+      ? await installFromGitHub(item, installPath, assetPath)
+      : await downloadAndExtractAsset(item, installPath, assetPath);
     if (!downloadResult.success) {
       return downloadResult;
     }
@@ -185,6 +183,13 @@ export function resolveInstallFile(installPath: string, file: string): string | 
  * Public skills in the crewly repo are stored as directories (not archives).
  * This function downloads the essential skill files (SKILL.md, execute.sh)
  * concurrently from GitHub. SKILL.md and execute.sh are required.
+ *
+ * Like `downloadAndExtractAsset`, this only writes files: it never touches
+ * the installed-items manifest, so callers that stage into a temporary
+ * directory (`updateItem`) can finalize once the files are in their final
+ * place. (Finalizing here used to point the manifest at the `-update-tmp`
+ * path, so the following uninstall deleted the staged copy and the update
+ * ended with the item uninstalled.)
  *
  * @param item - The marketplace item to install
  * @param installPath - Local directory to install to
@@ -253,8 +258,7 @@ async function installFromGitHub(
     await writeFile(target, value.content);
   }
 
-  // Post-install: update manifest, ensure common libs, refresh registrations
-  return await finalizeInstall(item, installPath);
+  return { success: true, message: `Downloaded ${item.name} v${item.version}` };
 }
 
 /**

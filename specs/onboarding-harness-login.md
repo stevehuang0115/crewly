@@ -425,7 +425,7 @@ so the stuck agents are every live session of that runtime.
    - Codex: a stored OpenAI key is re-applied with `codex login --with-api-key`.
    - If the harness expires again within 1 h, or the key is rejected, the
      phone login below is used instead.
-3. **Broker login.** Claude uses `subscription` (`claude setup-token`); Codex
+3. **Broker login.** Claude uses `subscription` (`claude auth login`); Codex
    uses `device`. `broker.start` returns the live session if one already
    exists, for example one the owner started on the web.
 4. **DM** through `SlackReloginDmService`. It opens a DM with the owner (the
@@ -986,7 +986,7 @@ Diagnosis (code + Cloud records):
 Not the cause: the version (1.20.170 has every earlier fix), the inbound
 path (Cloud → relay → `SlackService.handleCloudEnvelope` →
 `SlackOrchestratorBridge` interceptor runs in the backend with no agent
-awake), or the broker (it supports Claude's `setup-token` code paste).
+awake), or the broker (it supports Claude's `auth login` code paste).
 Cloud needs no change.
 
 ### Detection
@@ -1033,7 +1033,7 @@ Cloud needs no change.
    restart does not DM again inside the backoff.
 3. **The owner replies `login`** (also `log in`, `sign in`, `relogin`,
    `re-login`, 「登录」, 「重新登录」, 「重新登陆」, 「重登」; trailing punctuation and
-   backticks ignored) → the broker starts (`claude setup-token` /
+   backticks ignored) → the broker starts (`claude auth login` /
    `codex login --device-auth`) for every signed-out harness, and the link
    goes to the conversation the owner replied in:
    `*Sign in to Claude Code on iriss-air.lan*` / link / ``Reply here with the
@@ -1148,3 +1148,48 @@ telling the owner`, and `GET /api/harness`.
   a machine has no orc bot of its own).
 - Codex expiry that `codex login status` cannot see (it reads local state);
   Codex output rules still trigger, confirmed by that status.
+
+
+## No-token Claude sign-in (2026-10-17, CREW-759)
+
+Anthropic's Claude Code legal page: developers may not collect, store, or
+intermediate Claude.ai credentials or session tokens; sign-in must complete
+through Anthropic's own flow. Crewly therefore no longer captures a Claude token.
+
+- **Login.** The broker runs the unmodified `claude auth login` in a PTY (the
+  default account and every named account; `CLAUDE_CONFIG_DIR` is the account
+  dir). It relays the link and types the owner's one-time code, exactly as
+  before. Claude Code stores its own credential (credentials file or macOS
+  keychain). Crewly never runs `claude setup-token`, never reads a token off the
+  screen, never writes `claude.oauthToken` / `claudeAccounts.*.oauthToken`, and
+  never sets `CLAUDE_CODE_OAUTH_TOKEN` for a login, probe or agent it starts
+  (the PTY env drops `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`).
+- **Success.** `claude auth login` exits 0 on success, so success is exit 0
+  plus one real Claude turn on that login (token-free env). A login that only
+  looks signed in is not a success.
+- **Where Claude Code keeps a login on macOS (read from Claude Code 2.1.302's own code,
+  `strings` on the binary, 2026-10-17).** Keychain service =
+  `Claude Code-credentials` + (when `CLAUDE_CONFIG_DIR` is set) `-` + the first 8 hex
+  characters of `sha256(NFC(CLAUDE_CONFIG_DIR))`; account = the OS user name. With
+  `CLAUDE_CONFIG_DIR` unset the service is plain `Claude Code-credentials`. Two config
+  dirs therefore never share a keychain item (for example `/tmp/scratch-A/claude` ->
+  `Claude Code-credentials-aa80408f`, `/tmp/scratch-B/claude` ->
+  `Claude Code-credentials-1941323a`). Linux/Windows use `<config dir>/.credentials.json`.
+  A config dir spelled differently (trailing slash, symlink) hashes differently, so
+  Crewly always uses the one absolute path from `claudeAccountConfigDir`.
+- **Signed-in check.** `claude auth status --json` with `CLAUDE_CONFIG_DIR`
+  (macOS keeps the default login in the keychain, scoped per config dir; an
+  empty config dir reports `loggedIn: false`, so a file check alone is wrong
+  on a Mac). It still says `loggedIn: true` for an expired login, so expiry
+  keeps coming from login-expiry detection and the real probe.
+- **Migration (no lockout).** A token an older Crewly saved is still handed to
+  that account's Claude Code (`legacyClaudeTokenEnv`, the only place) until the
+  account is signed in natively, then deleted after a token-free real probe.
+  Named accounts retire when `claude auth status` says signed in and the probe
+  passes (checked hourly); the default login retires only after a Crewly
+  sign-in, because the machine's own Claude login may be another identity.
+  The owner is told once per machine which accounts need one re-sign-in
+  (`~/.crewly/claude-token-migration.json`, no secrets). When no token remains,
+  the claude keys are removed from `harness-credentials.json` (other keys kept,
+  atomic rewrite, 0600, no backup). The transition has no deadline: it lasts
+  until each account is signed in again.

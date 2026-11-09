@@ -24,6 +24,11 @@ tags:
   - delivery
   - quality
   - tiering
+# Rule metadata (#877): what this rule prevents, where seen, when to re-test
+prevents: "Every change ran the full 9-step, 3-review process regardless of risk, so an internal one-line fix cost as much as a customer-facing release (P0 plan 2026-05-03, decision 3)"
+seenOn: "claude-code, model not recorded (2026-05)"
+reviewBy: 2027-01-31
+source: https://github.com/stevehuang0115/crewly/pull/411
 ---
 
 # Development Process Tiers

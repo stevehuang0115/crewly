@@ -2,7 +2,7 @@
  * Experiment card routes — mounted at `/api/experiments` (issue #986).
  *
  * - GET  /               — list (`?status=planned|running|done|cancelled&ticket=`)
- * - POST /               — create `{hypothesis, metric, title?, direction?, expected?, windowDays?, ticket?, confidence?}`
+ * - POST /               — create `{hypothesis, metric, title?, direction?, expected?, windowDays?, ticket?, confidence?, supervisor?}`
  * - GET  /:id            — one experiment with its timeline (the run's trace)
  * - POST /:id/ship       — the change is live `{shippedAt?}`: windows fixed, baseline captured
  * - POST /:id/measure    — measure a due experiment now

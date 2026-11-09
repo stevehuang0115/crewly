@@ -33,8 +33,15 @@ execution:
 Composes a plain-text email **as the owner** and leaves it in their Gmail
 Drafts. **You cannot send it. Calling this does not send anything.**
 
-The owner sends it, from Gmail or from Crewly. Your job ends at telling them
-it is ready and what it says.
+The owner sends it: normally by tapping **Yes** on the "Send this to …?" decision card Crewly
+puts in front of them (`approvalCard: true` in the result), or from Gmail.
+Your job ends at telling them it is ready and what it says. If they tap Send
+you get a `[GMAIL]` note and **replies on that thread wake you** (see
+`gmail-watch-thread` and `watch-for-event --event-type gmail:reply_received`).
+The approval is for that exact email — sender, To/Cc/**Bcc**, subject, body and
+attachments: if any of it is edited after the owner looked, it is not sent and
+they are asked again. **Not now**, or no answer in 24 h, sends nothing and leaves
+the draft in Gmail (you are told); only an owner Discard deletes it.
 
 This is not advice you can weigh against the task in front of you — it is
 what the endpoint does. A call comes back `202` with `drafted: true`, and no
@@ -92,7 +99,7 @@ call — nothing is sent, no request leaves this machine.
 
 ## Output
 
-Drafted (the normal outcome): `{"success":true,"drafted":true,"draftId":"r-8…","pendingId":"…","message":"Saved as a draft … It has NOT been sent."}` with HTTP 202.
+Drafted (the normal outcome): `{"success":true,"id":null,"threadId":null,"drafted":true,"draftId":"r-8…","pendingId":"…","approvalCard":true,"message":"Saved as a draft … It has NOT been sent."}` (HTTP 202). `approvalCard:false` means no card could be posted (e.g. Slack not connected); the draft waits for the owner in Gmail.
 
 Dry run: `{"success":true,"dryRun":true,"preview":"To: …\nSubject: …\n\n<body>"}` — nothing is written anywhere, not even a draft.
 

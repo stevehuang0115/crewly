@@ -1,0 +1,13 @@
+{
+	"_comment": "Repos whose CI cannot run (private repos, GitHub Actions billing off). For these, `gh pr merge` of a CONTENT-ONLY PR is accepted when `record-local-gate` recorded a green local run at the PR head. A repo without an entry here gets no such path. gate = commands run in order in a fresh clone of the PR head; contentPaths = the files a content PR may touch (glob: ** crosses directories, * stays inside one); codePrs: true = a PR with other files may also merge, but only with a TL verification marker for its head.",
+	"stevehuang0115/crewly-web": {
+		"gate": [
+			"npm ci --ignore-scripts --no-audit --no-fund",
+			"npx tsc --noEmit",
+			"npx vitest run --maxWorkers=2 --retry=1",
+			"npm run build"
+		],
+		"contentPaths": ["content/blog/**/*.md"],
+		"codePrs": true
+	}
+}

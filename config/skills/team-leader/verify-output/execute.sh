@@ -43,6 +43,10 @@ WI_OUTPUT_RAW=$(echo "$WI_DATA" | jq -c '.data.output // empty' 2>/dev/null || t
 # or on an item completed before #1312 — so it is not verified on its summary alone.
 WI_FOUND=$(echo "$WI_DATA" | jq -r 'if (.data // null) != null then "yes" else "no" end' 2>/dev/null || echo "no")
 WI_EVIDENCE=$(echo "$WI_DATA" | jq -c 'if (.data.output.evidence | type) == "array" then .data.output.evidence else [] end' 2>/dev/null || echo '[]')
+# The worker's decision record (#875): decisions, options not taken, assumptions.
+# Shown to the reviewer as `record`; null when the worker sent none.
+WI_RECORD=$(echo "$WI_DATA" | jq -c '.data.output | {decisions, notTaken, assumptions} | with_entries(select(.value != null)) | if length == 0 then null else . end' 2>/dev/null || echo 'null')
+[ -z "$WI_RECORD" ] && WI_RECORD=null
 EVIDENCE_WARNING=""
 if [ "$WI_FOUND" = "yes" ]; then
   if [ "$(printf '%s' "$WI_EVIDENCE" | jq 'length')" = "0" ]; then
@@ -349,6 +353,7 @@ fi
 jq -n \
   --argjson evidence "$WI_EVIDENCE" \
   --arg evidenceWarning "$EVIDENCE_WARNING" \
+  --argjson record "$WI_RECORD" \
   --arg passed "$PASSED" \
   --arg score "$SCORE" \
   --arg feedback "$FEEDBACK" \
@@ -362,6 +367,7 @@ jq -n \
     evidence: ($evidence | to_entries | map(.value + {index: .key})),
     acceptWith: "complete-task with \"verdict\":\"verified\" and \"checks\":[{\"entry\":<evidence index, or null for a direct look>,\"did\":\"<what you did and saw>\",\"outcome\":\"pass\"}] (#1314)",
     evidenceWarning: (if $evidenceWarning != "" then $evidenceWarning else null end),
+    record: $record,
     passed: ($passed == "true"),
     score: ($score | tonumber),
     feedback: $feedback,

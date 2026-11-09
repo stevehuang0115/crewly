@@ -95,6 +95,21 @@ describe('OrcStatusRouterService', () => {
     expect(queued).toHaveLength(1);
   });
 
+  it('[DONE] on lead-reported team work: the orc notice says no owner post is needed; a delivery owed is ignored (crewly#1371)', async () => {
+    const leadReport = { lead: 'owen', leadName: 'Owen', worker: 'vera', teamId: 'team-ce', teamName: 'CE', slackChannelId: 'C0CE', channelName: 'ce' };
+    const { queued, report } = setup([wi({ owner: 'orchestrator', metadata: { delegatedBy: 'crewly-orc', leadReport } })]);
+    await report('[DONE] Agent vera: drafted', 'vera', { deliveryOwed: true });
+    expect(queued).toHaveLength(1);
+    expect(queued[0].content).toContain('Agent status: [DONE] Agent vera: drafted\nNo owner post needed — Owen reports it in #ce');
+  });
+
+  it('lead-reported TL-owned work with a delivery owed does not wake the orchestrator (crewly#1371)', async () => {
+    const leadReport = { lead: 'owen', worker: 'vera', teamId: 'team-ce', teamName: 'CE', slackChannelId: 'C0CE', channelName: 'ce' };
+    const { queued, report } = setup([wi({ metadata: { delegatedBy: 'owen', leadReport } })]);
+    await report('[DONE] Agent vera: drafted', 'vera', { deliveryOwed: true });
+    expect(queued).toEqual([]);
+  });
+
   it('progress markers are recorded only', async () => {
     const { queued, router, report } = setup();
     for (const m of ['[IN_PROGRESS]', '[ACTIVE]', '[READY]', '[WORKING]', '[IDLE]']) await report(`${m} Agent vera: …`);

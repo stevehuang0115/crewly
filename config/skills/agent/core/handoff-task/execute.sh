@@ -54,10 +54,17 @@ CREWLY_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # --- Step 0: Resolve target WorkItem if not supplied ---
-# Resolve order: explicit workItemId > the agent's currently-running claim.
+# Resolve order: explicit workItemId > the agent's ONE running claim. With
+# several running, the first one was handed over (and its owner thread with
+# it) — this skill no longer guesses (message-routing audit 2026-10-18).
 if [ -z "$WORK_ITEM_ID" ]; then
   POOL_RESP=$(api_call_full GET "/task-pool/items?status=running&target=${SESSION_NAME}" 2>/dev/null || echo '{}')
-  WORK_ITEM_ID=$(echo "$POOL_RESP" | jq -r '.workItems[0].id // .data[0].id // empty' 2>/dev/null || true)
+  RUNNING_IDS=$(echo "$POOL_RESP" | jq -r '(.workItems // .data // [])[]?.id // empty' 2>/dev/null || true)
+  RUNNING_COUNT=$(printf '%s\n' "$RUNNING_IDS" | grep -c . || true)
+  if [ "${RUNNING_COUNT:-0}" -gt 1 ]; then
+    error_exit "Nothing was handed off: ${RUNNING_COUNT} WorkItems are running for '${SESSION_NAME}' ($(printf '%s' "$RUNNING_IDS" | tr '\n' ' ' | sed 's/ *$//')) and this skill does not guess which one you mean. Pass 'workItemId' with one of them and call again."
+  fi
+  WORK_ITEM_ID=$(printf '%s\n' "$RUNNING_IDS" | head -n1)
 fi
 
 # --- Step 1: Fission guard check (rate limit before handoff) ---
@@ -101,7 +108,7 @@ HANDOFF_MSG_FILE=$(mktemp)
 trap 'rm -f "$HANDOFF_MSG_FILE"' EXIT
 
 cat > "$HANDOFF_MSG_FILE" << MSG_EOF
-[TASK HANDOFF] from ${SESSION_NAME}
+[TASK HANDOFF] from ${SESSION_NAME}${WORK_ITEM_ID:+ — WorkItem: ${WORK_ITEM_ID} {route: work-item ${WORK_ITEM_ID}}}
 
 ## Reason for Handoff
 ${REASON}
@@ -157,8 +164,8 @@ deliver_result=$(api_call POST "/terminal/${TO}/write" "$DELIVER_BODY" 2>/dev/nu
 
 # --- Step 4: Notify orchestrator/TL about the handoff ---
 NOTIFY_MSG="[HANDOFF] ${SESSION_NAME} → ${TO}: ${REASON}"
-NOTIFY_BODY=$(jq -n --arg content "$NOTIFY_MSG" --arg senderName "$SESSION_NAME" \
-  '{content: $content, senderName: $senderName, senderType: "agent"}')
+NOTIFY_BODY=$(jq -n --arg content "$NOTIFY_MSG" --arg senderName "$SESSION_NAME" --arg workItemId "${WORK_ITEM_ID:-}" \
+  '{content: $content, senderName: $senderName, senderType: "agent"} + (if $workItemId == "" then {} else {workItemId: $workItemId} end)')
 api_call POST "/chat/agent-response" "$NOTIFY_BODY" >/dev/null 2>&1 || true
 
 # --- Step 5: Output result as safe JSON ---

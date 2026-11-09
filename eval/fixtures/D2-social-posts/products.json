@@ -1,0 +1,17 @@
+[
+  {
+    "name": "Sourdough Starter Kit",
+    "price": "USD 24",
+    "note": "jar of live starter, flour, instruction card; ships Mon-Wed"
+  },
+  {
+    "name": "Weekend Croissant Box",
+    "price": "USD 18",
+    "note": "six butter croissants, pre-order by Friday 6pm for Saturday pickup"
+  },
+  {
+    "name": "Birthday Cake Builder",
+    "price": "from USD 45",
+    "note": "pick sponge, filling and message online; 48h notice"
+  }
+]

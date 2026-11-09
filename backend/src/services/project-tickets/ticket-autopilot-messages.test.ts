@@ -219,6 +219,20 @@ describe('owner-facing texts', () => {
     );
   });
 
+  it('shows raw and weighted figures in the budget pause notice', () => {
+    const msg = buildBudgetPausedMessage('CE', 13_900_000, 50_000_000, 'CE', 108_000_000);
+    expect(msg).toContain('13.9M tokens of its 50M tokens daily budget');
+    expect(msg).toContain('108M tokens raw');
+  });
+
+  it('warns that other work keeps running when no spend cap is set', () => {
+    const msg = buildBudgetPausedMessage('CE', 20_456_000, 20_000_000, 'CE', undefined, true);
+    expect(msg).toContain('no spend cap is set for CE');
+    expect(msg).toContain('scheduled tasks');
+    expect(msg).toContain('`set team cap for CE to 50M`');
+    expect(buildBudgetPausedMessage('CE', 20_456_000, 20_000_000, 'CE', undefined, false)).not.toContain('spend cap');
+  });
+
   it('formats ages', () => {
     expect(formatAge(new Date(NOW - 5 * 60_000).toISOString(), NOW)).toBe('5m');
     expect(formatAge(new Date(NOW - 5 * 3_600_000).toISOString(), NOW)).toBe('5h');

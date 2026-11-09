@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-10-17T12:37:31.553Z",
+  "lastUpdated": "2026-10-27T01:11:19.863Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -23,12 +23,12 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-10-14T03:53:59.392Z",
+      "updatedAt": "2026-10-18T13:10:51.841Z",
       "source": "config/skills/agent/marketplace/send-pdf-to-slack",
       "assets": {
         "archive": "config/skills/agent/marketplace/send-pdf-to-slack",
         "checksum": "",
-        "sizeBytes": 8158
+        "sizeBytes": 8754
       },
       "metadata": {
         "skillType": "claude-skill",
@@ -779,9 +779,9 @@
       "id": "gmail",
       "type": "skill",
       "name": "Gmail",
-      "description": "Multi-action Gmail skill for agents — list/read/search/send messages, manage labels (add/remove/list), and toggle read/unread. Requires a google-oauth credential bound to the 'gmail' slot with gmail.modify scope.",
+      "description": "Multi-action Gmail skill for agents — list/read/search messages, compose one as a draft (never sends; the owner sends it), manage labels (add/remove/list), and toggle read/unread. Requires a google-oauth credential bound to the 'gmail' slot with gmail.modify scope.",
       "author": "Crewly Team",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "category": "communication",
       "tags": [
         "gmail",
@@ -797,12 +797,12 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-04-25T00:15:10.000Z",
-      "updatedAt": "2026-10-03T03:22:34.836Z",
+      "updatedAt": "2026-10-27T01:11:19.863Z",
       "source": "config/skills/agent/marketplace/gmail",
       "assets": {
         "archive": "config/skills/agent/marketplace/gmail",
         "checksum": "",
-        "sizeBytes": 60677
+        "sizeBytes": 63263
       },
       "metadata": {
         "skillType": "claude-skill",
@@ -1306,7 +1306,7 @@
       "name": "RedNote (小红书) Reader",
       "description": "Read content from 小红书 (RedNote) iPad app on macOS via Accessibility API + screencapture. Actions: feed (read posts), scroll-feed, nav, screenshot (capture window), search (type keyword), tap (click coordinates), read-detail (screenshot + text), goto-profile (navigate to user profile by username). Zero network requests — cannot trigger account bans.",
       "author": "Crewly Team",
-      "version": "3.0.0",
+      "version": "3.1.0",
       "category": "automation",
       "tags": [
         "automation",
@@ -1321,12 +1321,12 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:55:44.195Z",
+      "updatedAt": "2026-10-18T12:46:33.984Z",
       "source": "config/skills/agent/marketplace/rednote-reader",
       "assets": {
         "archive": "config/skills/agent/marketplace/rednote-reader",
         "checksum": "",
-        "sizeBytes": 60050
+        "sizeBytes": 64321
       },
       "metadata": {
         "skillType": "claude-skill",

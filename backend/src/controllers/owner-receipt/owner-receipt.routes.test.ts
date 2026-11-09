@@ -12,6 +12,8 @@ describe('createOwnerReceiptRouter', () => {
     const routes = stack.filter((l) => l.route).map((l) => ({ path: l.route?.path, methods: Object.keys(l.route?.methods ?? {}) }));
     expect(routes).toEqual([
       { path: '/', methods: ['get'] },
+      { path: '/pulls', methods: ['get'] },
+      { path: '/spot-check', methods: ['get'] },
       { path: '/settings', methods: ['get'] },
       { path: '/settings', methods: ['put'] },
       { path: '/settings', methods: ['post'] },

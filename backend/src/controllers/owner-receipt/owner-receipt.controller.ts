@@ -11,6 +11,8 @@
 
 import type { Request as ExpressRequest, Response } from 'express';
 import { getOwnerReceiptService, type OwnerReceiptService } from '../../services/v3/owner-receipt/owner-receipt.service.js';
+import { renderSpotCheck } from '../../services/v3/owner-receipt/verified-spot-check.js';
+import { renderPullsWeekly } from '../../services/v3/owner-receipt/owner-pulls-weekly.js';
 import { rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 
 /**
@@ -81,6 +83,54 @@ export async function getReceipt(req: ExpressRequest, res: Response): Promise<vo
       ...(mode ? { mode: mode as 'since_last_receipt' | 'local_day' } : {}),
     });
     res.json({ success: true, data: { receipt: data, text } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+}
+
+/**
+ * GET /api/owner-receipt/pulls — how often agents pulled the owner in over the
+ * last seven days, by kind, outcome, team and agent, with the owner's active
+ * minutes, against the week before (#1387). Owner only.
+ *
+ * @param req - Express request
+ * @param res - Express response
+ */
+export async function getPullsWeekly(req: ExpressRequest, res: Response): Promise<void> {
+  // Owner only: an agent that can read the number could game it.
+  if (rejectNonOwner(req, res, { success: false, error: 'Only the owner can read how often agents pulled them in' })) return;
+  const svc = serviceOr503(res);
+  if (!svc) return;
+  try {
+    const pulls = await svc.pullsWeekly();
+    if (!pulls) {
+      res.status(503).json({ success: false, error: 'Weekly pulls are not wired' });
+      return;
+    }
+    res.json({ success: true, data: { pulls, text: renderPullsWeekly(pulls) } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+}
+
+/**
+ * GET /api/owner-receipt/spot-check — run the verified-work spot-check now
+ * (#1315, phase 1): a few WorkItems verified in the last day, with any file
+ * artifact that is gone. Read-only; the result carries WorkItem ids.
+ *
+ * @param _req - Express request
+ * @param res - Express response
+ */
+export async function getSpotCheck(_req: ExpressRequest, res: Response): Promise<void> {
+  const svc = serviceOr503(res);
+  if (!svc) return;
+  try {
+    const spotCheck = await svc.spotCheck();
+    if (!spotCheck) {
+      res.status(503).json({ success: false, error: 'Spot-check is not wired' });
+      return;
+    }
+    res.json({ success: true, data: { spotCheck, text: renderSpotCheck(spotCheck) } });
   } catch (error) {
     res.status(500).json({ success: false, error: (error as Error).message });
   }

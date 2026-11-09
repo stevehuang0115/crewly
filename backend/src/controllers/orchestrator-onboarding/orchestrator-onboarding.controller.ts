@@ -34,6 +34,7 @@ import {
   type HierarchyPlan,
 } from '../../services/orchestrator/onboarding/synthesize-hierarchy.js';
 import type { TeamRecommendation } from '../../services/orchestrator/onboarding/recommend-team.js';
+import type { TeamTemplate } from '../../types/team-template.types.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { getCrewlyHomePath } from '../../services/core/crewly-home.utils.js';
 
@@ -99,11 +100,34 @@ export async function recommendTeamRoute(
       res.status(400).json({ success: false, error: ctx.error });
       return;
     }
-    const recommendation = recommendTeam(ctx.value);
+    const recommendation = recommendTeam(ctx.value, await usableExtraTemplates());
     res.status(200).json({ success: true, recommendation });
   } catch (err) {
     logger.error('recommend-team route failed', { err });
     next(err);
+  }
+}
+
+/**
+ * The `CREWLY_TEMPLATE_DIRS` templates (Crewly Pro's) the current plan can
+ * create a team from — onboarding never proposes one it would then refuse.
+ *
+ * @returns Catalog for {@link recommendTeam}
+ */
+async function usableExtraTemplates(): Promise<TeamTemplate[]> {
+  const { TemplateService } = await import('../../services/template/template.service.js');
+  const { CloudClientService } = await import('../../services/cloud/cloud-client.service.js');
+  const { SkillTierService } = await import('../../services/skill/skill-tier.service.js');
+  try {
+    const tier = CloudClientService.getInstance().getTier();
+    const tiers = SkillTierService.getInstance();
+    return TemplateService.getInstance()
+      .listExtraTemplates()
+      .filter((t) => !t.requiredTier || tiers.isTierSufficient(tier, t.requiredTier));
+  } catch (err) {
+    // Recommending stays total: without the catalog, the built-in mappings answer.
+    logger.warn('Could not read extra templates for onboarding', { err });
+    return [];
   }
 }
 
@@ -181,7 +205,10 @@ export async function synthesizeHierarchyRoute(
     }
     const maxSubteams =
       typeof req.body?.maxSubteams === 'number' ? req.body.maxSubteams : undefined;
-    const plan = synthesizeHierarchyPlan(ctx.value, { maxSubteams });
+    const plan = synthesizeHierarchyPlan(ctx.value, {
+      maxSubteams,
+      catalog: await usableExtraTemplates(),
+    });
     res.status(200).json({ success: true, plan });
   } catch (err) {
     logger.error('synthesize-hierarchy route failed', { err });

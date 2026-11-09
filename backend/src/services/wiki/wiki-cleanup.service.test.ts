@@ -186,11 +186,12 @@ describe('WikiCleanupService.scan', () => {
     await fs.rm(vault, { recursive: true });
   });
 
-  it('skips frozen folders (memory, sop, sop-overrides, okr)', async () => {
+  it('skips frozen folders (memory, sop, sop-overrides, okr, owner)', async () => {
     const vault = await makeVault([
       { relPath: 'llm-curated/patterns/visible.md', confidence: 0.3, originalId: 'visible' },
       { relPath: 'memory/secret.md', confidence: 0.3, originalId: 'frozen-mem' },
       { relPath: 'sop/frozen.md', confidence: 0.3, originalId: 'frozen-sop' },
+      { relPath: 'owner/rules.md', confidence: 0.3, originalId: 'frozen-owner' },
     ]);
 
     const result = await WikiCleanupService.getInstance().scan({

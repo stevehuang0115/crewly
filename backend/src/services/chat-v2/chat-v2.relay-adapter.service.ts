@@ -447,6 +447,25 @@ export class ChatV2RelayAdapter {
         );
         return { members };
       }
+      case 'renameChannel': {
+        const channel = this.service.renameChannel(
+          this.requireString(p, 'channelId'),
+          this.requireString(p, 'name'),
+          principal,
+        );
+        return this.serializeChannel(channel);
+      }
+      case 'setHuddleMembers': {
+        const rawMembers = Array.isArray(p['memberSessions'])
+          ? (p['memberSessions'] as unknown[]).filter((m): m is string => typeof m === 'string')
+          : [];
+        const channel = this.service.setHuddleRoster(
+          this.requireString(p, 'channelId'),
+          rawMembers,
+          principal,
+        );
+        return this.serializeChannel(channel);
+      }
       case 'listMessages': {
         const result = this.service.listMessages({
           channelId: this.requireString(p, 'channelId'),
@@ -499,6 +518,39 @@ export class ChatV2RelayAdapter {
           }
         }
         return this.serializeMessage(message, fromDevice);
+      }
+      case 'markChannelRead': {
+        const seq = p['seq'];
+        return this.service.markChannelRead(
+          this.requireString(p, 'channelId'),
+          principal,
+          seq === undefined || seq === null ? undefined : (seq as number),
+        );
+      }
+      case 'markChannelUnread': {
+        return this.service.markChannelUnread(
+          this.requireString(p, 'channelId'),
+          principal,
+          p['seq'] as number,
+        );
+      }
+      case 'getUnread': {
+        return this.service.getUnreadSummary(principal);
+      }
+      case 'searchMessages': {
+        // Cross-conversation search (#1400 item 6). The portal is the owner,
+        // so no `session` = every conversation on this machine; `from` / `to`
+        // take a date (`2026-10-09`) or an ISO timestamp like the REST route.
+        const hits = this.service.searchMessagesForAgent({
+          agentSession: this.optionalString(p, 'session'),
+          principal,
+          query: this.requireString(p, 'query'),
+          channel: this.optionalString(p, 'channel'),
+          from: this.optionalDate(p, 'from', false),
+          to: this.optionalDate(p, 'to', true),
+          limit: this.optionalNumber(p, 'limit'),
+        });
+        return { count: hits.length, hits };
       }
       default: {
         // Unreachable given CHAT_RPC_METHODS check above, but TypeScript
@@ -597,6 +649,30 @@ export class ChatV2RelayAdapter {
   ): number | undefined {
     const v = params[key];
     return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  }
+
+  /**
+   * A date (`2026-10-09`) or timestamp parameter as epoch ms; a bare date
+   * with `endOfDay` covers the whole day (exclusive end), like the REST route.
+   *
+   * @param params - RPC params
+   * @param key - Parameter name
+   * @param endOfDay - Whether a bare date means its end rather than its start
+   * @returns Epoch ms, or undefined when absent
+   * @throws {ChatError} `validation_error` (400) when present but unparseable
+   */
+  private optionalDate(
+    params: Record<string, unknown>,
+    key: string,
+    endOfDay: boolean,
+  ): number | undefined {
+    const raw = this.optionalString(params, key);
+    if (!raw) return undefined;
+    const ms = Date.parse(raw);
+    if (!Number.isFinite(ms)) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, `bad date: ${raw}`);
+    }
+    return endOfDay && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? ms + 24 * 60 * 60 * 1000 : ms;
   }
 
   private serializeChannel(channel: ChatChannelDTO): ChatChannelDTO {

@@ -52,6 +52,8 @@ Create a new task via the `/api/task-management/create` endpoint. This allows te
 | `--owner` | `owner` | No | Responsible role: `orchestrator`, `team_lead`, `agent` (default), `system`. A role, not a session name — use `--session` for the session |
 | `--description` / `-d` | `description` | No | Short summary of the task |
 | `--brief` | `briefMarkdown` | No | Long-form brief in markdown. Inline text, or `@/path/to/file.md`. Max 16384 bytes |
+| `--thread` | `thread` | No | Owner thread the task answers: the Slack thread key from your prompt. A task you assign to yourself inherits no owner thread from your last turn — name it here when the owner should get its result |
+| `--conversation` | `conversation` | No | Owner conversation the task answers (chat-v2 id) |
 | `--request-id` / `-R` | `requestId` | No | Ticket this work is for: the id (or `TKT-123`) from the `[TICKET:TKT-123 <id>]` line of the message you are acting on. Omit it and the task is still linked when your current turn has exactly one ticket |
 
 ### Always attach a brief

@@ -21,6 +21,11 @@ tags:
   - authoring
   - prompts
   - skills
+# Rule metadata (#877): what this rule prevents, where seen, when to re-test
+prevents: "none recorded as an incident — skills and norms were written for human readers (long prose, vague verbs, no examples); borrowed from mattpocock/skills, enforced by the skill lint"
+seenOn: "unknown (2026-10)"
+reviewBy: 2027-01-31
+source: https://github.com/stevehuang0115/crewly/pull/1277
 ---
 
 # Writing for Agents

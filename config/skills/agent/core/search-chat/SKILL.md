@@ -67,3 +67,7 @@ Output: `{ "data": { "count": N, "hits": [ { "id", "time", "channelId", "channel
 - Try a shorter or different keyword when nothing comes back; CJK text is
   matched as written, without word splitting.
 - To read around a hit, search again with `--channel` and a one-day range.
+
+## What it does not search
+
+Posts an agent makes with `reply --work-item`, `--new-thread` or `--ticket` are in this history when the Slack channel is a team room or an agent DM. In any other Slack channel they go to Slack only and are not searched; the result carries a `note` saying so. A missing hit does **not** mean such a post failed: the `reply` call itself returns `slackChannelId` and `messageTs` as proof it landed. Ask the poster for those, or read the Slack thread, before posting the answer again.

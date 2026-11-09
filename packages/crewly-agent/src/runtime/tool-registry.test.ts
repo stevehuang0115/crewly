@@ -4,6 +4,7 @@ import { createTools, getToolNames, TOOL_SENSITIVITY, stripNotifyMarkers, conver
 import { CrewlyApiClient } from './api-client.js';
 import type { AuditEntry, ToolCallbacks, CompactionResult, AuditLogFilters } from './types.js';
 import { WRITE_TOOLS } from './types.js';
+import { getAuditorToolNames } from './auditor-tools.js';
 
 describe('Tool Registry', () => {
   let mockClient: Mocked<CrewlyApiClient>;
@@ -1574,6 +1575,10 @@ describe('Tool Registry', () => {
   });
 
   describe('TOOL_SENSITIVITY', () => {
+    it('should classify create_github_issue as sensitive', () => {
+      expect(TOOL_SENSITIVITY.create_github_issue).toBe('sensitive');
+    });
+
     it('should classify read-only tools as safe', () => {
       expect(TOOL_SENSITIVITY.get_agent_status).toBe('safe');
       expect(TOOL_SENSITIVITY.get_team_status).toBe('safe');
@@ -2025,7 +2030,8 @@ describe('Tool Registry', () => {
     });
 
     it('should only contain valid tool names from the registry', () => {
-      const validNames = getToolNames();
+      // The auditor registry owns create_github_issue, so both name lists count.
+      const validNames = [...getToolNames(), ...getAuditorToolNames()];
       for (const writeTool of WRITE_TOOLS) {
         expect(validNames).toContain(writeTool);
       }

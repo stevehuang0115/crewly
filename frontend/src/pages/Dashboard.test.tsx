@@ -30,6 +30,9 @@ vi.mock('@/components/Dashboard/WaitingOnYouCard', () => ({
     <div data-testid="waiting-on-you-card-mock" data-agents={directory.size} />
   ),
 }));
+vi.mock('@/components/Dashboard/OwnerPullsCard', () => ({
+  OwnerPullsCard: () => <div data-testid="owner-pulls-card-mock" />,
+}));
 vi.mock('@/components/Onboarding/GettingStartedCard', () => ({
   GettingStartedCard: () => <div data-testid="getting-started-card-mock" />,
 }));

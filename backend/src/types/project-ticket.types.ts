@@ -53,6 +53,13 @@ export interface ProjectTicketFields {
    * autopilot's triage; it is offered again afterwards. Absent / null = not deferred.
    */
   deferUntil?: string | null;
+  /**
+   * Why the ticket is on hold (the owner's words, e.g. "do not merge PR #1138").
+   * A held ticket's PR / branch / worktree may only be closed and removed:
+   * follow-up tickets that reference them are held too and merge-style
+   * decision cards about them are refused (crewly#1369). Absent / null = not held.
+   */
+  hold?: string | null;
 }
 
 /** Frontmatter keys the service writes, in the order new files list them. */
@@ -72,6 +79,7 @@ export const OWNED_TICKET_FIELDS: ReadonlyArray<keyof ProjectTicketFields> = [
   'source',
   'migratedFrom',
   'deferUntil',
+  'hold',
 ];
 
 /** A ticket as the API returns it. */

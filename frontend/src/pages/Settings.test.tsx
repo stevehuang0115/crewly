@@ -36,6 +36,9 @@ vi.mock('../components/Settings/RuntimesTab', () => ({
 vi.mock('../components/Settings/CloudDevicesTab', () => ({
   CloudDevicesTab: () => <div data-testid="cloud-portal">Cloud & devices Content</div>,
 }));
+vi.mock('../components/Settings/ActivityTab', () => ({
+  ActivityTab: () => <div data-testid="activity-tab" />,
+}));
 vi.mock('../components/Settings/SecurityTab', () => ({
   SecurityTab: () => <div data-testid="security-overview">Security Content</div>,
 }));
@@ -58,7 +61,7 @@ function renderAt(url: string) {
 }
 
 describe('Settings Page', () => {
-  it('renders the header and the nine tabs in order', () => {
+  it('renders the header and the ten tabs in order', () => {
     renderAt('/settings');
     expect(screen.getByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
     expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
@@ -71,6 +74,7 @@ describe('Settings Page', () => {
       'Cloud & devices',
       'Security',
       'System',
+      'Activity',
     ]);
   });
 

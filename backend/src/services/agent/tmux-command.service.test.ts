@@ -297,7 +297,10 @@ describe('TmuxCommandService', () => {
 			const endTime = Date.now();
 			const duration = endTime - startTime;
 
-			expect(duration).toBeGreaterThanOrEqual(500);
+			// Date.now() is truncated to whole milliseconds and a 500 ms timer may
+			// fire a hair early, so a real 500 ms wait can measure 499 (publish run
+			// 2026-10-26); allow a few ms of slack instead of failing the release.
+			expect(duration).toBeGreaterThanOrEqual(490);
 			expect(validationCalled).toBe(true);
 		});
 

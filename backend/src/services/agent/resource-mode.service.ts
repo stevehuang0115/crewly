@@ -54,6 +54,16 @@ export const RESOURCE_MODE_CONSTANTS = {
 	 * finished a turn and is about to get the next one (crewly#1344).
 	 */
 	MIN_IDLE_BEFORE_EVICT_MS: 5 * 60_000,
+	/**
+	 * The soft reasons to keep an agent running for a slot — the owner spoke
+	 * to it lately (answered), it stated an intent, or it waits on a teammate's
+	 * ticket or delegated work — lapse once it has been idle this long. Such an
+	 * agent is woken again by the message it waits for; holding the slot for
+	 * hours starved everyone else (2026-10-19: Ella waited 2 h 38 min, with
+	 * 1132 "owes the owner" keeps in a day). An unanswered owner message, an
+	 * owner promise and work in hand still protect at any idle.
+	 */
+	SOFT_KEEP_MAX_IDLE_MS: 30 * 60_000,
 	/** A wait record older than this since its last touch is a new wait */
 	WAIT_RECORD_TTL_MS: 10 * 60_000,
 	/** A started agent counts against the cap even before it shows as running */
@@ -73,17 +83,30 @@ export interface MemoryReading {
 }
 
 /**
- * Whether memory alone is tight (used share, free floor, swap, OS pressure).
+ * Whether memory alone is tight: the used share, the free floor, the OS
+ * pressure flag, or swap at or above its threshold while free memory is also
+ * under twice the floor.
+ *
+ * Swap fill alone does not count (same rule as `boot-pressure.ts`): macOS
+ * grows its swap file on demand and keeps it full for hours after the
+ * pressure is gone, so a 16 GB Mac with 5–6 GB available and the kernel
+ * reporting no pressure entered pressure mode 11 times on 2026-10-26 — 18
+ * idle stops, 13 starts queued behind the cap, 2 boot restores deferred, for
+ * nothing. A machine that is really swapping itself to a crawl still trips
+ * the OS pressure flag, the CPU-load rule or the used share.
  *
  * @param stats - Memory reading
  * @returns True when tight
  */
 export function memoryIsTightFor(stats: MemoryReading): boolean {
 	if (!stats.totalMB) return false;
+	const swapTight =
+		(stats.swapUsedPercent ?? 0) >= AGENT_SUSPEND_CONSTANTS.IDLE_STOP_SWAP_USED_PERCENT &&
+		stats.freeMB < AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MIN_FREE_MB * AGENT_SUSPEND_CONSTANTS.IDLE_STOP_SWAP_FREE_FACTOR;
 	return (
 		stats.usedPercent >= AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MEMORY_USED_PERCENT ||
 		stats.freeMB < AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MIN_FREE_MB ||
-		(stats.swapUsedPercent ?? 0) >= AGENT_SUSPEND_CONSTANTS.IDLE_STOP_SWAP_USED_PERCENT ||
+		swapTight ||
 		stats.pressureElevated === true
 	);
 }
@@ -107,15 +130,17 @@ export interface ResourceModeDeps {
 	 * owner thread, or a stated "starting now". Such an agent is never stopped
 	 * to free a slot unless memory is critical; the waiter waits for another
 	 * victim (2026-10-08: Atlas and Ella were stopped mid-conversation;
-	 * 2026-10-12: Pia was stopped with a video owed).
+	 * 2026-10-12: Pia was stopped with a video owed). `idleMs` lets the soft
+	 * reasons lapse (see SOFT_KEEP_MAX_IDLE_MS).
 	 */
-	owesOwnerThread?: (sessionName: string) => boolean;
+	owesOwnerThread?: (sessionName: string, idleMs: number) => boolean;
 	/**
 	 * Why this agent must not be stopped for a slot: it has work queued for it,
 	 * owns an open ticket, or delegated work that is still open (its report is
 	 * still to come). Null/undefined = free to stop. Errors count as free.
+	 * `idleMs` lets the waiting-on-a-teammate reasons lapse (see SOFT_KEEP_MAX_IDLE_MS).
 	 */
-	protectedReason?: (sessionName: string) => Promise<string | null | undefined>;
+	protectedReason?: (sessionName: string, idleMs: number) => Promise<string | null | undefined>;
 	/**
 	 * Whether the waiter is waiting on the candidate's work (it delegated an
 	 * open work item or ticket to it). Such a candidate is never stopped for
@@ -504,7 +529,7 @@ export class ResourceModeService {
 				continue;
 			}
 			let why: string | null | undefined;
-			try { why = await this.deps!.protectedReason?.(r.sessionName); } catch { why = null; }
+			try { why = await this.deps!.protectedReason?.(r.sessionName, r.idleMs); } catch { why = null; }
 			const tooYoung = r.idleMs < minIdleMs;
 			if (tooYoung || why) {
 				const text = [tooYoung ? `idle ${Math.round(r.idleMs / 60000)} min, under the ${idleTimeoutMinutes} min idle timeout` : '', why ?? ''].filter(Boolean).join('; ');
@@ -516,7 +541,7 @@ export class ResourceModeService {
 			candidates.push(r);
 		}
 		const owes = (r: RunningAgent): boolean => {
-			try { return this.deps!.owesOwnerThread?.(r.sessionName) === true; } catch { return false; }
+			try { return this.deps!.owesOwnerThread?.(r.sessionName, r.idleMs) === true; } catch { return false; }
 		};
 		// An agent that owes the owner is never a victim (not even when the rules
 		// relax): the waiter waits for another one. Only critical memory overrides.

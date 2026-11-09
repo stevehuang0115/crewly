@@ -308,12 +308,15 @@ export interface BudgetWeights {
 /**
  * The default budget weights, and the Claude ones: input x1 + output x1 +
  * cache writes x1.25 + cache reads x0.1. They equal the cache/input price
- * ratios of the Anthropic tiers in `model-pricing.ts` (Sonnet 0.3/3 and
- * 3.75/3, Opus 1.5/15 and 18.75/15, Haiku 0.1/1 and 1.25/1). Output stays at
+ * ratios of most Anthropic tiers in `model-pricing.ts` (cache reads 0.1x,
+ * 5-minute cache writes 1.25x); every Claude model uses them. Output stays at
  * x1 on purpose: the budget is a measure of context re-reading, not a USD
  * figure, and an owner's existing numbers keep their meaning.
  */
 export const DEFAULT_BUDGET_WEIGHTS: Readonly<BudgetWeights> = Object.freeze({ input: 1, output: 1, cacheWrite: 1.25, cacheRead: 0.1 });
+
+/** Model ids of the Claude families, which share {@link DEFAULT_BUDGET_WEIGHTS}. */
+const CLAUDE_FAMILY_PATTERN = /claude|opus|sonnet|haiku|fable|mythos/i;
 
 /** Rounds a price ratio to 3 decimals (0.3/3 is 0.09999999999999999 in floating point). */
 function ratio(a: number, b: number): number {
@@ -341,7 +344,10 @@ function ratio(a: number, b: number): number {
  */
 export function budgetWeightsFor(model: string): BudgetWeights {
   const rate = resolveRate(model || '');
-  if (rate.source === 'default') return { ...DEFAULT_BUDGET_WEIGHTS };
+  // Claude stays on the 0.1 / 1.25 weights even where its price ratio is
+  // lower (Opus 5.5 reads at 0.05x, Fable 5.1 at 0.025x), so a budget an
+  // owner set keeps meaning the same amount of context re-reading.
+  if (rate.source === 'default' || CLAUDE_FAMILY_PATTERN.test(model || '')) return { ...DEFAULT_BUDGET_WEIGHTS };
   return { input: 1, output: 1, cacheWrite: ratio(rate.cacheWrite, rate.input), cacheRead: ratio(rate.cacheRead, rate.input) };
 }
 

@@ -1,6 +1,8 @@
-import { holdReasonFor, releaseHeldWork, FRESH_PROMISE_MS, TICKET_HOLD_MAX_AGE_MS, type IdleWorkGuardDeps } from './idle-work-guard.js';
+import { hasOpenOwnerCommitment, holdReasonFor, releaseHeldWork, FRESH_PROMISE_MS, TICKET_HOLD_MAX_AGE_MS, type IdleWorkGuardDeps } from './idle-work-guard.js';
+import { OPEN_ITEMS_CONSTANTS } from '../../constants.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { Request } from '../../types/v2/request.types.js';
+import type { RequestOpenItem } from '../../types/v2/open-item.types.js';
 
 const NOW = Date.parse('2026-10-10T19:36:00Z');
 const wi = (over: Partial<WorkItem>): WorkItem => ({ id: 'w', target: 'pia', status: 'queued', ...over }) as WorkItem;
@@ -55,6 +57,44 @@ describe('holdReasonFor', () => {
 		expect(await holdReasonFor('pia', deps({ holdsBackgroundRun: () => true }))).toBe('background_run');
 		expect(await holdReasonFor('pia', deps({ holdsIntent: () => true, holdsBackgroundRun: () => true }))).toBe('stated_intent');
 		expect(await holdReasonFor('pia', deps({ holdsBackgroundRun: () => false }))).toBeNull();
+	});
+});
+
+describe('open owner commitments (crewly#1386, Pia idle-stopped with her plan open)', () => {
+	const item = (over: Partial<RequestOpenItem> = {}): RequestOpenItem => ({
+		id: 'c-1',
+		type: 'commitment',
+		text: '三条已经提交，让它们跑完，对比后看差多少。',
+		agent: 'pia',
+		sourceMessageId: 'm-1',
+		createdAt: new Date(NOW - 2 * 3600_000).toISOString(),
+		status: 'open',
+		...over,
+	});
+	const req = (items: RequestOpenItem[], over: Partial<Request> = {}): Request => ({ id: 'r', status: 'in_progress', createdAt: '2026-10-10T17:00:00Z', openItems: items, ...over }) as Request;
+
+	it.each(['open', 'ready', 'overdue'] as const)('a %s commitment holds the agent', async (status) => {
+		expect(await holdReasonFor('pia', deps({ tickets: [req([item({ status })])] }))).toBe('open_commitment');
+	});
+
+	it('is not a fresh promise: memory pressure still stops the agent', async () => {
+		expect(await holdReasonFor('pia', deps({ tickets: [req([item({ createdAt: new Date(NOW - 60_000).toISOString() })])] }))).toBe('open_commitment');
+	});
+
+	it.each([
+		['waiting on the owner', [item({ status: 'waiting_owner' })], {}],
+		['delivered', [item({ status: 'delivered' })], {}],
+		['another agent', [item({ agent: 'luna' })], {}],
+		['a question', [item({ type: 'question' })], {}],
+		['too old', [item({ createdAt: new Date(NOW - OPEN_ITEMS_CONSTANTS.IDLE_HOLD_MAX_AGE_MS - 1000).toISOString() })], {}],
+		['on a done request', [item()], { status: 'done' }],
+		['on a cancelled request', [item()], { status: 'cancelled' }],
+	] as const)('%s does not hold it', async (_label, items, over) => {
+		expect(await holdReasonFor('pia', deps({ tickets: [req([...items], over as Partial<Request>)] }))).toBeNull();
+	});
+
+	it('hasOpenOwnerCommitment tolerates requests without open items', () => {
+		expect(hasOpenOwnerCommitment([req([]), { id: 'x', status: 'open' } as Request], 'pia', NOW)).toBe(false);
 	});
 });
 

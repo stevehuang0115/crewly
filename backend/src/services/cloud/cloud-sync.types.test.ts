@@ -283,8 +283,14 @@ describe('cloud-sync.types', () => {
         'createChannel',
         'createHuddle',
         'listHuddleMembers',
+        'renameChannel',
+        'setHuddleMembers',
         'listMessages',
         'sendMessage',
+        'markChannelRead',
+        'markChannelUnread',
+        'getUnread',
+        'searchMessages',
       ]);
     });
   });

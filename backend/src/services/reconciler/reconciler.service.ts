@@ -41,6 +41,7 @@ import {
   detectRetryableFailedWorkItems,
   detectUndisposedStrandedWorkItems,
   detectDependencyResolvedWorkItems,
+  detectDueBlockedWorkItems,
   detectUnclaimedTasks,
   detectUnverifiedWorkItems,
   detectUnreviewedPastTTL,
@@ -48,9 +49,12 @@ import {
   VERIFY_ESCALATED_AT_KEY,
   REVIEW_OWNER_ESCALATED_AT_KEY,
   runPruningPass,
+  decisionHoldPredicate,
 } from './reconcile-rules.js';
-import type { AgentHealth } from './reconcile-rules.js';
+import type { AgentHealth, DecisionHoldLink } from './reconcile-rules.js';
 import { surfaceIdleHolders, type IdleHolderSurfacerDeps } from './idle-holder-surfacer.js';
+import { surfaceRedeliveryMiss } from './redelivery-escalation.js';
+import { surfaceOfflineQueue } from './offline-queue-notice.js';
 import { WORK_ITEM_BLOCK_SOURCES } from '../../types/v2/work-item.types.js';
 import { getSettingsService } from '../settings/index.js';
 import { LoggerService } from '../core/logger.service.js';
@@ -155,7 +159,7 @@ export interface ReconcilerDataProvider {
    * `allowWaitingOnHuman` must be passed true only for the waiting_on_human
    * rule's own requeue (see the call site below and the provider's JSDoc).
    */
-  requeueWorkItem(workItemId: string, opts?: { allowWaitingOnHuman?: boolean }): Promise<void>;
+  requeueWorkItem(workItemId: string, opts?: { allowWaitingOnHuman?: boolean; allowExplicitWhenDue?: boolean }): Promise<void>;
   /** Mark a claim as 'expiring' (lease expired, within grace period) */
   markClaimExpiring(claimId: string): Promise<void>;
   /** Revoke a claim and release its work item back to the pool */
@@ -168,6 +172,11 @@ export interface ReconcilerDataProvider {
   renewClaim?(claimId: string): Promise<void>;
   /** Get all available (queued, unclaimed) WorkItems from the task pool */
   getAvailablePoolItems?(): Promise<WorkItem[]>;
+  /**
+   * Open owner decision cards (their work item / ticket): WorkItems waiting
+   * on one are not TTL-cancelled (crewly#1369 §5). Optional.
+   */
+  getOpenDecisionHolds?(): Promise<DecisionHoldLink[]>;
   /**
    * Execute a wake action — rehydrate a suspended agent, start an inactive
    * one, or re-push a brief. `true` / `false` are read as ok / failed; a
@@ -182,6 +191,11 @@ export interface ReconcilerDataProvider {
   parkStalledAgent?(sessionName: string, role: string): Promise<boolean>;
   /** Sessions the claim service reports as hung (optional). */
   getHungAgents?(): string[];
+  /**
+   * Whether this machine is offline, and for how long (minutes); null when
+   * online. While it is offline every wake is held (CREW-862). Optional.
+   */
+  getMachineOffline?(): { offlineMinutes: number } | null;
   /** Backfill token usage data on completed WorkItems that have 0 tokens */
   backfillTokenUsage?(): Promise<number>;
   /**
@@ -237,6 +251,16 @@ export class ReconcilerService {
    * the queue.
    */
   private readonly wakeFailures = new Map<string, { failures: number; nextAt: number; session: string; workItemId: string }>();
+  /**
+   * Consecutive failed redeliveries per WorkItem (CREW-577). Separate from {@link wakeFailures}, which is
+   * cleared for the whole session when any other wake of it succeeds (CE-282, 2026-10-12: the count restarted
+   * at 1 after attempt 3 and the lead was never told). Cleared when that item's own redelivery succeeds.
+   */
+  private readonly redeliveryMisses = new Map<string, number>();
+  /** WorkItems whose failing redelivery was already reported to a lead (once per item, CREW-577) */
+  private readonly escalatedRedeliveries = new Set<string>();
+  /** Oldest queued WorkItems whose offline-machine wait was already reported (once per item, CREW-862) */
+  private readonly noticedOfflineQueues = new Set<string>();
   /**
    * Successful wakes per `session + WorkItem`: the next wake of the same pair waits a doubling
    * backoff while the item stays queued (the wake "worked" but the agent did not take the item).
@@ -369,6 +393,14 @@ export class ReconcilerService {
       result.corrections.push(...unblocked.corrections);
       result.workItemsRequeued += unblocked.unblockedIds.length;
 
+      // 3c-ii. Lift explicit blocks whose `until` time has passed (block-task
+      // `until`): the item returns to `queued` for the same target, who takes
+      // it before new work. The only explicit-block requeue the reconciler
+      // performs — the agent asked for it when it set the time.
+      const dueBlocks = detectDueBlockedWorkItems(workItems);
+      result.corrections.push(...dueBlocks.corrections);
+      result.workItemsRequeued += dueBlocks.releasedIds.length;
+
       // 3d. Verification enforcement (P1): a worker reported done but the TL
       // never verified within the deadline. Escalate to the orchestrator for an
       // explicit verdict so unverified work is never silently auto-accepted by
@@ -383,7 +415,8 @@ export class ReconcilerService {
       await this.disposeStrandedWorkItems(workItems);
 
       // 4. Pruning pass (F4): TTL expiry + orphan cascade + deep cascade + stale queue detection
-      const pruning = runPruningPass(workItems);
+      const holds = (await this.dataProvider.getOpenDecisionHolds?.().catch(() => [] as DecisionHoldLink[])) ?? [];
+      const pruning = runPruningPass(workItems, undefined, undefined, decisionHoldPredicate(holds));
       result.corrections.push(...pruning.totalCorrections);
       // `staleItemsCleaned` means "work that was DISCARDED", so only the
       // cancel-shaped counters may be summed here. The TTL rule also emits
@@ -767,9 +800,16 @@ export class ReconcilerService {
           // provider's waiting_on_human guard. Any other blocked->queued
           // correction on a waiting_on_human item (e.g. agent-back-online
           // recovery matching it too) must still be refused.
-          await this.dataProvider.requeueWorkItem(correction.entityId, {
+          //
+          // Likewise only the due-block rule's own requeue (its correction
+          // carries blockSource 'explicit' — see detectDueBlockedWorkItems)
+          // may lift an explicit block, and the provider still checks that
+          // the block's `until` time has in fact passed.
+          const requeueOptions: { allowWaitingOnHuman: boolean; allowExplicitWhenDue?: boolean } = {
             allowWaitingOnHuman: correction.blockSource === WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN,
-          });
+          };
+          if (correction.blockSource === WORK_ITEM_BLOCK_SOURCES.EXPLICIT) requeueOptions.allowExplicitWhenDue = true;
+          await this.dataProvider.requeueWorkItem(correction.entityId, requeueOptions);
           continue;
         }
 
@@ -1023,8 +1063,18 @@ export class ReconcilerService {
     // Only run if the provider supports wake actions
     if (!this.dataProvider.executeWakeAction) return;
 
-    // Respect maxConcurrentAgents — count currently active agents and skip wake
-    // if we're at capacity. This is the primary control preventing resource exhaustion.
+    // `maxConcurrentAgents` (Settings › General) used to end this pass here
+    // whenever that many agents were active. It was the only place that read
+    // the setting: a DM, a stall recovery, a restore and the start API all
+    // start agents regardless, and under memory pressure the start path has its
+    // own running-agent cap that queues a start and frees a slot (CREW-304).
+    // So the early return only delayed work: 2026-10-27, 11 agents up on a
+    // 10-agent setting, a trigger's WorkItem for the stopped Owen sat queued
+    // for 20 minutes — the fast wake was dropped every pass without a log line
+    // and the stall recovery (which never checked the setting) started him.
+    // Redelivers (a re-push to an agent already running) were dropped too.
+    // Now a wake to a named target goes through; the count is logged so an
+    // exceeded setting is visible.
     let maxConcurrent = 50; // matches ConfigService default (MAX_CONCURRENT_AGENTS)
     try {
       const settings = await getSettingsService().getSettings();
@@ -1039,10 +1089,7 @@ export class ReconcilerService {
         activeAgentCount++;
       }
     }
-
-    if (activeAgentCount >= maxConcurrent) {
-      return;
-    }
+    const overConfiguredMax = activeAgentCount >= maxConcurrent;
 
     // Use pool items if available, otherwise fall back to active work items
     const poolItems = this.dataProvider.getAvailablePoolItems
@@ -1087,6 +1134,15 @@ export class ReconcilerService {
       if (paced && now < paced.nextAt) continue;
       if (this.sessionWakeCapReached(session, now)) continue;
       actedOn.add(session);
+      if (overConfiguredMax && action.strategy !== 'redeliver') {
+        LoggerService.getInstance().createComponentLogger('ReconcilerService').info('Waking the named target although the configured max concurrent agents is reached', {
+          agent: session,
+          workItemId: action.workItemId,
+          strategy: action.strategy,
+          activeAgents: activeAgentCount,
+          maxConcurrentAgents: maxConcurrent,
+        });
+      }
       try {
         const outcome = await this.attemptWake(action);
         this.recordWakeOutcome(action, outcome, result);
@@ -1193,6 +1249,7 @@ export class ReconcilerService {
 
     this.pendingTraced.delete(session);
     if (res.outcome === 'ok') {
+      this.redeliveryMisses.delete(action.workItemId);
       for (const [key, entry] of this.wakeFailures) {
         if (entry.session === session) this.wakeFailures.delete(key);
       }
@@ -1232,6 +1289,87 @@ export class ReconcilerService {
         `Wake action failed for agent ${session} (strategy: ${action.strategy})`,
       );
     }
+    if (action.strategy === 'redeliver') {
+      const misses = (this.redeliveryMisses.get(action.workItemId) ?? 0) + 1;
+      this.redeliveryMisses.set(action.workItemId, misses);
+      if (this.redeliveryMisses.size > RECONCILER_WAKE_CONSTANTS.REDELIVERY_ESCALATED_KEPT) {
+        const oldest = this.redeliveryMisses.keys().next().value;
+        if (oldest !== undefined && oldest !== action.workItemId) this.redeliveryMisses.delete(oldest);
+      }
+      if (misses >= RECONCILER_WAKE_CONSTANTS.REDELIVERY_ESCALATE_AFTER) {
+        void this.escalateRedeliveryMiss(action.workItemId, session, misses, res.reason);
+      }
+    }
+  }
+
+  /**
+   * Tell the target's lead, once per WorkItem, that its brief keeps failing
+   * to reach the agent (CREW-577). Best-effort: never throws, and does
+   * nothing when idle-holder reporting is not wired.
+   *
+   * @param workItemId - The queued WorkItem
+   * @param session - Its target
+   * @param attempts - Consecutive failed redeliveries
+   * @param reason - Why the last one failed
+   */
+  private async escalateRedeliveryMiss(workItemId: string, session: string, attempts: number, reason?: string): Promise<void> {
+    if (!this.idleHolderDeps || this.escalatedRedeliveries.has(workItemId)) return;
+    this.escalatedRedeliveries.add(workItemId);
+    if (this.escalatedRedeliveries.size > RECONCILER_WAKE_CONSTANTS.REDELIVERY_ESCALATED_KEPT) {
+      const oldest = this.escalatedRedeliveries.values().next().value;
+      if (oldest !== undefined && oldest !== workItemId) this.escalatedRedeliveries.delete(oldest);
+    }
+    const log = LoggerService.getInstance().createComponentLogger('ReconcilerService');
+    try {
+      const review = await surfaceRedeliveryMiss({ workItemId, session, attempts, ...(reason ? { reason } : {}) }, this.idleHolderDeps);
+      log.warn('Brief keeps failing to reach its target — reported to its lead', { workItemId, session, attempts, reason, lead: review.target, reviewWorkItemId: review.id });
+    } catch (err) {
+      this.escalatedRedeliveries.delete(workItemId);
+      log.warn('Reporting a failing redelivery failed (non-fatal)', { workItemId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
+   * Tell the agent's lead, once per oldest item, that its queued work is
+   * waiting behind an offline machine (CREW-862). Best-effort: never throws,
+   * and does nothing when idle-holder reporting is not wired.
+   *
+   * @param agent - The stalled agent with queued work
+   * @param offlineMinutes - How long the machine has been offline
+   */
+  private async noticeOfflineQueue(agent: StalledAgent, offlineMinutes: number): Promise<void> {
+    const id = agent.workItem.id;
+    if (!this.idleHolderDeps || this.noticedOfflineQueues.has(id)) return;
+    this.noticedOfflineQueues.add(id);
+    if (this.noticedOfflineQueues.size > RECONCILER_WAKE_CONSTANTS.OFFLINE_QUEUE_NOTICED_KEPT) {
+      const oldest = this.noticedOfflineQueues.values().next().value;
+      if (oldest !== undefined && oldest !== id) this.noticedOfflineQueues.delete(oldest);
+    }
+    const log = LoggerService.getInstance().createComponentLogger('ReconcilerService');
+    try {
+      const review = await surfaceOfflineQueue(
+        { session: agent.sessionName, workItemId: id, queuedCount: agent.queuedCount, queuedForMs: agent.queuedForMs, offlineMinutes },
+        this.idleHolderDeps,
+      );
+      traceHarness('harness.recover', {
+        workItemId: id,
+        session: agent.sessionName,
+        summary: `Queued work for ${agent.sessionName} is waiting behind an offline machine (${Math.round(agent.queuedForMs / 60_000)} min); its lead was told`,
+        outcome: 'queued',
+        data: { kind: 'offline_queue', queuedCount: agent.queuedCount, offlineMinutes },
+      });
+      log.warn('Queued work is waiting behind an offline machine — reported to the lead', {
+        workItemId: id,
+        session: agent.sessionName,
+        queuedCount: agent.queuedCount,
+        offlineMinutes,
+        lead: review.target,
+        reviewWorkItemId: review.id,
+      });
+    } catch (err) {
+      this.noticedOfflineQueues.delete(id);
+      log.warn('Reporting an offline-machine queue failed (non-fatal)', { workItemId: id, error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   /**
@@ -1267,7 +1405,12 @@ export class ReconcilerService {
         idleNoProgressMs: this.wakeTuning.stalledIdleMs,
         hungSessions: hung,
       });
+      const offline = this.dataProvider.getMachineOffline?.() ?? null;
+      if (!offline) this.noticedOfflineQueues.clear();
       for (const agent of stalled) {
+        if (offline && agent.queuedCount > 0 && agent.queuedForMs >= RECONCILER_WAKE_CONSTANTS.OFFLINE_QUEUE_NOTICE_AFTER_MS) {
+          void this.noticeOfflineQueue(agent, offline.offlineMinutes);
+        }
         const last = this.recoveredAt.get(agent.sessionName);
         if (last !== undefined && now - last < this.wakeTuning.recoveryCooldownMs) continue;
         if (this.pendingStarts.has(agent.sessionName)) continue;

@@ -19,7 +19,7 @@ import {
   materializeHierarchy,
   DEFAULT_MAX_SUBTEAMS,
 } from './synthesize-hierarchy.js';
-import type { BusinessContext } from './recommend-team.js';
+import type { BusinessContext, CatalogTemplate } from './recommend-team.js';
 import type { MaterializeOptions, ProvisionedTeam, MaterializeResult } from './materialize-team.js';
 
 function ctx(industry: string, tasks: string[] = []): BusinessContext {
@@ -95,6 +95,27 @@ describe('synthesizeHierarchyPlan', () => {
       ctx('frontend backend devops design data qa content growth research'),
     );
     expect(plan.children.length).toBeLessThanOrEqual(DEFAULT_MAX_SUBTEAMS);
+  });
+
+  it('picks the parent from the catalog but keeps children on the stream mapping', () => {
+    const education: CatalogTemplate = {
+      id: 'pro-education-smb',
+      name: 'Education SMB Team',
+      description: 'Curriculum design and student engagement.',
+      tags: ['education', 'k12', 'curriculum'],
+      roles: [{ role: 'curriculum-designer', label: 'Curriculum Designer', defaultSkills: [] }],
+    };
+    const flat = synthesizeHierarchyPlan(ctx('k12 education curriculum tutoring'), { catalog: [education] });
+    expect(flat.children).toEqual([]);
+    expect(flat.parent.templateId).toBe('pro-education-smb');
+
+    const nested = synthesizeHierarchyPlan(
+      ctx('k12 education curriculum: React frontend, Node API backend, DevOps'),
+      { catalog: [education] },
+    );
+    expect(nested.children.length).toBeGreaterThanOrEqual(2);
+    expect(nested.parent.templateId).toBe('pro-education-smb');
+    expect(nested.children.some((c) => c.recommendation.templateId === 'pro-education-smb')).toBe(false);
   });
 });
 

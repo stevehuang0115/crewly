@@ -263,6 +263,15 @@ describe('WikiQueryService', () => {
       expect(step2.context.pages[0].frontmatter.summary).toBe('Pro is $800 + credits');
       expect(step2.context.pages[0].content).toContain('1000 credits');
 
+      // A page from Alice's grant (#969): Alice reads it, Bob does not, the owner does.
+      await writePage('llm-curated/people/alice.md', { title: 'Alice notes', summary: 'From Alice Drive', keep_because: 'hard_fact', visible_to_people: ['UALICE'] }, '# Alice\n\npricing notes from Alice Drive');
+      const alice = await svc.query({ vaultPath: vault, query: 'pricing', viewerRole: 'developer', viewerPerson: 'UALICE', pages: ['llm-curated/people/alice.md'] });
+      expect(alice.ok && alice.context.pages.length).toBe(1);
+      const bob = await svc.query({ vaultPath: vault, query: 'pricing', viewerRole: 'developer', viewerPerson: 'UBOB', pages: ['llm-curated/people/alice.md'] });
+      expect(bob.ok && bob.context.pages.length).toBe(0);
+      const ownerView = await svc.query({ vaultPath: vault, query: 'pricing', pages: ['llm-curated/people/alice.md'] });
+      expect(ownerView.ok && ownerView.context.pages.length).toBe(1);
+
       // The teacher sees the teacher-only page; the owner (no role) sees everything incl. superseded on request.
       const teacher = await svc.query({ vaultPath: vault, query: 'pricing', viewerRole: 'teacher', pages: ['llm-curated/people/parent-notes.md'] });
       expect(teacher.ok && teacher.context.pages.length).toBe(1);

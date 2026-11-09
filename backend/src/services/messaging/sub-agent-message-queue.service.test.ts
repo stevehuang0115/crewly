@@ -28,10 +28,12 @@ jest.mock('../core/logger.service.js', () => ({
 
 // Mock constants
 jest.mock('../../constants.js', () => ({
+	ORCHESTRATOR_SESSION_NAME: 'crewly-orc',
 	SUB_AGENT_QUEUE_CONSTANTS: {
 		MAX_QUEUE_SIZE: 5, // Small size for testing overflow
 		FLUSH_INTER_MESSAGE_DELAY: 2000,
 		MAX_AGE_MS: 6 * 60 * 60 * 1000,
+		MAX_KEEPS_WHILE_DOWN: 3,
 	},
 }));
 
@@ -152,6 +154,20 @@ describe('SubAgentMessageQueue', () => {
 			expect(left.map((m) => m.data)).toEqual(['dup', 'dup']);
 			expect(new Set(left.map((m) => m.id)).size).toBe(2);
 			expect(left[0].attempts).toBe(1);
+		});
+
+		it('counts deferrals and remembers when the agent was last busy for it (crewly#1431)', async () => {
+			queue.enqueue('ella', 'brief');
+			const busy = async (data: string) => {
+				queue.enqueue('ella', data);
+				return { queued: true };
+			};
+			await queue.flush('ella', busy);
+			await queue.flush('ella', busy);
+			const [entry] = queue.peek('ella');
+			expect(entry.deferrals).toBe(2);
+			expect(typeof entry.lastDeferredAt).toBe('number');
+			expect(Date.now() - (entry.lastDeferredAt as number)).toBeLessThan(5_000);
 		});
 
 		it('removes only the copy send re-queued, keeping the original entry id and place', async () => {
@@ -449,6 +465,21 @@ describe('SubAgentMessageQueue', () => {
 			expect(listener).toHaveBeenCalledWith('ella', [expect.objectContaining({ data: 'first', attempts: 5 }), expect.objectContaining({ data: 'second', attempts: 5 })], 'undeliverable');
 		});
 
+		it('an agent that is down keeps its messages for its next start, for a few rounds, then they are reported (2026-10-22 audit)', async () => {
+			const listener = jest.fn();
+			queue.setDropListener(listener);
+			queue.setDownCheck(() => true);
+			queue.enqueue('pia', 'owner work');
+			const send = jest.fn(async () => ({ success: false, error: 'Session does not exist' }));
+			for (let i = 0; i < 15; i++) await queue.flush('pia', send);
+			expect(queue.getQueueSize('pia')).toBe(1);
+			expect(listener).not.toHaveBeenCalled();
+			for (let i = 0; i < 5; i++) await queue.flush('pia', send);
+			expect(queue.getQueueSize('pia')).toBe(0);
+			expect(listener).toHaveBeenCalledWith('pia', [expect.objectContaining({ data: 'owner work', keptWhileDown: 3 })], 'undeliverable');
+			queue.setDownCheck(null);
+		});
+
 		it('reports messages aged out at load, once a listener is set', () => {
 			fs.writeFileSync(storePath, JSON.stringify({ queues: { ella: [
 				{ data: 'old', queuedAt: Date.now() - 7 * 60 * 60 * 1000, sessionName: 'ella' },
@@ -600,6 +631,16 @@ describe('SubAgentMessageQueue — surviving a restart', () => {
 	});
 	afterEach(() => {
 		try { fs.rmSync(storePath, { force: true }); } catch { /* nothing to clean */ }
+	});
+
+	it("keys a message held for the orchestrator's display name by its session, live and restored (D-952, 2026-10-26)", () => {
+		fs.writeFileSync(storePath, JSON.stringify({ queues: { Orchestrator: [{ data: 'D-952 skipped', queuedAt: Date.now() - 1000 }] } }));
+		const queue = SubAgentMessageQueue.getInstance(storePath);
+		// Reads are by session: nothing waits under the alias.
+		expect(queue.getQueueSize('Orchestrator')).toBe(0);
+		expect(queue.getQueueSize('crewly-orc')).toBe(1);
+		queue.enqueue('orc', 'and this one');
+		expect(queue.dequeueAll('crewly-orc').map((m) => m.data)).toEqual(['D-952 skipped', 'and this one']);
 	});
 
 	it('brings undelivered messages back after the process ends', () => {

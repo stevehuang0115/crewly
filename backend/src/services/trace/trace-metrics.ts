@@ -12,6 +12,7 @@
 
 import { TRACE_CONSTANTS } from '../../constants.js';
 import { eventCostUsd, eventTokens } from '../monitoring/token-usage.service.js';
+import { isAgentAuthoredChat } from './trace-markers.js';
 import type { TraceEvent, TraceRoot } from './trace.types.js';
 
 // ---------------------------------------------------------------------------
@@ -78,7 +79,7 @@ export interface TraceMetrics {
 	 * dashboard marker is not authenticated (an agent could send it), so it is
 	 * left out of `total` and not shown until owner sessions (#999) land.
 	 */
-	ownerTouches: { answered: number; approved: number; sentBack: number; corrected: number; manual: number; total: number };
+	ownerTouches: { answered: number; approved: number; sentBack: number; corrected: number; other: number; manual: number; total: number };
 	rework: { sendBacks: number; retries: number; failedVerifications: number; subagentSendBacks: number; total: number };
 	stalls: {
 		thresholdMinutes: number;
@@ -86,6 +87,8 @@ export interface TraceMetrics {
 		/** Ongoing stall included */
 		totalMs: number;
 		byCause: Record<StallCause, number>;
+		/** Stall time per cause (ms, ongoing stall included; #1472) */
+		msByCause: Record<StallCause, number>;
 		/** Chronological; at most METRICS_MAX_STALL_ITEMS (the longest) */
 		items: TraceStall[];
 	};
@@ -122,6 +125,13 @@ export interface TraceMetricsSummary {
 	rework: number;
 	stalls: number;
 	stallMs: number;
+	/**
+	 * Stall time per cause (ms). Lets a list reader split a run's idle time
+	 * into harness causes (runtime_quota, delivery_failure), the owner
+	 * (waiting_on_owner) and the team (waiting_on_agent, nobody_pushing)
+	 * without reading every trace (#1472).
+	 */
+	stallMsByCause: Record<StallCause, number>;
 	ongoingStall: boolean;
 	interventions: number;
 	totalTokens: number;
@@ -145,8 +155,10 @@ export interface TraceMetricsOptions {
 
 /** One owner touch and when it happened (`detail` only). */
 export interface OwnerTouchEvent {
-	kind: 'answered' | 'approved' | 'sentBack' | 'corrected';
+	kind: 'answered' | 'approved' | 'sentBack' | 'corrected' | 'other';
 	at: string;
+	/** The owner's message text, for a touch made by a message (deduped across traces) */
+	text?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +355,35 @@ function ownerMessageText(e: TraceEvent): string {
 }
 
 /**
+ * What the owner wrote in a delivered message: without the routing prefix and
+ * sender header, and after any Slack thread / channel context block.
+ *
+ * @param text - Delivered text
+ * @returns The owner's own words
+ */
+export function ownerWords(text: string): string {
+	const afterContext = text.split(/\[end of Slack [^\]]*\]\s*/).pop() ?? text;
+	return afterContext.replace(/^\s*\[G?CHAT:[^\]]*\]\s*(?:<[^>]*>\s*)?/, '').trim();
+}
+
+/**
+ * The owner rejected or changed the work: a positive signal, so a plain
+ * 「好的」 or a new question is never a correction (crewly#1389).
+ */
+const CORRECTION_RE =
+	/^\s*(?:不是|不对|不行|不要|别)|不对|错了|搞错|弄错|重做|重新做|打回|改成|我要的是|我说的是|不是我要的|\bwrong\b|\bnot what I\b|\bredo\b|\brevert\b|\bundo\b|^\s*no\b/i;
+
+/**
+ * Whether an owner message corrects the work.
+ *
+ * @param text - Delivered text
+ * @returns True on a rejection / change signal
+ */
+export function isOwnerCorrection(text: string): boolean {
+	return CORRECTION_RE.test(ownerWords(text));
+}
+
+/**
  * Tokens and cost of a `usage` event (the Usage page's unit and prices).
  *
  * @param e - Event
@@ -434,6 +475,13 @@ function busyPeriods(timed: ReadonlyArray<Timed>): { intervals: Interval[]; expl
 interface Holds {
 	owner: Hold[];
 	agent: Hold[];
+	/**
+	 * Planned waits: a work item blocked with an `until` time, from the block
+	 * to that time (or to its next status change, whichever comes first). The
+	 * team said "nothing to do before then", so the clock is not a stall and
+	 * the item holds nobody (CREW-893).
+	 */
+	plannedWaits: Interval[];
 	/** Work item id → last status */
 	workItemStatus: Map<string, string>;
 	/** Request id → last status, in order of appearance */
@@ -451,9 +499,10 @@ interface Holds {
 function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 	const owner: Hold[] = [];
 	const agent: Hold[] = [];
+	const plannedWaits: Interval[] = [];
 	const openDecisions = new Map<string, number>();
 	const requestState = new Map<string, { status: string; since: number; waitsOnOwner?: boolean }>();
-	const workItems = new Map<string, { status: string; since: number; target?: string; open: boolean }>();
+	const workItems = new Map<string, { status: string; since: number; target?: string; open: boolean; waitUntil?: number }>();
 	const pendingMessages: Array<{ target: string; from?: string; since: number }> = [];
 
 	const closeRequest = (id: string, t: number, stillOpen = false): void => {
@@ -466,7 +515,18 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 	};
 	const closeWorkItem = (id: string, t: number, stillOpen = false): void => {
 		const wi = workItems.get(id);
-		if (!wi || !wi.open) return;
+		if (!wi) return;
+		if (wi.waitUntil !== undefined) {
+			// The wait ends at its time; blocked past it, the item holds its agent again.
+			const waitEnd = Math.min(wi.waitUntil, t);
+			if (waitEnd > wi.since) plannedWaits.push([wi.since, waitEnd]);
+			if (t > wi.waitUntil) {
+				agent.push({ start: wi.waitUntil, end: t, label: `Work item${wi.target ? ` for ${wi.target}` : ''} is still blocked past its until time`, ...(wi.target ? { session: wi.target } : {}), ...(stillOpen ? { stillOpen } : {}) });
+			}
+			wi.waitUntil = undefined;
+			return;
+		}
+		if (!wi.open) return;
 		agent.push({
 			start: wi.since,
 			end: t,
@@ -520,8 +580,12 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 				const id = e.refs.workItemId;
 				if (!id) break;
 				const status = dataStr(e, 'status') ?? 'queued';
-				const open = !WORK_ITEM_CLOSED.has(status) && !WORK_ITEM_WAITING_ON_TIME.has(status);
-				workItems.set(id, { status, since: t, open, ...(e.refs.session ? { target: e.refs.session } : {}) });
+				// Born blocked with a planned end to the wait (a commitment follow-up
+				// due at a known time): the wait is covered, like a block with `until`.
+				const bornUntil = status === 'blocked' ? Date.parse(dataStr(e, 'blockedUntil') ?? '') : Number.NaN;
+				const planned = Number.isFinite(bornUntil) && bornUntil > t;
+				const open = !planned && !WORK_ITEM_CLOSED.has(status) && !WORK_ITEM_WAITING_ON_TIME.has(status);
+				workItems.set(id, { status, since: t, open, ...(planned ? { waitUntil: bornUntil } : {}), ...(e.refs.session ? { target: e.refs.session } : {}) });
 				break;
 			}
 			case 'workitem.status': {
@@ -534,7 +598,13 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 				wi.status = to;
 				wi.since = t;
 				if (e.refs.session) wi.target = e.refs.session;
-				wi.open = !WORK_ITEM_CLOSED.has(to) && !WORK_ITEM_WAITING_ON_TIME.has(to);
+				const until = to === 'blocked' ? Date.parse(dataStr(e, 'blockedUntil') ?? '') : Number.NaN;
+				if (Number.isFinite(until) && until > t) {
+					wi.waitUntil = until;
+					wi.open = false;
+				} else {
+					wi.open = !WORK_ITEM_CLOSED.has(to) && !WORK_ITEM_WAITING_ON_TIME.has(to);
+				}
 				break;
 			}
 			case 'message.agent': {
@@ -557,7 +627,7 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 	for (const [id, wi] of workItems) workItemStatus.set(id, wi.status);
 	const requestStatus = new Map<string, string>();
 	for (const [id, st] of requestState) requestStatus.set(id, st.status);
-	return { owner, agent, workItemStatus, requestStatus };
+	return { owner, agent, plannedWaits, workItemStatus, requestStatus };
 }
 
 /**
@@ -616,7 +686,7 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 		busy.explicit === 0 && busy.inferred === 0 ? 'none' : busy.explicit === 0 ? 'inferred' : busy.inferred === 0 ? 'turn_events' : 'mixed';
 
 	// --- Owner touches, rework, interventions, usage --------------------------
-	const touches = { answered: 0, approved: 0, sentBack: 0, corrected: 0, manual: 0 };
+	const touches = { answered: 0, approved: 0, sentBack: 0, corrected: 0, other: 0, manual: 0 };
 	const rework = { sendBacks: 0, retries: 0, failedVerifications: 0, subagentSendBacks: 0 };
 	const interventions = { nudges: 0, redeliveries: 0, wakes: 0, corrections: 0, guardBlocks: 0, misroutes: 0 };
 	const touchTimes: number[] = [];
@@ -633,10 +703,10 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 	const agents = new Set<string>();
 	let experiment: TraceMetrics['outcome']['experiment'];
 
-	const touch = (kind: OwnerTouchEvent['kind'], t: number): void => {
+	const touch = (kind: OwnerTouchEvent['kind'], t: number, text?: string): void => {
 		touches[kind] += 1;
 		touchTimes.push(t);
-		if (options.detail) touchEvents.push({ kind, at: new Date(t).toISOString() });
+		if (options.detail) touchEvents.push({ kind, at: new Date(t).toISOString(), ...(text !== undefined ? { text } : {}) });
 		agentSpoke = false;
 	};
 	const addUsage = (map: Map<string, UsageBreakdown>, key: string, tokens: { input: number; cachedInput: number; output: number; total: number }, cost: number): void => {
@@ -659,12 +729,15 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 			case 'turn.delivered': {
 				if (e.refs.session && e.actor.kind !== 'owner') agents.add(e.refs.session);
 				if (dataStr(e, 'kind') !== 'owner_message' || e.actor.kind !== 'owner') break;
-				if (e.refs.session) agents.add(e.refs.session);
 				const text = ownerMessageText(e);
+				// Traces recorded before the delivery kind was split carry other
+				// agents' room posts and digests as owner messages (crewly#1389).
+				if (isAgentAuthoredChat(text)) break;
+				if (e.refs.session) agents.add(e.refs.session);
 				const dup = recentOwnerMessages.some((m) => m.text === text && t - m.t <= TRACE_CONSTANTS.OWNER_MESSAGE_DEDUPE_MS);
 				recentOwnerMessages.push({ text, t });
 				if (dup || t - start <= TRACE_CONSTANTS.ROOT_GRACE_MS) break;
-				touch(agentSpoke ? 'answered' : 'corrected', t);
+				touch(isOwnerCorrection(text) ? 'corrected' : agentSpoke ? 'answered' : 'other', t, ownerWords(text));
 				break;
 			}
 			case 'decision.created': {
@@ -771,8 +844,8 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 
 	// --- Stalls --------------------------------------------------------------
 	const progress = timed.filter(({ e }) => isProgressEvent(e));
-	// Busy periods and progress instants, in order (overlaps are fine: the cursor only moves forward).
-	const covered: Interval[] = [...active, ...progress.map(({ t }): Interval => [t, t])].sort((x, y) => x[0] - y[0]);
+	// Busy periods, planned waits and progress instants, in order (overlaps are fine: the cursor only moves forward).
+	const covered: Interval[] = [...active, ...clip(holds.plannedWaits, start, end), ...progress.map(({ t }): Interval => [t, t])].sort((x, y) => x[0] - y[0]);
 	const gaps: Interval[] = [];
 	let cursor = start;
 	for (const [a, b] of covered) {
@@ -798,7 +871,11 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 		}
 	}
 	const byCause = Object.fromEntries(STALL_CAUSES.map((c) => [c, 0])) as Record<StallCause, number>;
-	for (const s of stalls) byCause[s.cause] += 1;
+	const msByCause = Object.fromEntries(STALL_CAUSES.map((c) => [c, 0])) as Record<StallCause, number>;
+	for (const s of stalls) {
+		byCause[s.cause] += 1;
+		msByCause[s.cause] += s.ms;
+	}
 	const kept =
 		!options.detail && stalls.length > TRACE_CONSTANTS.METRICS_MAX_STALL_ITEMS
 			? [...stalls].sort((x, y) => y.ms - x.ms).slice(0, TRACE_CONSTANTS.METRICS_MAX_STALL_ITEMS).sort((x, y) => x.start.localeCompare(y.start))
@@ -829,9 +906,9 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 		agents: [...agents].sort(),
 		time: { wallMs, activeMs, waitingOwnerMs, waitingAgentMs, idleMs, activeSource },
 		// `manual` is not collected yet (see TraceMetrics.ownerTouches): not in the total.
-		ownerTouches: { ...touches, total: touches.answered + touches.approved + touches.sentBack + touches.corrected },
+		ownerTouches: { ...touches, total: touches.answered + touches.approved + touches.sentBack + touches.corrected + touches.other },
 		rework: { ...rework, total: total(rework) },
-		stalls: { thresholdMinutes: stallMinutes, count: stalls.length, totalMs: stalls.reduce((s, x) => s + x.ms, 0), byCause, items: kept },
+		stalls: { thresholdMinutes: stallMinutes, count: stalls.length, totalMs: stalls.reduce((s, x) => s + x.ms, 0), byCause, msByCause, items: kept },
 		interventions: { ...interventions, total: total(interventions) },
 		usage: {
 			inputTokens: sum('inputTokens'),
@@ -964,6 +1041,7 @@ export function summarizeTraceMetrics(m: TraceMetrics): TraceMetricsSummary {
 		rework: m.rework.total,
 		stalls: m.stalls.count,
 		stallMs: m.stalls.totalMs,
+		stallMsByCause: { ...m.stalls.msByCause },
 		ongoingStall: m.stalls.items.some((s) => s.ongoing === true),
 		interventions: m.interventions.total,
 		totalTokens: m.usage.totalTokens,

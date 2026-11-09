@@ -47,6 +47,7 @@ import { WikiHistoryService } from '../../services/wiki/wiki-history.service.js'
 import { WikiUsageService } from '../../services/wiki/wiki-usage.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { viewerPersonOf } from '../../services/people/acting-for.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('WikiController');
 
@@ -258,6 +259,7 @@ export async function queryVault(
       pages,
       agent: caller.session ?? 'owner',
       viewerRole: caller.role,
+      viewerPerson: viewerPersonOf(caller.session),
       includeSuperseded: includeSuperseded === true,
     });
 

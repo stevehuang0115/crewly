@@ -14,6 +14,7 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import * as fs from 'fs/promises';
 import { WikiIngestService } from './wiki-ingest.service.js';
+import { PrivateSourceTracker, setPrivateSourceTrackerForTesting } from '../people/private-source.service.js';
 
 const PROJECT_VAULT_YAML = `
 vault_scope: project
@@ -354,6 +355,43 @@ describe('WikiIngestService', () => {
       await fs.writeFile(path.join(vault, 'SCHEMA.md'), PROJECT_VAULT_YAML + '\nprivacy:\n  pii: refuse\n', 'utf8');
       const refused = await service.ingest({ vaultPath: vault, sourceType: 'slack_message', sourceRef: 's', sourceBody: 'call 415-555-1234' });
       expect(refused).toMatchObject({ ok: false, reason: 'pii_refused' });
+    });
+  });
+
+  describe('private sources (#969)', () => {
+    afterEach(() => setPrivateSourceTrackerForTesting(null));
+
+    it('a page written by a session that just read a person\'s grant is visible to that person only, and the list only grows', async () => {
+      const tracker = new PrivateSourceTracker();
+      tracker.note('tl-1', 'UALICE', 'google-workspace');
+      setPrivateSourceTrackerForTesting(tracker);
+      const base = { vaultPath: vault, sourceType: 'user_chat' as const, sourceRef: 's', sourceBody: 'b', title: 'T', summary: 'S', keepBecause: 'hard_fact' as const, targetRelativePath: 'llm-curated/decisions/alice.md', callerRole: 'team-leader' };
+      const first = await service.ingest({ ...base, callerSession: 'tl-1' });
+      expect(first.ok).toBe(true);
+      let page = await fs.readFile(path.join(vault, 'llm-curated/decisions/alice.md'), 'utf8');
+      expect(page).toContain('visible_to_people:\n  - UALICE');
+
+      // Another session, no private source: the page stays Alice's.
+      tracker.reset();
+      const second = await service.ingest({ ...base, callerSession: 'tl-2', sourceBody: 'public addendum' });
+      expect(second.ok).toBe(true);
+      page = await fs.readFile(path.join(vault, 'llm-curated/decisions/alice.md'), 'utf8');
+      expect(page).toContain('visible_to_people:\n  - UALICE');
+      expect(page).toContain('public addendum');
+
+      // An explicit list adds people.
+      const third = await service.ingest({ ...base, callerSession: 'tl-2', visibleToPeople: ['UBOB'] });
+      expect(third.ok).toBe(true);
+      page = await fs.readFile(path.join(vault, 'llm-curated/decisions/alice.md'), 'utf8');
+      expect(page).toContain('visible_to_people:\n  - UALICE\n  - UBOB');
+    });
+
+    it('a page written with no private source carries no people list', async () => {
+      setPrivateSourceTrackerForTesting(new PrivateSourceTracker());
+      const res = await service.ingest({ vaultPath: vault, sourceType: 'user_chat', sourceRef: 's', sourceBody: 'b', title: 'T', summary: 'S', keepBecause: 'hard_fact', targetRelativePath: 'llm-curated/decisions/open.md', callerRole: 'team-leader', callerSession: 'tl-1' });
+      expect(res.ok).toBe(true);
+      const page = await fs.readFile(path.join(vault, 'llm-curated/decisions/open.md'), 'utf8');
+      expect(page).not.toContain('visible_to_people');
     });
   });
 

@@ -88,6 +88,39 @@ describe('TeamModelTiers', () => {
     expect(screen.getByText('Review now').closest('button')).toBeDisabled();
   });
 
+  it('picks the change mode only while Optimize usage is on (default: Ask me first)', async () => {
+    getMock.mockResolvedValue(settings());
+    render(<TeamModelTiers teamId="t1" />);
+    await waitFor(() => expect(screen.getByTestId('tier-change-mode')).toBeInTheDocument());
+    expect(screen.getByTestId('tier-mode-approve')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('tier-mode-auto')).toBeDisabled();
+    expect(screen.getByTestId('tier-change-mode')).toHaveTextContent('Turn on Optimize usage to choose.');
+  });
+
+  it('switches to "Lead decides, tells me"', async () => {
+    getMock.mockResolvedValue(settings({ optimizeUsage: true }));
+    updateMock.mockResolvedValue(settings({ optimizeUsage: true, tierChangeMode: 'auto' }));
+    render(<TeamModelTiers teamId="t1" />);
+    await waitFor(() => expect(screen.getByTestId('tier-change-mode')).toHaveTextContent('nothing changes until you tap Apply'));
+    fireEvent.click(screen.getByText('Lead decides, tells me'));
+    await waitFor(() => expect(updateMock).toHaveBeenCalledWith('t1', { tierChangeMode: 'auto' }));
+    await waitFor(() => expect(screen.getByTestId('tier-mode-auto')).toHaveAttribute('aria-checked', 'true'));
+    expect(screen.getByTestId('tier-change-mode')).toHaveTextContent('Changes apply right away');
+    expect(screen.getByText(/It tells you every change, and you can undo it/)).toBeInTheDocument();
+    // tapping the current mode again saves nothing
+    fireEvent.click(screen.getByText('Lead decides, tells me'));
+    expect(updateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('says a review in auto mode comes back as a notice', async () => {
+    getMock.mockResolvedValue(settings({ optimizeUsage: true, tierChangeMode: 'auto' }));
+    reviewMock.mockResolvedValue({ reviewId: 'TR-1', lead: 'Owen', delivered: true });
+    render(<TeamModelTiers teamId="t1" />);
+    await waitFor(() => expect(screen.getByText('Review now')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Review now'));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('You will get a notice of any changes, with Undo'));
+  });
+
   it('shows the server refusal', async () => {
     getMock.mockResolvedValue(settings());
     updateMock.mockRejectedValue(new Error('Only the owner changes model tiers'));

@@ -6,12 +6,13 @@
  * ask-owner question is not carded twice, and the backfill dry-run.
  */
 import { RequestService } from '../v3/request.service.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { createWorkItem, type WorkItem } from '../../types/v2/work-item.types.js';
 import type { Request } from '../../types/v2/request.types.js';
 import type { RequestOpenItem } from '../../types/v2/open-item.types.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import type { ComponentLogger } from '../core/logger.service.js';
-import { OpenItemsService, isConcreteInterimPromise, markRestartReminded, owedCommitments, plausiblyFulfils, supersededReason, type OpenItemsDeps, type OpenItemsChatMessage, type QuestionCardInput, type FollowUpInput } from './open-items.service.js';
+import { OpenItemsService, isConcreteInterimPromise, markRestartReminded, owedCommitments, plausiblyFulfils, supersededReason, withCanonicalSender, type OpenItemsDeps, type OpenItemsChatMessage, type QuestionCardInput, type FollowUpInput } from './open-items.service.js';
 import { planCommitmentNotes } from '../restart/interrupted-turns.js';
 import { buildFollowUpWorkItem, followUpBlockedReason } from './open-items.wiring.js';
 import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
@@ -187,6 +188,18 @@ function kaiWork(h: Harness, requestId: string, status: WorkItem['status'] = 'ru
 }
 
 describe('OpenItemsService — the ticket stays open', () => {
+  it('an orchestrator reply posted under its display name tracks items for its session, so the card and the answer reach it (D-952, 2026-10-26)', async () => {
+    const h = harness();
+    const t = await ticket(h, 'done');
+    kaiWork(h, t.id);
+    const updated = await h.service.onAgentMessage(msg(h, ATLAS_REPLY, 'Orchestrator'));
+    const items = updated!.openItems!;
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.map((i) => i.agent)).toEqual(items.map(() => ORCHESTRATOR_SESSION_NAME));
+    expect(h.cards.map((c) => c.item.agent)).toEqual([ORCHESTRATOR_SESSION_NAME]);
+    expect(withCanonicalSender({ senderId: 'ce-owen-ad0320ab' })).toEqual({ senderId: 'ce-owen-ad0320ab' });
+  });
+
   it('a done ticket whose agent leaves open items moves to awaiting_followup (TKT-185)', async () => {
     const h = harness();
     const t = await ticket(h, 'done');
@@ -1810,5 +1823,48 @@ describe('a promise names project tickets: work done outside the request fulfils
     ownWork(h, 'CE-16', 'done', -HOUR);
     await h.service.onAgentMessage(msg(h, '明天中午把 CE-16 的链接发你，见 TKT-185。'));
     expect((await h.requests.getById(t.id))!.openItems![0].childWorkItemIds).toBeUndefined();
+  });
+});
+
+describe('OpenItemsService — owner decisions asked in prose (crewly#1369)', () => {
+  const ELLA_REPLY = 'PR #1138 is still open (the Gmail card). Should I close it?\n\nThe first video cut is in the drive.';
+
+  it('a mid-message yes/no decision goes on file as an owner question due in 24 h, without a card', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    const updated = await h.service.onAgentMessage(msg(h, ELLA_REPLY));
+    const q = updated!.openItems!.find((i) => i.type === 'question');
+    expect(q).toMatchObject({ type: 'question', text: 'Should I close it?', ownerQuestion: true, status: 'open', dueSource: 'default' });
+    expect(Date.parse(q!.due!) - h.clock.now.getTime()).toBe(24 * HOUR);
+    expect(h.cards).toHaveLength(0);
+    expect((await h.requests.getById(t.id))?.status).toBe('running');
+  });
+
+  it("the owner's next message in the thread is the answer on file", async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, ELLA_REPLY));
+    h.clock.now = new Date(h.clock.now.getTime() + HOUR);
+    await h.service.onAgentMessage({ id: 'owner-1', channelId: CHANNEL, threadId: ROOT, senderType: 'user', senderId: 'UOWNER', content: '关掉吧，我要的是视频', createdAt: h.clock.now.getTime() });
+    const q = (await h.requests.getById(t.id))!.openItems!.find((i) => i.type === 'question');
+    expect(q).toMatchObject({ status: 'resolved', answer: '关掉吧，我要的是视频' });
+    expect(q!.closedReason).toContain('owner-1');
+  });
+
+  it('an uncarded final decision question is marked; a carded one keeps its card', async () => {
+    const h = harness();
+    await ticket(h);
+    const carded = await h.service.onAgentMessage(msg(h, 'The draft for the three partners is ready. Should I send it to them on Monday?'));
+    const q = carded!.openItems!.find((i) => i.type === 'question')!;
+    expect(q.decisionId).toBe('D-1');
+    expect(q.ownerQuestion).toBeUndefined();
+  });
+
+  it('plain questions and backfill planning add nothing', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    expect(await h.service.onAgentMessage(msg(h, 'How do I merge it?\n\nMore later.'))).toBeNull();
+    const planned = await h.service.plan(t, msg(h, ELLA_REPLY), h.clock.now);
+    expect(planned.some((p) => p.item.ownerQuestion)).toBe(false);
   });
 });

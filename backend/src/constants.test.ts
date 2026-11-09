@@ -7,6 +7,7 @@
  * critically the OAuth scope set used to issue new Google credentials.
  */
 import {
+	MEETING_CONSTANTS,
   HANDOVER_CONSTANTS,
   OPEN_ITEMS_CONSTANTS,
   ORC_WAKE_CONSTANTS,
@@ -34,6 +35,7 @@ import {
   WAITING_SYNC_CONSTANTS,
   CREWLY_CHANNEL_CONSTANTS,
   STALL_WATCHER_CONSTANTS,
+  VERIFIED_SPOT_CHECK_CONSTANTS,
   TL_DELEGATION_CONSTANTS,
   TRACE_CONSTANTS,
 } from './constants.js';
@@ -572,6 +574,29 @@ describe('WIKI_QUEUE_CONSTANTS (#914 wiki queue hygiene)', () => {
 	});
 });
 
+describe('WIKI_GAPS_CONSTANTS (#914 knowledge gaps)', () => {
+	it('keeps the page under llm-curated, the state in a dot-file, and the query bounds sane', async () => {
+		const { WIKI_GAPS_CONSTANTS: C } = await import('./constants.js');
+		expect(C.DIR.startsWith('llm-curated/')).toBe(true);
+		expect(C.STATE_FILE.startsWith('.')).toBe(true);
+		expect(C.QUERY_MIN_CHARS).toBeLessThan(C.QUERY_MAX_CHARS);
+		expect(C.MAX_GAPS_PER_PAGE).toBeGreaterThan(0);
+		expect(C.MAX_AGENTS_PER_GAP).toBeGreaterThan(0);
+		expect(C.WINDOW_DAYS).toBe(7);
+		expect(C.WORKITEM_KIND).toBe('wiki-knowledge-gaps');
+	});
+});
+
+describe('MEMORY_CONSTANTS.DEDUP (#914 evidence merge)', () => {
+	it('keeps the near-duplicate threshold strict and the guards positive', async () => {
+		const { MEMORY_CONSTANTS: C } = await import('./constants.js');
+		expect(C.DEDUP.NEAR_DUPLICATE_JACCARD).toBeGreaterThanOrEqual(0.8);
+		expect(C.DEDUP.NEAR_DUPLICATE_JACCARD).toBeLessThan(1);
+		expect(C.DEDUP.MIN_TOKENS_FOR_NEAR).toBeGreaterThan(1);
+		expect(C.DEDUP.SUBSTRING_MIN_CHARS).toBe(20);
+	});
+});
+
 describe('CREWLY_CHANNEL_CONSTANTS', () => {
 	it('names the registry file and keeps limits in line with Slack and huddles', () => {
 		expect(CREWLY_CHANNEL_CONSTANTS.STORE_FILENAME).toBe('crewly-channels.json');
@@ -598,6 +623,18 @@ describe('HANDOVER_CONSTANTS (interrupted work, crewly#1361)', () => {
   });
 });
 
+describe('VERIFIED_SPOT_CHECK_CONSTANTS (crewly#1315)', () => {
+  it('samples a day of verified work once a day and lists a bounded number of discrepancies', () => {
+    expect(VERIFIED_SPOT_CHECK_CONSTANTS.WINDOW_MS).toBe(24 * 60 * 60 * 1000);
+    expect(VERIFIED_SPOT_CHECK_CONSTANTS.SAMPLE_SIZE).toBeGreaterThan(0);
+    expect(VERIFIED_SPOT_CHECK_CONSTANTS.CHECK_INTERVAL_MS).toBeLessThan(VERIFIED_SPOT_CHECK_CONSTANTS.WINDOW_MS);
+    expect(VERIFIED_SPOT_CHECK_CONSTANTS.BOOT_DELAY_MS).toBeLessThan(VERIFIED_SPOT_CHECK_CONSTANTS.CHECK_INTERVAL_MS);
+    expect(VERIFIED_SPOT_CHECK_CONSTANTS.STATE_FILE).toMatch(/\.json$/);
+    expect(VERIFIED_SPOT_CHECK_CONSTANTS.MAX_LISTED_DISCREPANCIES).toBeGreaterThan(0);
+    expect(VERIFIED_SPOT_CHECK_CONSTANTS.ENV_SWITCH).toBe('CREWLY_VERIFIED_SPOT_CHECK');
+  });
+});
+
 describe('STALL_WATCHER_CONSTANTS (crewly#1363, crewly#1362)', () => {
   it('keys the ladder to the agent estimate with a floor, and never spams', () => {
     expect(STALL_WATCHER_CONSTANTS.INTERVAL_MS).toBe(5 * 60 * 1000);
@@ -609,6 +646,13 @@ describe('STALL_WATCHER_CONSTANTS (crewly#1363, crewly#1362)', () => {
     expect(STALL_WATCHER_CONSTANTS.OWNER_LINE_INTERVAL_MS).toBe(24 * 60 * 60 * 1000);
     expect(STALL_WATCHER_CONSTANTS.CLAIM_STALL_MS).toBe(TRACE_CONSTANTS.STALL_MINUTES * 60 * 1000);
     expect(STALL_WATCHER_CONSTANTS.CLAIM_CHECK_WINDOW_MS).toBe(10 * 60 * 1000);
+    // crewly#1427 item 5: words that make a hand-off a plan, not a claim
+    expect(STALL_WATCHER_CONSTANTS.CLAIM_PLAN_ZH.test('你看过说可以,我再')).toBe(true);
+    expect(STALL_WATCHER_CONSTANTS.CLAIM_PLAN_ZH.test('会随这次一起')).toBe(true);
+    expect(STALL_WATCHER_CONSTANTS.CLAIM_PLAN_ZH.test('刚才')).toBe(false);
+    expect(STALL_WATCHER_CONSTANTS.CLAIM_PLAN_ZH.test('视频已经是')).toBe(false);
+    expect(STALL_WATCHER_CONSTANTS.CLAIM_PLAN_EN.test("Once you approve, I'll")).toBe(true);
+    expect(STALL_WATCHER_CONSTANTS.CLAIM_PLAN_EN.test('After the review I')).toBe(false);
     expect(STALL_WATCHER_CONSTANTS.ARM_DELAY_MS).toBe(24 * 60 * 60 * 1000);
     expect(STALL_WATCHER_CONSTANTS.ENV_KILL_SWITCH).toBe('CREWLY_STALL_WATCHER');
     expect(STALL_WATCHER_CONSTANTS.ENV_DRY_RUN).toBe('CREWLY_STALL_WATCHER_DRY_RUN');
@@ -632,4 +676,13 @@ describe('OPEN_ITEMS_CONSTANTS due defaults (crewly#1360)', () => {
     expect(OPEN_ITEMS_CONSTANTS.CHAT_PROMISE_DEFAULT_DUE_MS).toBeLessThan(OPEN_ITEMS_CONSTANTS.DEFAULT_DUE_MS);
     expect(OPEN_ITEMS_CONSTANTS.ESTIMATE_WINDOW_MS).toBe(10 * 60 * 1000);
   });
+});
+
+describe('MEETING_CONSTANTS', () => {
+	it('advertises meeting_pack and keeps the pack within the Cloud budget', () => {
+		expect(MEETING_CONSTANTS.CAPABILITY).toBe('meeting_pack');
+		expect(MEETING_CONSTANTS.SOURCE).toBe('cloud-talk');
+		expect(MEETING_CONSTANTS.PACK_MAX_TOKENS).toBeLessThanOrEqual(15_000);
+		expect(MEETING_CONSTANTS.AGENDA_MAX).toBeLessThanOrEqual(15);
+	});
 });

@@ -1,7 +1,7 @@
 ---
 name: Trace Read
 description: Read how a run went, sized for your context — where the time went (agents working, waiting on the owner, waiting on an agent, idle), owner touches, rework, stalls with their cause, harness interventions, tokens and cost by agent and model, the key events and links. Look a run up by trace, work item, ticket, request or experiment, or list recent runs. For team leads and the orchestrator reviewing runs (retros), and for any agent checking what happened to its own work.
-version: 1.0.0
+version: 1.1.0
 category: monitoring
 skillType: claude-skill
 assignableRoles:
@@ -105,17 +105,45 @@ the owner asks "how is X going" or "is it forgotten", before guessing.
 
 ```bash
 bash execute.sh --since 2026-10-01T00:00:00Z --limit 10
+bash execute.sh --since 2026-10-19T00:00:00Z --until 2026-10-26T00:00:00Z --project careerengine --limit 100
 ```
 
 One line per run, newest first: state, wall / active / waiting-on-owner
-time, touches, rework, stalls (and whether one is still going on),
+time, touches, rework, stalls (and whether one is still going on, and how
+the stalled time splits between the harness, the owner and the team),
 interventions, cost. Pick one and read it with `--trace`.
+
+Narrow the list:
+
+| Option | Meaning |
+|---|---|
+| `--until ISO` | Close the window: only runs whose last event is at or before this time |
+| `--project ID\|NAME\|PATH` | Only runs of that autopilot project (you must be a member or a supervisor of it) |
+| `--day YYYY-MM-DD` | Only runs tagged with that autopilot day (owner / orchestrator unless `--project` is given) |
+| `--label LABEL` | Only runs tagged with that ticket label (same rule) |
+
+With `--json`, each row carries `project`, `day`, `labels` and `metrics`
+(including `stallMsByCause`), so a weekly review can group runs itself.
+
+### Reading a whole week
+
+The backend embeds metrics in at most 100 rows per call. A busy project has
+more runs than that in a week, so page by day: one call per
+`--since <day 00:00> --until <next day 00:00>` and add the rows up. Raise
+`--max-chars` (up to 64000) when the text of one page is cut.
+
+Idle time by cause, per run, from `metrics.stallMsByCause`:
+
+- **harness**: `runtime_quota` + `delivery_failure` — the system was stuck
+  (a runtime out of usage, a message not delivered);
+- **owner**: `waiting_on_owner`;
+- **team**: `waiting_on_agent` + `nobody_pushing` — the team was stuck.
 
 ## Options
 
 | Option | Meaning |
 |---|---|
-| `--max-chars N` | Output size bound (600–16000, default 4000) |
+| `--max-chars N` | Output size bound (600–64000, default 4000; one run's summary is at most 16000) |
 | `--stall-minutes N` | Stall threshold in minutes (default 30) |
 | `--json` | `{traceId, links, text, metrics}` — the full metrics object (not size-bounded) |
 

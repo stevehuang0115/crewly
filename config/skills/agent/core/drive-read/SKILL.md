@@ -26,6 +26,8 @@ bash execute.sh --id 1AbC…                        # print content (text/CSV) a
 bash execute.sh --id 1AbC… --out /tmp/report.pdf  # save (binary decoded) and print metadata
 ```
 
+A file over the skill output cap (60 KB) is too big to print: without `--out` you get a one-line `{"truncated":true,...,"next":"...--out <path>..."}` envelope. With `--out` the cap is skipped and the exact bytes are saved (a binary of any size); `--out` fails with `reason: no_content` / `truncated_response` rather than report success without a file.
+
 ## Output
 
 ```json

@@ -47,6 +47,24 @@ export interface TrackedCount<T> {
   counts?: T;
 }
 
+/** How a tool that reaches outside is held before its effect leaves Crewly (#894). */
+export type OutboundGate = 'draft' | 'owner_word' | 'owner_card' | 'as_owner' | 'none';
+
+/** Who an outbound tool's effect can reach. */
+export type OutboundReach = 'owner' | 'people' | 'public';
+
+/** One bundled tool whose effect leaves Crewly. */
+export interface OutboundTool {
+  /** Skill name (`gmail-send`, `marketplace/gmail`) */
+  skill: string;
+  /** Outside system it acts on */
+  surface: string;
+  reaches: OutboundReach;
+  gate: OutboundGate;
+  /** The hold in one sentence */
+  note: string;
+}
+
 /** `GET /api/security/approvals`. */
 export interface ApprovalActivity {
   days: number;
@@ -60,6 +78,8 @@ export interface ApprovalActivity {
   whatsapp: TrackedCount<{ held: number; sent: number; discarded: number; waiting: number; sending?: number }>;
   gmail: TrackedCount<{ waiting: number }>;
   items: ActivityItem[];
+  /** Every tool that reaches outside, with its hold; in display order */
+  outbound: OutboundTool[];
 }
 
 /** Client. */

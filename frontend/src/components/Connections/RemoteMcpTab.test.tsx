@@ -64,6 +64,24 @@ describe('RemoteMcpTab', () => {
     expect(screen.getByTestId('remote-mcp-host-zoho')).toHaveTextContent('https://crm-1.zohomcp.com/…');
   });
 
+  it('sends request headers as name/value pairs, masks the value, and drops blank rows', async () => {
+    api.addRemoteMcp.mockResolvedValue({ server: ZOHO });
+    render(<RemoteMcpTab />);
+    fireEvent.change(screen.getByTestId('remote-mcp-url'), { target: { value: 'https://portal.example.com/mcp' } });
+    fireEvent.click(screen.getByTestId('remote-mcp-header-add'));
+    fireEvent.change(screen.getByTestId('remote-mcp-header-name-0'), { target: { value: ' Authorization ' } });
+    fireEvent.change(screen.getByTestId('remote-mcp-header-value-0'), { target: { value: 'Bearer k' } });
+    expect(screen.getByTestId('remote-mcp-header-value-0')).toHaveAttribute('type', 'password');
+    fireEvent.click(screen.getByTestId('remote-mcp-header-add'));
+    fireEvent.click(screen.getByTestId('remote-mcp-header-add'));
+    fireEvent.click(screen.getByTestId('remote-mcp-header-remove-2'));
+    fireEvent.click(screen.getByTestId('remote-mcp-add'));
+    await waitFor(() => expect(api.addRemoteMcp).toHaveBeenCalledWith({
+      label: 'Zoho', url: 'https://portal.example.com/mcp', provider: 'zoho', headers: { Authorization: 'Bearer k' },
+    }));
+    await waitFor(() => expect(screen.queryByTestId('remote-mcp-header-name-0')).not.toBeInTheDocument());
+  });
+
   it('switching to Other swaps the default name and help', async () => {
     render(<RemoteMcpTab />);
     fireEvent.click(screen.getByTestId('remote-mcp-preset-custom'));

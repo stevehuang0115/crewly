@@ -18,11 +18,13 @@ import {
   ORCHESTRATOR_SESSION_NAME,
   PROJECT_TICKET_CONSTANTS,
   TICKET_AUTOPILOT_CONSTANTS,
+  TICKET_ROUTINE_NUDGE_CONSTANTS,
 } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { Project, Team, TeamMember } from '../../types/index.js';
 import {
   MAX_BRIEF_MARKDOWN_BYTES,
+  createWorkItem,
   getWorkItemDisposition,
   type WorkItem,
   type WorkItemStatus,
@@ -45,7 +47,9 @@ import {
 import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
 import { decideDelegationTicketRoute, delegationTicketTitle } from './delegation-ticket-route.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
-import { isTeamLead } from '../../utils/team.utils.js';
+import { isTeamLead, findLeadSessionFor, getTeamLeads } from '../../utils/team.utils.js';
+import type { Trigger } from '../../types/v2/trigger.types.js';
+import { collectResultText, detectRecurringCadence, routineNudgeAlreadySent, triggerReferencesTicket, buildRoutineNudgeBrief } from './ticket-routine-nudge.js';
 import { isTeamPausedNow, pausedRefusalMessage, pausedTeamOfSession } from '../team/team-pause.registry.js';
 import { memberAvailability } from './ticket-autopilot-decision.js';
 import { autopilotTicketTraceForStart, traceAutopilotTicketStarted } from './ticket-autopilot-trace.js';
@@ -85,7 +89,7 @@ export type ProjectTicketAccess = 'owner' | 'orchestrator' | 'lead' | 'member' |
 
 /** The subset of the task pool this service uses. */
 export interface ProjectTicketPool {
-  addToPool(workItem: WorkItem, options?: { creatorSession?: string; ownerOriginOnly?: boolean }): Promise<void>;
+  addToPool(workItem: WorkItem, options?: { creatorSession?: string; ownerOriginOnly?: boolean; inheritCreatorTurn?: boolean }): Promise<void>;
   claimSpecificItem(agentId: string, workItemId: string): Promise<{ workItem: WorkItem } | null>;
   findWorkItem(workItemId: string): Promise<WorkItem | null>;
   getAllItems(): Promise<WorkItem[]>;
@@ -127,6 +131,8 @@ export interface ProjectTicketWorkflowDeps {
   directory: ProjectTicketDirectory;
   /** Starts a stopped assignee (spec §5a); absent = assigned work waits for the member's next start */
   wakeAssignee?: AssigneeWaker;
+  /** Lists the schedules, so the routine nudge skips a ticket a trigger already names (crewly#1034); absent = no check */
+  listTriggers?: () => Trigger[];
   logger?: ComponentLogger;
   now?: () => string;
 }
@@ -170,7 +176,7 @@ interface StartWorkOptions {
   /** Use this WorkItem (a delegation) instead of building one from the ticket */
   prepared?: (t: ProjectTicket) => WorkItem;
   /** Passed through to the pool's add */
-  addOptions?: { creatorSession?: string; ownerOriginOnly?: boolean };
+  addOptions?: { creatorSession?: string; ownerOriginOnly?: boolean; inheritCreatorTurn?: boolean };
   /** Log lines written before the assignment line */
   logFirst?: string[];
 }
@@ -249,6 +255,7 @@ export class ProjectTicketWorkflowService {
   private readonly pool: ProjectTicketPool;
   private readonly directory: ProjectTicketDirectory;
   private readonly wakeAssignee: AssigneeWaker | null;
+  private readonly listTriggers: (() => Trigger[]) | null;
   private readonly logger: ComponentLogger;
   private readonly now: () => string;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
@@ -264,6 +271,7 @@ export class ProjectTicketWorkflowService {
     this.pool = deps.pool;
     this.directory = deps.directory;
     this.wakeAssignee = deps.wakeAssignee ?? null;
+    this.listTriggers = deps.listTriggers ?? null;
     this.logger = deps.logger ?? LoggerService.getInstance().createComponentLogger('ProjectTicketWorkflow');
     this.now = deps.now ?? (() => new Date().toISOString());
   }
@@ -1124,7 +1132,68 @@ export class ProjectTicketWorkflowService {
       }
     });
     if (outcome !== 'unchanged') this.logger.info('Project ticket synced from its WorkItem', { projectPath, id, outcome });
+    if ((outcome as TicketSyncOutcome) === 'done' && end.kind === 'success') {
+      await this.nudgeRoutine(projectPath, id, end.wi).catch((err) =>
+        this.logger.warn('Routine nudge failed', { projectPath, id, error: err instanceof Error ? err.message : String(err) }),
+      );
+    }
     return outcome;
+  }
+
+  /**
+   * A done ticket whose verified result names a recurring cadence: tell the
+   * verifying lead once to set a routine or say why not (crewly#1034). Only a
+   * nudge, never a cron. Skipped when the ticket's Log already carries the
+   * nudge marker, a live trigger names the ticket, or no lead is found.
+   *
+   * @param projectPath - Project root
+   * @param id - Ticket id
+   * @param wi - The verified WorkItem the ticket finished on
+   */
+  private async nudgeRoutine(projectPath: string, id: string, wi: WorkItem): Promise<void> {
+    if (process.env[TICKET_ROUTINE_NUDGE_CONSTANTS.ENV_SWITCH] === '0') return;
+    const quote = detectRecurringCadence(collectResultText(wi.result, wi.output));
+    if (!quote) return;
+    const ticket = await this.tickets.get(projectPath, id);
+    if (!ticket || ticket.status !== 'done' || routineNudgeAlreadySent(ticket.log)) return;
+    if (this.listTriggers && triggerReferencesTicket(this.listTriggers(), ticket.id)) return;
+
+    const teams = (await this.directory.getTeams()).filter((t) => !t.archived);
+    const worker = wi.target ?? ticket.assignee ?? '';
+    const lead = (worker ? findLeadSessionFor(teams, worker) : null)
+      ?? this.leadOfTeam(teams.find((t) => t.id === ticket.team) ?? teams.find((t) => (t.members ?? []).some((m) => m.sessionName === worker)));
+    if (!lead) return;
+
+    const workItem = createWorkItem({
+      type: 'notify',
+      owner: 'team_lead',
+      target: lead,
+      title: `Set a routine for ${ticket.id}?`.slice(0, WORK_ITEM_DESCRIPTION_MAX),
+      description: `${ticket.id} is done and its result describes recurring work. Set a routine or say why not.`,
+      briefMarkdown: buildRoutineNudgeBrief({ ticketId: ticket.id, title: ticket.title, quote, lead }),
+      metadata: {
+        kind: TICKET_ROUTINE_NUDGE_CONSTANTS.METADATA_KIND,
+        requiresVerification: false,
+        [PROJECT_TICKET_CONSTANTS.WORK_ITEM_METADATA_KEY]: { projectPath, id: ticket.id },
+      },
+    });
+    workItem.targetSource = 'assigned';
+    // Log first: the marker is the dedupe key, so a failed add is not retried into a double nudge.
+    await this.tickets.mutate(projectPath, id, TICKET_ROUTINE_NUDGE_CONSTANTS.ACTOR, (t) =>
+      routineNudgeAlreadySent(t.log) ? null : { fields: {}, log: [`${TICKET_ROUTINE_NUDGE_CONSTANTS.LOG_MARKER} ${lead} (result names a recurring cadence)`] },
+    );
+    await this.pool.addToPool(workItem);
+    this.logger.info('Routine nudge sent to the lead', { projectPath, id, lead, workItemId: workItem.id });
+  }
+
+  /**
+   * The first lead session of a team.
+   *
+   * @param team - Team, if any
+   * @returns Lead session name, or null
+   */
+  private leadOfTeam(team: Team | undefined): string | null {
+    return team ? getTeamLeads(team).find((m) => m.sessionName)?.sessionName ?? null : null;
   }
 
   // ---------------------------------------------------------------------------

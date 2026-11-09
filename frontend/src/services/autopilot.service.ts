@@ -30,7 +30,7 @@ export interface AutopilotPeriodStats {
   sentBack: number;
   stalled: number;
   cycleTime: { toDone: AutopilotCycleStat; toVerified: AutopilotCycleStat };
-  ownerTouches: { answered: number; approved: number; sentBack: number; corrected: number; total: number };
+  ownerTouches: { answered: number; approved: number; sentBack: number; corrected: number; other?: number; total: number };
   stalls: { count: number; totalMs: number; byCause: Record<AutopilotStallCause, { count: number; ms: number }> };
   interventions: { nudges: number; redeliveries: number; wakes: number; corrections: number; guardBlocks: number; misroutes: number; total: number };
   tokens: number;

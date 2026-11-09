@@ -11,11 +11,19 @@ import { requireConnectorAccess } from './connector.controller.js';
 import { ConnectorAccessService } from '../../services/connector/connector-access.service.js';
 import { RemoteMcpService } from '../../services/connector/remote-mcp.service.js';
 import { ActingForService, currentActor, setActingForForTesting } from '../../services/people/acting-for.service.js';
+import { ConnectorUseAuditService, setConnectorUseAuditForTesting } from '../../services/connector/connector-use-audit.service.js';
+import { PrivateSourceTracker, getPrivateSourceTracker, setPrivateSourceTrackerForTesting } from '../../services/people/private-source.service.js';
+import type { ActivityEntryInput } from '../../services/activity/activity-log.service.js';
 
 jest.mock('../../services/core/logger.service.js', () => ({
   LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }) }) },
 }));
 jest.mock('../../utils/agent-caller.utils.js', () => ({ resolveAgentCaller: jest.fn() }));
+const mockRecordActivity = jest.fn();
+jest.mock('../../services/activity/activity-log.service.js', () => ({
+  ...jest.requireActual('../../services/activity/activity-log.service.js'),
+  recordActivity: (...args: unknown[]) => mockRecordActivity(...args),
+}));
 
 import { resolveAgentCaller } from '../../utils/agent-caller.utils.js';
 import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
@@ -84,6 +92,20 @@ describe('PUT /api/connectors/access/:connectorId', () => {
     expect(access.setAllowedRoles).toHaveBeenLastCalledWith('canva', []);
   });
 
+  it('writes who changed the allowlist, before and after, to the activity log (#881)', async () => {
+    mockRecordActivity.mockClear();
+    access.list.mockResolvedValue({ canva: { allowedRoles: ['ops'] } });
+    await request(app).put('/api/connectors/access/canva').send({ allowedRoles: ['ops', 'team-leader'] });
+    expect(mockRecordActivity).toHaveBeenCalledTimes(1);
+    expect(mockRecordActivity.mock.calls[0][0]).toMatchObject({
+      actor: { type: 'owner' },
+      action: 'connector.access.updated',
+      target: { type: 'connector', id: 'canva' },
+      before: { allowedRoles: ['ops'] },
+      after: { allowedRoles: ['ops', 'team-leader'] },
+    });
+  });
+
   it('400s without an array', async () => {
     const res = await request(app).put('/api/connectors/access/canva').send({ allowedRoles: 'ops' });
     expect(res.status).toBe(400);
@@ -114,6 +136,57 @@ describe('requireConnectorAccess', () => {
     mockCaller.mockRejectedValue(new Error('storage down'));
     const res = await request(app).get('/api/canva/designs');
     expect(res.status).toBe(200);
+  });
+});
+
+describe('requireConnectorAccess — audit log of connector use (issue #969)', () => {
+  let written: ActivityEntryInput[];
+  beforeEach(() => {
+    written = [];
+    setConnectorUseAuditForTesting(new ConnectorUseAuditService({ record: (e) => written.push(e) }));
+  });
+  afterEach(() => setConnectorUseAuditForTesting(null));
+
+  it('writes one connector.use.allowed entry for an allowed agent, not one per call', async () => {
+    mockCaller.mockResolvedValue({ session: 'a-dev', role: 'developer' });
+    await request(app).get('/api/canva/designs');
+    await request(app).get('/api/canva/designs');
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({
+      action: 'connector.use.allowed',
+      actor: { type: 'agent', id: 'a-dev' },
+      target: { type: 'connector', id: 'canva' },
+    });
+    expect(written[0].note).toContain('agent a-dev used canva');
+  });
+
+  it('notes that the session read the connector for its person, so wiki pages it writes next are tagged (#969)', async () => {
+    setPrivateSourceTrackerForTesting(new PrivateSourceTracker());
+    try {
+      mockCaller.mockResolvedValue({ session: 'a-dev', role: 'developer' });
+      await request(app).get('/api/canva/designs');
+      expect(getPrivateSourceTracker().recent('a-dev')).toEqual([expect.objectContaining({ personId: 'owner', connectorId: 'canva' })]);
+      access.isAllowed.mockResolvedValue(false);
+      await request(app).get('/api/canva/designs');
+      expect(getPrivateSourceTracker().recent('a-dev')).toHaveLength(1); // a refusal reads nothing
+    } finally {
+      setPrivateSourceTrackerForTesting(null);
+    }
+  });
+
+  it('writes a connector.use.refused entry with the allowed roles every time a role is refused', async () => {
+    mockCaller.mockResolvedValue({ session: 'a-dev', role: 'developer' });
+    access.isAllowed.mockResolvedValue(false);
+    access.allowedRoles.mockResolvedValue(['ops', 'support']);
+    await request(app).get('/api/canva/designs');
+    await request(app).get('/api/canva/designs');
+    expect(written).toHaveLength(2);
+    expect(written[0]).toMatchObject({
+      action: 'connector.use.refused',
+      actor: { type: 'agent', id: 'a-dev' },
+      target: { type: 'connector', id: 'canva' },
+      after: { reason: 'role_not_allowed', allowedRoles: ['ops', 'support'] },
+    });
   });
 });
 

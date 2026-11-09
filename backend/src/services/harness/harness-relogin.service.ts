@@ -29,7 +29,7 @@
  *    the DM. The Slack bridge offers owner DMs to
  *    {@link HarnessReloginService.handleOwnerReply} before anything else, so
  *    this works with no agent awake. The login broker runs the harness's
- *    login in its own PTY (`claude setup-token` / `codex login --device-auth`)
+ *    login in its own PTY (`claude auth login` / `codex login --device-auth`)
  *    and the link (and Codex's one-time code) is sent back.
  * 5. **The code.** For Claude the owner replies with the code from the page;
  *    it is typed into the waiting login. A rejected code is reported once; an
@@ -402,7 +402,7 @@ export function unwrapReply(text: string): string {
  * no whitespace and a plausible length.
  *
  * @param text - Unwrapped owner reply
- * @returns True when it can be typed into `claude setup-token`
+ * @returns True when it can be typed into `claude auth login`
  */
 export function looksLikeAuthCode(text: string): boolean {
 	const { CODE_MIN_LENGTH, CODE_MAX_LENGTH } = HARNESS_CONSTANTS.RELOGIN;

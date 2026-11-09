@@ -107,6 +107,12 @@ import { RequestCascadeSubscriber } from './services/v3/request-cascade.subscrib
 import { setRequestServiceEventBus, RequestService } from './services/v3/request.service.js';
 import { OwnerReceiptService, setOwnerReceiptService } from './services/v3/owner-receipt/owner-receipt.service.js';
 import { agentNameIndexOf, createSlackOwnerSender, startOwnerReceiptSchedule, teamIndexOf, teamLeadIndexOf } from './services/v3/owner-receipt/owner-receipt.boot.js';
+import { createSpotCheckLoader } from './services/v3/owner-receipt/verified-spot-check.loader.js';
+import { createPullsWeeklyLoader } from './services/v3/owner-receipt/owner-pulls-weekly.loader.js';
+import { OwnerPullsPostLog, getOwnerPullsPostLog, setOwnerPullsPostLog } from './services/v3/owner-receipt/owner-pulls-post-log.js';
+import { onAgentStartedDmPost } from './services/slack/slack-agent-post.service.js';
+import { getTraceAnalysis } from './services/trace/trace-analysis.service.js';
+import { getTraceStore } from './services/trace/trace-store.js';
 import { IntakeOutcomeLog } from './services/v3/ticket-intake-log.js';
 import { getSlackService } from './services/slack/slack.service.js';
 import { getSlackTypingPlaceholderService } from './services/slack/slack-typing-placeholder.service.js';
@@ -126,7 +132,7 @@ import { driveCapabilities } from './services/drive/drive-agent.service.js';
 import { canvasCapabilities } from './services/board/canvas/canvas-inbound.service.js';
 import { isBoardPushDisabled } from './services/board/board-push.service.js';
 import { teamMoveCapabilities } from './services/team-move/team-move-driver.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, TICKET_HYGIENE_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS, CREWLY_APPS_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, BRIEFING_CONSTANTS, DRIVE_CONSTANTS, POOL_PRUNE_CONSTANTS, STALL_WATCHER_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, TICKET_HYGIENE_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS, CREWLY_APPS_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, BRIEFING_CONSTANTS, DRIVE_CONSTANTS, MEETING_CONSTANTS, ORC_CONVERSATION_CONSTANTS, POOL_PRUNE_CONSTANTS, STALL_WATCHER_CONSTANTS, VERIFIED_SPOT_CHECK_CONSTANTS, OWNER_RECEIPT_CONSTANTS } from './constants.js';
 import { randomUUID } from 'crypto';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
@@ -167,6 +173,7 @@ import { resolveSupervisorStopBudgetMs, capDrainToSupervisor } from './services/
 import { findClaudeTranscript, defaultClaudeHome } from './services/agent/runtime-session-recovery.js';
 import { DeviceIdentityService } from './services/cloud/device-identity.service.js';
 import { CloudSyncService } from './services/cloud/cloud-sync.service.js';
+import { NetworkStatusService } from './services/core/network-status.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
 import { SlackImageService, setSlackImageService } from './services/slack/slack-image.service.js';
@@ -188,7 +195,7 @@ import { createCallerIdentityMiddleware } from './middleware/caller-identity.mid
 import { bodyParserExcept } from './middleware/body-parser-except.js';
 import { PeerProcessService } from './services/core/peer-process.service.js';
 import { createOwnerSessionPageMiddleware, createOwnerSessionRouter } from './controllers/auth/owner-session.controller.js';
-import { dashboardBuildHeader, dashboardBuildMessage, loadDashboardEntry } from './services/core/dashboard-build.js';
+import { dashboardBuildHeader, dashboardBuildMessage, loadDashboardEntry, loadInlineScriptHashes } from './services/core/dashboard-build.js';
 import {
 	apiTokenMiddleware,
 	healthGateMiddleware,
@@ -213,6 +220,7 @@ import { OrcReplyRouteService } from './services/orc/orc-reply-route.service.js'
 import { buildTriggerOrigin } from './services/orc/work-item-destination.js';
 import { ReloginAgentResumerService } from './services/agent/relogin-agent-resumer.service.js';
 import { getHarnessReloginService, harnessCommandWord } from './services/harness/harness-relogin.service.js';
+import { getClaudeTokenMigrationService } from './services/harness/claude-token-migration.service.js';
 import { getHarnessService } from './services/harness/harness.service.js';
 import { SlackReloginDmService, createReloginReplyInterceptor } from './services/slack/slack-relogin-dm.service.js';
 import { startBackendRuntimeFallback } from './services/runtime-fallback/runtime-fallback.wiring.js';
@@ -269,6 +277,7 @@ import { ProjectTicketWorkflowService } from './services/project-tickets/project
 import { WorkItemWorktreeService } from './services/worktree/workitem-worktree.service.js';
 import { WorkItemWorktreeSubscriber, createTerminalNotifier } from './services/worktree/workitem-worktree.subscriber.js';
 import { ResourceModeService, RESOURCE_MODE_CONSTANTS, type RunningAgent } from './services/agent/resource-mode.service.js';
+import { memoryStopHold } from './services/agent/memory-stop-hold.js';
 import { getStallWatcher } from './services/stall/stall-watcher.service.js';
 import { getRestoreQueue, RESTORE_TIER, type RestoreEntry } from './services/agent/restore-queue.js';
 import {
@@ -296,6 +305,7 @@ import { traceHarness, traceTurnActivity } from './services/trace/trace-recorder
 import { inputCircuitStats, setInputCircuitOpenListener } from './services/session/input-circuit-breaker.js';
 import { looksLikeShellPrompt } from './utils/screen-excerpt.js';
 import { harnessPastesSinceOutsideInput, shownMarkers } from './services/session/input-ledger.js';
+import { viewerPersonOf } from './services/people/acting-for.service.js';
 
 // ESM __dirname equivalent using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -517,8 +527,9 @@ export class CrewlyServer {
 				API_SECURITY_CONSTANTS.DEFAULT_BIND_HOST,
 		};
 		// Single source of truth for "where is this instance's API": agents get
-		// it as CREWLY_API_URL and internal self-calls use it (#777).
-		setLocalApiPort(this.config.webPort);
+		// it as CREWLY_API_URL and internal self-calls use it (#777). An IP
+		// literal, so self-calls never wait on a DNS lookup (2026-10-26 outage).
+		setLocalApiPort(this.config.webPort, this.config.bindHost);
 
 		this.app = express();
 		this.httpServer = createServer(this.app);
@@ -759,6 +770,10 @@ export class CrewlyServer {
 		try {
 			// #828 coverage: every owner message's fate, for the receipt's coverage line.
 			const intakeOutcomeLog = new IntakeOutcomeLog(RequestService.getInstance().getRequestsDir());
+			// #1387: posts agents start in a DM, for the weekly FYI count.
+			const pullsPostLog = new OwnerPullsPostLog(RequestService.getInstance().getRequestsDir());
+			setOwnerPullsPostLog(pullsPostLog);
+			onAgentStartedDmPost((post) => void pullsPostLog.note(post));
 			const ticketIntake = new TicketIntakeService({
 				requests: RequestService.getInstance(),
 				findWorkItem: (id) => TaskPoolService.getInstance().findWorkItem(id),
@@ -799,6 +814,28 @@ export class CrewlyServer {
 					loadAgentNameIndex: async () => agentNameIndexOf(await StorageService.getInstance().getTeams()),
 					sender: createSlackOwnerSender(() => getSlackService()),
 					readIntakeLog: () => intakeOutcomeLog.read(),
+					// #1315: every receipt, a spot-check that verified work's files still exist.
+					loadSpotCheck: createSpotCheckLoader({
+						listWorkItems: () => TaskPoolService.getInstance().getAllItems(),
+						loadTeamIndex: async () => teamIndexOf(await StorageService.getInstance().getTeams()),
+					}),
+					// #1387: once a week, how often agents pulled the owner in.
+					loadPullsWeekly: createPullsWeeklyLoader({
+						listDecisions: async () => {
+							const { DecisionService } = await import('./services/decisions/decision.service.js');
+							return (await DecisionService.getInstance()?.list('all')) ?? [];
+						},
+						listRequests: () => RequestService.getInstance().listAll(),
+						loadTeamIndex: async () => teamIndexOf(await StorageService.getInstance().getTeams()),
+						loadTeamNameById: async () => new Map((await StorageService.getInstance().getTeams()).map((t) => [t.id, t.name])),
+						listTraceTouches: async (since, limit) => {
+							const rows = await getTraceAnalysis().withMetrics(getTraceStore().list({ since, limit }));
+							return rows.map((r) => ({ createdAt: r.root.createdAt, ownerTouches: r.metrics?.ownerTouches ?? 0 }));
+						},
+						listAgentPosts: () => pullsPostLog.read(),
+						loadAgentNameIndex: async () => agentNameIndexOf(await StorageService.getInstance().getTeams()),
+						listOwnerMessageTimes: async (sinceMs, limit) => getChatV2Service().getOwnerMessageTimes(sinceMs, limit, OWNER_RECEIPT_CONSTANTS.PULLS_WEEKLY.ACTIVE_BUCKET_MS),
+					}),
 				});
 				setOwnerReceiptService(receipt);
 				// #856 follow-up: while the receipt is off, show the owner one real
@@ -1232,16 +1269,68 @@ void (async () => {
 
 			// Wiki maintenance (#1345): hourly queue drain into the vault logs
 			// (the bridge below is the LLM path and is usually switched off),
-			// daily log rotation into llm-curated/log-archive/ and a weekly
-			// digest page compiled from the log. No LLM. Non-fatal.
+			// daily log rotation into llm-curated/log-archive/, a weekly
+			// digest page compiled from the log, and (#914) a weekly
+			// knowledge-gaps page per vault with one review WorkItem for the
+			// vault's team lead. No LLM. Non-fatal.
 			try {
 				const { WikiMaintenanceService } = await import('./services/wiki/wiki-maintenance.service.js');
-				const maintenance = new WikiMaintenanceService({ bootGate: this.bootQuietGate() });
+				const { WikiKnowledgeGapsService } = await import('./services/wiki/wiki-knowledge-gaps.service.js');
+				const { resolveWikiOwner } = await import('./services/wiki/wiki-owner.resolver.js');
+				const gaps = new WikiKnowledgeGapsService({
+					pool: TaskPoolService.getInstance(),
+					// Team leaders own their vault's knowledge; the global vault stays with the orchestrator.
+					resolveTarget: (vaultPath) => resolveWikiOwner(this.storageService, vaultPath),
+					// WorkItem titles name the team, not its folder id.
+					labelFor: async (vaultPath) => {
+						const teamMatch = vaultPath.replace(/\\/g, '/').match(/\/teams\/([^/]+)\/wiki$/);
+						if (!teamMatch) return null;
+						const team = (await this.storageService.getTeams()).find((t) => t.id === teamMatch[1]);
+						return team?.name ?? null;
+					},
+					// Never queue a review for a stopped lead: a weekly chore is
+					// not worth a wake the owner never asked for.
+					isTargetAwake: async (sessionName) => {
+						if (sessionName === ORCHESTRATOR_SESSION_NAME) return true;
+						const member = (await this.storageService.getTeams())
+							.flatMap((t) => t.members ?? [])
+							.find((m) => m.sessionName === sessionName);
+						return member?.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE;
+					},
+				});
+				WikiKnowledgeGapsService.setInstance(gaps);
+				const maintenance = new WikiMaintenanceService({ bootGate: this.bootQuietGate(), gaps });
 				WikiMaintenanceService.setInstance(maintenance);
 				maintenance.start();
 			} catch (maintenanceErr) {
 				this.logger.warn('Wiki maintenance failed to start (non-fatal)', {
 					error: (maintenanceErr as Error).message,
+				});
+			}
+
+			// Correction ladder (#810): the second time a correction class is
+			// recorded in a project, its team lead gets one WorkItem asking
+			// for a check in code instead of more prose. No LLM. Non-fatal.
+			try {
+				const { CorrectionLadderService } = await import('./services/memory/correction-ladder.service.js');
+				const { resolveWikiOwner } = await import('./services/wiki/wiki-owner.resolver.js');
+				CorrectionLadderService.setInstance(
+					new CorrectionLadderService({
+						pool: TaskPoolService.getInstance(),
+						// The lead of a team assigned to the project; the orchestrator when none.
+						resolveTarget: (projectPath) => resolveWikiOwner(this.storageService, projectPath),
+						isTargetAwake: async (sessionName) => {
+							if (sessionName === ORCHESTRATOR_SESSION_NAME) return true;
+							const member = (await this.storageService.getTeams())
+								.flatMap((t) => t.members ?? [])
+								.find((m) => m.sessionName === sessionName);
+							return member?.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE;
+						},
+					}),
+				);
+			} catch (ladderErr) {
+				this.logger.warn('Correction ladder failed to start (non-fatal)', {
+					error: (ladderErr as Error).message,
 				});
 			}
 
@@ -1418,6 +1507,7 @@ void (async () => {
 		this.systemResourceAlertService = new SystemResourceAlertService();
 		this.teamsJsonWatcherService.setEventBusService(this.eventBusService);
 		this.activityMonitorService.setEventBusService(this.eventBusService);
+		this.activityMonitorService.setAgentRegistrationService(this.apiController.agentRegistrationService);
 		setEventBusControllerService(this.eventBusService);
 		setTeamControllerEventBusService(this.eventBusService);
 
@@ -1777,6 +1867,7 @@ void (async () => {
 				loadTeams: () => this.storageService.getTeams(),
 				addToPool: (wi) => TaskPoolService.getInstance().addToPool(wi),
 				stamp: (id, patch) => TaskPoolService.getInstance().mergeItemMetadata(id, patch),
+				findWorkItem: (id) => TaskPoolService.getInstance().findWorkItem(id),
 			});
 
 			// Subscribe EventBus events for targeted reconciliation
@@ -1948,13 +2039,16 @@ void (async () => {
 
 	private configureMiddleware(): void {
 		// Security middleware
+		const inlineScriptHashes = loadInlineScriptHashes(path.join(findPackageRoot(__dirname), 'frontend/dist/index.html'));
 		this.app.use(
 			helmet({
 				contentSecurityPolicy: {
 					directives: {
 						defaultSrc: ["'self'"],
 						styleSrc: ["'self'", "'unsafe-inline'"],
-						scriptSrc: ["'self'", "'unsafe-eval'"],
+						// The built page's inline theme script (packages/ui THEME_INIT_SCRIPT) runs
+						// only when its hash is listed; without it the page flashes the wrong theme.
+						scriptSrc: ["'self'", "'unsafe-eval'", ...inlineScriptHashes],
 						imgSrc: ["'self'", 'data:', 'https:', 'blob:'],
 						connectSrc: ["'self'", 'ws:', 'wss:', 'blob:'],
 						// Disable upgrade-insecure-requests for HTTP-only deployments (ESTestNode)
@@ -2154,6 +2248,8 @@ void (async () => {
 				// Agents whose deliveries the input guard keeps refusing (crewly#1028).
 				input_circuit: inputCircuitStats(),
 				cloud: cloudHealthBlock(),
+				// Offline breaker: is this machine on the internet at all (#1463).
+				network: NetworkStatusService.getInstance().getStatus(),
 				// Boot restore progress (staggered restore queue).
 				restoreQueue: getRestoreQueue().stats(),
 				// Adaptive agent limits: normal | pressure, running count, cap.
@@ -2495,10 +2591,12 @@ void (async () => {
 				// (specs/2026-10-08-owner-thread-sentinel.md).
 				// … and so is an agent the owner spoke to in the last two hours, answered
 				// or not: evicting it loses the conversation the owner is in (crewly#1344).
-				owesOwnerThread: (name) =>
+				// Both soft reasons lapse after SOFT_KEEP_MAX_IDLE_MS idle: the owner
+				// conversation resumes when the owner writes again (2026-10-19: Ella waited 2 h 38 min).
+				owesOwnerThread: (name, idleMs) =>
 					getOwnerThreadSentinel()?.owesOwner(name) === true ||
-					getOwnerThreadSentinel()?.ownerActiveRecently(name) === true ||
-					getFollowThrough()?.holdsIntent(name) === true,
+					(idleMs < RESOURCE_MODE_CONSTANTS.SOFT_KEEP_MAX_IDLE_MS &&
+						(getOwnerThreadSentinel()?.ownerActiveRecently(name) === true || getFollowThrough()?.holdsIntent(name) === true)),
 				onStoppedForSlot: (name) => {
 					reportOwnerThreadBlocking(name, { kind: 'stopped', why: 'slot' });
 					// Same hook as every other stop path: what it owes goes back to the queue and it is brought back.
@@ -2741,6 +2839,24 @@ void (async () => {
 				});
 			}
 
+			// Claude sign-in tokens older versions saved: keep them working until the
+			// account is signed in through Claude Code itself, then delete them; the
+			// owner is told once which accounts need one re-sign-in.
+			try {
+				const migrationDm = new SlackReloginDmService(
+					() => getSlackService(),
+					undefined,
+					(agentSession) => getSlackAgentIdentityService()?.getInstalled(agentSession)?.botToken ?? null,
+				);
+				const migration = getClaudeTokenMigrationService();
+				migration.setNotifier(() => migrationDm);
+				migration.start();
+			} catch (error) {
+				this.logger.warn('Failed to start the Claude token migration (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
 			// Temporary team pause: index from storage, auto-resume sweep, and the
 			// owner's "pause <team>" / "resume <team>" DM commands (specs/2026-10-04-team-pause.md).
 			try {
@@ -2882,6 +2998,82 @@ void (async () => {
 				});
 			}
 
+			// Gmail: owner approves a drafted email on a card, and replies on a
+			// watched thread wake the agent (CREW-257).
+			try {
+				const { GmailSendApprovalService } = await import('./services/google/gmail-send-approval.service.js');
+				const { GmailReplyWatchService } = await import('./services/google/gmail-reply-watch.service.js');
+				const { DecisionService } = await import('./services/decisions/decision.service.js');
+				const { GoogleWorkspaceTokenService } = await import('./services/google/google-workspace-token.service.js');
+				const { gmailForAccount, setGmailSendApproval, setGmailReplyWatch } = await import('./controllers/google/google.controller.js');
+				const tokens = GoogleWorkspaceTokenService.getInstance();
+				const connectedAccounts = async (): Promise<string[]> => {
+					const st = await tokens.status();
+					return st.connected ? (st.connections ?? []).map((a) => a.email) : [];
+				};
+				const replyWatch = new GmailReplyWatchService({
+					file: path.join(this.config.crewlyHome, 'gmail-watches.json'),
+					gmailFor: (account) => gmailForAccount(account || undefined),
+					accountConnected: async (account) => (await connectedAccounts()).includes(account),
+					defaultAccount: async () => (await tokens.status()).email ?? '',
+					publish: (event) => this.eventBusService.publish(event),
+				});
+				setGmailReplyWatch(replyWatch);
+				await replyWatch.start();
+				const { loadHeldSends } = await import('./services/google/gmail-send-gate.js');
+				loadHeldSends(path.join(this.config.crewlyHome, 'gmail-send-holds.json'));
+				const approval = new GmailSendApprovalService({
+					gmailFor: (account) => gmailForAccount(account),
+					decisions: () => DecisionService.getInstance(),
+					canAskInSlack: () => !!DecisionService.getInstance() && getSlackService().isConnected(),
+					tellAgent: (sessionName, message) =>
+						this.apiController.agentRegistrationService.sendMessageToAgent(sessionName, message),
+					agentNameOf: async (sessionName) => {
+						const teams = await this.storageService.getTeams().catch(() => []);
+						return teams.flatMap((t) => t.members ?? []).find((m) => m.sessionName === sessionName)?.name;
+					},
+					onSent: async ({ threadId, agentSession, account }) => {
+						await replyWatch.watch(threadId, agentSession, account);
+					},
+				});
+				setGmailSendApproval(approval);
+				DecisionService.registerKindHandler('gmail_send', approval);
+			} catch (error) {
+				this.logger.warn('Gmail approve-then-send / reply watch not started', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			// A reply held from a room because it draws on someone's private data:
+			// the owner taps Share / Keep private on a card in the DM (crewly#969).
+			try {
+				const { PrivateShareDecisions, setPrivateShareDecisions } = await import('./services/orc/private-share-decisions.js');
+				const { postHeldReply } = await import('./services/orc/reply-destination.wiring.js');
+				const { DecisionService } = await import('./services/decisions/decision.service.js');
+				const { getSlackTeamChannelService } = await import('./services/slack/slack-team-channel.service.js');
+				const { getPeopleDirectory } = await import('./services/people/people-directory.service.js');
+				const shareCards = new PrivateShareDecisions({
+					decisions: () => DecisionService.getInstance(),
+					canAsk: () => !!DecisionService.getInstance() && getSlackService().isConnected(),
+					post: (held) => postHeldReply(held),
+					slackChannelOf: (conversationId) =>
+						getSlackTeamChannelService()?.findByChatChannelId(conversationId)?.slackChannelId ??
+						getSlackAgentDmService()?.findByChatChannelId(conversationId)?.slackChannelId ??
+						null,
+					agentNameOf: async (sessionName) => {
+						const teams = await this.storageService.getTeams().catch(() => []);
+						return teams.flatMap((t) => t.members ?? []).find((m) => m.sessionName === sessionName)?.name;
+					},
+					personName: (id) => getPeopleDirectory().get(id)?.name ?? undefined,
+				});
+				setPrivateShareDecisions(shareCards);
+				DecisionService.registerKindHandler('private_share', shareCards);
+			} catch (error) {
+				this.logger.warn('Gmail approve-then-send / reply watch not started', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
 			// Start chat-v2 WebSocket gateway + dispatcher (Phase 1 Chat MVP).
 			// The gateway fans `message`/`presence` frames to subscribers of
 			// `/ws/chat?channelId=...`. The dispatcher pushes user-origin
@@ -2889,7 +3081,7 @@ void (async () => {
 			// `reply-channel` skill. See chat-v2.gateway.ts for the contract.
 			try {
 				const [
-					{ ChatV2Gateway, devAnonymousTokenVerifier },
+					{ ChatV2Gateway, devAnonymousTokenVerifier, buildReadStateEvent },
 					{ ChatV2DispatcherService, agentAuthorOf },
 					{ ChatV2MentionResolver },
 					{ getChatV2Service },
@@ -3013,6 +3205,16 @@ void (async () => {
 							});
 						});
 					},
+					// The message is on the persisted queue before activate-on-send
+					// starts the agent: a restart mid-start no longer loses it (the
+					// boot restore brings back agents with queued messages and
+					// register-self delivers them). Taken back off when it is sent
+					// directly, so it never arrives twice.
+					holdDuringActivation: (agentSession, prompt) => {
+						SubAgentMessageQueue.getInstance().enqueue(agentSession, prompt);
+					},
+					releaseHeld: (agentSession, prompt) =>
+						SubAgentMessageQueue.getInstance().remove(agentSession, prompt, 'released after the agent started'),
 					// Every owner message that reached an agent is watched until
 					// it is answered (specs/2026-09-30-owner-message-guarantee.md).
 					onDispatched: async (channel, message, result) => {
@@ -3041,6 +3243,14 @@ void (async () => {
 				}
 				await this.startOwnerMessageWatchdog(chatService);
 				await this.startOwnerCompletionReport(chatService);
+				await this.startThreadAnswerLog();
+				// Owner read state (#1400): every change (read, mark-unread, new
+				// message raising a count) goes out as a `read_state` frame — to local
+				// WS subscribers and, through the gateway's broadcast hook, over the
+				// relay to Portal / phone.
+				chatService.on('read_state', (state: { channelId: string; lastReadSeq: number; unreadCount: number }) => {
+					chatGateway.broadcast(state.channelId, buildReadStateEvent(state));
+				});
 				this.chatV2Gateway = chatGateway;
 				this.chatV2Dispatcher = chatDispatcher;
 				// The chat-v2 router mounted earlier reads realtime deps from
@@ -3277,6 +3487,8 @@ void (async () => {
 						// "Let me check with the teams" (Drive kickoff): set below, once the
 						// status snapshot sync exists, and read by the Drive handler at run time.
 						let driveStatusCheck: { run: () => Promise<unknown> } | null = null;
+						// The status snapshot builder (set below with the briefing sync), read by meeting packs.
+						let driveSnapshot: (() => Promise<import('./services/drive/drive-briefing.contract.js').BriefingSnapshot>) | null = null;
 
 						// Drive mode (specs/2026-10-08-drive-mode.md §7): Crewly Cloud hosts
 						// the voice session; this machine delivers the owner's words to its
@@ -3306,7 +3518,85 @@ void (async () => {
 							const cloudClient = CloudClientService.getInstance();
 							const owner = { userId: SLACK_AGENT_DM_CONSTANTS.OWNER_USER_ID, source: 'oss' as const };
 							const botTokenOf = (session: string): string | undefined => getSlackAgentIdentityService()?.getInstalled(session)?.botToken;
+							// Meetings P2b (crewly#1415): a 1:1 voice meeting with one agent —
+							// its pack, live wiki search and write-backs into the right thread.
+							const [{ DriveMeetingService }, meetingWiring, { DecisionService }, { WikiSearchService }] = await Promise.all([
+								import('./services/drive/drive-meeting.service.js'),
+								import('./services/drive/drive-meeting.wiring.js'),
+								import('./services/decisions/decision.service.js'),
+								import('./services/wiki/wiki-search.service.js'),
+							]);
+							const meeting = new DriveMeetingService({
+								timeline: async (agentSession, sinceMs) =>
+									chatService
+										.getAgentTimeline({ agentSession, principal: owner, limit: MEETING_CONSTANTS.TIMELINE_SCAN })
+										.items.filter((r) => r.createdAt >= sinceMs)
+										.map((r) => ({
+											id: r.id,
+											channelId: r.channelId,
+											channelType: r.channelType,
+											channelName: r.channelName,
+											...(r.threadId ? { threadId: r.threadId } : {}),
+											senderType: r.senderType,
+											senderKind: r.senderKind,
+											senderId: r.senderId,
+											content: r.content,
+											createdAt: r.createdAt,
+											...(r.metadata ? { metadata: r.metadata } : {}),
+										})),
+								decisions: async () => ((await DecisionService.getInstance()?.list('all')) ?? []).map(meetingWiring.decisionSource),
+								snapshot: async () => (driveSnapshot ? driveSnapshot() : null),
+								handover: (agentSession) => meetingWiring.readLatestHandover(path.join(getCrewlyHomePath(), ORC_CONVERSATION_CONSTANTS.HANDOVER_DIR), agentSession),
+								vaults: async (agentSession) =>
+									meetingWiring.vaultsOfAgent(await this.storageService.getTeams(), await this.storageService.getProjects(), agentSession, getCrewlyHomePath()),
+								searchWiki: async (vaults, query, agentSession) => {
+									const role = meetingWiring.teamsOfAgent(await this.storageService.getTeams(), agentSession)[0]?.role;
+									const out = await WikiSearchService.getInstance().searchAllVaults({ vaults, query, ...(role ? { viewerRole: role } : {}), viewerPerson: viewerPersonOf(agentSession) });
+									return out.ok ? out.hits.map(meetingWiring.wikiHitToPage) : [];
+								},
+								readPage: meetingWiring.readWikiPage,
+								answerDecision: async (id, text) => {
+									const svc = DecisionService.getInstance();
+									if (!svc) return false;
+									await svc.answerInWords(id, text, 'voice');
+									return true;
+								},
+								slackDmOf: (agentSession) => {
+									const link = getSlackAgentDmService()?.findByAgentSession(agentSession);
+									return link && botTokenOf(agentSession) ? { slackChannelId: link.slackChannelId, chatChannelId: link.chatChannelId } : null;
+								},
+								chatChannelOfSlack: (slackChannelId) => {
+									const dm = getSlackAgentDmService()?.findBySlackChannelId(slackChannelId);
+									if (dm) return { chatChannelId: dm.chatChannelId, dm: true };
+									const room = getSlackTeamChannelService()?.findBySlackChannelId(slackChannelId);
+									return room ? { chatChannelId: room.chatChannelId, dm: false } : null;
+								},
+								slackRootId: (chatChannelId, threadTs) => chatService.findSlackThreadRoot(chatChannelId, threadTs)?.id ?? null,
+								postSlack: async ({ agentSession, slackChannelId, threadTs, text }) => {
+									const slack = getSlackService();
+									if (!slack.isConnected()) return null;
+									const token = botTokenOf(agentSession);
+									// An agent's DM belongs to its own bot (the workspace bot cannot post there).
+									if (!token && getSlackAgentDmService()?.findBySlackChannelId(slackChannelId)) return null;
+									return slack.sendMessage({ channelId: slackChannelId, text, ...(threadTs ? { threadTs } : {}), skipChatV2Mirror: true, ...(token ? { botToken: token } : {}) });
+								},
+								ownerDmChannel: (agentSession) => chatService.ensureDmChannel({ agentSession, principal: owner }).channel.id,
+								recordOwnerTurn: async ({ channelId, threadId, text, metadata }) => {
+									const { message } = chatService.recordTurn({
+										channelId,
+										senderType: 'user',
+										senderId: owner.userId,
+										content: text,
+										...(threadId ? { threadId } : {}),
+										clientMessageId: `meeting-${randomUUID()}`,
+										metadata,
+									});
+									await chatDispatcher.dispatchMessage(chatService.getChannel(channelId, owner), message);
+									return { messageId: message.id };
+								},
+							});
 							const drive = new DriveAgentService({
+								meeting,
 								source: sync,
 								cloud: {
 									getToken: () => cloudClient.getToken(),
@@ -3314,7 +3604,7 @@ void (async () => {
 									tryRefreshToken: () => cloudClient.tryRefreshToken(),
 								},
 								identity: async () => ({ instanceId: (await DeviceIdentityService.getInstance().getOrCreateIdentity()).deviceId }),
-								deliverOwnerTurn: async ({ kind, agentSession, slackChannelId, channelId, threadId, text }) => {
+								deliverOwnerTurn: async ({ kind, agentSession, slackChannelId, channelId, threadId, text, ownerText }) => {
 									// A team channel → its room; an agent or a team → the (lead's) DM.
 									const room = kind === 'channel' && slackChannelId ? getSlackTeamChannelService()?.findBySlackChannelId(slackChannelId)?.chatChannelId : undefined;
 									const chId = channelId ?? room ?? chatService.ensureDmChannel({ agentSession, principal: owner }).channel.id;
@@ -3322,12 +3612,13 @@ void (async () => {
 										channelId: chId,
 										senderType: 'user',
 										senderId: owner.userId,
-										content: text,
+										content: ownerText,
 										...(threadId ? { threadId } : {}),
 										clientMessageId: `drive-${randomUUID()}`,
 										metadata: { source: 'cloud-talk', inputMode: 'voice', via: DRIVE_CONSTANTS.VIA },
 									});
-									await chatDispatcher.dispatchMessage(chatService.getChannel(chId, owner), message);
+									// The chat shows the owner's words; the agent gets them with the Drive mode note.
+									await chatDispatcher.dispatchMessage(chatService.getChannel(chId, owner), { ...message, content: text });
 									// A room conversation is one thread, rooted at its first turn.
 									const root = chatService.getChannel(chId, owner).type === 'dm' ? undefined : (threadId ?? message.id);
 									return { channelId: chId, ...(root ? { threadId: root } : {}) };
@@ -3444,8 +3735,7 @@ void (async () => {
 								listTickets: async (projectPath) => (await ProjectTicketService.getInstance().list(projectPath)).tickets,
 								listWorkItems: () => TaskPoolService.getInstance().getAllItems(),
 							});
-							const briefingSync = new DriveBriefingSyncService({
-								build: async () =>
+							const buildSnapshot = async (): Promise<import('./services/drive/drive-briefing.contract.js').BriefingSnapshot> =>
 									buildBriefingSnapshot(
 										await collectSnapshotSources({
 											getTeams: () => this.storageService.getTeams(),
@@ -3458,7 +3748,10 @@ void (async () => {
 											// Charters and chore-free work lists for the high-level overview.
 											roster: async () => (await import('./services/team-roster/team-roster.service.js')).TeamRosterService.getInstance().getRoster(),
 										}),
-									),
+									);
+							driveSnapshot = buildSnapshot;
+							const briefingSync = new DriveBriefingSyncService({
+								build: buildSnapshot,
 								cloud: {
 									getToken: () => cloudClient.getToken(),
 									getCloudUrl: () => cloudClient.getCloudUrl(),
@@ -4002,6 +4295,7 @@ void (async () => {
 					configPath: path.join(home, SCHEDULED_COMMANDS.CONFIG_FILE),
 					logDir: path.join(home, SCHEDULED_COMMANDS.LOG_DIR),
 					logger: LoggerService.getInstance().createComponentLogger('ScheduledCommands'),
+					notify: slackOwnerAlertNotifier,
 				});
 				this.scheduledCommands.start();
 			} catch (schedErr) {
@@ -4771,6 +5065,8 @@ void (async () => {
 			// Starts the staggered restore queue; it drains in the background.
 			await this.autoRestoreAgentSessionsIfEnabled();
 			this.wakeQueuedAgentsAfterBoot();
+			const queuedWakeSweep = setInterval(() => this.wakeQueuedAgents(), SUB_AGENT_QUEUE_CONSTANTS.QUEUED_WAKE_SWEEP_MS);
+			queuedWakeSweep.unref?.();
 
 			// Re-deliver interrupted turns now that their agents are coming back.
 			// Background: the orchestrator may take minutes to register.
@@ -7062,6 +7358,8 @@ void (async () => {
 	 */
 	/** Last time a session was woken for queued messages (loop guard). */
 	private readonly queuedWakeAt = new Map<string, number>();
+	/** Periodic queued-wake sweep: wakes per agent since it was last seen up, for the backoff */
+	private readonly sweepWakes = new Map<string, { count: number; at: number }>();
 
 	/**
 	 * Start the unanswered-owner-message watchdog and feed it what the owner
@@ -7236,7 +7534,17 @@ void (async () => {
 			// Model tiers (crewly#1173): the lead's weekly usage review and the
 			// owner's one card per review that applies tier changes.
 			await import('./services/model-tiers/model-tier.wiring.js')
-				.then((m) => m.startModelTiers({ crewlyHome: this.config.crewlyHome, decisions, sendToAgent, packageRoot: findPackageRoot(__dirname) }))
+				.then((m) =>
+					m.startModelTiers({
+						crewlyHome: this.config.crewlyHome,
+						decisions,
+						sendToAgent,
+						packageRoot: findPackageRoot(__dirname),
+						// Restart an idle member whose model changed (crewly#1173 phase 2).
+						registration: () => this.apiController.agentRegistrationService,
+						sessionExists: (sessionName) => getSessionBackendSync()?.sessionExists(sessionName) ?? false,
+					}),
+				)
 				.catch((err) => this.logger.warn('Model tier reviews not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }));
 			decisions.start();
 			this.logger.info('Decision cards started');
@@ -7323,6 +7631,8 @@ void (async () => {
 					return result.success;
 				},
 				notifyOwner: (line) => slackOwnerAlertNotifier({ title: STALL_WATCHER_CONSTANTS.OWNER_ALERT_TITLE, message: line, urgent: false }),
+				// #1387: stalled work put in front of the owner counts as a "stuck" pull.
+				onOwnerTold: (agent) => void getOwnerPullsPostLog()?.noteStuck(agent),
 				bootGate: this.bootQuietGate(),
 			});
 			getChatV2Service().on('chat_message', (dto: ChatMessageDTO) => {
@@ -7332,6 +7642,25 @@ void (async () => {
 		} catch (error) {
 			this.logger.warn('Stall watcher not started', { error: error instanceof Error ? error.message : String(error) });
 		}
+		// Daily spot check of verified work (crewly#1315): re-checks a sample of
+		// yesterday's verified artifacts; one line in the evening digest, an
+		// owner alert only on a discrepancy. Kill switch: CREWLY_VERIFIED_SPOT_CHECK=0.
+		if (process.env[VERIFIED_SPOT_CHECK_CONSTANTS.ENV_SWITCH] !== '0') {
+			try {
+				const { VerifiedSpotCheckService } = await import('./services/task-pool/verified-spot-check.service.js');
+				const spotCheck = new VerifiedSpotCheckService({
+					getItems: () => TaskPoolService.getInstance().getAllItems(),
+					notifyOwner: slackOwnerAlertNotifier,
+					stateFile: path.join(this.config.crewlyHome, VERIFIED_SPOT_CHECK_CONSTANTS.STATE_FILE),
+					logger: LoggerService.getInstance().createComponentLogger('VerifiedSpotCheck'),
+				});
+				VerifiedSpotCheckService.getInstance()?.stop();
+				VerifiedSpotCheckService.setInstance(spotCheck);
+				spotCheck.start();
+			} catch (error) {
+				this.logger.warn('Verified spot check not started', { error: error instanceof Error ? error.message : String(error) });
+			}
+		}
 		// Held browser actions from before the restart: re-attach or expire
 		// (after the decision service, so expired cards are updated).
 		try {
@@ -7339,6 +7668,20 @@ void (async () => {
 			await BrowserApprovalService.getInstance()?.restore();
 		} catch (error) {
 			this.logger.warn('Held browser actions not restored', { error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	/**
+	 * Start remembering which agent posted in which owner Slack thread, so
+	 * `delegate-task --thread` can refuse a delegation into a thread another
+	 * agent already answered (CREW-878). Best-effort: a failure here never
+	 * affects boot.
+	 */
+	private async startThreadAnswerLog(): Promise<void> {
+		try {
+			(await import('./services/messaging/thread-answer-log.js')).installThreadAnswerLog();
+		} catch (error) {
+			this.logger.warn('Thread answer log not started', { error: error instanceof Error ? error.message : String(error) });
 		}
 	}
 
@@ -7441,6 +7784,13 @@ void (async () => {
 						},
 					}),
 				displayNameOf: (session) => names.get(session) ?? session,
+				teammatesOf: async (session) => {
+					const teams = await this.storageService.getTeams().catch(() => []);
+					const sessions = teams
+						.filter((team) => (team.members ?? []).some((m) => m.sessionName === session))
+						.flatMap((team) => (team.members ?? []).map((m) => m.sessionName));
+					return sessions.filter((s): s is string => !!s);
+				},
 				appCommentsCmd: `bash ${skillsRoot}/core/app-comments/execute.sh`,
 			});
 			setOwnerCompletionReport(service);
@@ -7448,6 +7798,8 @@ void (async () => {
 			const slack = getSlackService();
 			slack.on('outbound', (post: { channelId: string; threadTs?: string; notAnAnswer?: boolean }) => wiring.onSlackOutboundPost(service, post));
 			slack.on('message', (message: { channelId: string; threadTs?: string; authorAgentSession?: string }) => wiring.onSlackInboundPost(service, message));
+			const { onAgentSlackPost } = await import('./services/messaging/owner-thread-sentinel.service.js');
+			onAgentSlackPost((post) => wiring.onAgentSlackPost(service, post));
 			service.start();
 			this.logger.info('Owner completion report started', { active: service.activeRecords.length });
 		} catch (error) {
@@ -7616,6 +7968,18 @@ void (async () => {
 	}
 
 	/**
+	 * Why an agent the machine stopped for memory must not be started yet
+	 * (memory-stop-hold.ts), or null. Every wake path for queued work and
+	 * queued messages asks; an owner start does not.
+	 *
+	 * @param sessionName - Agent a wake path wants to start
+	 * @returns Reason text while held, null otherwise
+	 */
+	private memoryStopHold(sessionName: string): string | null {
+		return memoryStopHold(sessionName, ResourceModeService.getInstance().getMode());
+	}
+
+	/**
 	 * The one hook every stop path runs: what the stopped agent owes goes back
 	 * in the queue and the agent is brought back with a reminder.
 	 *
@@ -7639,6 +8003,8 @@ void (async () => {
 				void scheduleDeferredStartRetry(name, {
 					activate: (n) => activateAgentBySession(this.apiController, n),
 					hasPending: (n) => SubAgentMessageQueue.getInstance().hasPending(n),
+					// Stopped for memory: wait for pressure to clear instead of taking back the slot it just freed.
+					hold: () => this.memoryStopHold(name),
 					firstPauseMs: 60_000,
 				});
 			},
@@ -7661,6 +8027,14 @@ void (async () => {
 		// Stopped on purpose: hold the queue until someone starts the agent.
 		if (isOwnerStopped(sessionName)) {
 			this.logger.info('Holding queued messages for an agent that was stopped on purpose (not waking it)', { sessionName });
+			return;
+		}
+		// The machine itself stopped it for memory: waking it 5 s later would take
+		// back the memory the stop freed. The retry starts it once pressure clears.
+		const memoryHold = this.memoryStopHold(sessionName);
+		if (memoryHold) {
+			this.logger.info('Holding queued messages for an agent stopped for memory until pressure clears', { sessionName, reason: memoryHold });
+			this.retryStartWhileQueued(sessionName);
 			return;
 		}
 		const last = this.queuedWakeAt.get(sessionName) ?? 0;
@@ -7707,8 +8081,9 @@ void (async () => {
 					return activateAgentBySession(this.apiController, n);
 				},
 				hasPending: (n) => SubAgentMessageQueue.getInstance().hasPending(n),
-				// Boot launches outside the restore queue keep its spacing and its memory gate (crewly#1353).
-				...(opts.boot ? { hold: () => this.bootLaunchHold() } : {}),
+				// Boot launches outside the restore queue keep its spacing and its memory gate (crewly#1353);
+				// an agent the machine stopped for memory waits for pressure to clear (memory-stop-hold.ts).
+				hold: () => (opts.boot ? this.bootLaunchHold() : null) ?? this.memoryStopHold(sessionName),
 				...(firstPauseMs !== undefined ? { firstPauseMs } : {}),
 			});
 		})().catch((err) => {
@@ -7726,6 +8101,31 @@ void (async () => {
 	 * (with its messages persisted) was never started again (Pia, 2026-10-16).
 	 */
 	private wakeQueuedAgentsAfterBoot(): void {
+		this.wakeQueuedAgents({ boot: true });
+	}
+
+	/**
+	 * Start every agent that has messages queued for it and is not running,
+	 * being restored, owner-stopped or on a paused team. Runs once after boot
+	 * and then every QUEUED_WAKE_SWEEP_MS. Never throws.
+	 *
+	 * @param opts - `boot`: the one-off sweep after boot (paced with the restore queue)
+	 */
+	private wakeQueuedAgents(opts: { boot?: boolean } = {}): void {
+		this.wakeQueuedAgentsNow(opts).catch((err) => {
+			this.logger.warn('Could not sweep agents with queued messages', { error: err instanceof Error ? err.message : String(err) });
+		});
+	}
+
+	/**
+	 * Body of {@link wakeQueuedAgents} (may throw). A periodic sweep skips an
+	 * agent with no local team member (renamed, deleted, moved away), and backs
+	 * off per agent — the gap doubles with each wake that did not bring it up
+	 * (QUEUED_WAKE_SWEEP_MS, then 2x, 4x … up to QUEUED_WAKE_SWEEP_MAX_BACKOFF_MS)
+	 * — so a start that keeps failing is not relaunched four times an hour.
+	 */
+	private async wakeQueuedAgentsNow(opts: { boot?: boolean }): Promise<void> {
+		const { sweepWakeDue } = await import('./services/messaging/deferred-start-retry.js');
 		const restoreQueue = getRestoreQueue();
 		const backend = getSessionBackendSync();
 		const registration = this.apiController.agentRegistrationService;
@@ -7738,12 +8138,32 @@ void (async () => {
 					!restoreQueue.isRestoring(name) &&
 					!isOwnerStopped(name) &&
 					!pausedTeamOfSession(name) &&
+					// Stopped for memory and the machine is still under pressure
+					!this.memoryStopHold(name) &&
 					!backend?.sessionExists(name) &&
 					!registration.getInProcessRuntime(name),
 			);
-		if (sessions.length === 0) return;
-		this.logger.info('Starting agents that were down with messages queued for them', { sessions });
-		for (const name of sessions) this.retryStartWhileQueued(name, SUB_AGENT_QUEUE_CONSTANTS.BOOT_QUEUED_WAKE_DELAY_MS, { boot: true });
+		if (opts.boot) {
+			if (sessions.length === 0) return;
+			this.logger.info('Starting agents that were down with messages queued for them', { sessions, boot: true });
+			for (const name of sessions) this.retryStartWhileQueued(name, SUB_AGENT_QUEUE_CONSTANTS.BOOT_QUEUED_WAKE_DELAY_MS, { boot: true });
+			return;
+		}
+		// Up again (or nothing queued any more): its backoff starts over.
+		const down = new Set(sessions);
+		for (const name of this.sweepWakes.keys()) if (!down.has(name)) this.sweepWakes.delete(name);
+		const now = Date.now();
+		const due: string[] = [];
+		for (const name of sessions) {
+			const prev = this.sweepWakes.get(name);
+			if (!sweepWakeDue(prev, now)) continue;
+			if (!(await this.storageService.findMemberBySessionName(name).catch(() => null))) continue;
+			this.sweepWakes.set(name, { count: (prev?.count ?? 0) + 1, at: now });
+			due.push(name);
+		}
+		if (due.length === 0) return;
+		this.logger.info('Starting agents that were down with messages queued for them', { sessions: due, boot: false });
+		for (const name of due) this.retryStartWhileQueued(name, 0);
 	}
 
 	/**
@@ -7784,16 +8204,11 @@ void (async () => {
 	 * @param opts - A sample message (its `[CHAT:…]` header), a kind for the orchestrator queue key, the Slack title for the orchestrator case
 	 */
 	private tellAboutAgent(sessionName: string, text: string, opts: { sample?: string; kind: string; title: string }): void {
-		// In the chat the message came from, when it names one…
-		const chat = opts.sample ? /^\s*\[CHAT:([^\]\s:]+)/.exec(opts.sample) : null;
-		if (chat) {
-			try {
-				getChatV2Service().recordTurn({ channelId: chat[1], senderType: 'system', senderId: 'crewly', content: text, metadata: { source: 'system' } });
-			} catch {
-				// The channel may be gone; the orchestrator still hears below.
-			}
-		}
-		// …and to the orchestrator, unless it is the one in trouble.
+		// Not in the owner's thread: "No action needed: … busy for 10 min" and
+		// "N message(s) were dropped" lines read as a log there (23 in 8 days,
+		// 2026-10-22 audit; specs: owner thread is not a log). The owner thread
+		// that waits on the agent hears it through the owner-thread sentinel.
+		// The orchestrator is told, unless it is the one in trouble.
 		if (sessionName !== ORCHESTRATOR_SESSION_NAME) {
 			this.messageQueueService.enqueue({ content: `[SYSTEM]\n${text}\n[/SYSTEM]`, conversationId: `system:${opts.kind}:${sessionName}`, source: 'system_event' });
 			return;
@@ -7805,7 +8220,7 @@ void (async () => {
 				.then((sent) => sent !== false, () => false)
 			: Promise.resolve(false);
 		void viaSlack.then((sent) => {
-			if (sent || chat) return;
+			if (sent) return;
 			this.tellOrchestratorChat(text);
 		});
 	}
@@ -7998,6 +8413,10 @@ void (async () => {
 			queue.setHandOverPreparer(async (sessionName, workItemId, data) => {
 				const { prepareWorkItemHandOver } = await import('./controllers/monitoring/terminal.controller.js');
 				return prepareWorkItemHandOver(sessionName, workItemId, data);
+			});
+			queue.setDownCheck((sessionName) => {
+				const backend = getSessionBackendSync();
+				return !!backend && !backend.sessionExists(sessionName);
 			});
 			queue.setDropListener((sessionName, dropped, reason) => {
 				const why = reason === 'aged-out'
@@ -8422,6 +8841,7 @@ void (async () => {
 			// Stop OAuth relogin monitor and the Slack re-login status check
 			OAuthReloginMonitorService.getInstance().destroy();
 			getHarnessReloginService().stop();
+			getClaudeTokenMigrationService().stop();
 			getRuntimeFallbackService()?.stop();
 
 			// Stop orchestrator heartbeat monitor

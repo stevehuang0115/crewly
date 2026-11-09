@@ -128,6 +128,14 @@ write_policy:
       schemaCache = await loader.load(tmpVault);
     });
 
+    it('treats the owner/ folder as frozen even when the schema does not list it (#914 P2)', () => {
+      expect(loader.isFrozenPath(schemaCache, 'owner/rules.md')).toBe(true);
+      expect(loader.isFrozenPath(schemaCache, 'owner')).toBe(true);
+      expect(loader.isFrozenPath(schemaCache, '/owner/')).toBe(true);
+      expect(loader.isFrozenPath(schemaCache, 'owners/rules.md')).toBe(false);
+      expect(loader.isFrozenPath(schemaCache, 'llm-curated/owner/rules.md')).toBe(false);
+    });
+
     it('returns true for exact frozen folder match', () => {
       expect(loader.isFrozenPath(schemaCache, 'sop/')).toBe(true);
       expect(loader.isFrozenPath(schemaCache, 'sop')).toBe(true);

@@ -15,6 +15,7 @@
 import { EventEmitter } from 'events';
 import WebSocket from 'ws';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { NetworkStatusService } from '../core/network-status.service.js';
 import type { BrowserCommandResponse } from './browser-bridge.service.js';
 import { BROWSER_BRIDGE_CONSTANTS, BROWSER_PROXY_CONSTANTS } from '../../constants.js';
 import { getRegisteredBridge, registerProxyAccessor } from './browser-services.registry.js';
@@ -399,6 +400,7 @@ export class BrowserProxyService {
     this.ws = new WebSocket(this.buildStickyRelayUrl(this.relayUrl, this.authToken));
 
     this.ws.on('open', () => {
+      NetworkStatusService.getInstance().recordSuccess('relay');
       this.logger.info('Relay WebSocket connected, registering as agent');
       // Register synchronously so liveness/registration is not delayed by the
       // (async) device-identity lookup. The deviceId observability tag is
@@ -419,7 +421,19 @@ export class BrowserProxyService {
     });
 
     this.ws.on('error', (err: Error) => {
-      this.logger.error('Relay WebSocket error', { error: err.message });
+      // A DNS/route failure here is the earliest sign the machine is offline
+      // (the relay reconnects every minute). Report it, and once the breaker
+      // has tripped keep one line per 10 minutes instead of one per retry.
+      const net = NetworkStatusService.getInstance();
+      net.recordFailure('relay', err);
+      if (net.shouldLog('relay')) {
+        this.logger.error('Relay WebSocket error', {
+          error: err.message,
+          ...(net.isOffline() ? { offlineMinutes: net.offlineMinutes() } : {}),
+        });
+      } else {
+        this.logger.debug('Relay WebSocket error (repeat while offline)', { error: err.message });
+      }
       // Don't call handleDisconnect here — 'close' event always fires after 'error'
       // and handleDisconnect is called from the close handler.
     });

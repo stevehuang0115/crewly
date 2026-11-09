@@ -14,10 +14,11 @@ import { LoggerService } from '../core/logger.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { randomUUID } from 'crypto';
 import type { TeamTemplate, TemplateRole, TemplateOnboarding } from '../../types/team-template.types.js';
-import { isValidTeamTemplate, isValidTemplateOnboarding } from '../../types/team-template.types.js';
+import { isValidTeamTemplate, isValidTemplateCategory, isValidTemplateOnboarding } from '../../types/team-template.types.js';
 import type { TeamMember, Team, TeamMemberRole } from '../../types/index.js';
 import { SkillTierService, type SkillTierInfo } from '../skill/skill-tier.service.js';
 import { type CloudTier, CLOUD_CONSTANTS } from '../../constants.js';
+import { resolveTemplateDirs } from '../bundle/bundle-catalog.js';
 
 // =============================================================================
 // Constants
@@ -41,6 +42,64 @@ function humanizeRoleId(roleId: string): string {
     .split('-')
     .map((p) => (p.length ? p[0].toUpperCase() + p.slice(1) : p))
     .join(' ');
+}
+
+/** Verification pipeline for templates that don't define one. */
+const DEFAULT_PIPELINE = {
+  name: 'Manual Review',
+  steps: [{
+    id: 'manual',
+    name: 'Manual Review',
+    description: 'Team leader reviews output manually',
+    method: 'manual_review',
+    critical: true,
+    config: {},
+  }],
+  passPolicy: 'all',
+  maxRetries: 1,
+} as TeamTemplate['verificationPipeline'];
+
+/**
+ * Build a TeamTemplate from roles-format JSON, filling what it leaves out
+ * (role counts and levels, runtime, verification pipeline). An unknown
+ * category — a vertical such as "education" — becomes `custom`.
+ *
+ * @param data - Parsed template JSON with a `roles` array
+ * @param id - Template id to use
+ * @returns The normalized template
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- parsed template JSON
+function rolesFormatTemplate(data: Record<string, any>, id: string): TeamTemplate {
+  const roles: TemplateRole[] = data.roles.map((r: Record<string, unknown>) => ({
+    ...(r as object),
+    role: String(r.role ?? 'developer'),
+    label: String(r.label ?? r.role ?? 'Member'),
+    defaultName: String(r.defaultName ?? humanizeRoleId(String(r.role ?? 'member'))),
+    count: typeof r.count === 'number' ? r.count : 1,
+    hierarchyLevel: typeof r.hierarchyLevel === 'number' ? r.hierarchyLevel : 2,
+    canDelegate: r.canDelegate === true,
+    defaultSkills: Array.isArray(r.defaultSkills) ? (r.defaultSkills as string[]) : [],
+  })) as TemplateRole[];
+
+  return {
+    id,
+    name: data.name,
+    description: data.description ?? '',
+    category: isValidTemplateCategory(data.category) ? data.category : 'custom',
+    version: data.version ?? '0.1.0',
+    hierarchical: typeof data.hierarchical === 'boolean'
+      ? data.hierarchical
+      : roles.some((r) => r.canDelegate),
+    roles,
+    defaultRuntime: data.defaultRuntime ?? 'claude-code',
+    verificationPipeline: data.verificationPipeline ?? DEFAULT_PIPELINE,
+    ...(typeof data.requiredTier === 'string' ? { requiredTier: data.requiredTier as TeamTemplate['requiredTier'] } : {}),
+    ...(Array.isArray(data.tags) ? { tags: data.tags } : {}),
+    ...(isValidTemplateOnboarding(data.onboarding) ? { onboarding: data.onboarding } : {}),
+    // Solution bundle section (specs/solution-bundles.md), validated
+    // and applied by services/bundle; carried so callers can see it.
+    ...(data.bundle && typeof data.bundle === 'object' ? { bundle: data.bundle } : {}),
+  };
 }
 
 // =============================================================================
@@ -99,6 +158,12 @@ export class TemplateService {
   /** Templates directory path */
   private templatesDir: string;
 
+  /**
+   * Templates loaded from `CREWLY_TEMPLATE_DIRS` (e.g. Crewly Pro's): id →
+   * the directory they came from, where their norms live.
+   */
+  private extraRoots: Map<string, string> = new Map();
+
   /** Whether templates have been loaded */
   private loaded: boolean = false;
 
@@ -135,17 +200,42 @@ export class TemplateService {
    */
   loadTemplates(): number {
     this.templates.clear();
+    this.extraRoots.clear();
 
-    if (!existsSync(this.templatesDir)) {
-      this.loaded = true;
-      return 0;
+    // The base dir first, then every `CREWLY_TEMPLATE_DIRS` entry (Crewly Pro
+    // points it at its paid templates). A base template keeps its id: an
+    // extra dir can add templates, never replace one.
+    const [baseDir, ...extraDirs] = resolveTemplateDirs([this.templatesDir]);
+    this.loadTemplatesFrom(baseDir);
+    for (const dir of extraDirs) {
+      const before = new Map(this.templates);
+      this.loadTemplatesFrom(dir);
+      for (const id of this.templates.keys()) {
+        if (!before.has(id)) this.extraRoots.set(id, dir);
+      }
+      for (const [id, template] of before) this.templates.set(id, template);
     }
 
-    const entries = readdirSync(this.templatesDir);
+    this.loaded = true;
+    return this.templates.size;
+  }
 
-    for (const entry of entries) {
-      const fullPath = join(this.templatesDir, entry);
-      const stat = statSync(fullPath);
+  /**
+   * Load every template in one directory into the registry.
+   *
+   * @param dir - Directory holding `<id>/template.json` subdirs and/or flat JSON files
+   */
+  private loadTemplatesFrom(dir: string): void {
+    if (!existsSync(dir)) return;
+
+    for (const entry of readdirSync(dir)) {
+      const fullPath = join(dir, entry);
+      let stat;
+      try {
+        stat = statSync(fullPath);
+      } catch {
+        continue; // a broken link or unreadable entry is not a template
+      }
 
       if (stat.isDirectory()) {
         // Check for template.json in subdirectory (new format)
@@ -158,9 +248,28 @@ export class TemplateService {
         this.loadLegacyTemplate(fullPath, entry);
       }
     }
+  }
 
-    this.loaded = true;
-    return this.templates.size;
+  /**
+   * Templates that came from `CREWLY_TEMPLATE_DIRS` rather than the OSS
+   * templates dir — on a Crewly Pro install, the paid templates. Onboarding
+   * offers these alongside its built-in recommendations.
+   *
+   * @returns The extra templates, in load order
+   */
+  listExtraTemplates(): TeamTemplate[] {
+    if (!this.loaded) this.loadTemplates();
+    return Array.from(this.templates.values()).filter((t) => this.extraRoots.has(t.id));
+  }
+
+  /**
+   * The directory a template's own files (template.json, norms/) are in.
+   *
+   * @param templateId - Template ID
+   * @returns `<templates dir>/<id>`
+   */
+  private templateHome(templateId: string): string {
+    return join(this.extraRoots.get(templateId) ?? this.templatesDir, templateId);
   }
 
   /**
@@ -380,7 +489,7 @@ export class TemplateService {
    */
   private copyTeamNorms(templateId: string, teamId: string): void {
     try {
-      const normsSourceDir = join(this.templatesDir, templateId, 'norms');
+      const normsSourceDir = join(this.templateHome(templateId), 'norms');
       if (!existsSync(normsSourceDir)) return;
 
       const normsFiles = readdirSync(normsSourceDir).filter(f => f.endsWith('.md'));
@@ -435,7 +544,7 @@ export class TemplateService {
    */
   private loadTemplateJson(templateId: string): Record<string, unknown> | null {
     try {
-      const jsonPath = join(this.templatesDir, templateId, 'template.json');
+      const jsonPath = join(this.templateHome(templateId), 'template.json');
       if (!existsSync(jsonPath)) return null;
       return JSON.parse(readFileSync(jsonPath, 'utf-8'));
     } catch {
@@ -473,8 +582,16 @@ export class TemplateService {
         return;
       }
 
-      // It might be an education-smb/insurance-smb style template.json (metadata only)
-      // These don't have roles/verificationPipeline, skip them
+      // A roles-format template that leaves out optional fields (no
+      // verificationPipeline, a vertical as its category — most of Crewly
+      // Pro's): fill the defaults instead of dropping it.
+      if (Array.isArray(data.roles) && data.roles.length > 0 && typeof data.name === 'string') {
+        const template = rolesFormatTemplate(data, typeof data.id === 'string' ? data.id : dirName);
+        this.templates.set(template.id, template);
+        return;
+      }
+
+      // Metadata-only template.json (no roles): nothing to create a team from
     } catch (error) {
       logger.warn('Skipped invalid template file', { dirName, filePath, error: error instanceof Error ? error.message : String(error) });
     }
@@ -495,64 +612,13 @@ export class TemplateService {
       if (!data.name) return;
       const id = data.id ?? fileName.replace('.json', '');
 
-      // Default verification pipeline for flat templates that omit one.
-      const defaultPipeline = {
-        name: 'Manual Review',
-        steps: [{
-          id: 'manual',
-          name: 'Manual Review',
-          description: 'Team leader reviews output manually',
-          method: 'manual_review',
-          critical: true,
-          config: {},
-        }],
-        passPolicy: 'all',
-        maxRetries: 1,
-      } as TeamTemplate['verificationPipeline'];
-
       // New roles-format flat template (e.g. a hierarchical team with a
       // delegating leader): the `roles` array is already in TeamTemplate
-      // shape. Load it directly so the template's real hierarchy
-      // (hierarchyLevel / canDelegate / reportsTo), skills and runtime
-      // survive. Previously these files were silently SKIPPED because the
-      // loader only accepted `members[]`, leaving every roles-format
-      // template — the only ones that define a delegating leader —
-      // unregistered. (The OSS-shipped examples of this format were the
-      // premium templates moved to crewly-pro on 2026-09-28, #816; this
-      // branch is exercised by crewly-pro's own templates now, and by
-      // template.service.test.ts's roles-format fixture.)
+      // shape, so its real hierarchy (hierarchyLevel / canDelegate /
+      // reportsTo), skills and runtime survive. Previously these files were
+      // silently SKIPPED because the loader only accepted `members[]`.
       if (Array.isArray(data.roles)) {
-        const rolesFromTemplate: TemplateRole[] = data.roles.map((r: Record<string, unknown>) => ({
-          ...(r as object),
-          role: String(r.role ?? 'developer'),
-          label: String(r.label ?? r.role ?? 'Member'),
-          defaultName: String(r.defaultName ?? humanizeRoleId(String(r.role ?? 'member'))),
-          count: typeof r.count === 'number' ? r.count : 1,
-          hierarchyLevel: typeof r.hierarchyLevel === 'number' ? r.hierarchyLevel : 2,
-          canDelegate: r.canDelegate === true,
-          defaultSkills: Array.isArray(r.defaultSkills) ? (r.defaultSkills as string[]) : [],
-        })) as TemplateRole[];
-
-        const rolesTemplate: TeamTemplate = {
-          id,
-          name: data.name,
-          description: data.description ?? '',
-          category: data.category ?? 'custom',
-          version: data.version ?? '0.1.0',
-          hierarchical: typeof data.hierarchical === 'boolean'
-            ? data.hierarchical
-            : rolesFromTemplate.some((r) => r.canDelegate),
-          roles: rolesFromTemplate,
-          defaultRuntime: data.defaultRuntime ?? 'claude-code',
-          verificationPipeline: data.verificationPipeline ?? defaultPipeline,
-          ...(typeof data.requiredTier === 'string' ? { requiredTier: data.requiredTier } : {}),
-          ...(Array.isArray(data.tags) ? { tags: data.tags } : {}),
-          ...(isValidTemplateOnboarding(data.onboarding) ? { onboarding: data.onboarding } : {}),
-          // Solution bundle section (specs/solution-bundles.md), validated
-          // and applied by services/bundle; carried so callers can see it.
-          ...(data.bundle && typeof data.bundle === 'object' ? { bundle: data.bundle } : {}),
-        };
-        this.templates.set(id, rolesTemplate);
+        this.templates.set(id, rolesFormatTemplate(data, id));
         return;
       }
 
@@ -579,19 +645,7 @@ export class TemplateService {
         hierarchical: false,
         roles,
         defaultRuntime: 'claude-code',
-        verificationPipeline: {
-          name: 'Manual Review',
-          steps: [{
-            id: 'manual',
-            name: 'Manual Review',
-            description: 'Team leader reviews output manually',
-            method: 'manual_review',
-            critical: true,
-            config: {},
-          }],
-          passPolicy: 'all',
-          maxRetries: 1,
-        },
+        verificationPipeline: DEFAULT_PIPELINE,
         ...(isValidTemplateOnboarding(data.onboarding) ? { onboarding: data.onboarding } : {}),
       };
 

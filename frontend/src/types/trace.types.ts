@@ -78,7 +78,7 @@ export interface TraceMetrics {
 		idleMs: number;
 		activeSource: 'turn_events' | 'inferred' | 'mixed' | 'none';
 	};
-	ownerTouches: { answered: number; approved: number; sentBack: number; corrected: number; manual: number; total: number };
+	ownerTouches: { answered: number; approved: number; sentBack: number; corrected: number; other?: number; manual: number; total: number };
 	rework: { sendBacks: number; retries: number; failedVerifications: number; subagentSendBacks: number; total: number };
 	stalls: { thresholdMinutes: number; count: number; totalMs: number; byCause: Record<StallCause, number>; items: TraceStall[] };
 	interventions: { nudges: number; redeliveries: number; wakes: number; corrections: number; guardBlocks: number; misroutes: number; total: number };

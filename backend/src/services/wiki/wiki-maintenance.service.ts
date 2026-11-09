@@ -4,7 +4,8 @@
  * One hourly tick:
  *   - every tick: a queue drain pass ({@link WikiQueueDrainService});
  *   - once per day (and on the first tick after boot when the last daily
- *     pass is older than a day): log rotation then digest compile for every
+ *     pass is older than a day): log rotation, digest compile and the
+ *     knowledge-gap roll-up (#914, itself once per ISO week) for every
  *     discovered vault.
  *
  * The first tick runs `MAINTENANCE_BOOT_DELAY_MS` after `start()` so boot
@@ -24,6 +25,7 @@ import { discoverWikiVaults } from './wiki-bookkeep-trigger.service.js';
 import { WikiLogRotationService, type WikiLogRotateResult } from './wiki-log-rotation.service.js';
 import { WikiLogCompileService, type WikiLogCompileResult } from './wiki-log-compile.service.js';
 import { WikiQueueDrainService, type WikiQueueDrainResult } from './wiki-queue-drain.service.js';
+import { WikiKnowledgeGapsService, type WikiKnowledgeGapsResult } from './wiki-knowledge-gaps.service.js';
 
 /** Persisted scheduler state. */
 interface MaintenanceState {
@@ -47,6 +49,7 @@ export interface WikiMaintenanceOptions {
   rotation?: WikiLogRotationService;
   compile?: WikiLogCompileService;
   drain?: WikiQueueDrainService;
+  gaps?: WikiKnowledgeGapsService;
   /** Clock (tests). */
   now?: () => number;
   /** Dry run: every step reports and writes nothing. */
@@ -65,7 +68,7 @@ export type BootGate = () => Promise<{ reduced: boolean; waitedMs: number; reaso
 export interface WikiMaintenanceTickResult {
   drain: WikiQueueDrainResult | null;
   /** Set when the daily pass ran this tick. */
-  daily?: { vaults: string[]; rotated: WikiLogRotateResult[]; compiled: WikiLogCompileResult[] };
+  daily?: { vaults: string[]; rotated: WikiLogRotateResult[]; compiled: WikiLogCompileResult[]; gaps: WikiKnowledgeGapsResult[] };
   skippedDaily?: 'not_due';
 }
 
@@ -83,6 +86,7 @@ export class WikiMaintenanceService {
   private readonly rotation: WikiLogRotationService;
   private readonly compile: WikiLogCompileService;
   private readonly drain: WikiQueueDrainService;
+  private readonly gaps: WikiKnowledgeGapsService;
   private readonly nowFn: () => number;
   private readonly dryRun: boolean;
   private readonly bootGate: BootGate | null;
@@ -102,6 +106,7 @@ export class WikiMaintenanceService {
     this.rotation = opts.rotation ?? WikiLogRotationService.getInstance();
     this.compile = opts.compile ?? WikiLogCompileService.getInstance();
     this.drain = opts.drain ?? WikiQueueDrainService.getInstance();
+    this.gaps = opts.gaps ?? WikiKnowledgeGapsService.getInstance();
     this.nowFn = opts.now ?? (() => Date.now());
     this.dryRun = opts.dryRun === true;
     this.bootGate = opts.bootGate ?? null;
@@ -211,12 +216,14 @@ export class WikiMaintenanceService {
       const now = this.nowFn();
       const rotated = await this.rotation.rotateAll(vaults, { dryRun: this.dryRun, now });
       const compiled = await this.compile.compileAll(vaults, { dryRun: this.dryRun, now });
-      result.daily = { vaults, rotated, compiled };
+      const gaps = await this.gaps.compileAll(vaults, { dryRun: this.dryRun, now });
+      result.daily = { vaults, rotated, compiled, gaps };
       this.logger.info('WikiMaintenance daily pass', {
         dryRun: this.dryRun,
         vaults: vaults.length,
         rotated: rotated.filter((r) => r.rotated).map((r) => ({ vault: r.vaultPath, bytes: r.bytes, entries: r.entries, carried: r.carried, archive: r.archivePath })),
         compiled: compiled.filter((c) => c.compiled).map((c) => ({ vault: c.vaultPath, page: c.pagePath, entries: c.entriesCompiled })),
+        gaps: gaps.filter((g) => g.compiled).map((g) => ({ vault: g.vaultPath, page: g.pagePath, gaps: g.rollup.gaps.length, target: g.target, workItemId: g.workItemId ?? null, skipped: g.workItemSkipped ?? null })),
       });
       if (!this.dryRun) {
         this.state = { lastDailyAt: new Date(now).toISOString() };

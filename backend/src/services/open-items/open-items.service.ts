@@ -41,7 +41,7 @@ import { ACTIVE_OPEN_ITEM_STATUSES, type RequestOpenItem } from '../../types/v2/
 import type { DecisionSource, OwnerDecision } from '../../types/decision.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
 import { readProjectTicketLink } from '../../types/project-ticket.types.js';
-import { estimateDue, extractOpenItems, parseDue, type ExtractedQuestion } from './open-item-extractor.js';
+import { estimateDue, extractOpenItems, extractOwnerDecisionQuestions, parseDue, type ExtractedQuestion } from './open-item-extractor.js';
 import { deriveEitherOrCard, deriveQuestionCard, groupEitherOr, isTooVague, questionContextBlocks, questionSimilarity, type DerivedQuestionCard } from './open-item-card.js';
 import { formatWhen } from '../decisions/decision-card.js';
 import { AgentPromptReferenceService, type ReplyReference } from '../orc/agent-prompt-reference.service.js';
@@ -52,6 +52,7 @@ import { isStaleCommitment, staleCommitmentNotice, supersededReason } from './st
 import { isPastReminderCutoff, leadStaleNotice, reminderFooter } from '../orc/harness-reminder.js';
 import { gateVerdict, siblingQuestion, type GateVerdict } from './open-item-gate.js';
 import { questionCardSkipReason } from './question-card-gate.js';
+import { canonicalAgentSession } from '../../utils/orchestrator-alias.utils.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -68,6 +69,18 @@ export interface OpenItemsChatMessage {
   /** Epoch ms (defaults to now) */
   createdAt?: number;
   metadata?: Record<string, unknown>;
+}
+
+/**
+ * The message with its sender named by session: the orchestrator's display
+ * name becomes `ORCHESTRATOR_SESSION_NAME`, any other sender stays as posted.
+ *
+ * @param message - A chat-v2 row
+ * @returns The same row, or a copy whose senderId is the orchestrator's session
+ */
+export function withCanonicalSender<T extends Pick<OpenItemsChatMessage, 'senderId'>>(message: T): T {
+  const senderId = canonicalAgentSession(message.senderId);
+  return senderId === message.senderId ? message : { ...message, senderId };
 }
 
 /** Where a request's conversation lives in Slack, when it does. */
@@ -782,7 +795,11 @@ export class OpenItemsService {
    * @param message - The message
    * @returns The request it changed, or null
    */
-  async onAgentMessage(message: OpenItemsChatMessage): Promise<Request | null> {
+  async onAgentMessage(posted: OpenItemsChatMessage): Promise<Request | null> {
+    // The orchestrator's rows carry its display name ("Orchestrator") as
+    // senderId: its items and cards must name its session, or the owner's
+    // answer is queued for a session that does not exist (D-952, 2026-10-26).
+    const message = withCanonicalSender(posted);
     if (message.senderType === 'user') return this.onOwnerMessage(message);
     if (message.senderType !== 'agent' || !message.content?.trim()) return null;
     // An interim note ("got it — here is my plan, the doc in ~30 min") is not
@@ -875,14 +892,40 @@ export class OpenItemsService {
    * @returns The request it changed, or null
    */
   async onOwnerMessage(message: OpenItemsChatMessage): Promise<Request | null> {
-    if (!message.content?.trim() || !isApproval(message.content)) return null;
+    if (!message.content?.trim()) return null;
     return this.serial(async () => {
+      const at = new Date(message.createdAt ?? this.now().getTime());
+      const answered = await this.answerOwnerQuestions(message, at);
+      if (!isApproval(message.content)) return answered;
       const all = await this.deps.requests.listAll();
       const request = all.find((r) => r.status !== 'cancelled' && inRequestThread(r, message) && (r.openItems ?? []).some((i) => i.status === 'waiting_owner'));
-      if (!request) return null;
-      const at = new Date(message.createdAt ?? this.now().getTime());
-      return this.openWaiting(request, at, `the owner said yes in the thread (message ${message.id})`, () => true);
+      if (!request) return answered;
+      return (await this.openWaiting(request, at, `the owner said yes in the thread (message ${message.id})`, () => true)) ?? answered;
     });
+  }
+
+  /**
+   * The owner wrote in a thread where an agent asked him a yes/no decision in
+   * prose (an uncarded owner question): his words are the answer on file
+   * (crewly#1369 gap 2). Runs inside {@link serial}.
+   *
+   * @param message - The owner's message
+   * @param at - When it was posted
+   * @returns The request it changed, or null
+   */
+  private async answerOwnerQuestions(message: OpenItemsChatMessage, at: Date): Promise<Request | null> {
+    const open = (i: RequestOpenItem): boolean =>
+      i.type === 'question' && i.ownerQuestion === true && !i.decisionId && ACTIVE_OPEN_ITEM_STATUSES.has(i.status) && Date.parse(i.createdAt) <= at.getTime();
+    const all = await this.deps.requests.listAll();
+    const request = all.find((r) => r.status !== 'cancelled' && inRequestThread(r, message) && (r.openItems ?? []).some(open));
+    if (!request) return null;
+    const nowIso = at.toISOString();
+    const answer = short(message.content.replace(/\s+/g, ' ').trim(), OPEN_ITEMS_CONSTANTS.QUESTION_MAX_CHARS);
+    const items = (request.openItems ?? []).map((i) =>
+      open(i) ? { ...i, status: 'resolved' as const, answer, closedAt: nowIso, closedReason: `the owner answered in the thread (message ${message.id})` } : i,
+    );
+    this.logger.info('Owner question answered in the thread', { tkt: ticketLabel(request), items: items.filter((i, k) => i !== (request.openItems ?? [])[k]).map((i) => i.id) });
+    return this.save(request, items, false);
   }
 
   /**
@@ -928,7 +971,8 @@ export class OpenItemsService {
    * @param opts - `live`: the message was just posted in the owner's conversation
    * @returns Planned items
    */
-  async plan(request: Request, message: OpenItemsChatMessage, at: Date, opts: { live?: boolean } = {}): Promise<PlannedOpenItem[]> {
+  async plan(request: Request, posted: OpenItemsChatMessage, at: Date, opts: { live?: boolean } = {}): Promise<PlannedOpenItem[]> {
+    const message = withCanonicalSender(posted);
     const names = await this.deps.colleagueNames?.(message.senderId).catch(() => [] as string[]);
     const owner = this.deps.ownerSlackUserId?.() ?? (request.origin?.author?.startsWith('U') ? request.origin.author : null);
     const found = extractOpenItems(message.content, {
@@ -1027,7 +1071,49 @@ export class OpenItemsService {
       carded = true;
       out.push({ item, card: { ...derived, context }, ...(where.cardPlace !== undefined ? { cardPlace: where.cardPlace } : {}) });
     }
+    if (opts.live) this.planOwnerQuestions(out, message, at, names, owner, (n) => base('question', qi + n));
     return out;
+  }
+
+  /**
+   * Yes/no decisions the agent asked the owner in prose (anywhere in the
+   * message) go on file with a due time, unless a card already carries them:
+   * an uncarded final question is marked, the others are added as owner
+   * questions (crewly#1369 gap 2). Live messages only — the backfill does not
+   * open questions nobody can still answer.
+   *
+   * @param out - Planned items (changed in place)
+   * @param message - The agent message
+   * @param at - When it was posted
+   * @param names - Colleague names
+   * @param owner - Owner Slack id
+   * @param base - Base fields of the n-th extra question item (1-based)
+   */
+  private planOwnerQuestions(
+    out: PlannedOpenItem[],
+    message: OpenItemsChatMessage,
+    at: Date,
+    names: string[] | undefined,
+    owner: string | null,
+    base: (n: number) => Pick<RequestOpenItem, 'id' | 'agent' | 'sourceMessageId' | 'createdAt' | 'status'>,
+  ): void {
+    const found = extractOwnerDecisionQuestions(message.content, {
+      now: at,
+      ...(names ? { colleagueNames: names } : {}),
+      ...(owner ? { ownerSlackUserId: owner } : {}),
+    });
+    let n = 0;
+    for (const q of found) {
+      const due = q.due.toISOString();
+      const same = out.find((p) => p.item.type === 'question' && p.item.text === q.text);
+      if (same) {
+        // Carded, skipped before or linked to an ask-owner card: that record stands.
+        if (!same.card && !same.skippedDecisionId && !same.linkedDecisionId) same.item = { ...same.item, ownerQuestion: true, due, dueSource: 'default' };
+        continue;
+      }
+      n += 1;
+      out.push({ item: { ...base(n), type: 'question', text: q.text, ownerQuestion: true, due, dueSource: 'default' } });
+    }
   }
 
   /**
@@ -1863,7 +1949,8 @@ export class OpenItemsService {
       const ref = followUpReference(request, current);
       const text =
         `[FOLLOW-UP ${ticketLabel(request)}] You promised the owner: "${short(current.text, 200)}" — due ${formatWhen(new Date(due), now)}, and it hasn't been delivered. ` +
-        `Deliver it now, or tell the owner plainly when it will come and why. Run: ${followUpCommand(ref)} — Crewly posts it in the ticket's thread.` +
+        `Deliver it now, or tell the owner plainly when it will come and why. Run: ${followUpCommand(ref)} — Crewly posts it in the ticket's thread. ` +
+        'First read that thread (search-chat): a teammate you handed this to may already have delivered it there — then say so and close this, never say it is undone from memory (2026-10-22: "没送到她手里" when Pia had posted twice).' +
         staleCommitmentNotice(current, now) +
         reminderFooter(current.wokeAt ? 2 : 1, current.createdAt, now.getTime());
       const ok = await this.remindAgent(request, current.agent, text);

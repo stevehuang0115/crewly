@@ -9,9 +9,12 @@ import {
   describeAnswerFiles,
   slackTsAfter,
   waitReminderLine,
+  remindNowLine,
+  sensitiveReaskLine,
   canRemind,
   canSkip,
   isSkipWord,
+  isNoticeCard,
   settledLine,
   skipChoice,
   choiceFromReaction,
@@ -51,11 +54,12 @@ function decision(extra: Partial<OwnerDecision> = {}): OwnerDecision {
 const blocksOf = (b: unknown) => b as Array<Record<string, any>>;
 
 describe('renderOpenCard', () => {
-  it('header, question, details, option buttons + remind + skip, context line', () => {
+  it('header is the question (no ticket id), details, option buttons + remind + skip, context line', () => {
     const blocks = blocksOf(renderOpenCard(decision(), 'inst-1', NOW));
-    expect(blocks[0]).toMatchObject({ type: 'header', text: { text: 'APP-12 · Partner outreach email' } });
-    expect(blocks[1].text.text).toBe('Send the draft to the 3 partners?');
-    expect(blocks[2].text.text).toContain('• *Send Monday* — after the review call');
+    // crewly#1367: the card leads with the question, never "APP-12 · <ticket title>"
+    expect(blocks[0]).toMatchObject({ type: 'header', text: { text: 'Send the draft to the 3 partners?' } });
+    expect(JSON.stringify(blocks)).not.toContain('APP-12');
+    expect(blocks[1].text.text).toContain('• *Send Monday* — after the review call');
     const actions = blocks.find((b) => b.type === 'actions')!;
     expect(actions.elements.map((e: any) => e.action_id)).toEqual(['decision:a', 'decision:b', 'decision:remind', 'decision:skip']);
     expect(actions.elements.map((e: any) => e.text.text)).toEqual(['Send Monday', 'Hold', 'Remind me tomorrow', 'Skip']);
@@ -79,10 +83,46 @@ describe('renderOpenCard', () => {
     expect(actions.elements.some((e: any) => e.style === 'primary')).toBe(false);
   });
 
-  it('a non-ticket decision is headed by its id; no detail section without details', () => {
+  it('a non-ticket decision is headed by its question; no section without details', () => {
     const blocks = blocksOf(renderOpenCard(decision({ ticket: undefined, options: [{ key: 'a', label: 'Yes' }, { key: 'b', label: 'No' }], defaultKey: 'a' }), 'i', NOW));
-    expect(blocks[0].text.text).toBe('Decision D-7');
-    expect(blocks.filter((b) => b.type === 'section')).toHaveLength(1);
+    expect(blocks[0].text.text).toBe('Send the draft to the 3 partners?');
+    expect(blocks.filter((b) => b.type === 'section')).toHaveLength(0);
+  });
+
+  it('a system card keeps its own title and shows the question under it', () => {
+    const blocks = blocksOf(renderOpenCard(decision({ title: 'Runtime terms', ticket: undefined }), 'i', NOW));
+    expect(blocks[0].text.text).toBe('Runtime terms');
+    expect(blocks[1].text.text).toBe('Send the draft to the 3 partners?');
+  });
+
+  it('a Chinese owner gets Chinese harness buttons and context line', () => {
+    const blocks = blocksOf(renderOpenCard(decision({ ownerLanguage: 'zh', defaultKey: 'wait' }), 'i', NOW));
+    const actions = blocks.find((b) => b.type === 'actions')!;
+    expect(actions.elements.map((e: any) => e.text.text).slice(2)).toEqual(['明天再问', '不用了']);
+    expect(blocks[blocks.length - 1].elements[0].text).toBe('点一个选项，或在这个帖子里回复——你回答之前我先不动。 · D-7');
+    const dflt = blocksOf(renderOpenCard(decision({ ownerLanguage: 'zh' }), 'i', NOW));
+    expect(dflt[dflt.length - 1].elements[0].text).toBe('明天 12:00 前没回答，我就按「Hold」。 · D-7');
+  });
+
+  it('a merge card shows its context and details line, and no Skip when it has a "not now"', () => {
+    const d = decision({
+      question: '要不要让 agent 发的 Gmail 先经你同意再发出？',
+      options: [{ key: 'a', label: '合并' }, { key: 'b', label: '先不合' }],
+      defaultKey: 'wait',
+      merge: true,
+      ownerLanguage: 'zh',
+      context: { requestedBy: 'Ella，10月6日', ownerLastSaid: '我要的是视频 不是新增功能', runtimeChanges: '开机后每 30 秒查一次 Gmail', link: 'https://github.com/o/r/pull/1138' },
+      details: ['PR #1138'],
+    });
+    const blocks = blocksOf(renderOpenCard(d, 'i', NOW));
+    expect(blocks[0].text.text).toBe('要不要让 agent 发的 Gmail 先经你同意再发出？');
+    const ctx = blocks.find((b) => b.type === 'section')!.text.text as string;
+    expect(ctx).toBe('*谁提的*：Ella，10月6日\n*你上次说*：“我要的是视频 不是新增功能”\n*合并后会*：开机后每 30 秒查一次 Gmail');
+    const actions = blocks.find((b) => b.type === 'actions')!;
+    expect(actions.elements.map((e: any) => e.text.text)).toEqual(['合并', '先不合', '明天再问']);
+    const contexts = blocks.filter((b) => b.type === 'context');
+    // The link names the PR: no separate "PR #1138"
+    expect(contexts[0].elements[0].text).toBe('详情：https://github.com/o/r/pull/1138');
   });
 
   it('shows a pending reminder', () => {
@@ -266,6 +306,22 @@ describe('Skip (specs/2026-10-01-decision-skip.md)', () => {
     }
   });
 
+  it('a model-tier notice (the change already happened) has no Remind or Skip; skipping keeps it', () => {
+    const notice = decision({
+      kind: 'model_tier_change',
+      options: [{ key: 'a', label: 'Undo' }, { key: 'b', label: 'Keep' }],
+      defaultKey: 'b',
+      tierChange: { teamId: 't', teamName: 'T', reviewId: 'r', kind: 'undo', notice: 'applied', changes: [], routing: [], askerSession: 's', askerName: 'Owen' },
+    });
+    expect(isNoticeCard(notice)).toBe(true);
+    expect(isNoticeCard(decision())).toBe(false);
+    expect(canRemind(notice)).toBe(false);
+    expect(canSkip(notice)).toBe(false);
+    expect(skipChoice(notice)).toEqual({ kind: 'option', key: 'b' });
+    const actions = blocksOf(renderOpenCard(notice, 'i', NOW)).find((b) => b.type === 'actions')!;
+    expect(actions.elements.map((e: any) => e.text.text)).toEqual(['Undo', 'Keep']);
+  });
+
   it('skip means a real skip, or the safe "no" where Skip is not offered', () => {
     expect(skipChoice(decision())).toEqual({ kind: 'skip' });
     // "Hold" reads as no
@@ -332,13 +388,27 @@ describe('thread answers, deadline lines and withdraw reasons (specs/2026-10-02-
     expect(deadlineDefaultLine(decision({ defaultKey: 'wait' }), NOW)).not.toContain('keep waiting');
   });
 
-  it('the wait reminder carries the question and how to answer', () => {
+  it('the wait reminder is one short line pointing at the card (crewly#1367)', () => {
     expect(waitReminderLine({ question: '关于在 CE 团队下加一个 codex agent 这件事——你看这样安排行不行？' }, 'U-OWNER')).toBe(
-      '<@U-OWNER> Still waiting on you: 关于在 CE 团队下加一个 codex agent 这件事——你看这样安排行不行？ — tap an answer on the card above, or reply here.',
+      '<@U-OWNER> Still waiting on you: “关于在 CE 团队下加一个 codex agent 这件事——你看这样安排行不行？” — tap an answer on the card above, or reply here.',
     );
-    expect(waitReminderLine({ question: 'Ship it?' }, null)).toBe('Still waiting on you: Ship it? — tap an answer on the card above, or reply here.');
+    expect(waitReminderLine({ question: 'Ship it?' }, null)).toBe('Still waiting on you: “Ship it?” — tap an answer on the card above, or reply here.');
     expect(waitReminderLine([{ question: 'Ship it?' }, { question: 'Use the blue logo?' }], 'U1')).toBe(
-      '<@U1> Still waiting on you for 2 questions in this thread:\n• Ship it?\n• Use the blue logo?\nTap an answer on each card above, or reply here.',
+      '<@U1> Still waiting on you for 2 questions in this thread — tap an answer on each card above, or reply here.',
+    );
+    const long = 'Decide the fate of the approve-then-send Gmail card and the wake on reply work that was built last week?';
+    const line = waitReminderLine({ question: long }, null);
+    expect(line).not.toContain(long);
+    expect(line.split('\n')).toHaveLength(1);
+    expect(waitReminderLine({ question: '合并这个改动吗？要不要现在合？', ownerLanguage: 'zh' }, 'U1')).toBe(
+      '<@U1> 还在等你回复：「合并这个改动吗？要不要现在合？」——点上面卡片里的选项，或直接在这里回复。',
+    );
+  });
+
+  it('the remind-tomorrow and sensitive re-ask lines are one short line', () => {
+    expect(remindNowLine({ question: 'Ship it?' }, 'U1')).toBe('<@U1> Reminder: “Ship it?” — tap an answer on the card above, or reply here.');
+    expect(sensitiveReaskLine({ question: 'Send it?', sensitive: 'email', ownerLanguage: 'zh' }, null)).toBe(
+      '还需要你确认：「Send it?」——这件事需要你同意（对外发消息），没有答复我不会继续。卡片在上面。',
     );
   });
 

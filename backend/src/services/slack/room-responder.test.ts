@@ -10,6 +10,8 @@ import {
   findPriorRoomAnswer,
   heldReplyMessage,
   isDecisionCardText,
+  lastOwnerMessageAt,
+  ownAppCommentAnswer,
   sameAgentName,
   threadOwnerFromSlack,
 } from './room-responder.js';
@@ -124,6 +126,27 @@ describe('threadOwnerFromSlack', () => {
   });
 });
 
+describe('ownAppCommentAnswer (Lyra answered #16 in the app and again in the thread, 2026-10-19)', () => {
+  let seq = 0;
+  const row = (o: Partial<ChatMessageDTO>): ChatMessageDTO => ({
+    id: `a${++seq}`, channelId: 'room', seq, senderType: 'user', senderId: 'steve', content: 'x', contentType: 'markdown', createdAt: seq, attachments: [], mentions: [], ...o,
+  });
+  const LYRA = 'crewly-marketing-lyra';
+  const appRow = (session: string, content: string) => row({ senderType: 'agent', senderId: session, content, metadata: { source: 'app-comment', appComment: { appId: 'a', commentId: 'c' } } });
+
+  it('holds a reply after the agent\'s own app-comments answer to the owner\'s latest message', () => {
+    const t = [row({ content: '💬 Comment on #16' }), appRow(LYRA, '已改（#16 现在是新版）')];
+    expect(ownAppCommentAnswer(t, LYRA, 'Lyra')).toMatchObject({ by: 'Lyra', own: true, excerpt: '已改（#16 现在是新版）' });
+    expect(heldReplyMessage(ownAppCommentAnswer(t, LYRA)!)).toMatch(/you already answered .* with app-comments/);
+  });
+
+  it('does not hold after a new owner message, for another agent, or for an ordinary thread reply', () => {
+    expect(ownAppCommentAnswer([row({}), appRow(LYRA, 'done'), row({ content: '再短一点' })], LYRA)).toBeNull();
+    expect(ownAppCommentAnswer([row({}), appRow(LYRA, 'done')], 'crewly-marketing-ella')).toBeNull();
+    expect(ownAppCommentAnswer([row({}), row({ senderType: 'agent', senderId: LYRA, content: 'done' })], LYRA)).toBeNull();
+  });
+});
+
 describe('findPriorRoomAnswer (reply gate)', () => {
   let seq = 0;
   const row = (o: Partial<ChatMessageDTO>): ChatMessageDTO => ({
@@ -174,11 +197,24 @@ describe('findPriorRoomAnswer (reply gate)', () => {
     expect(findPriorRoomAnswer(t2, ELLA, names)).toMatchObject({ bySession: ATLAS });
   });
 
-  it('only an answer from the chosen responder holds; no recorded responders, interim notes and earlier answers never hold', () => {
-    expect(findPriorRoomAnswer([owner('q', [ATLAS]), said('ops-noah', 'chiming in')], ELLA, names)).toBeNull();
+  it('no recorded responders, interim notes and earlier answers never hold', () => {
     expect(findPriorRoomAnswer([row({ content: 'q' }), said(ATLAS, 'a')], ELLA, names)).toBeNull();
     expect(findPriorRoomAnswer([owner('q', [ATLAS]), said(ATLAS, 'on it (~5 min)', { metadata: { interim: true } })], ELLA, names)).toBeNull();
     expect(findPriorRoomAnswer([owner('q1', [ATLAS]), said(ATLAS, 'a1'), owner('q2', [ATLAS])], ELLA, names)).toBeNull();
+  });
+
+  it('crewly#1376: once any agent answered the owner\'s latest message, a non-responder\'s repeat is held (the chosen responder\'s answer is named first)', () => {
+    // 「你再发一次」: Rex (another machine) answered first; Sage must not answer again, Atlas (the thread owner) still may.
+    const rex = row({ senderId: 'Rex (agent)', content: 'Atlas 能再发一次吗', metadata: { remoteAgentSession: 'rednote-rex' } });
+    const t = [owner('你再发一次', [ATLAS]), rex];
+    expect(findPriorRoomAnswer(t, ELLA, names)).toMatchObject({ by: 'Rex', bySession: 'rednote-rex', byResponder: false });
+    expect(findPriorRoomAnswer(t, ATLAS, names)).toBeNull();
+    const t2 = [...t, said(ATLAS, '已重新发了 PDF')];
+    expect(findPriorRoomAnswer(t2, ELLA, names)).toMatchObject({ bySession: ATLAS });
+    expect(findPriorRoomAnswer(t2, ELLA, names)?.byResponder).toBeUndefined();
+    // An answer that asks this agent in does not hold it.
+    expect(findPriorRoomAnswer([owner('q', [ATLAS]), said('ops-noah', '@Ella can you take this?')], ELLA, names)).toBeNull();
+    expect(heldReplyMessage({ by: 'Rex', excerpt: 'x', byResponder: false })).toContain('Held, not posted: Rex already replied to the owner\'s latest message in this thread: "x"');
   });
 
   it('a chosen responder on another machine, recorded here, holds under its name', () => {
@@ -191,5 +227,31 @@ describe('findPriorRoomAnswer (reply gate)', () => {
     expect(text).toContain('Held, not posted: Atlas, the agent answering the owner');
     expect(text).toContain('Post with --adds-new if you have something new, or if you were asked.');
     expect(text).not.toContain('--none');
+  });
+});
+
+describe('lastOwnerMessageAt', () => {
+  const row = (o: Partial<ChatMessageDTO>): ChatMessageDTO => ({
+    id: `r${o.createdAt}`,
+    channelId: 'huddle-1',
+    seq: o.createdAt ?? 0,
+    senderType: 'user',
+    senderId: 'steve',
+    content: 'x',
+    contentType: 'markdown',
+    createdAt: 0,
+    attachments: [],
+    mentions: [],
+    ...o,
+  });
+
+  it('the owner\'s newest row, not agents\' later posts', () => {
+    const t = [row({ createdAt: 10 }), row({ createdAt: 20 }), row({ createdAt: 30, senderType: 'agent', senderId: 'crewly-marketing-ella' })];
+    expect(lastOwnerMessageAt(t)).toBe(20);
+  });
+
+  it('null when the owner never wrote in the thread', () => {
+    expect(lastOwnerMessageAt([row({ createdAt: 5, senderType: 'agent', senderId: 'ella' })])).toBeNull();
+    expect(lastOwnerMessageAt([])).toBeNull();
   });
 });

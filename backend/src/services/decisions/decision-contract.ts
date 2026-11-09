@@ -8,8 +8,10 @@
  * @module services/decisions/decision-contract
  */
 
-import { DECISION_CONSTANTS } from '../../constants.js';
-import type { AskOwnerInput, DecisionOption, DecisionSensitiveKind, ValidatedAsk } from '../../types/decision.types.js';
+import { DECISION_CONSTANTS, DECISION_WORDING_CONSTANTS } from '../../constants.js';
+import type { AskOwnerInput, DecisionLanguage, DecisionOption, DecisionSensitiveKind, ValidatedAsk } from '../../types/decision.types.js';
+import { isMergeAsk, letterCount, localizeOptions, parseDecisionContext, questionFitsOwnerLanguage, stripInternalRefs } from './decision-wording.js';
+import { detectOwnerLanguage } from '../orc/owner-completion-report.text.js';
 
 /** A rejected ask. */
 export class DecisionContractError extends Error {
@@ -22,6 +24,28 @@ export class DecisionContractError extends Error {
 /** The example appended to every contract error. */
 export const ASK_OWNER_EXAMPLE =
   'Example: ask-owner --question "Send the partner email on Monday?" --option "Send Monday — after the review call" --option "Hold — wait for legal" [--option "Third choice"] --default "Hold" [--deadline 2026-10-02T12:00] [--ticket APP-12 --project P] [--sensitive email]';
+
+/** The example appended to a merge card's contract errors. */
+export const MERGE_ASK_EXAMPLE =
+  'Example: ask-owner --question "Should agents\' Gmail emails go out only after you tap Approve on a card?" --option "Merge" --option "Not now" --default wait ' +
+  '--requested-by "Ella, Oct 6 (from your line about email safety)" --owner-last-said "我要的是视频 不是新增功能" ' +
+  '--runtime-changes "Starts a Gmail poller at boot (every 30 s) and adds the gmail.send scope" --link https://github.com/org/repo/pull/1138';
+
+/**
+ * The fix-it message for a question with nothing left once internal
+ * references are stripped (crewly#1367).
+ *
+ * @param raw - The question as asked
+ * @returns Error text
+ */
+export function rewriteInPlainWordsMessage(raw: string): string {
+  return (
+    `"${raw.slice(0, 120)}" is not a question the owner can answer: once ticket ids, PR numbers, branch / worktree names and "GOAL:" prefixes are taken out, nothing plain is left. ` +
+    'The owner never sees tickets, PRs or worktrees. Rewrite the question in plain words, in the owner\'s language: what changes for them if they say yes ' +
+    '(e.g. "Should agents\' Gmail emails go out only after you approve them?"). Put the PR link in --link. ' +
+    ASK_OWNER_EXAMPLE
+  );
+}
 
 const OPTION_KEYS = ['a', 'b', 'c', 'd', 'e'];
 
@@ -210,10 +234,17 @@ export function validateAskOwner(input: AskOwnerInput, now: Date = new Date()): 
   if (/\n\s*\S/.test(rawQ.trim())) {
     throw new DecisionContractError('question must be ONE line. Put the context in the ticket, the choices in --option. ' + ASK_OWNER_EXAMPLE);
   }
-  const question = oneLine(rawQ);
-  if (!question) throw new DecisionContractError(`question is required. ${ASK_OWNER_EXAMPLE}`);
-  if (question.length > DECISION_CONSTANTS.QUESTION_MAX_CHARS) {
+  const asked = oneLine(rawQ);
+  if (!asked) throw new DecisionContractError(`question is required. ${ASK_OWNER_EXAMPLE}`);
+  if (asked.length > DECISION_CONSTANTS.QUESTION_MAX_CHARS) {
     throw new DecisionContractError(`question is too long (max ${DECISION_CONSTANTS.QUESTION_MAX_CHARS} characters) — one line the owner can answer with a tap.`);
+  }
+  // Tickets, PRs, branches and worktrees are internal (crewly#1367): the
+  // owner sees the question in plain words; a PR link goes to the details line.
+  const stripped = stripInternalRefs(asked);
+  const question = stripped.text;
+  if (question !== asked && (letterCount(question) < DECISION_WORDING_CONSTANTS.QUESTION_MIN_LETTERS || question.length < DECISION_CONSTANTS.QUESTION_MIN_CHARS || isVagueQuestion(question))) {
+    throw new DecisionContractError(rewriteInPlainWordsMessage(asked));
   }
   if (question.length < DECISION_CONSTANTS.QUESTION_MIN_CHARS || isVagueQuestion(question)) {
     throw new DecisionContractError(
@@ -224,6 +255,23 @@ export function validateAskOwner(input: AskOwnerInput, now: Date = new Date()): 
   const defaultKey = resolveDefault(input.default, options);
   const deadline = parseDeadline(input.deadline, now);
   const sensitive = parseSensitive(input.sensitive);
+  let context;
+  try {
+    context = parseDecisionContext(input.context);
+  } catch (err) {
+    throw new DecisionContractError(`${err instanceof Error ? err.message : String(err)} ${ASK_OWNER_EXAMPLE}`);
+  }
+  // A merge card says what merging changes at runtime (crewly#1369 §3:
+  // D-822 said "Sam reviewed it, tests pass" and the merge started a Gmail
+  // poller at boot).
+  const merge = isMergeAsk(asked, options);
+  if (merge && !context?.runtimeChanges) {
+    throw new DecisionContractError(
+      'this card asks the owner to merge: say what merging changes at runtime with --runtime-changes (new background jobs, polling, scopes, data written — or "nothing at runtime, only <what>"). ' +
+        'Also say who asked for it and when (--requested-by) and what the owner said last about it (--owner-last-said) when you know. ' +
+        MERGE_ASK_EXAMPLE,
+    );
+  }
   const ticketId = typeof input.ticket === 'string' && input.ticket.trim() ? input.ticket.trim() : undefined;
   const project = typeof input.project === 'string' && input.project.trim() ? input.project.trim() : undefined;
   if (ticketId && !project) throw new DecisionContractError('ticket needs --project too (the project the ticket belongs to).');
@@ -235,6 +283,9 @@ export function validateAskOwner(input: AskOwnerInput, now: Date = new Date()): 
     ...(sensitive ? { sensitive } : {}),
     ...(ticketId ? { ticketId } : {}),
     ...(project ? { project } : {}),
+    ...(context ? { context } : {}),
+    ...(stripped.refs.length ? { details: stripped.refs } : {}),
+    ...(merge ? { merge: true } : {}),
   };
 }
 
@@ -295,4 +346,36 @@ export function withTicketContext(question: string, title: string | undefined): 
   const joined = `${subject} — ${question}`;
   const max = DECISION_CONSTANTS.QUESTION_MAX_CHARS;
   return joined.length > max ? `${joined.slice(0, max - 1)}…` : joined;
+}
+
+/** Latin words in a label (an English label has two or more). */
+const LATIN_WORD_RE = /[A-Za-z]{2,}/g;
+
+/**
+ * Fit a validated ask to the owner's language (crewly#1367): a Chinese owner
+ * gets a Chinese question (else the ask is refused with what to fix) and
+ * generic English option labels in Chinese ("Not now" → 先不, on a merge
+ * card "Yes, merge" → 合并). An English or unknown owner gets the ask as is.
+ *
+ * @param ask - The validated ask
+ * @param lang - The owner's language, when known
+ * @returns The ask with localized options
+ * @throws DecisionContractError when the question or a button is not in the owner's language
+ */
+export function fitAskToOwnerLanguage(ask: ValidatedAsk, lang: DecisionLanguage | null | undefined): ValidatedAsk {
+  if (lang !== 'zh') return ask;
+  if (!questionFitsOwnerLanguage(ask.question, lang)) {
+    throw new DecisionContractError(
+      `the owner writes Chinese, so the card must be in Chinese: rewrite --question "${ask.question.slice(0, 80)}" in Chinese, in plain words (what changes for the owner if they say yes). ` +
+        'Write the options and the context fields in Chinese too; generic buttons such as "Yes" / "Not now" are translated for you.',
+    );
+  }
+  const options = localizeOptions(ask.options, lang, ask.merge === true);
+  const english = options.find((o) => detectOwnerLanguage(o.label) === 'en' && (o.label.match(LATIN_WORD_RE)?.length ?? 0) >= 2);
+  if (english) {
+    throw new DecisionContractError(
+      `the owner writes Chinese: the button "${english.label}" must be in Chinese too, named by its outcome. Rewrite that --option in Chinese.`,
+    );
+  }
+  return { ...ask, options };
 }

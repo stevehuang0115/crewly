@@ -48,7 +48,7 @@ describe('trace-summary', () => {
 		const { text, links } = buildTraceSummary(root(), events, m, 4000);
 		expect(text).toContain(`Trace ${TRACE} · request · TKT-012: Fix the FAQ schema`);
 		expect(text).toMatch(/Time: wall 2h 31m · active .* · waiting on owner 2h/);
-		expect(text).toContain('Owner touches 1 (answered 1, approved 0, sent back 0, corrected 0)');
+		expect(text).toContain('Owner touches 1 (answered 1, approved 0, sent back 0, corrected 0, other 0)');
 		expect(text).not.toContain('manual');
 		expect(text).toContain('Harness interventions 1 (nudges 0, redeliveries 0, wakes 0, corrections 0, guard blocks 1, misroutes 0)');
 		expect(text).toMatch(/Tokens 6k · <\$0\.01 · by agent: ella 6k <\$0\.01 · by model: deepseek\/deepseek-chat 6k/);

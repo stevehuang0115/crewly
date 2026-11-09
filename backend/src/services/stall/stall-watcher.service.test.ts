@@ -22,7 +22,9 @@ import {
 	durationWords,
 	ladderDue,
 	ownerLanguage,
+	isUncardedOwnerQuestion,
 	promiseOwnerLine,
+	questionOwnerLine,
 	runOwnerLine,
 	stallWatcherDryRun,
 	stallWatcherEnabled,
@@ -43,6 +45,7 @@ interface Harness {
 	deps: StallWatcherDeps & {
 		deliverToAgent: jest.Mock<Promise<boolean>, [string, string]>;
 		notifyOwner: jest.Mock<Promise<boolean>, [string]>;
+		onOwnerTold: jest.Mock<void, [string]>;
 		releaseClaim: jest.Mock<Promise<void>, [string, string]>;
 		recordPromiseStep: jest.Mock;
 		trace: jest.Mock;
@@ -81,6 +84,7 @@ async function harness(dir: string, env: NodeJS.ProcessEnv = { [C.ENV_DRY_RUN]: 
 		leadOf: async (session) => (session === 'pia' || session === 'rex' ? 'ella' : null),
 		displayName: async (session) => session.charAt(0).toUpperCase() + session.slice(1),
 		notifyOwner: jest.fn(async (_line: string): Promise<boolean> => true),
+		onOwnerTold: jest.fn(),
 		recordPromiseStep: jest.fn(async () => undefined),
 		teammatesOf: async () => [
 			{ name: 'Pia', session: 'pia' },
@@ -221,6 +225,9 @@ describe('StallWatcherService', () => {
 			h.clock.now = T0 + 3 * H + 30 * MIN;
 			expect((await h.service.tick()).promises).toEqual({ agent: 0, lead: 0, owner: 1 });
 			expect(h.deps.notifyOwner).toHaveBeenCalledTimes(1);
+			// #1387: the stalled agent is reported once for the weekly owner-pulls count.
+			expect(h.deps.onOwnerTold).toHaveBeenCalledTimes(1);
+			expect(h.deps.onOwnerTold).toHaveBeenCalledWith('pia');
 			expect(h.deps.notifyOwner.mock.calls[0][0]).toBe('Pia 说大约 1 小时 内给「一小时内给 W41 完整版」，现在过了 3.5 小时 还没有，已经提醒过 Pia，也问了 Ella。');
 			expect(h.deps.recordPromiseStep).toHaveBeenCalledWith('req-1', 'c-1', 'owner', new Date(T0 + 3 * H + 30 * MIN));
 
@@ -291,6 +298,48 @@ describe('StallWatcherService', () => {
 			);
 			h.clock.now = T0 + 10 * H;
 			expect((await h.service.tick()).promises).toEqual({ agent: 0, lead: 0, owner: 0 });
+		});
+	});
+
+	describe('owner questions asked in prose (crewly#1369)', () => {
+		const question = (over: Partial<RequestOpenItem> = {}): Request =>
+			promiseRequest({ id: 'q-1', type: 'question', text: 'Should I close PR #1138?', ownerQuestion: true, due: new Date(T0 + 24 * H).toISOString(), dueSource: 'default', ...over });
+
+		it('climbs agent (make it a card) → lead → the owner gets the question once', async () => {
+			const h = await harness(dir);
+			h.requests.push(question());
+			h.threads.set('ch/root', [msg({ id: 'root', senderType: 'user', senderId: 'owner', content: 'What is left on the Gmail work?', createdAt: T0 - MIN })]);
+			h.clock.now = T0 + 30 * H;
+			expect((await h.service.tick()).promises).toEqual({ agent: 0, lead: 0, owner: 0 });
+			h.clock.now = T0 + 36 * H;
+			expect((await h.service.tick()).promises.agent).toBe(1);
+			expect(h.deps.deliverToAgent.mock.calls[0][1]).toMatch(/^\[STALL\] You asked the owner "Should I close PR #1138\?" 36 hours ago and no answer is on file\./);
+			expect(h.deps.deliverToAgent.mock.calls[0][1]).toContain('decision card (ask-owner)');
+			expect(h.deps.recordPromiseStep).toHaveBeenCalledWith('req-1', 'q-1', 'agent', new Date(T0 + 36 * H));
+			h.clock.now = T0 + 72 * H;
+			expect((await h.service.tick()).promises.lead).toBe(1);
+			expect(h.deps.deliverToAgent).toHaveBeenLastCalledWith('ella', expect.stringContaining('Pia asked the owner "Should I close PR #1138?"'));
+			h.clock.now = T0 + 72 * H + 30 * MIN;
+			expect((await h.service.tick()).promises.owner).toBe(1);
+			expect(h.deps.notifyOwner.mock.calls[0][0]).toBe('Pia asked you 3 days ago: "Should I close PR #1138?" — there is no answer from you yet. One line is enough, or say "skip".');
+		});
+
+		it('carded, answered, plain and undated questions are not followed up here', async () => {
+			const h = await harness(dir);
+			h.requests.push(
+				question({ decisionId: 'D-1' }),
+				{ ...question({ status: 'resolved' }), id: 'req-2' } as Request,
+				{ ...question({ ownerQuestion: undefined }), id: 'req-3' } as Request,
+				{ ...question({ due: undefined }), id: 'req-4' } as Request,
+			);
+			h.clock.now = T0 + 100 * H;
+			expect((await h.service.tick()).promises).toEqual({ agent: 0, lead: 0, owner: 0 });
+		});
+
+		it('helpers', () => {
+			expect(isUncardedOwnerQuestion({ type: 'question', ownerQuestion: true, due: 'x' } as RequestOpenItem)).toBe(true);
+			expect(isUncardedOwnerQuestion({ type: 'commitment', ownerQuestion: true, due: 'x' } as RequestOpenItem)).toBe(false);
+			expect(questionOwnerLine('zh', { name: 'Ella', what: '要不要关掉 PR #1138？', elapsedMs: 36 * H })).toBe('Ella 36 小时前问你：「要不要关掉 PR #1138？」还没有你的回答。回一句就行，或者说「不用了」。');
 		});
 	});
 
@@ -380,6 +429,14 @@ describe('StallWatcherService', () => {
 			expect(h.service.protectedRunReason('pia')).toBeNull();
 			// Persisted.
 			expect((await h.deps.store.load()).runs).toHaveLength(1);
+		});
+
+		it('registers jobs submitted to an outside generator with no duration at the default estimate (crewly#1386)', async () => {
+			const h = await harness(dir);
+			await h.service.onMessage(announce({ id: 'pia-1', senderId: 'pia', content: '三条片段已经提交到 Flow 了，作为第 3 步的预览。让它们跑完，对比后看差多少。' }));
+			const runs = h.service.runsOf('pia');
+			expect(runs).toHaveLength(1);
+			expect(runs[0]).toMatchObject({ id: 'pia-1', estimateMs: C.RUN_DEFAULT_ESTIMATE_MS, estimateSource: 'default', expectedBy: T0 + C.RUN_DEFAULT_ESTIMATE_MS });
 		});
 
 		it('ignores interim marks, posts without a duration, and a second announcement in the same thread', async () => {

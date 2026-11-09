@@ -134,6 +134,24 @@ describe('ClaudeTranscriptSyncService', () => {
 		expect((await service.sync()).turnsCounted).toBe(0);
 	});
 
+	it('reads a huge transcript in bounded chunks over several passes, and skips a line longer than a chunk (2026-10-22: a 745 MB file broke every pass)', async () => {
+		const lines = Array.from({ length: 6 }, (_, i) => assistantLine({ id: `m${i}`, timestamp: `2026-09-21T10:0${i}:00.000Z` }) + '\n');
+		await fs.writeFile(transcriptPath, lines.join(''));
+		// Two lines fit in a chunk.
+		service.readChunkBytes = lines[0].length * 2 + 4;
+		const first = await service.sync();
+		expect(first.turnsCounted).toBe(2);
+		expect((await service.sync()).turnsCounted).toBe(2);
+		expect((await service.sync()).turnsCounted).toBe(2);
+		expect((await service.sync()).turnsCounted).toBe(0);
+		// A giant line (a tool result) longer than a chunk is skipped, and the turn after it still counts.
+		const giant = JSON.stringify({ type: 'user', message: { content: 'x'.repeat(lines[0].length * 3) } }) + '\n';
+		await fs.appendFile(transcriptPath, giant + assistantLine({ id: 'm9', timestamp: '2026-09-21T10:09:00.000Z' }) + '\n');
+		let counted = 0;
+		for (let i = 0; i < 6; i++) counted += (await service.sync()).turnsCounted;
+		expect(counted).toBe(1);
+	});
+
 	it('leaves a half-written trailing line for the next pass', async () => {
 		const whole = assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z' }) + '\n';
 		const partial = assistantLine({ id: 'm2', timestamp: '2026-09-21T10:01:00.000Z' }).slice(0, 40);

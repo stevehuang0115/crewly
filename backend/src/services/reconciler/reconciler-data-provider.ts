@@ -12,7 +12,7 @@
  */
 
 import type { ReconcilerDataProvider } from './reconciler.service.js';
-import type { AgentHealth } from './reconcile-rules.js';
+import type { AgentHealth, DecisionHoldLink } from './reconcile-rules.js';
 import type {
   WorkItem,
   Request,
@@ -21,7 +21,7 @@ import type {
   WakeAction,
   WakeActionResult,
 } from '../../types/v2/index.js';
-import { isExplicitlyBlocked, isWaitingOnHumanBlocked } from '../../types/v2/work-item.types.js';
+import { isExplicitlyBlocked, isWaitingOnHumanBlocked, isBlockedUntilReached } from '../../types/v2/work-item.types.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { computeWorkItemUsage } from '../task-pool/work-item-usage.js';
 import { ClaimService } from '../task-pool/claim.service.js';
@@ -37,7 +37,9 @@ import { getWaiting } from '../monitoring/agent-attention-registry.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { limitToOneProjectTicket } from '../task-pool/ticket-claim-policy.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
+import { NetworkStatusService } from '../core/network-status.service.js';
 import { ResourceModeService, RESOURCE_MODE_CONSTANTS } from '../agent/resource-mode.service.js';
+import { memoryStopHold } from '../agent/memory-stop-hold.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
@@ -728,13 +730,20 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    *   rule's OWN requeue was also refused, leaving the item blocked
    *   forever while `workItemsRequeued` still counted it as done).
    */
-  async requeueWorkItem(workItemId: string, opts?: { allowWaitingOnHuman?: boolean }): Promise<void> {
+  async requeueWorkItem(
+    workItemId: string,
+    opts?: { allowWaitingOnHuman?: boolean; allowExplicitWhenDue?: boolean },
+  ): Promise<void> {
     try {
       const pool = TaskPoolService.getInstance();
       // Defence in depth: the rules already skip explicit blocks, but the
-      // reconciler must never be the one to undo an agent's /block.
+      // reconciler must never be the one to undo an agent's /block. The one
+      // exception is the agent's own `until`: a block given a time lifts
+      // once that time has passed (block-task `until`), and only the
+      // due-block rule asks for it.
       const current = await pool.findWorkItem(workItemId);
-      if (current && isExplicitlyBlocked(current)) {
+      const dueExplicit = !!current && opts?.allowExplicitWhenDue === true && isBlockedUntilReached(current);
+      if (current && isExplicitlyBlocked(current) && !dueExplicit) {
         this.logger.info('Not re-queuing an explicitly blocked work item (stays blocked until unblocked)', { workItemId });
         return;
       }
@@ -742,8 +751,12 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         this.logger.info('Not re-queuing a waiting_on_human work item (resumed when the prompt is gone)', { workItemId });
         return;
       }
-      await pool.releaseBack(workItemId, 'reconciler_requeue');
-      this.logger.info('Re-queued work item', { workItemId, allowWaitingOnHuman: opts?.allowWaitingOnHuman ?? false });
+      await pool.releaseBack(workItemId, dueExplicit ? 'blocked_until_reached' : 'reconciler_requeue');
+      this.logger.info('Re-queued work item', {
+        workItemId,
+        allowWaitingOnHuman: opts?.allowWaitingOnHuman ?? false,
+        blockedUntilReached: dueExplicit,
+      });
     } catch (error) {
       this.logger.error('Failed to re-queue work item', {
         workItemId,
@@ -819,6 +832,31 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    *
    * @returns Available pool items (always an array)
    */
+  /**
+   * Open owner decision cards, as the work item / ticket each waits for
+   * (crewly#1369 §5): the reconciler does not TTL-cancel work waiting on one.
+   *
+   * @returns Holds (empty when the decision service is not running)
+   */
+  async getOpenDecisionHolds(): Promise<DecisionHoldLink[]> {
+    try {
+      const { DecisionService } = await import('../decisions/decision.service.js');
+      const service = DecisionService.getInstance();
+      if (!service) return [];
+      const open = await service.list('open');
+      return open
+        .filter((d) => d.status === 'open')
+        .map((d) => ({
+          ...(d.workItemId ? { workItemId: d.workItemId } : {}),
+          ...(d.ticket ? { ticket: { projectPath: d.ticket.projectPath, id: d.ticket.id } } : {}),
+        }))
+        .filter((h) => h.workItemId || h.ticket);
+    } catch (err) {
+      this.logger.debug('Could not read open decision cards for the TTL hold', { error: err instanceof Error ? err.message : String(err) });
+      return [];
+    }
+  }
+
   async getAvailablePoolItems(): Promise<WorkItem[]> {
     try {
       const pool = TaskPoolService.getInstance();
@@ -1273,6 +1311,22 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   }
 
   /**
+   * Whether this machine is offline, and for how long (CREW-862). While it
+   * is, every wake is held; the reconciler uses this to tell a lead that
+   * queued work is waiting behind the outage.
+   *
+   * @returns The outage length in minutes, or null when online
+   */
+  getMachineOffline(): { offlineMinutes: number } | null {
+    try {
+      const net = NetworkStatusService.getInstance();
+      return net.isOffline() ? { offlineMinutes: net.offlineMinutes() } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Cooldown that applies to the NEXT redelivery of a WorkItem: the base
    * window doubled once per reminder already sent, capped at
    * {@link REDELIVER_MAX_COOLDOWN_MS}.
@@ -1371,6 +1425,11 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           this.redeliverCount.delete(action.workItemId);
           return { outcome: 'skipped', reason: 'work item no longer queued' };
         }
+        // Its target is being stopped for memory right now (the released brief
+        // reached a dying session as a 500 on 2026-10-26): nothing to write to.
+        if (memoryStopHold(agentSessionName, ResourceModeService.getInstance().getMode())) {
+          return { outcome: 'skipped', reason: 'target stopped for memory' };
+        }
         // Per-WI redeliver backoff — the fast loop re-emits this every ~10s
         // while the WI stays queued; without the gate that floods the PTY,
         // and with a flat gate it still wakes the agent every few minutes.
@@ -1456,6 +1515,18 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
     // refused (crewly-product-team-sam, 2026-10-13).
     const blocked = this.lastWakeBlockedAt.get(agentSessionName);
     if (strategy === 'start') {
+      // The machine itself stopped this agent for memory moments ago (idle or
+      // emergency stop under pressure): starting it for the item it has just
+      // released would only redo the cold start and take back the memory the
+      // stop freed. Held while pressure lasts (memory-stop-hold.ts).
+      const memoryHold = memoryStopHold(agentSessionName, ResourceModeService.getInstance().getMode());
+      if (memoryHold) {
+        this.logger.debug('Skipping wake — the agent was stopped for memory and pressure persists', {
+          agent: agentSessionName,
+          reason: memoryHold,
+        });
+        return { outcome: 'skipped', reason: 'stopped for memory; held while pressure lasts' };
+      }
       // Don't re-attempt a wake the approval gate just refused. Its verdict
       // depends on owner messages, not on anything the reconciler can change
       // by asking again 10 seconds later.
@@ -1576,6 +1647,23 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
     } else {
       // Pressure cleared — reset state so the next episode re-fires.
       this.resetMemoryPressureBroadcast();
+    }
+
+    // No network: a freshly started agent cannot reach its model API, never
+    // registers, is marked stuck after 15 min and gets woken again (seven
+    // such cycles for two agents during the 2026-10-25 outage). Wait it out;
+    // the queued work is still there when the network returns.
+    const net = NetworkStatusService.getInstance();
+    if (net.isOffline()) {
+      if (net.shouldLog(`wake:${agentSessionName}`)) {
+        this.logger.info('Wake skipped — this machine is offline', {
+          agent: agentSessionName,
+          strategy,
+          workItemId: action.workItemId,
+          offlineMinutes: net.offlineMinutes(),
+        });
+      }
+      return { outcome: 'skipped', reason: 'network offline' };
     }
 
     this.logger.info('Executing wake action', {

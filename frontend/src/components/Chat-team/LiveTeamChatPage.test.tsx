@@ -32,9 +32,10 @@ import {
   type SendMessageInput,
   type ChatWebsocketEvent,
   type CreateChannelInput,
+  type ChatSearchHit,
   type MentionTarget,
 } from '@crewly/chat-ui';
-import { LiveTeamChatPage, __test__, crewlyChannelRow, isConversationUnread, filterMessages, type ChatTeam } from './LiveTeamChatPage';
+import { LiveTeamChatPage, __test__, crewlyChannelRow, filterMessages, type ChatTeam } from './LiveTeamChatPage';
 import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
 
 const ISO = '2026-04-25T20:00:00.000Z';
@@ -92,8 +93,13 @@ function makeStubClient(channels: Channel[], messages: Record<string, Message[]>
   client: ChatApiClient;
   sendCalls: Array<{ channelId: string; input: SendMessageInput }>;
   injectError: (err: Error) => void;
+  readCalls: string[];
+  unreadCalls: Array<{ channelId: string; seq: number }>;
+  emit: (channelId: string, event: ChatWebsocketEvent) => void;
 } {
   const sendCalls: Array<{ channelId: string; input: SendMessageInput }> = [];
+  const readCalls: string[] = [];
+  const unreadCalls: Array<{ channelId: string; seq: number }> = [];
   let nextSendError: Error | null = null;
   const subscribers: Record<string, Array<(e: ChatWebsocketEvent) => void>> = {};
 
@@ -136,6 +142,27 @@ function makeStubClient(channels: Channel[], messages: Record<string, Message[]>
     async getAgentPresence(agentId: string): Promise<AgentPresence> {
       return { agentId, status: 'online' };
     },
+    async markChannelRead(channelId: string) {
+      readCalls.push(channelId);
+      return { channelId, lastReadSeq: 99, unreadCount: 0 };
+    },
+    async markChannelUnread(channelId: string, seq: number) {
+      unreadCalls.push({ channelId, seq });
+      return { channelId, lastReadSeq: seq - 1, unreadCount: 2 };
+    },
+    // Cross-conversation search over the seeded messages (#1400): every word
+    // must appear; newest first like the server.
+    async searchMessages(query: string): Promise<ChatSearchHit[]> {
+      const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+      const hits: ChatSearchHit[] = [];
+      for (const ch of channels) {
+        for (const m of messages[ch.id] ?? []) {
+          if (!terms.every((t) => m.content.toLowerCase().includes(t))) continue;
+          hits.push({ id: m.id, time: m.createdAt, channelId: ch.id, channel: ch.name, channelType: ch.type, sender: m.author.name ?? m.author.id, senderType: m.author.role, text: m.content, threadId: m.threadId ?? null });
+        }
+      }
+      return hits.sort((a, b) => b.time.localeCompare(a.time));
+    },
     subscribeToChannel(channelId, onEvent): ChannelSubscription {
       (subscribers[channelId] ||= []).push(onEvent);
       return {
@@ -151,6 +178,11 @@ function makeStubClient(channels: Channel[], messages: Record<string, Message[]>
     sendCalls,
     injectError: (err: Error) => {
       nextSendError = err;
+    },
+    readCalls,
+    unreadCalls,
+    emit: (channelId, event) => {
+      for (const cb of subscribers[channelId] ?? []) cb(event);
     },
   };
 }
@@ -532,39 +564,80 @@ describe('LiveTeamChatPage — simplified chat (specs/2026-10-02-ui-redesign.md)
   };
   const recent = (msAgo: number): string => new Date(Date.now() - msAgo).toISOString();
 
-  it('shows an unread dot for conversations with messages since Chat was last open, and marks the open one seen', async () => {
+  it('shows the server unread count per conversation; opening one marks it read', async () => {
     const channels: Channel[] = [
       orcDm,
-      { id: 'dm-ella', agentSession: 'sess-ella', name: 'Ella', createdAt: ISO, type: 'dm', lastMessageAt: recent(60_000) },
-      { id: 'dm-owen', agentSession: 'sess-owen', name: 'Owen', createdAt: ISO, type: 'dm', lastMessageAt: recent(3 * 3600_000) },
+      { id: 'dm-ella', agentSession: 'sess-ella', name: 'Ella', createdAt: ISO, type: 'dm', lastReadSeq: 0, unreadCount: 3 },
+      { id: 'dm-owen', agentSession: 'sess-owen', name: 'Owen', createdAt: ISO, type: 'dm', lastReadSeq: 5, unreadCount: 0 },
     ];
-    const { client } = makeStubClient(channels);
-    render(
-      <LiveTeamChatPage
-        client={client}
-        mentionables={MENTIONABLES}
-        teams={[]}
-        initialConversationId="orc-dm"
-        seenBaseline={{ all: Date.now() - 3600_000 }}
-      />,
-    );
+    const { client, readCalls } = makeStubClient(channels);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} initialConversationId="orc-dm" />);
     await waitFor(() => expect(screen.getByTestId('conv-row-dm-ella')).toHaveAttribute('data-unread', 'true'));
-    expect(screen.getByTestId('conv-unread-dm-ella')).toBeInTheDocument();
+    expect(screen.getByTestId('conv-unread-dm-ella')).toHaveTextContent('3');
     expect(screen.getByTestId('conv-row-dm-owen')).toHaveAttribute('data-unread', 'false');
+    expect(readCalls).not.toContain('dm-ella');
     fireEvent.click(screen.getByTestId('conv-row-dm-ella'));
+    await waitFor(() => expect(readCalls).toContain('dm-ella'));
     await waitFor(() => expect(screen.getByTestId('conv-row-dm-ella')).toHaveAttribute('data-unread', 'false'));
-    const record = JSON.parse(window.localStorage.getItem('crewly.chat.seen') ?? '{}');
-    expect(record['dm-ella']).toBeGreaterThan(0);
+    // Nothing is kept in the browser any more.
+    expect(window.localStorage.getItem('crewly.chat.seen')).toBeNull();
   });
 
-  it('first visit in this browser (no seen record): nothing is marked unread', async () => {
+  it('conversations the server reports as read show no unread mark', async () => {
     const channels: Channel[] = [
       orcDm,
-      { id: 'dm-ella', agentSession: 'sess-ella', name: 'Ella', createdAt: ISO, type: 'dm', lastMessageAt: recent(60_000) },
+      { id: 'dm-ella', agentSession: 'sess-ella', name: 'Ella', createdAt: ISO, type: 'dm', lastReadSeq: 4, unreadCount: 0 },
     ];
     const { client } = makeStubClient(channels);
-    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} seenBaseline={{}} />);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
     await waitFor(() => expect(screen.getByTestId('conv-row-dm-ella')).toHaveAttribute('data-unread', 'false'));
+  });
+
+  it('a live read_state frame updates the list (another device read or kept a message)', async () => {
+    const channels: Channel[] = [
+      orcDm,
+      { id: 'dm-ella', agentSession: 'sess-ella', name: 'Ella', createdAt: ISO, type: 'dm', lastReadSeq: 0, unreadCount: 0 },
+    ];
+    const { client, emit } = makeStubClient(channels);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} initialConversationId="orc-dm" />);
+    await waitFor(() => expect(screen.getByTestId('conv-row-orc-dm')).toBeInTheDocument());
+    // The orchestrator conversation is open; a frame for it that raises the count is auto-read.
+    emit('orc-dm', { type: 'read_state', channelId: 'orc-dm', lastReadSeq: 1, unreadCount: 1 });
+    await waitFor(() => expect(screen.getByTestId('conv-row-orc-dm')).toHaveAttribute('data-unread', 'false'));
+  });
+
+  it('opens at the first unread message with an Unread divider, and Mark unread keeps a message for later', async () => {
+    const msg = (seq: number, content: string): Message => ({
+      id: `m${seq}`,
+      channelId: 'dm-ella',
+      seq,
+      author: { role: 'agent', id: 'sess-ella', name: 'Ella' },
+      content,
+      createdAt: ISO,
+      mentions: [],
+    });
+    const channels: Channel[] = [
+      orcDm,
+      { id: 'dm-ella', agentSession: 'sess-ella', name: 'Ella', createdAt: ISO, type: 'dm', lastReadSeq: 1, unreadCount: 2 },
+    ];
+    const { client, readCalls, unreadCalls } = makeStubClient(channels, {
+      'dm-ella': [msg(1, 'old one'), msg(2, 'new two'), msg(3, 'new three')],
+    });
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} initialConversationId="dm-ella" />);
+    await waitFor(() => expect(screen.getByText('new two')).toBeInTheDocument());
+    const divider = screen.getByTestId('unread-divider');
+    expect(divider).toHaveTextContent('Unread');
+    expect(divider.nextElementSibling).toHaveAttribute('data-testid', 'msg-m2');
+    // Opening marked it read; the divider stays so the owner sees what was new.
+    await waitFor(() => expect(readCalls).toContain('dm-ella'));
+    expect(screen.getByTestId('unread-divider')).toBeInTheDocument();
+
+    // Keep message 3 for later: server marker -> 2, divider moves above it, row is unread again.
+    fireEvent.click(screen.getByTestId('msg-more-m3'));
+    fireEvent.click(screen.getByTestId('msg-menu-unread-m3'));
+    await waitFor(() => expect(unreadCalls).toEqual([{ channelId: 'dm-ella', seq: 3 }]));
+    await waitFor(() => expect(screen.getByTestId('unread-divider').nextElementSibling).toHaveAttribute('data-testid', 'msg-m3'));
+    expect(screen.getByTestId('conv-row-dm-ella')).toHaveAttribute('data-unread', 'true');
   });
 
   it('folds long DM and channel lists behind "N more"; Find searches everything', async () => {
@@ -610,6 +683,43 @@ describe('LiveTeamChatPage — simplified chat (specs/2026-10-02-ui-redesign.md)
     expect(screen.getByTestId('conversation-search-count')).toHaveTextContent('2 loaded messages match.');
     fireEvent.click(screen.getByLabelText('Close search'));
     expect(await screen.findByText('approved')).toBeInTheDocument();
+  });
+
+  it('Find → "Search messages" lists hits from every conversation; opening one lands in it filtered by the words (#1400)', async () => {
+    const ops: Channel = { id: 'ch-ops', agentSession: '', name: 'ops', createdAt: ISO, type: 'channel', teamId: 'team-product' };
+    const messagesById: Record<string, Message[]> = {
+      'orc-dm': [
+        { id: 'a', channelId: 'orc-dm', seq: 1, author: { role: 'agent', id: 'orc', name: 'Orchestrator' }, content: 'Docker will not start', createdAt: '2026-04-25T20:00:00.000Z', mentions: [] },
+        { id: 'b', channelId: 'orc-dm', seq: 2, author: { role: 'user', id: 'me', name: 'You' }, content: 'approved', createdAt: '2026-04-25T20:01:00.000Z', mentions: [] },
+      ],
+      'ch-ops': [
+        { id: 'c', channelId: 'ch-ops', seq: 1, author: { role: 'agent', id: 'pia', name: 'Pia' }, content: 'docker reset done', createdAt: '2026-04-25T21:00:00.000Z', mentions: [] },
+      ],
+    };
+    const { client } = makeStubClient([orcDm, ops], messagesById);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[PRODUCT_TEAM]} />);
+    expect(await screen.findByText('approved')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('conv-search-toggle'));
+    fireEvent.change(screen.getByTestId('conv-search'), { target: { value: 'docker' } });
+    fireEvent.click(screen.getByTestId('conv-search-messages'));
+    // The search column replaces the conversation.
+    expect(screen.queryByTestId('team-chat-right-panel')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('chat-search-status')).toHaveTextContent('2 messages match.'));
+    const hits = within(screen.getByTestId('chat-search-hits')).getAllByRole('button');
+    // A team channel is listed under its team's name; the hit says the same.
+    expect(hits[0]).toHaveTextContent('#Crewly Product');
+    expect(hits[0]).toHaveTextContent('Pia');
+    expect(hits[1]).toHaveTextContent('Orchestrator');
+    // Opening the team-channel hit lands in it with the in-conversation search preset.
+    fireEvent.click(screen.getByTestId('chat-search-hit-c'));
+    await waitFor(() => expect(screen.getByTestId('team-chat-right-panel')).toHaveAttribute('aria-label', 'Conversation with Crewly Product'));
+    expect(screen.getByTestId('conversation-search')).toHaveValue('docker');
+    expect(await screen.findByText('docker reset done')).toBeInTheDocument();
+    // Picking a conversation from the list (Find closed first) drops the filter.
+    fireEvent.keyDown(screen.getByTestId('conv-search'), { key: 'Escape' });
+    fireEvent.click(screen.getByTestId('conv-row-orc-dm'));
+    expect(await screen.findByText('approved')).toBeInTheDocument();
+    expect(screen.queryByTestId('conversation-search')).not.toBeInTheDocument();
   });
 
   it('pins and unpins the open conversation from the header ⋯ (works on phones)', async () => {
@@ -665,16 +775,7 @@ describe('LiveTeamChatPage — review fixes', () => {
   });
 });
 
-describe('isConversationUnread / filterMessages', () => {
-  it('compares the last message with the later of "Chat last open" and "this conversation last open"', () => {
-    const t = Date.parse('2026-10-02T10:00:00Z');
-    expect(isConversationUnread('2026-10-02T10:00:01Z', undefined, t)).toBe(true);
-    expect(isConversationUnread('2026-10-02T10:00:01Z', t + 5000, t)).toBe(false);
-    expect(isConversationUnread('2026-10-02T09:00:00Z', undefined, t)).toBe(false);
-    expect(isConversationUnread('2026-10-02T10:00:01Z', undefined, undefined)).toBe(false);
-    expect(isConversationUnread(undefined, undefined, t)).toBe(false);
-  });
-
+describe('filterMessages', () => {
   it('filterMessages ignores case and internal hints', () => {
     const m = (content: string) => ({ id: content, channelId: 'c', seq: 1, author: { role: 'agent' as const, id: 'x' }, content, createdAt: ISO, mentions: [] });
     expect(filterMessages([m('Hello'), m('bye [Thread context file: /tmp/hello]')], 'HELLO').map((x) => x.id)).toEqual(['Hello']);
@@ -778,6 +879,44 @@ describe('LiveTeamChatPage — Crewly channels (agents from any team)', () => {
       await waitFor(() => expect(channelsApi.create).toHaveBeenCalledWith({ name: 'Tech Brief', memberSessions: ['research-ella'] }));
       await waitFor(() => expect(screen.getByTestId('conv-row-huddle-brief')).toHaveAttribute('aria-current', 'page'));
       expect(screen.queryByText('New channel')).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a group chat has Channel settings too: rename and roster go through the chat client (#1400)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ data: { agents: [{ agentSession: 'ops-ana', name: 'Ana', role: 'Ops' }] } }) }));
+    try {
+      const HUDDLE: Channel = {
+        id: 'hud-1',
+        agentSession: '',
+        name: 'Launch crew',
+        createdAt: ISO,
+        type: 'huddle',
+        members: [{ sessionName: 'research-ella' }, { sessionName: 'eng-sam' }],
+      };
+      const { client: base } = makeStubClient([HUDDLE]);
+      const renameChannel = vi.fn().mockResolvedValue({ ...HUDDLE, name: 'Launch crew 2' });
+      const setHuddleMembers = vi.fn().mockResolvedValue({ ...HUDDLE, members: [...HUDDLE.members!, { sessionName: 'ops-ana' }] });
+      const client: ChatApiClient = { ...base, renameChannel, setHuddleMembers };
+      const channelsApi = { list: vi.fn().mockResolvedValue([]), create: vi.fn(), rename: vi.fn(), addMember: vi.fn(), removeMember: vi.fn() };
+      render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[PRODUCT_TEAM]} channelsApi={channelsApi} initialConversationId="hud-1" />);
+      await screen.findByTestId('conv-row-hud-1');
+      fireEvent.click(screen.getByLabelText('Conversation options'));
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Channel settings' }));
+      const modal = await screen.findByTestId('channel-settings-modal');
+      expect(modal).toHaveTextContent('research-ella');
+      expect(modal).toHaveTextContent('eng-sam');
+
+      const input = modal.querySelector('input') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'Launch crew 2' } });
+      fireEvent.click(screen.getByTestId('channel-rename-submit'));
+      await waitFor(() => expect(renameChannel).toHaveBeenCalledWith('hud-1', 'Launch crew 2'));
+      expect(channelsApi.rename).not.toHaveBeenCalled();
+
+      fireEvent.change(await screen.findByTestId('channel-add-select'), { target: { value: 'ops-ana' } });
+      fireEvent.click(screen.getByTestId('channel-add-submit'));
+      await waitFor(() => expect(setHuddleMembers).toHaveBeenCalledWith('hud-1', ['research-ella', 'eng-sam', 'ops-ana']));
     } finally {
       vi.unstubAllGlobals();
     }

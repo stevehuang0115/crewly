@@ -16,6 +16,7 @@ import {
   PR_REVIEW_ACTIONS,
   type PullRequestPayload,
 } from '../../services/pr-review/pr-review.service.js';
+import { isValidRepo, isValidPrNumber } from '../../services/pr-review/pr-review.validation.js';
 
 /** Environment variable name for the GitHub webhook secret */
 const WEBHOOK_SECRET_ENV = 'GITHUB_WEBHOOK_SECRET';
@@ -31,6 +32,8 @@ const WEBHOOK_SECRET_ENV = 'GITHUB_WEBHOOK_SECRET';
  * Required headers:
  * - X-GitHub-Event: must be "pull_request"
  * - X-Hub-Signature-256: HMAC signature of the body
+ *
+ * Refused with 503 when GITHUB_WEBHOOK_SECRET is not set.
  *
  * @param req - Express request with webhook payload
  * @param res - Express response (200 on accept, 400/401/202 on reject)
@@ -51,14 +54,21 @@ export async function handleWebhook(
     }
 
     // Verify webhook signature
+    // No secret means anyone could post a payload: refuse (CREW-967).
     const secret = process.env[WEBHOOK_SECRET_ENV];
-    if (secret) {
-      const signature = req.headers['x-hub-signature-256'] as string | undefined;
-      const rawBody = JSON.stringify(req.body);
-      if (!signature || !verifyWebhookSignature(rawBody, signature, secret)) {
-        res.status(401).json({ success: false, error: 'Invalid webhook signature' });
-        return;
-      }
+    if (!secret) {
+      res.status(503).json({ success: false, error: `Webhook is disabled: ${WEBHOOK_SECRET_ENV} is not set` });
+      return;
+    }
+    const signature = req.headers['x-hub-signature-256'] as string | undefined;
+    // GitHub signs the exact bytes it sent. Re-serialising the parsed body
+    // gives different bytes (spacing, key order, escapes), so verify over the
+    // raw text the app-wide JSON parser captured. Without it we cannot verify,
+    // so refuse rather than fall back to the re-serialised body (CREW-972).
+    const rawBody = (req as Request & { rawBody?: string }).rawBody;
+    if (!signature || typeof rawBody !== 'string' || !verifyWebhookSignature(rawBody, signature, secret)) {
+      res.status(401).json({ success: false, error: 'Invalid webhook signature' });
+      return;
     }
 
     const payload = req.body as PullRequestPayload;
@@ -66,6 +76,11 @@ export async function handleWebhook(
     // Validate required fields
     if (!payload.action || !payload.pull_request || !payload.repository) {
       res.status(400).json({ success: false, error: 'Invalid webhook payload' });
+      return;
+    }
+
+    if (!isValidRepo(payload.repository.full_name) || !isValidPrNumber(payload.pull_request.number)) {
+      res.status(400).json({ success: false, error: 'Invalid repository or pull request number' });
       return;
     }
 
@@ -122,6 +137,13 @@ export async function triggerManualReview(
       res.status(400).json({
         success: false,
         error: 'Missing required fields: repo (string), prNumber (number)',
+      });
+      return;
+    }
+    if (!isValidRepo(repo) || !isValidPrNumber(prNumber)) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid repo (owner/repo) or prNumber (positive integer)',
       });
       return;
     }

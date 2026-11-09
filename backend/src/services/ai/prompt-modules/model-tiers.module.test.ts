@@ -42,4 +42,18 @@ describe('ModelTiersModule', () => {
     expect(text).toContain('bash /skills/team-leader/propose-tier-change/execute.sh');
     expect(text).toContain('The owner approves every change');
   });
+
+  it('tells the lead in auto mode that its changes take effect at once and the owner can undo them', async () => {
+    const text = await mod.build({ ...base, canDelegate: true, teamTiers: { ...tiers, changeMode: 'auto' } });
+    expect(text).toContain('Change mode: **you decide**');
+    expect(text).toContain('It takes effect at once');
+    expect(text).toContain('the owner gets a notice and can undo it');
+    expect(text).not.toContain('The owner approves every change');
+    expect(text.length / 4).toBeLessThan(mod.maxTokens);
+  });
+
+  it('says the owner approves when the mode is approve or unset', async () => {
+    const text = await mod.build({ ...base, canDelegate: true, teamTiers: { ...tiers, changeMode: 'approve' } });
+    expect(text).toContain('Change mode: **the owner approves**');
+  });
 });

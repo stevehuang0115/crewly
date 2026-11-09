@@ -8,7 +8,11 @@
 # Input shape:
 #   { "sessionName": "dev-1", "progress": 50, "current": "Implementing tests",
 #     "workItemId"?: "abc-123",  // optional override
-#     "completed"?: ["t1"], "nextSteps"?: ["t2"], "blockers"?: ["..."] }
+#     "completed"?: ["t1"], "nextSteps"?: ["t2"], "blockers"?: ["..."],
+#     "etaMinutes"?: 20, "taskKind"?: "revision" }
+#
+# `etaMinutes` / `taskKind` feed task timing: the first ETA stated for a
+# WorkItem is compared with how long it actually took when it completes.
 #
 # If `workItemId` is omitted, the agent's currently-running claim is
 # resolved from the pool.
@@ -48,6 +52,18 @@ NOTE=$(printf '%s' "$INPUT" | jq -r '
     (if (.blockers // [] | length) > 0 then "Blockers: \(.blockers | join(", "))" else empty end)
   ] | join("\n"))')
 
-BODY=$(jq -n --arg author "$SESSION_NAME" --arg note "$NOTE" '{author: $author, note: $note}')
+ETA_MINUTES=$(printf '%s' "$INPUT" | jq -r '.etaMinutes // empty')
+TASK_KIND=$(printf '%s' "$INPUT" | jq -r '.taskKind // empty')
+if [ -n "$ETA_MINUTES" ] && ! printf '%s' "$ETA_MINUTES" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
+  error_exit "etaMinutes must be a number of minutes (got: $ETA_MINUTES)"
+fi
+if [ -n "$ETA_MINUTES" ]; then
+  NOTE="${NOTE}"$'\n'"ETA: ${ETA_MINUTES} min${TASK_KIND:+ (${TASK_KIND})}"
+fi
+
+BODY=$(jq -n --arg author "$SESSION_NAME" --arg note "$NOTE" --arg eta "$ETA_MINUTES" --arg kind "$TASK_KIND" \
+  '{author: $author, note: $note}
+   + (if $eta != "" then {etaMinutes: ($eta | tonumber)} else {} end)
+   + (if $kind != "" then {taskKind: $kind} else {} end)')
 
 api_call POST "/task-pool/items/${WORK_ITEM_ID}/notes" "$BODY"

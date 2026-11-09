@@ -9,7 +9,9 @@ import {
   inheritedOrigin,
   isDelegatedInThread,
   isOwnerRequestTooOld,
+  isLeadReport,
   isWorkItemOrigin,
+  leadReportOf,
   originOfWorkItem,
   ownerOriginFromConversation,
   ownerOriginFromThreadKey,
@@ -265,6 +267,9 @@ describe('owner-thread hand-over (crewly#1083)', () => {
   it('isDelegatedInThread: done work keeps the thread open for a grace period only', () => {
     const done = (ago: number) => wi({ target: 'tt-sage', status: 'done', completedAt: new Date(NOW - ago).toISOString(), metadata: { origin: ownerOrigin } });
     expect(isDelegatedInThread([done(10 * 60 * 1000)], 'tt-sage', 'C0THINK', '1790000000.000100', NOW)).toBe(true);
+    // Verified by the lead 45 min ago (crewly#1496, Sage): still the agent's thread.
+    const verified = wi({ target: 'tt-sage', status: 'verified', completedAt: new Date(NOW - 45 * 60 * 1000).toISOString(), metadata: { origin: ownerOrigin } });
+    expect(isDelegatedInThread([verified], 'tt-sage', 'C0THINK', '1790000000.000100', NOW)).toBe(true);
     expect(isDelegatedInThread([done(2 * HOUR)], 'tt-sage', 'C0THINK', '1790000000.000100', NOW)).toBe(false);
     const failed = wi({ target: 'tt-sage', status: 'failed', metadata: { origin: ownerOrigin } });
     expect(isDelegatedInThread([failed], 'tt-sage', 'C0THINK', '1790000000.000100', NOW)).toBe(false);
@@ -277,6 +282,19 @@ describe('owner-thread hand-over (crewly#1083)', () => {
     expect(h?.note).toContain('[SLACK-THREAD:C0THINK:1790000000.000100]');
     expect(h?.note).toContain('reply --work-item wi-42');
     expect(h?.note).toContain('Atlas does not relay it for you.');
+  });
+
+  it('ownerThreadHandover names the Crewly thread id and keeps --work-item on reply only (CREW-957)', () => {
+    const chatOrigin = { ...ownerOrigin, conversationId: '3e4b40f2-conv', chatThreadId: '8b6edf77-thread' };
+    const h = ownerThreadHandover(wi({ id: 'wi-7', target: 'tt-sage', metadata: { origin: chatOrigin } }), 'Ella');
+    expect(h?.note).toContain('reply --work-item wi-7');
+    expect(h?.note).toContain('Crewly thread id is 8b6edf77-thread in conversation 3e4b40f2-conv');
+    expect(h?.note).toContain('never the Slack ts');
+    expect(h?.note).toContain('reply-channel has no --work-item flag');
+    expect(h?.note).not.toMatch(/reply-channel[^.;]*--work-item wi-7/);
+    // No Crewly thread known: still never points --work-item at reply-channel.
+    const bare = ownerThreadHandover(wi({ id: 'wi-8', target: 'tt-sage', metadata: { origin: ownerOrigin } }), 'Ella');
+    expect(bare?.note).toContain('reply-channel does not take it');
   });
 
   it('ownerThreadHandover: nothing for non-owner work, no Slack thread, or self-targeted work', () => {
@@ -299,7 +317,9 @@ describe('agent-initiated delegations (crewly#1357)', () => {
     expect(originOfWorkItem(item)).toEqual(origin);
     // Even a fresh owner turn of the member does not redirect the result to the owner once the item is its current work.
     const dest = planWorkDestination({ workItem: item, ownerOrigin: owner(NOW - 3 * HOUR), now: NOW });
-    expect(dest).toEqual({ kind: 'agent', sessionName: 'ella', reason: expect.stringContaining('delegated by ella on its own initiative') });
+    // The destination names the work item, so the result relay is about this one,
+    // not the delegate's newest item (message-routing audit 2026-10-18).
+    expect(dest).toEqual({ kind: 'agent', sessionName: 'ella', workItemId: 'x-prep', reason: expect.stringContaining('delegated by ella on its own initiative') });
   });
 
   it('a delegation made while answering the owner does NOT inherit that thread: the origin is the delegator (incident 15:47Z)', () => {
@@ -398,5 +418,33 @@ describe('agent-initiated delegations (crewly#1357)', () => {
     expect(await deliverToWorkDestination('lyra', dest, 'x', { ...deps, messageAgent: undefined })).toBeNull();
     // The messenger refusing → the same.
     expect(await deliverToWorkDestination('lyra', dest, 'x', { ...deps, messageAgent: async () => false })).toBeNull();
+  });
+});
+
+describe('lead-reported team work (crewly#1371)', () => {
+  const ownerOrigin = { kind: 'owner', receivedBy: 'orchestrator', slackChannelId: 'D0ORC', threadTs: '1792000000.000100' };
+  const stamp = { lead: 'ella', worker: 'luna', teamId: 'team-mkt', teamName: 'Marketing', slackChannelId: 'C0MKTTEAM', channelName: 'marketing' };
+
+  it('isLeadReport / leadReportOf read only a complete stamp', () => {
+    expect(isLeadReport(stamp)).toBe(true);
+    expect(isLeadReport({ ...stamp, slackChannelId: '' })).toBe(false);
+    expect(isLeadReport(null)).toBe(false);
+    expect(leadReportOf(wi({ metadata: { leadReport: stamp } }))).toEqual(stamp);
+    expect(leadReportOf(wi({ metadata: { leadReport: { lead: 'ella' } } }))).toBeNull();
+    expect(leadReportOf(null)).toBeNull();
+  });
+
+  it('reply --work-item on stamped owner work → a new top-level post in the team channel, not the owner thread', () => {
+    const item = wi({ target: 'ella', metadata: { origin: ownerOrigin, leadReport: stamp } });
+    const d = planWorkDestination({ workItem: item, now: NOW });
+    expect(d).toEqual(expect.objectContaining({ kind: 'new-top-level', teamId: 'team-mkt' }));
+    expect((d as { topic?: string }).topic).toBeUndefined();
+    // Unstamped owner work keeps the owner thread.
+    expect(planWorkDestination({ workItem: wi({ metadata: { origin: ownerOrigin } }), now: NOW }).kind).not.toBe('new-top-level');
+  });
+
+  it('no owner-thread hand-over for stamped work', () => {
+    expect(ownerThreadHandover(wi({ target: 'luna', metadata: { origin: ownerOrigin, leadReport: stamp } }), 'Orc')).toBeNull();
+    expect(ownerThreadHandover(wi({ target: 'luna', metadata: { origin: ownerOrigin } }), 'Orc')).not.toBeNull();
   });
 });

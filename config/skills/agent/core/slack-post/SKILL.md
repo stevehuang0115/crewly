@@ -59,7 +59,7 @@ reply in the same Slack thread.
 
 ```bash
 bash config/skills/agent/core/slack-post/execute.sh \
-  --target "#general" \
+  --target "#general" --new-topic \
   --text "Deploy finished, staging is on 1.4.2."
 ```
 
@@ -71,7 +71,7 @@ bash config/skills/agent/core/slack-post/execute.sh --target "@steve" --text "..
 bash config/skills/agent/core/slack-post/execute.sh --target C0123ABCD --thread 1712345678.000100 --text "..."
 
 # Long text from a file, or piped
-bash .../execute.sh --target "#general" --text-file /tmp/report.md
+bash .../execute.sh --target "#general" --new-topic --text-file /tmp/report.md
 echo "..." | bash .../execute.sh --target "@steve"
 ```
 
@@ -111,7 +111,7 @@ two are told apart. Write ids exactly as Slack shows them.
 | `--text` | `-m` | Message text (required unless piped or `--text-file`) |
 | `--text-file` | | Read the text from a file |
 | `--thread` | `-t` | Slack thread timestamp to reply inside, or the `[SLACK-THREAD:<key>]` key from your prompt |
-| `--new-topic` | | A new top-level message. Use it for scheduled output (a briefing, a triage summary): without it, a post into a conversation where you still owe an answer from the last 30 minutes goes into that thread as the answer |
+| `--new-topic` | | A new top-level message (scheduled output, a briefing, a new subject). **A channel post needs `--thread` or `--new-topic`**: with neither it is refused (409 `thread_required`), never placed by guess. A post with no thread where you still owe an answer is refused too, and the error names that thread — pass it as `--thread` |
 | `--file` | `-f` | Upload a file into the channel/thread right after the text (repeatable, up to 5; relative paths resolve against your project). Sent by your own bot, or the workspace bot with your name when you have none. Output has `filesNotSent` with Slack's error code if one did not go |
 | `--json` | `-j` | Raw JSON payload |
 

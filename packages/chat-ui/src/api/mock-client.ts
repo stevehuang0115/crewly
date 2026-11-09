@@ -28,6 +28,8 @@ import type {
   SendMessageInput,
   AgentPresence,
   ChatWebsocketEvent,
+  ChatSearchHit,
+  ChatSearchOptions,
 } from '../types/chat.types';
 
 const MOCK_USER_ID = 'demo-user';
@@ -95,10 +97,54 @@ export class MockChatApiClient implements ChatApiClient {
       createdAt: new Date().toISOString(),
       presence: 'online',
       type: 'huddle',
+      members: input.memberSessions.map((sessionName) => ({ sessionName })),
     };
     this.channels = [...this.channels, ch];
     this.messages[ch.id] = [];
     return ch;
+  }
+
+  async renameChannel(channelId: string, name: string): Promise<Channel> {
+    const ch = this.channels.find((c) => c.id === channelId);
+    if (!ch) throw new Error('channel not found');
+    const next = { ...ch, name };
+    this.channels = this.channels.map((c) => (c.id === channelId ? next : c));
+    return next;
+  }
+
+  async setHuddleMembers(channelId: string, memberSessions: string[]): Promise<Channel> {
+    const ch = this.channels.find((c) => c.id === channelId);
+    if (!ch) throw new Error('channel not found');
+    const next = { ...ch, members: memberSessions.map((sessionName) => ({ sessionName })) };
+    this.channels = this.channels.map((c) => (c.id === channelId ? next : c));
+    return next;
+  }
+
+  /** In-memory keyword search over every seeded channel (all words, case-insensitive), newest first. */
+  async searchMessages(query: string, opts: ChatSearchOptions = {}): Promise<ChatSearchHit[]> {
+    const terms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
+    if (terms.length === 0) return [];
+    const hits: ChatSearchHit[] = [];
+    for (const ch of this.channels) {
+      if (opts.channel && opts.channel !== ch.id && opts.channel.replace(/^#/, '') !== ch.name.replace(/^#/, '')) continue;
+      for (const m of this.messages[ch.id] ?? []) {
+        const text = m.content.toLowerCase();
+        if (!terms.every((t) => text.includes(t))) continue;
+        hits.push({
+          id: m.id,
+          time: m.createdAt,
+          channelId: ch.id,
+          channel: ch.name,
+          channelType: ch.type ?? 'dm',
+          sender: m.author.name ?? m.author.id,
+          senderType: m.author.role,
+          text: m.content,
+          threadId: m.threadId ?? null,
+        });
+      }
+    }
+    hits.sort((a, b) => b.time.localeCompare(a.time));
+    return hits.slice(0, opts.limit ?? hits.length);
   }
 
   async listMessages(

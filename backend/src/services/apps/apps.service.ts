@@ -207,7 +207,7 @@ export interface AppsServiceDeps {
   thumbnails?: { schedule(appId: string, agent?: string | null): void };
   /** Mirrors an agent's comment reply / resolve / reopen to Slack (never awaited; failures are ignored) */
   commentsSlack?: {
-    agentReplied(appId: string, commentId: string, agent: string, text: string): Promise<void>;
+    agentReplied(appId: string, commentId: string, agent: string, text: string, note?: boolean): Promise<void>;
     statusChanged(appId: string, commentId: string, agent: string, action: 'resolve' | 'reopen'): Promise<void>;
   };
   /** Pushes this instance's agent roster (who the owner can @mention) after a publish */
@@ -1583,15 +1583,16 @@ export class AppsService {
    * @param commentId - Comment id
    * @param text - Reply text
    * @param caller - Agent or owner
+   * @param note - The note a resolve posts first (`--resolve --text`)
    * @returns The thread after
    */
-  async replyComment(appId: unknown, commentId: unknown, text: unknown, caller: AppsCaller): Promise<unknown> {
+  async replyComment(appId: unknown, commentId: unknown, text: unknown, caller: AppsCaller, note = false): Promise<unknown> {
     const path = this.commentPath(appId, commentId);
     if (typeof text !== 'string' || !text.trim()) throw validation('text is required.');
     if (text.length > C.COMMENTS.MAX_BODY_CHARS) throw validation(`A reply is at most ${C.COMMENTS.MAX_BODY_CHARS} characters.`);
     await this.assertCommentAccess(appId as string, path, caller);
     const out = await this.dataRequest('POST', `${path}/replies`, { body: { body: text.trim() }, agent: caller.agentSession });
-    if (caller.agentSession) void this.deps.commentsSlack?.agentReplied(appId as string, commentId as string, caller.agentSession, text.trim()).catch(() => undefined);
+    if (caller.agentSession) void this.deps.commentsSlack?.agentReplied(appId as string, commentId as string, caller.agentSession, text.trim(), note).catch(() => undefined);
     return out;
   }
 

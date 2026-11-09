@@ -3,17 +3,19 @@
  * model tier (strong / mid / weak), crewly#1173.
  *
  * While "Optimize usage" is on, the team lead reviews the team's token usage
- * weekly and proposes tier changes; the owner approves each proposal on a
- * card. Here the owner flips the switch, sets a member's tier directly, or
- * asks for a review now.
+ * weekly. The change mode decides what happens to its changes: "Ask me first"
+ * — the owner approves each proposal on a card; "Lead decides, tells me" —
+ * they apply at once and the owner gets a notice with Undo. Here the owner
+ * flips the switch, picks the mode, sets a member's tier directly, or asks
+ * for a review now.
  *
  * @module components/TeamDetail/TeamModelTiers
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { Button, FormSelect, Toggle } from '@crewly/ui';
+import { Button, FormSelect, SegmentedControl, Toggle } from '@crewly/ui';
 import { apiService } from '../../services/api.service';
-import type { ModelTier, TeamModelTierSettings } from '../../types';
+import type { ModelTier, TeamModelTierSettings, TierChangeMode } from '../../types';
 
 export interface TeamModelTiersProps {
   /** Team id */
@@ -27,6 +29,18 @@ const TIER_OPTIONS: ReadonlyArray<{ value: ModelTier | ''; label: string }> = [
   { value: 'mid', label: 'Mid' },
   { value: 'weak', label: 'Weak' },
 ];
+
+/** Change mode options (owner-facing labels). */
+const MODE_OPTIONS: ReadonlyArray<{ value: TierChangeMode; label: string }> = [
+  { value: 'approve', label: 'Ask me first' },
+  { value: 'auto', label: 'Lead decides, tells me' },
+];
+
+/** What each change mode means, under the control. */
+const MODE_HELP: Record<TierChangeMode, string> = {
+  approve: 'You get one card per review and nothing changes until you tap Apply.',
+  auto: 'Changes apply right away. You get a short notice listing them, with Undo.',
+};
 
 /**
  * A date as a short local day ("Oct 15").
@@ -50,6 +64,7 @@ export function TeamModelTiers({ teamId }: TeamModelTiersProps): JSX.Element | n
   const [data, setData] = useState<TeamModelTierSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const mode: TierChangeMode = data?.tierChangeMode ?? 'approve';
 
   useEffect(() => {
     let cancelled = false;
@@ -67,7 +82,7 @@ export function TeamModelTiers({ teamId }: TeamModelTiersProps): JSX.Element | n
   }, [teamId]);
 
   const save = useCallback(
-    async (patch: { optimizeUsage?: boolean; memberTiers?: Record<string, ModelTier | ''> }) => {
+    async (patch: { optimizeUsage?: boolean; tierChangeMode?: TierChangeMode; memberTiers?: Record<string, ModelTier | ''> }) => {
       setSaving(true);
       setMessage(null);
       try {
@@ -85,11 +100,15 @@ export function TeamModelTiers({ teamId }: TeamModelTiersProps): JSX.Element | n
     setMessage(null);
     try {
       const r = await apiService.startTeamModelTierReview(teamId);
-      setMessage(`Review sent to ${r.lead}. Their proposal comes to you as one card.`);
+      setMessage(
+        mode === 'auto'
+          ? `Review sent to ${r.lead}. You will get a notice of any changes, with Undo.`
+          : `Review sent to ${r.lead}. Their proposal comes to you as one card.`,
+      );
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Could not start the review');
     }
-  }, [teamId]);
+  }, [teamId, mode]);
 
   if (!data) return null;
   const { review } = data;
@@ -100,12 +119,29 @@ export function TeamModelTiers({ teamId }: TeamModelTiersProps): JSX.Element | n
       </h3>
       <Toggle
         label="Optimize usage"
-        description="The team lead reviews token usage weekly and proposes which members move to a cheaper or stronger model. You approve every change."
+        description={
+          mode === 'auto'
+            ? 'The team lead reviews token usage weekly and moves members to a cheaper or stronger model. It tells you every change, and you can undo it.'
+            : 'The team lead reviews token usage weekly and proposes which members move to a cheaper or stronger model. You approve every change.'
+        }
         checked={data.optimizeUsage}
         disabled={saving}
         onChange={(e) => void save({ optimizeUsage: e.target.checked })}
         data-testid="optimize-usage-toggle"
       />
+      <div className="mt-2 flex flex-wrap items-center gap-3 text-[13px]" data-testid="tier-change-mode">
+        <span className="text-text-2">Tier changes</span>
+        <SegmentedControl<TierChangeMode>
+          aria-label="Who changes tiers"
+          size="sm"
+          value={mode}
+          options={MODE_OPTIONS.map((o) => ({ ...o, disabled: saving || !data.optimizeUsage, 'data-testid': `tier-mode-${o.value}` }))}
+          onChange={(v) => {
+            if (v !== mode) void save({ tierChangeMode: v });
+          }}
+        />
+        <span className="text-text-3">{data.optimizeUsage ? MODE_HELP[mode] : 'Turn on Optimize usage to choose.'}</span>
+      </div>
       <ul className="mt-3 flex flex-col gap-2">
         {data.members.map((m) => (
           <li key={m.id} className="flex flex-wrap items-center gap-3 text-[13px]" data-testid={`tier-row-${m.id}`}>

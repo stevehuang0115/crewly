@@ -104,6 +104,10 @@ check "update: path" "$(last .path)" "/api/project-tickets/p1/APP-1/update"
 check "update: body" "$(last '.body | tostring')" '{"priority":"P0","status":"ready","note":"groomed"}'
 run update --project p1 --id APP-1 --defer-until 2026-11-01 >/dev/null
 check "update: defer-until body" "$(last '.body | tostring')" '{"deferUntil":"2026-11-01"}'
+run update --project p1 --id APP-1 --hold "owner: do not merge PR #12" >/dev/null
+check "update: hold body" "$(last '.body | tostring')" '{"hold":"owner: do not merge PR #12"}'
+run update --project p1 --id APP-1 --hold none >/dev/null
+check "update: hold none lifts it" "$(last '.body | tostring')" '{"hold":null}'
 run update --project p1 --id APP-1 --defer-until none >/dev/null
 check "update: defer-until none clears" "$(last '.body | tostring')" '{"deferUntil":null}'
 run autopilot --project p1 --skip-labels "parked,later" >/dev/null

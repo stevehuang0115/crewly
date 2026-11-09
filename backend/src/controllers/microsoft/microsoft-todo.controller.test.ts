@@ -12,6 +12,8 @@ import { setMicrosoftTodoControllerDeps, strList, type MicrosoftTodoControllerDe
 import { MicrosoftError, type MicrosoftTokenService } from '../../services/microsoft/microsoft-token.service.js';
 import type { MicrosoftTodoService } from '../../services/microsoft/microsoft-todo.service.js';
 import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
+import { ConnectorUseAuditService, setConnectorUseAuditForTesting } from '../../services/connector/connector-use-audit.service.js';
+import type { ActivityEntryInput } from '../../services/activity/activity-log.service.js';
 
 jest.mock('../../services/core/logger.service.js', () => ({
   LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }) }) },
@@ -125,6 +127,20 @@ it('strList reads arrays (strings only), comma strings, and nothing', () => {
   expect(strList('a, b')).toEqual(['a', ' b']);
   expect(strList(undefined)).toBeUndefined();
   expect(strList(3)).toBeUndefined();
+});
+
+it('writes a connector.use.refused audit entry when Cloud says the grant is not shared (issue #969)', async () => {
+  const written: ActivityEntryInput[] = [];
+  setConnectorUseAuditForTesting(new ConnectorUseAuditService({ record: (e) => written.push(e) }));
+  try {
+    todo.listLists.mockRejectedValueOnce(new MicrosoftError(403, 'not_permitted', 'not shared'));
+    const res = await request(app).get('/api/microsoft-todo/lists');
+    expect(res.status).toBe(403);
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ action: 'connector.use.refused', target: { type: 'connector', id: 'microsoft-todo' }, after: { reason: 'grant_not_shared' } });
+  } finally {
+    setConnectorUseAuditForTesting(null);
+  }
 });
 
 it('maps not_connected to 409 with the connect URL, rate_limited to 429 + Retry-After, forbidden with a mailbox hint, and unexpected throws to 500', async () => {

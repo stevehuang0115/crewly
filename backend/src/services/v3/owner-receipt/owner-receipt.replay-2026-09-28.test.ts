@@ -7,7 +7,7 @@
  * days close as stale — specs/ticket-calm.md) and checks the receipt that
  * comes out: at most ten lines, Chinese, no ticket numbers, none of his raw
  * words, nothing for unknowns, the right team for each line, misrouted
- * answers left off.
+ * answers left off, and a ticket closed by silence marked as such (#1316).
  */
 
 import * as fs from 'fs';
@@ -16,7 +16,7 @@ import { isValidRequestTransition, type Request, type UpdateRequestInput } from 
 import { TICKET_CONSTANTS } from '../../../constants.js';
 import { answerNeedsOwner, planTicketCleanup, runTicketCleanup, type TicketCleanupStore } from '../ticket-hygiene.js';
 import { buildReceiptData } from './owner-receipt-data.js';
-import { renderReceiptSlack } from './owner-receipt.renderer.js';
+import { renderReceiptSlack, SILENCE_ACCEPTED_MARK } from './owner-receipt.renderer.js';
 import type { ReceiptWindow } from './owner-receipt.types.js';
 
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, 'owner-receipt.replay-2026-09-28.fixture.json'), 'utf8')) as {
@@ -101,6 +101,11 @@ describe('replay — 2026-09-28, the overwhelming receipt, under the new rules',
     // TKT-094 had no assignee; Owen answered it → CE, not Unassigned.
     expect(data.highlights.find((h) => h.ticketId === 'tkt-094')?.team).toBe('CE');
     expect(text).not.toContain('Unassigned');
+    // TKT-090 closed because he said nothing for 24h (#1316): its line says
+    // so; the lines he confirmed or that needed no OK do not.
+    expect(data.highlights.find((h) => h.ticketId === 'tkt-090')?.acceptedBySilence).toBe(true);
+    expect(lines.filter((l) => l.endsWith(`— ${SILENCE_ACCEPTED_MARK}`))).toEqual([expect.stringMatching(/^• Crewly Marketing: 落地页文案改好了/)]);
+    expect(data.highlights.filter((h) => h.ticketId !== 'tkt-090').every((h) => !h.acceptedBySilence)).toBe(true);
 
     // Needs your decision: three questions, then how many more are on the board.
     expect(data.decisions).toHaveLength(3);

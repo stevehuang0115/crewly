@@ -74,8 +74,10 @@ jest.mock('../../services/orc/work-item-destination.wiring.js', () => ({
 // The one reply destination resolver (specs/2026-10-02-harness-owned-routing.md).
 type MockPlace = { slackChannelId: string; threadTs?: string; topic?: string; conversationId?: string } | null;
 const mockResolveSlackPlace = jest.fn<Promise<MockPlace>, [Record<string, unknown>]>(async () => null);
+const mockInternalThread = jest.fn<Promise<string | null>, [unknown]>(async () => null);
 jest.mock('../../services/orc/reply-destination.wiring.js', () => ({
   resolveSlackPlace: (input: Record<string, unknown>) => mockResolveSlackPlace(input),
+  internalCoordinationThread: (id: unknown) => mockInternalThread(id),
   deliverReply: jest.fn(async () => ({ ok: false, error: 'not wired in this test' })),
 }));
 
@@ -807,6 +809,50 @@ describe('Slack Controller', () => {
       }
     });
 
+    describe('no thread named (R3: never a silent top-level post as Crewly)', () => {
+      afterEach(() => {
+        mockResolveSlackPlace.mockReset();
+        mockResolveSlackPlace.mockResolvedValue(null);
+        jest.restoreAllMocks();
+      });
+      const pdf = async () => {
+        const fs = await import('fs/promises');
+        const p = (await import('path')).join((await import('os')).tmpdir(), `r3-${process.pid}.pdf`);
+        await fs.writeFile(p, 'pdf');
+        return p;
+      };
+
+      it('refuses with 409 thread_unresolved when the harness cannot place it', async () => {
+        const slackService = getSlackService();
+        jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+        const upload = jest.spyOn(slackService, 'uploadFile').mockResolvedValue({ fileId: 'F1' });
+        const response = await request(app).post('/api/slack/upload-file').set('X-Agent-Session', 'kai').send({ channelId: 'C0DAILY', filePath: await pdf() });
+        expect(response.status).toBe(409);
+        expect(response.body.code).toBe('thread_unresolved');
+        expect(upload).not.toHaveBeenCalled();
+      });
+
+      it('uses the thread the harness resolves in that channel', async () => {
+        const slackService = getSlackService();
+        jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+        const upload = jest.spyOn(slackService, 'uploadFile').mockResolvedValue({ fileId: 'F1' });
+        mockResolveSlackPlace.mockResolvedValue({ slackChannelId: 'C0DAILY', threadTs: '1792326052.722189' });
+        const response = await request(app).post('/api/slack/upload-file').set('X-Agent-Session', 'kai').send({ channelId: 'C0DAILY', filePath: await pdf() });
+        expect(response.status).toBe(200);
+        expect(upload).toHaveBeenCalledWith(expect.objectContaining({ channelId: 'C0DAILY', threadTs: '1792326052.722189' }));
+      });
+
+      it('a place in another channel is not used', async () => {
+        const slackService = getSlackService();
+        jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+        const upload = jest.spyOn(slackService, 'uploadFile').mockResolvedValue({ fileId: 'F1' });
+        mockResolveSlackPlace.mockResolvedValue({ slackChannelId: 'C0OTHER', threadTs: '1.2' });
+        const response = await request(app).post('/api/slack/upload-file').set('X-Agent-Session', 'kai').send({ channelId: 'C0DAILY', filePath: await pdf() });
+        expect(response.status).toBe(409);
+        expect(upload).not.toHaveBeenCalled();
+      });
+    });
+
     it('should return 422 when Slack API returns a platform error', async () => {
       const fs = await import('fs/promises');
       const path = await import('path');
@@ -824,6 +870,7 @@ describe('Slack Controller', () => {
 
       try {
         const response = await request(app).post('/api/slack/upload-file').send({
+          allowNewThread: true,
           channelId: 'C123',
           filePath: tmpFile,
         });
@@ -849,6 +896,7 @@ describe('Slack Controller', () => {
 
       try {
         const response = await request(app).post('/api/slack/upload-file').send({
+          allowNewThread: true,
           channelId: 'C123',
           filePath: tmpFile,
         });
@@ -873,6 +921,7 @@ describe('Slack Controller', () => {
 
       try {
         const response = await request(app).post('/api/slack/upload-file').send({
+          allowNewThread: true,
           channelId: 'C123',
           filePath: tmpFile,
           title: 'Test PDF',
@@ -1001,6 +1050,7 @@ describe('Slack Controller', () => {
 
       try {
         const response = await request(app).post('/api/slack/upload-file').send({
+          allowNewThread: true,
           channelId: 'C-NOTHREAD',
           filePath: tmpFile,
         });
@@ -1989,6 +2039,46 @@ describe('Slack Controller', () => {
       expect(res.status).toBe(409);
       expect(res.body.error).toMatch(/^File NOT sent/);
       expect(attachFileForAgent).not.toHaveBeenCalled();
+    });
+
+    it('a channel with no thread the harness can stand behind → 409 thread_unresolved, never the channel top level (Kai, 2026-10-18)', async () => {
+      const attachFileForAgent = jest.fn(async () => ({ ok: true, slackChannelId: 'C0DAILY', asAgentBot: false }));
+      mockTeamChannels.current = { attachFileForAgent };
+
+      const res = await request(app).post('/api/slack/attach').set('X-Agent-Session', 'kai').send({ channelId: 'room-daily', filePath: tmpFile });
+
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('thread_unresolved');
+      expect(res.body.error).toMatch(/--work-item/);
+      expect(attachFileForAgent).not.toHaveBeenCalled();
+    });
+
+    it('--work-item names the work the file delivers; the resolver places it in that work\'s thread', async () => {
+      const attachFileForAgent = jest.fn(async () => ({ ok: true, slackChannelId: 'C0DAILY', threadTs: '7.7', asAgentBot: false }));
+      mockTeamChannels.current = { attachFileForAgent, findBySlackChannelId: jest.fn(() => ({ chatChannelId: 'room-daily' })) };
+      mockResolveSlackPlace.mockResolvedValue({ slackChannelId: 'C0DAILY', threadTs: '7.7' });
+
+      const res = await request(app).post('/api/slack/attach').set('X-Agent-Session', 'kai').send({ workItemId: 'wi-393ff4b3', filePath: tmpFile });
+
+      expect(res.status).toBe(200);
+      expect(mockResolveSlackPlace).toHaveBeenCalledWith(expect.objectContaining({ reference: { workItemId: 'wi-393ff4b3' } }));
+      expect(attachFileForAgent).toHaveBeenCalledWith(expect.objectContaining({ chatChannelId: 'room-daily', threadId: 'C0DAILY:7.7', destination: { slackChannelId: 'C0DAILY', threadTs: '7.7' } }));
+    });
+
+    it('a thread of agent-to-agent coordination kept inside Crewly → 409 internal_thread, never the owner\'s Slack thread (Pia → Ella, 2026-10-18)', async () => {
+      const attachFileForAgent = jest.fn(async () => ({ ok: true, slackChannelId: 'C0VIDEO', threadTs: '1792177808.671549', asAgentBot: true }));
+      mockTeamChannels.current = { attachFileForAgent };
+      mockResolveSlackPlace.mockResolvedValue({ slackChannelId: 'C0VIDEO', threadTs: '1792177808.671549', conversationId: 'room-video' });
+      mockInternalThread.mockImplementation(async (id) => (id === 'b4647c3f' ? 'local-only' : null));
+
+      const res = await request(app).post('/api/slack/attach').set('X-Agent-Session', 'pia').send({ channelId: 'room-video', filePath: tmpFile, threadId: 'b4647c3f' });
+      mockInternalThread.mockReset();
+      mockInternalThread.mockResolvedValue(null);
+
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('internal_thread');
+      expect(attachFileForAgent).not.toHaveBeenCalled();
+      expect(mockResolveSlackPlace).not.toHaveBeenCalled();
     });
 
     it('a file in a thread counts as the agent\'s post there (the sentinel settles a promise it kept)', async () => {

@@ -1,8 +1,8 @@
-# Gmail Suite (v1.1.0)
+# Gmail Suite (v1.2.0)
 
 Comprehensive Gmail management skill. Supports listing, reading, searching, and
-sending emails plus label management and read/unread toggling — 9 actions in
-total.
+composing emails (as drafts — nothing is sent; the owner sends it) plus label
+management and read/unread toggling — 9 actions in total.
 
 ## Prerequisites
 
@@ -24,7 +24,7 @@ bash config/skills/agent/marketplace/gmail/execute.sh '{"action":"<one of: list|
 | `list` | — | List messages matching `q`. Defaults to `is:unread in:inbox`, `maxResults=10`. |
 | `search` | — | Alias for `list` (shares code). |
 | `read` | `id` | Fetch full message by ID with decoded headers + body. |
-| `send` | `to`, `subject`, `body` | Send a new email. Optional `cc`, `bcc`. |
+| `send` | `to`, `subject`, `body` | Save a new email as a draft in the account's Drafts; never sends. Optional `cc`, `bcc`. |
 | `list-labels` | — | List all labels on the account (system + user). |
 | `add-label` | `id`, `labelId` or `labelIds` | Add labels to a message. |
 | `remove-label` | `id`, `labelId` or `labelIds` | Remove labels from a message. |
@@ -45,10 +45,10 @@ bash execute.sh '{"action":"search","q":"from:steve subject:report"}'
 # 3. Read a specific message
 bash execute.sh '{"action":"read","id":"18f1a2b3c4d5e6f7"}'
 
-# 4. Send a message
+# 4. Compose a message (saved as a draft; the owner sends it)
 bash execute.sh '{"action":"send","to":"user@example.com","subject":"Hello from Crewly","body":"This is a test email."}'
 
-# 4a. Send with CC + BCC
+# 4a. Compose with CC + BCC
 bash execute.sh '{"action":"send","to":"a@b.com","subject":"Hi","body":"Hello","cc":"c@b.com","bcc":"d@b.com"}'
 ```
 

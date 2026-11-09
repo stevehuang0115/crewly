@@ -18,6 +18,8 @@
 
 import { TURN_TRIGGER_CONSTANTS } from '../../constants.js';
 import { parseInboundOrigin } from '../orc/orc-reply-route.service.js';
+import { parseAgentMessageSender } from '../messaging/agent-message-envelope.js';
+import { parseRouteToken, type MessageRoute } from '../orc/message-route.js';
 
 const C = TURN_TRIGGER_CONSTANTS;
 
@@ -25,6 +27,7 @@ const C = TURN_TRIGGER_CONSTANTS;
 export const TURN_TRIGGER_KINDS = [
 	'owner_message',
 	'agent_message',
+	'delegated_result',
 	'dispatch',
 	'redelivery',
 	'follow_up',
@@ -51,6 +54,16 @@ export interface ClassifiedTrigger {
 	ticket?: string;
 	/** Chat conversation of an owner message (`[CHAT:<id>]`) */
 	conversationId?: string;
+	/** Slack thread key of an owner message (`[SLACK-THREAD:<key>]`), when it names one */
+	thread?: string;
+	/**
+	 * The destination the message carries (message-route.ts): the route token
+	 * of an agent message or a delegated result. The answer to the whole
+	 * chain goes there.
+	 */
+	route?: MessageRoute;
+	/** Sending agent named by the text itself (`[RESULT] From <session>`) */
+	textSender?: string;
 }
 
 /** The trigger of a session's current turn. */
@@ -105,14 +118,29 @@ export function classifyTurnTrigger(text: string): ClassifiedTrigger {
 		}
 		return { triggerKind: 'restart', ...workItemOf(t) };
 	}
+	// Another agent's message opens with its sender header (crewly#1375),
+	// and names the route it carries (message-routing audit 2026-10-18).
+	if (parseAgentMessageSender(t)) {
+		const route = parseRouteToken(firstLine(t));
+		return { triggerKind: 'agent_message', ...(route ? { route } : {}) };
+	}
+	// A delegate's result for work this agent handed out: it names the work
+	// item and the route the delegator was answering when it delegated.
+	const result = RESULT_RE.exec(t);
+	if (result) {
+		const route = parseRouteToken(firstLine(t));
+		const about = /about WorkItem ([A-Za-z0-9_-]{6,})/.exec(firstLine(t))?.[1];
+		return { triggerKind: 'delegated_result', textSender: result[1], ...(about ? { workItemId: about } : {}), ...(route ? { route } : {}) };
+	}
 	// An owner's chat message opens with its routing prefix; checked before
 	// the harness tags, which the owner's own text may quote.
 	const chat = parseInboundOrigin(t);
-	if (chat) return { triggerKind: 'owner_message', conversationId: chat.conversationId };
+	if (chat) return { triggerKind: 'owner_message', conversationId: chat.conversationId, ...(chat.slackThreadKey ? { thread: chat.slackThreadKey } : {}) };
 	if (/^\s*\[(?:OWNER MESSAGE\]|SLACK[A-Z_-]*[:\]]|REMOTE:)/.test(t)) return { triggerKind: 'owner_message' };
 	if (/\[TASK RE-DELIVERY\]|\[CREWLY-DISPATCH\] \d+ WorkItems? (?:is|are) still queued/.test(t)) return { triggerKind: 'redelivery', ...workItemOf(t) };
 	if (/\[TRIGGER WAKE\]|\[SCHEDULED\]|\[SCHEDULED CHECK-IN/.test(t)) return { triggerKind: 'scheduled', ...workItemOf(t) };
-	if (/\[CREWLY-DISPATCH\]|\[TASK ASSIGNMENT\]|^\s*\[TASK\]/.test(t)) return { triggerKind: 'dispatch', ...workItemOf(t) };
+	// A hand-off moves running work (and its origin) to this agent.
+	if (/\[CREWLY-DISPATCH\]|\[TASK ASSIGNMENT\]|^\s*\[TASK\]|^\s*\[TASK HANDOFF\]/.test(t)) return { triggerKind: 'dispatch', ...workItemOf(t) };
 	const followUp = /\[FOLLOW-UP\s+([A-Z][A-Z0-9]*-\d+)?/.exec(t);
 	if (followUp) return { triggerKind: 'follow_up', ...(followUp[1] ? { ticket: followUp[1] } : {}) };
 	if (/\[OWNER REPORT DUE\b/.test(t)) return { triggerKind: 'owner_report_due', ...workItemOf(t) };
@@ -136,6 +164,22 @@ function workItemOf(text: string): { workItemId?: string } {
 	return m ? { workItemId: m[1] } : {};
 }
 
+/** `[RESULT] From <session>` — a delegate's result relayed to its delegator. */
+const RESULT_RE = /^\s*\[RESULT\] From ([a-z0-9][a-z0-9_-]*)/;
+
+/** The first line of a text (where harness headers live). */
+function firstLine(text: string): string {
+	const nl = text.indexOf('\n');
+	return nl < 0 ? text : text.slice(0, nl);
+}
+
+/**
+ * Trigger kinds that name what the agent is answering. A reminder, a status
+ * digest or a system notice arriving later does not change what a bare
+ * reply answers (message-routing audit 2026-10-18).
+ */
+const ROUTED_KINDS: ReadonlySet<TurnTriggerKind> = new Set<TurnTriggerKind>(['owner_message', 'agent_message', 'delegated_result', 'dispatch', 'scheduled']);
+
 /** Recognisable start of a text (whitespace collapsed). */
 function fingerprint(text: string): string {
 	return text.replace(/\s+/g, ' ').trim().slice(0, C.SENDER_MATCH_CHARS);
@@ -153,9 +197,13 @@ interface PendingSend {
  */
 export class TurnTriggerTracker {
 	private readonly current = new Map<string, TurnTrigger>();
+	/** Per session: the latest trigger that names what the agent answers ({@link ROUTED_KINDS}) */
+	private readonly routed = new Map<string, TurnTrigger>();
 	private readonly sends = new Map<string, PendingSend[]>();
 	/** Per session: conversation id → when the owner last wrote to it there */
 	private readonly ownerAsks = new Map<string, Map<string, number>>();
+	/** Per session: its routed agent message that it already answered with send-message (crewly#1381) */
+	private readonly answered = new Map<string, TurnTrigger>();
 
 	/**
 	 * Note that `sender` asked to write `text` to `target` (the terminal write
@@ -187,13 +235,17 @@ export class TurnTriggerTracker {
 	 */
 	noteDelivery(session: string, text: string, opts: { traceId?: string | null; sender?: string | null } = {}, now: number = Date.now()): TurnTrigger {
 		const classified = classifyTurnTrigger(text);
-		const sender = opts.sender || this.takeSender(session, text, now);
-		const base: ClassifiedTrigger = sender && (classified.triggerKind === 'system' || classified.triggerKind === 'status')
+		const { textSender, ...rest } = classified;
+		// The sender header names it even when the send was not noted here (crewly#1375).
+		const sender = opts.sender || this.takeSender(session, text, now) || parseAgentMessageSender(text) || textSender;
+		const base: ClassifiedTrigger = sender && (rest.triggerKind === 'system' || rest.triggerKind === 'status')
 			? { triggerKind: 'agent_message' }
-			: classified;
+			: rest;
 		let trigger: TurnTrigger;
-		if (base.triggerKind === 'agent_message' && sender) {
-			const up = this.trigger(sender, now);
+		if ((base.triggerKind === 'agent_message' || base.triggerKind === 'delegated_result') && sender) {
+			// The sender's turn names the root only while it is recent (an old turn is likely unrelated).
+			const latest = this.trigger(sender, now);
+			const up = latest && now - latest.at <= C.CHAIN_LINK_MS ? latest : null;
 			const via = [...(up?.viaAgents ?? []), sender].filter((s, i, a) => a.indexOf(s) === i).slice(-C.MAX_VIA_AGENTS);
 			trigger = {
 				...base,
@@ -209,6 +261,7 @@ export class TurnTriggerTracker {
 		}
 		if (opts.traceId) trigger.traceId = opts.traceId;
 		if (session) this.current.set(session, trigger);
+		if (session && ROUTED_KINDS.has(trigger.triggerKind)) this.routed.set(session, trigger);
 		if (session && trigger.triggerKind === 'owner_message' && trigger.conversationId) {
 			const asks = this.ownerAsks.get(session) ?? new Map<string, number>();
 			asks.set(trigger.conversationId, now);
@@ -233,6 +286,74 @@ export class TurnTriggerTracker {
 	}
 
 	/**
+	 * Whether the owner wrote to `session` in `conversationId` within `windowMs`.
+	 *
+	 * @param session - Agent session
+	 * @param conversationId - Conversation
+	 * @param windowMs - How far back
+	 * @param now - Clock (epoch ms)
+	 * @returns True when the owner asked there within the window
+	 */
+	ownerAskedWithin(session: string, conversationId: string, windowMs: number, now: number = Date.now()): boolean {
+		const at = this.ownerAsks.get(session)?.get(conversationId);
+		return at !== undefined && now - at <= windowMs;
+	}
+
+	/**
+	 * The latest trigger of `session` that names what it is answering (an
+	 * owner message, an agent message, a delegated result, a dispatch), while
+	 * fresh. Reminders and notices delivered since do not replace it.
+	 *
+	 * @param session - Agent session
+	 * @param now - Clock (epoch ms)
+	 * @returns The trigger, or null
+	 */
+	routedTrigger(session: string, now: number = Date.now()): TurnTrigger | null {
+		const t = session ? this.routed.get(session) : undefined;
+		if (!t) return null;
+		if (now - t.at > C.FRESH_MS) {
+			this.routed.delete(session);
+			return null;
+		}
+		return t;
+	}
+
+	/**
+	 * `session` wrote to `recipient` (send-message / deliver). When its routed
+	 * input is `recipient`'s agent message, that message is answered: a later
+	 * bare `reply` no longer goes back to `recipient` (crewly#1381 item 3).
+	 * The route it carried still travels with the agent's messages
+	 * ({@link routedTrigger} is unchanged).
+	 *
+	 * @param session - Agent that wrote
+	 * @param recipient - Agent it wrote to
+	 * @param now - Clock (epoch ms)
+	 */
+	noteAnsweredAgent(session: string, recipient: string, now: number = Date.now()): void {
+		if (!session || !recipient || session === recipient) return;
+		const t = this.routedTrigger(session, now);
+		if (t?.triggerKind === 'agent_message' && t.sender === recipient) this.answered.set(session, t);
+	}
+
+	/**
+	 * {@link routedTrigger}, unless it is an agent message the session already
+	 * answered with send-message ({@link noteAnsweredAgent}): what a bare
+	 * `reply` still answers.
+	 *
+	 * @param session - Agent session
+	 * @param now - Clock (epoch ms)
+	 * @returns The trigger, or null
+	 */
+	openRoutedTrigger(session: string, now: number = Date.now()): TurnTrigger | null {
+		const t = this.routedTrigger(session, now);
+		if (!t) {
+			this.answered.delete(session);
+			return null;
+		}
+		return this.answered.get(session) === t ? null : t;
+	}
+
+	/**
 	 * The trigger of `session`'s current turn, while fresh.
 	 *
 	 * @param session - Agent session
@@ -252,8 +373,10 @@ export class TurnTriggerTracker {
 	/** Forget everything (tests). */
 	reset(): void {
 		this.current.clear();
+		this.routed.clear();
 		this.sends.clear();
 		this.ownerAsks.clear();
+		this.answered.clear();
 	}
 
 	/**

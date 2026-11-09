@@ -11,7 +11,7 @@
 
 import { EventEmitter } from 'events';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { EVENT_BUS_CONSTANTS } from '../../constants.js';
+import { EVENT_BUS_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { formatError } from '../../utils/format-error.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import type { SlackThreadStoreService } from '../slack/slack-thread-store.service.js';
@@ -283,6 +283,7 @@ export class EventBusService extends EventEmitter {
       sessionName: event.sessionName,
       ...(event.workItemId ? { workItemId: event.workItemId } : {}),
       ...(event.target ? { target: event.target } : {}),
+      ...(event.threadId ? { threadId: event.threadId } : {}),
     });
     // The full event, under the name index.ts and InFlightTurnTracker
     // subscribe to. Nothing ever emitted it, so those listeners never ran:
@@ -758,6 +759,10 @@ export class EventBusService extends EventEmitter {
     let baseMessage = event.workItemId && !event.sessionName
       ? `${prefix} ${formatWorkItemEventBody(event)}`
       : `${prefix} Agent "${event.memberName}" (session: ${event.sessionName}) is now ${event.newValue} (was: ${event.previousValue}). Team: ${event.teamName}.`;
+    // crewly#1371: a line meant for the orchestrator only (the team lead reports this work).
+    if (event.orchestratorNote && sub.subscriberSession === ORCHESTRATOR_SESSION_NAME) {
+      baseMessage += ` ${event.orchestratorNote}`;
+    }
 
     // Enrich with Slack thread file paths so orchestrator can route notifications
     if (this.slackThreadStore) {

@@ -12,7 +12,7 @@
  */
 
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
-import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, TUI_INPUT_GUARD } from '../../constants.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 import { TERMINAL_WORK_ITEM_STATUSES, type WorkItem } from '../../types/v2/work-item.types.js';
 import { internalAgentHeaders } from '../core/owner-auth.service.js';
@@ -45,8 +45,8 @@ const SERVICE_NAME = 'TLAutoVerify';
 
 /** Loopback API base (same one workitem-dispatch.subscriber.ts uses). */
 
-/** Timeout for the direct terminal write to the TL session. */
-const TL_WRITE_TIMEOUT_MS = 5_000;
+/** Timeout for the direct terminal write to the TL session; outlives the guarded paste (#1431). */
+const TL_WRITE_TIMEOUT_MS = TUI_INPUT_GUARD.WRITE_CLIENT_TIMEOUT_MS;
 
 /**
  * When the worker's task was just reported done, the bridge's `Verify:` item

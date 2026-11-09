@@ -21,6 +21,7 @@ import { isHiddenFromDefaultRecall } from './role-knowledge-eligibility.js';
 import { isTaskCompletionLog } from './task-log-filter.js';
 import { isNoiseLogBody } from '../wiki/wiki-log-entries.js';
 import { MEMORY_CONSTANTS } from '../../constants.js';
+import { getPrivateSourceTracker } from '../people/private-source.service.js';
 import type {
   RoleKnowledgeEntry,
   RoleKnowledgeCategory,
@@ -31,6 +32,7 @@ import type {
   TaskHistoryEntry,
 } from '../../types/memory.types.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
+import { viewerPersonOf } from '../people/acting-for.service.js';
 
 /**
  * Categories for the unified remember operation
@@ -647,17 +649,28 @@ export class MemoryService implements IMemoryService {
         vaults: vaultPaths.map((vaultPath) => ({ vaultPath, label: this.wikiVaultLabel(vaultPath) })),
         query: context,
         viewerRole: ledger?.viewerRole,
+        viewerPerson: viewerPersonOf(ledger?.agent),
       });
       if (!outcome.ok) return [];
 
       const top = outcome.hits.slice(0, limit);
       // Usage ledger: recall is the most common way a vault gets read, so
-      // it must count — per vault, with the pages it surfaced (or a miss).
+      // it must count — per vault that surfaced a page. A recall searches
+      // every vault at once, so "nothing from this vault" is not a miss of
+      // this vault; the miss is recorded once, in the vault that owns the
+      // question (the project vault, or the global vault for a global
+      // recall), only when no vault answered (#914: before this, one
+      // unanswered global recall became a "gap" in every team vault).
       if (ledger) {
         const usage = WikiUsageService.getInstance();
-        for (const vaultPath of vaultPaths) {
-          const hits = top.filter((h) => h.vaultPath === vaultPath).map((h) => h.relativePath);
-          void usage.record(vaultPath, { via: 'recall', agent: ledger.agent, query: context, hits, miss: hits.length === 0 });
+        if (top.length === 0) {
+          const owner = this.recallMissOwner(vaultPaths);
+          if (owner) void usage.record(owner, { via: 'recall', agent: ledger.agent, query: context, hits: [], miss: true });
+        } else {
+          for (const vaultPath of vaultPaths) {
+            const hits = top.filter((h) => h.vaultPath === vaultPath).map((h) => h.relativePath);
+            if (hits.length > 0) void usage.record(vaultPath, { via: 'recall', agent: ledger.agent, query: context, hits, miss: false });
+          }
         }
       }
 
@@ -701,6 +714,22 @@ export class MemoryService implements IMemoryService {
    * @param vaultPath - Absolute vault path.
    * @returns A short label used to prefix recall hits.
    */
+  /**
+   * The vault that records an unanswered recall: the global vault when it
+   * was searched (a global recall), else the single project vault. Team
+   * vaults never own a recall miss — they are only asked directly through
+   * wiki-query.
+   *
+   * @param vaultPaths - Vaults the recall searched
+   * @returns Vault root, or null when none qualifies
+   */
+  private recallMissOwner(vaultPaths: readonly string[]): string | null {
+    const global = vaultPaths.find((v) => this.wikiVaultLabel(v) === 'global');
+    if (global) return global;
+    const project = vaultPaths.find((v) => !this.wikiVaultLabel(v).startsWith('team:'));
+    return project ?? null;
+  }
+
   private wikiVaultLabel(vaultPath: string): string {
     if (vaultPath.endsWith('global-wiki')) return 'global';
     const teamMatch = vaultPath.match(/teams[/\\]([^/\\]+)[/\\]wiki$/);
@@ -870,9 +899,15 @@ export class MemoryService implements IMemoryService {
       throw new Error('projectPath is required for project scope');
     }
 
+    // #969: an entry written shortly after the session read a person's connector
+    // grant is that person's data — readable by them and the owner only.
+    const people = getPrivateSourceTracker().recentPeople(params.agentId);
+    const visibleToPeople = people.length > 0 ? people : undefined;
+
     switch (params.category) {
       case 'pattern':
         return this.projectMemory.addPattern(params.projectPath, {
+          visibleToPeople,
           category: params.metadata?.patternCategory || 'other',
           // P0-SEV defense-in-depth: derive title from content when caller omits
           // metadata.title, instead of a static default that collides on every call.
@@ -888,6 +923,7 @@ export class MemoryService implements IMemoryService {
 
       case 'decision':
         return this.projectMemory.addDecision(params.projectPath, {
+          visibleToPeople,
           title: params.metadata?.title || this.deriveTitleFromContent(params.content, 'Untitled Decision'),
           decision: params.content,
           rationale: params.metadata?.rationale || '',
@@ -898,6 +934,7 @@ export class MemoryService implements IMemoryService {
 
       case 'gotcha':
         return this.projectMemory.addGotcha(params.projectPath, {
+          visibleToPeople,
           title: params.metadata?.title || this.deriveTitleFromContent(params.content, 'Gotcha'),
           problem: params.content,
           solution: params.metadata?.solution || '',
@@ -920,6 +957,7 @@ export class MemoryService implements IMemoryService {
 
       case 'user_preference':
         return this.projectMemory.addPattern(params.projectPath, {
+          visibleToPeople,
           category: 'user_preference',
           title: params.metadata?.title || this.deriveTitleFromContent(params.content, 'User Preference'),
           description: params.content,
@@ -997,9 +1035,11 @@ export class MemoryService implements IMemoryService {
     // Fetch from project memory
     if ((params.scope === 'project' || params.scope === 'both') && params.projectPath) {
       promises.push(
-        this.projectMemory.searchAll(params.projectPath, params.context).then((searchResults) => {
-          result.projectMemories = this.formatSearchResults(searchResults, params.limit);
-        }),
+        this.projectMemory
+          .searchAll(params.projectPath, params.context, { person: viewerPersonOf(params.agentId) })
+          .then((searchResults) => {
+            result.projectMemories = this.formatSearchResults(searchResults, params.limit);
+          }),
       );
     }
 

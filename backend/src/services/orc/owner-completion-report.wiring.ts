@@ -164,14 +164,16 @@ export async function postReportFallback(place: ReportPlace, agentSession: strin
  */
 export function onChatRow(
   service: Pick<OwnerCompletionReportService, 'noteChatAnswer' | 'noteSlackAnswer'>,
-  message: Pick<ChatMessageDTO, 'channelId' | 'senderType' | 'threadId' | 'metadata'>,
+  message: Pick<ChatMessageDTO, 'channelId' | 'senderType' | 'threadId' | 'metadata'> & Partial<Pick<ChatMessageDTO, 'senderId'>>,
 ): void {
   if (message.senderType !== 'agent') return;
   const meta = message.metadata ?? {};
   if (meta[SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY] === true) return;
-  service.noteChatAnswer(message.channelId, message.threadId);
+  // The sender is the agent's session: who posted matters for crewly#1376.
+  const author = message.senderId || undefined;
+  service.noteChatAnswer(message.channelId, message.threadId, author);
   const key = parseSlackThreadKey(meta[SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]);
-  if (key) service.noteSlackAnswer(key.slackChannelId, key.threadTs);
+  if (key) service.noteSlackAnswer(key.slackChannelId, key.threadTs, author);
 }
 
 /**
@@ -199,5 +201,22 @@ export function onSlackInboundPost(
   message: { channelId: string; threadTs?: string; authorAgentSession?: string },
 ): void {
   if (!message.authorAgentSession || !message.channelId) return;
-  service.noteSlackAnswer(message.channelId, message.threadTs);
+  service.noteSlackAnswer(message.channelId, message.threadTs, message.authorAgentSession);
+}
+
+/**
+ * Feed an agent's Slack post made on this machine with its author: reply-chat,
+ * the agent-post skill (as the agent's bot or as the shared Crewly app on its
+ * behalf) and file uploads all report it (`reportOwnerThreadAgentPost`). A
+ * teammate's post is the report for crewly#1376. Interim lines are not answers.
+ *
+ * @param service - The report service
+ * @param post - Who posted where
+ */
+export function onAgentSlackPost(
+  service: Pick<OwnerCompletionReportService, 'noteSlackAnswer'>,
+  post: { agent: string; slackChannelId: string; threadTs?: string; interim?: boolean },
+): void {
+  if (post.interim || !post.agent || !post.slackChannelId) return;
+  service.noteSlackAnswer(post.slackChannelId, post.threadTs, post.agent);
 }

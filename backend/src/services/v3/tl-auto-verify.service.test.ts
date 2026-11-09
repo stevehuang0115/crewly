@@ -151,7 +151,7 @@ describe('TLAutoVerifyService delivery routing', () => {
 
     expect(mockAxiosPost).toHaveBeenCalledTimes(1);
     const [url, body, opts] = mockAxiosPost.mock.calls[0];
-    expect(url).toBe('http://localhost:8787/api/terminal/tl-session/write');
+    expect(url).toBe('http://127.0.0.1:8787/api/terminal/tl-session/write');
     expect(body).toEqual({ data: expect.stringContaining('[AUTO-VERIFY] Worker worker-session'), mode: 'message' });
     expect(body.data).toContain('Task ID: task-42');
     expect(opts.headers['X-Agent-Session']).toBeDefined();

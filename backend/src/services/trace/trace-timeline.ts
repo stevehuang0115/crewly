@@ -39,6 +39,7 @@ export interface TimelineGroup {
 /** How a delivery is named in a group title. */
 const DELIVERY_TITLES: Record<string, string> = {
 	owner_message: 'Owner',
+	agent_message: 'Agent',
 	dispatch: 'Work item',
 	redelivery: 'Work item (redelivered)',
 	status: 'Status report',

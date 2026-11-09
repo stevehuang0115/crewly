@@ -206,10 +206,15 @@ export interface Team {
 /** Model tiers, strongest first (crewly#1173). */
 export type ModelTier = 'strong' | 'mid' | 'weak';
 
+/** Who changes a team's tiers: `approve` — the owner approves each change; `auto` — the lead decides and tells the owner (crewly#1173). */
+export type TierChangeMode = 'approve' | 'auto';
+
 /** GET /api/teams/:id/model-tiers. */
 export interface TeamModelTierSettings {
   teamId: string;
   optimizeUsage: boolean;
+  /** Absent on older backends (= approve) */
+  tierChangeMode?: TierChangeMode;
   tierModels: Record<string, Partial<Record<ModelTier, string>>>;
   routingRules: string[];
   tierMaps: Record<string, Partial<Record<ModelTier, string>>>;

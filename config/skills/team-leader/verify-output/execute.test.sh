@@ -28,6 +28,9 @@ case "$url" in
   */api/task-pool/items/wi-ev)
     printf '%s\n200' '{"success":true,"data":{"id":"wi-ev","status":"done_by_worker","output":{"summary":"Report written","evidence":[{"type":"artifact","path":"/proj/report.md"},{"type":"command","command":"npm test","exitCode":0}]}}}'
     ;;
+  */api/task-pool/items/wi-rec)
+    printf '%s\n200' '{"success":true,"data":{"id":"wi-rec","status":"done_by_worker","output":{"summary":"Done","evidence":[{"type":"artifact","path":"/proj/a.md"}],"decisions":["Kept the v1 schema"],"assumptions":["Relay is on 1.5.24"]}}}'
+    ;;
   */api/task-pool/items/wi-noev)
     printf '%s\n200' '{"success":true,"data":{"id":"wi-noev","status":"done_by_worker","output":{"summary":"Trust me"}}}'
     ;;
@@ -128,6 +131,12 @@ assert_json_field "evidence is the first key of the verdict" \
   '{"workItemId":"wi-ev"}' 'keys_unsorted[0]' 'evidence'
 assert_json_field "each evidence entry carries its index for the checks (#1314)" \
   '{"workItemId":"wi-ev"}' '.evidence[1].index' '1'
+assert_json_field "the worker's decision record is surfaced as record (#875)" \
+  '{"workItemId":"wi-rec"}' '.record.decisions[0]' 'Kept the v1 schema'
+assert_json_field "record omits fields the worker did not send (#875)" \
+  '{"workItemId":"wi-rec"}' '.record | has("notTaken")' 'false'
+assert_json_field "no record -> record is null (#875)" \
+  '{"workItemId":"wi-ev"}' '.record' 'null'
 assert_json_field "evidence block is surfaced from output.evidence" \
   '{"workItemId":"wi-ev"}' '[.evidence[].type] | join(",")' 'artifact,command'
 assert_json_field "no evidence warning when evidence is present" \

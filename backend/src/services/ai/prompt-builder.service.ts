@@ -10,6 +10,7 @@ import type { ModuleConfig, OrgRole } from './prompt-modules/prompt-module.inter
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
 import { canMemberDelegate, getLeadSubordinates, isTeamLead } from '../../utils/team.utils.js';
 import { effectiveMemberModelId } from '../../utils/member-default-model.utils.js';
+import { tierChangeModeOf } from '../../utils/model-tier.utils.js';
 import { RUNTIME_TYPES } from '../../constants.js';
 
 /**
@@ -247,6 +248,7 @@ export function buildModuleConfigFromTeamMember(
 			? {
 					teamTiers: {
 						optimizeUsage: true,
+						changeMode: tierChangeModeOf(team),
 						members: (team.members ?? [])
 							.filter((m) => m.role !== 'orchestrator')
 							.map((m) => {
@@ -1269,28 +1271,33 @@ Action over deliberation — a wrong tool call is better than no tool call.`);
 
 **IMMEDIATELY after registering**, you MUST execute the following context recovery steps before saying "Ready" or accepting any tasks. This ensures you recover context from previous sessions and avoid repeating work or missing ongoing tasks.
 
-### Step 1: Recall previous knowledge
+### Step 1: Load your context (one memory search)
+\`get-my-context\` runs your memory recall for you and adds goals, focus, today's log,
+learnings and your own task timings. Do **not** run \`recall\` separately at startup —
+that is the same search twice (#857). If a \`## Standing Answers\` section appears above,
+it already answers the recurring questions (decisions in force, open gotchas, your
+unfinished work); this step fills in the rest.
 \`\`\`bash
-bash ${this.agentSkillsPath}/core/recall/execute.sh '{"agentId":"${sessionName}","context":"${role} session startup, recent tasks, unfinished work, blockers, key decisions","projectPath":"${projectPath}"}'
+bash ${this.agentSkillsPath}/core/get-my-context/execute.sh '{"agentId":"${sessionName}","agentRole":"${role}","projectPath":"${projectPath}","context":"${role} session startup, recent tasks, unfinished work, blockers, key decisions"}'
 \`\`\`
 
-### Step 1.5: Read your active work (authoritative state)
+### Step 2: Read your active work (authoritative state)
 Your current Requests + WorkItems are in the \`## Your Active Work\` section above
 (and, when there is one, your session memory is under \`## Your Previous Knowledge\`).
 That section is the source of truth. **State always wins over memory.** If a row
 carries a \`(memory: ...)\` annotation, the state value is what you should act on;
 the memory note flags a divergence to investigate, not to override the state.
 
+It already lists every task of yours that is still open — do not fetch your task
+history (\`get-my-tasks\`) on top of it. For a task you were in the middle of,
+\`read-task\` shows its workingNotes (your hypothesis, what you tried, where you left
+off): resume from there, don't restart from scratch.
+
 Run this skill now if that section says it was **not injected**, and mid-session if
 the briefing was truncated (\`... and X more\` marker) or stale (>5 minutes since
 registration, especially after long-running tasks):
 \`\`\`bash
 bash ${this.agentSkillsPath}/core/get-my-active-work/execute.sh --session ${sessionName} --role ${role}
-\`\`\`
-
-### Step 2: Load your full context
-\`\`\`bash
-bash ${this.agentSkillsPath}/core/get-my-context/execute.sh '{"agentId":"${sessionName}","agentRole":"${role}","projectPath":"${projectPath}"}'
 \`\`\`
 
 ### Step 3: Register yourself as active
@@ -1300,7 +1307,7 @@ bash ${this.agentSkillsPath}/core/register-self/execute.sh '{"sessionName":"${se
 \`\`\`
 
 ### Step 4: Assess and report
-After reviewing the results from Steps 1-3:
+After reviewing the results from Steps 1-2:
 1. **Check for unfinished work** — If you find tasks that were in progress but not completed, note them
 2. **Check for pending blockers** — If previous sessions recorded blockers, note them
 3. **Report status** — Include a brief summary of recovered context in your first status message

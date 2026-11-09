@@ -17,7 +17,8 @@ import {
   setSlackCloudConfigService,
 } from './slack-cloud-config.service.js';
 import type { SlackCloudConfig } from '../../types/slack.types.js';
-import { SLACK_CLOUD_CONSTANTS } from '../../constants.js';
+import { NETWORK_STATUS_CONSTANTS, SLACK_CLOUD_CONSTANTS } from '../../constants.js';
+import { NetworkStatusService } from '../core/network-status.service.js';
 
 jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
@@ -81,6 +82,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   setSlackCloudConfigService(null);
+  NetworkStatusService.resetInstance();
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
@@ -133,6 +135,24 @@ describe('refresh + cache', () => {
     expect(onDisk.version).toBe(1);
     expect(onDisk.config).toEqual(CONFIG);
     expect(service.getFetchedAt()).toBe(new Date(1_800_000_000_000).toISOString());
+    expect(service.getLastError()).toBeNull();
+  });
+
+  it('feeds the offline breaker from DNS failures and keeps the cached copy (#1463)', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: CONFIG }));
+    const service = makeService();
+    await service.refresh();
+
+    const cause = Object.assign(new Error('getaddrinfo ENOTFOUND api.crewlyai.com'), { code: 'ENOTFOUND' });
+    fetchMock.mockRejectedValue(Object.assign(new TypeError('fetch failed'), { cause }));
+    for (let i = 0; i < NETWORK_STATUS_CONSTANTS.OFFLINE_AFTER_FAILURES; i++) {
+      expect(await service.refresh()).toEqual(CONFIG);
+    }
+    expect(NetworkStatusService.getInstance().isOffline()).toBe(true);
+
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: CONFIG }));
+    await service.refresh();
+    expect(NetworkStatusService.getInstance().isOffline()).toBe(false);
     expect(service.getLastError()).toBeNull();
   });
 

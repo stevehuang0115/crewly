@@ -15,7 +15,7 @@
  * @module services/slack/room-responder
  */
 
-import { OWNER_EVIDENCE_METADATA, ROOM_RESPONDER_CONSTANTS, SLACK_TYPING_CONSTANTS } from '../../constants.js';
+import { CREWLY_APPS_CONSTANTS, OWNER_EVIDENCE_METADATA, ROOM_RESPONDER_CONSTANTS, SLACK_TYPING_CONSTANTS } from '../../constants.js';
 import type { SlackContextMessage, SlackThreadContext } from '../../types/slack.types.js';
 import type { ChatMessageDTO } from '../chat-v2/types.js';
 
@@ -160,6 +160,39 @@ export interface PriorRoomAnswer {
   excerpt: string;
   /** Its chat message id */
   messageId: string;
+  /** False when its writer was not a chosen responder (another agent already answered, crewly#1376) */
+  byResponder?: boolean;
+  /** The posting agent's own answer, written with app-comments and shown in this thread */
+  own?: boolean;
+}
+
+/**
+ * The posting agent's own app-comments reply to the owner's latest message in
+ * this thread. Such a reply is written into the room thread (and its Slack
+ * thread) for it, so a `reply` after it repeats the answer: Lyra's #16 answer
+ * showed up twice plus a resolve line on 2026-10-19.
+ *
+ * @param thread - The thread's rows, oldest first
+ * @param session - The agent about to post
+ * @param name - Its display name, when known
+ * @returns The answer already there, or null
+ */
+export function ownAppCommentAnswer(thread: readonly ChatMessageDTO[], session: string, name?: string): PriorRoomAnswer | null {
+  let ownerIdx = -1;
+  for (let i = thread.length - 1; i >= 0; i--) {
+    if (thread[i].senderType === 'user' && !agentWriterOf(thread[i])) {
+      ownerIdx = i;
+      break;
+    }
+  }
+  if (ownerIdx < 0) return null;
+  const prior = thread
+    .slice(ownerIdx + 1)
+    .find((m) => agentWriterOf(m) === session && m.metadata?.source === CREWLY_APPS_CONSTANTS.COMMENTS.ROOM_SOURCE && !!m.metadata?.appComment && !!m.content.trim());
+  if (!prior) return null;
+  const flat = prior.content.replace(/\s+/g, ' ').trim();
+  const max = ROOM_RESPONDER_CONSTANTS.GATE_EXCERPT_CHARS;
+  return { by: name ?? session, bySession: session, excerpt: flat.length > max ? `${flat.slice(0, max)}…` : flat, messageId: prior.id, own: true };
 }
 
 /**
@@ -206,6 +239,21 @@ function addresses(m: ChatMessageDTO, session: string, name: string | undefined)
 }
 
 /**
+ * When the owner last wrote in a room thread.
+ *
+ * @param thread - The thread's rows, oldest first
+ * @returns Epoch ms of the owner's newest row, or null when the owner never wrote in it
+ */
+export function lastOwnerMessageAt(thread: readonly ChatMessageDTO[]): number | null {
+  let latest: number | null = null;
+  for (const m of thread) {
+    if (m.senderType !== 'user' || agentWriterOf(m)) continue;
+    if (latest === null || m.createdAt > latest) latest = m.createdAt;
+  }
+  return latest;
+}
+
+/**
  * The reply gate (specs/2026-10-03-one-responder-per-message.md §2). A post
  * is held only when ALL of these hold:
  *
@@ -213,8 +261,10 @@ function addresses(m: ChatMessageDTO, session: string, name: string | undefined)
  *   the agent posting is not one of them nor @'d in it;
  * - the agent owes no earlier owner message in this thread (it was the
  *   responder for, or @'d in, one it has not posted after);
- * - one of those responders already answered (an interim note is not an
- *   answer), and that answer does not @ the agent posting.
+ * - an agent already answered (an interim note is not an answer) — one of
+ *   those responders, else any other agent of the room (crewly#1376: three
+ *   agents answered one 「你再发一次」) — and that answer does not @ the
+ *   agent posting.
  *
  * @param thread - The thread's rows, oldest first
  * @param session - The agent about to post
@@ -249,22 +299,25 @@ export function findPriorRoomAnswer(
     if (!answered) return null;
   }
   const name = nameFor?.(session);
-  for (let j = ownerIdx + 1; j < thread.length; j++) {
-    const m = thread[j];
+  const answers = thread.slice(ownerIdx + 1).filter((m) => {
     const writer = agentWriterOf(m);
-    if (!writer || writer === session || !chosen.includes(writer) || !isAnswer(m)) continue;
-    if (addresses(m, session, name)) return null;
-    const flat = m.content.replace(/\s+/g, ' ').trim();
-    const max = ROOM_RESPONDER_CONSTANTS.GATE_EXCERPT_CHARS;
-    const by = m.senderType === 'agent' ? nameFor?.(writer) ?? writer : m.senderId.replace(/\s*\(agent\)$/, '');
-    return {
-      by,
-      bySession: writer,
-      excerpt: flat.length > max ? `${flat.slice(0, max)}…` : flat,
-      messageId: m.id,
-    };
-  }
-  return null;
+    return !!writer && writer !== session && isAnswer(m);
+  });
+  // An answer that asks this agent in means it is not a repeat.
+  if (answers.some((m) => addresses(m, session, name))) return null;
+  const prior = answers.find((m) => chosen.includes(agentWriterOf(m)!)) ?? answers[0];
+  if (!prior) return null;
+  const writer = agentWriterOf(prior)!;
+  const flat = prior.content.replace(/\s+/g, ' ').trim();
+  const max = ROOM_RESPONDER_CONSTANTS.GATE_EXCERPT_CHARS;
+  const by = prior.senderType === 'agent' ? nameFor?.(writer) ?? writer : prior.senderId.replace(/\s*\(agent\)$/, '');
+  return {
+    by,
+    bySession: writer,
+    excerpt: flat.length > max ? `${flat.slice(0, max)}…` : flat,
+    messageId: prior.id,
+    ...(chosen.includes(writer) ? {} : { byResponder: false }),
+  };
 }
 
 /**
@@ -274,9 +327,16 @@ export function findPriorRoomAnswer(
  * @param prior - The answer already there
  * @returns English harness text
  */
-export function heldReplyMessage(prior: Pick<PriorRoomAnswer, 'by' | 'excerpt'>): string {
+export function heldReplyMessage(prior: Pick<PriorRoomAnswer, 'by' | 'excerpt' | 'byResponder' | 'own'>): string {
+  if (prior.own) {
+    return (
+      `Held, not posted: you already answered the owner's latest message in this thread with app-comments (shown here): "${prior.excerpt}". ` +
+      'Post with --adds-new only if you have something new.'
+    );
+  }
+  const who = prior.byResponder === false ? `${prior.by} already replied to the owner's latest message in this thread` : `${prior.by}, the agent answering the owner's latest message in this thread, already replied`;
   return (
-    `Held, not posted: ${prior.by}, the agent answering the owner's latest message in this thread, already replied: "${prior.excerpt}". ` +
+    `Held, not posted: ${who}: "${prior.excerpt}". ` +
     'Post with --adds-new if you have something new, or if you were asked.'
   );
 }

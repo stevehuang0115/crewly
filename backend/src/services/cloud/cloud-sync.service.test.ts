@@ -8,6 +8,7 @@
  */
 
 import { CloudSyncService, registerRetryDelay } from './cloud-sync.service.js';
+import { NetworkStatusService } from '../core/network-status.service.js';
 import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
 import type { CloudSyncConfig, SyncDevice } from './cloud-sync.types.js';
 
@@ -847,6 +848,29 @@ describe('CloudSyncService', () => {
       expect(await fsp.stat(queueFile).then(() => true, () => false)).toBe(false);
     });
 
+    // The relay also answers 403 for an expired JWT. After a night of sleep
+    // that read as "another account", and the Mac swapped queues on wake
+    // (d5c4ebc2 → 072d309a, 2026-11-06), stranding mail sent to the old one.
+    it('keeps its queue on a 403 for an expired token', async () => {
+      await fsp.mkdir(path.dirname(queueFile), { recursive: true });
+      await fsp.writeFile(queueFile, JSON.stringify({ queueId: 'q-remembered' }), 'utf-8');
+      const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
+      mockFetch.mockImplementation(async (url) =>
+        typeof url === 'string' && url.includes('/queue/register')
+          ? mockResponse({ success: false, error: 'jwt expired' }, 403)
+          : mockResponse({ success: true }),
+      );
+
+      service.start(configWithJwt);
+      await untilRegisterCalls(1);
+      for (let i = 0; i < 10; i++) await flushPromises();
+
+      expect(registerCalls()).toHaveLength(1);
+      expect(claimedId(0)).toBe('q-remembered');
+      expect(service.getQueueError()).toContain('jwt expired');
+      expect(JSON.parse(await fsp.readFile(queueFile, 'utf-8')).queueId).toBe('q-remembered');
+    });
+
     it('takes a fresh id when the remembered queue is refused too (account switched again)', async () => {
       await fsp.mkdir(path.dirname(queueFile), { recursive: true });
       await fsp.writeFile(queueFile, JSON.stringify({ queueId: 'q-old-account' }), 'utf-8');
@@ -1253,6 +1277,41 @@ describe('CloudSyncService', () => {
         ([url]) => typeof url === 'string' && url.includes('/queue/poll')
       );
       expect(pollCall).toBeUndefined();
+    });
+
+    it('feeds the offline breaker: DNS failures of the regular poll trip it, the next answer resets it', async () => {
+      NetworkStatusService.resetInstance();
+      try {
+        service.start(testConfig);
+        await flushPromises();
+        (service as unknown as { queueId: string }).queueId = 'q-abc';
+        const net = NetworkStatusService.getInstance();
+
+        // A Cloud outage (5xx) never counts (one here: five poll failures in a
+        // row would put the service itself into its error state and skip polls).
+        mockFetch.mockResolvedValue(mockResponse({ success: false }, 503));
+        await service.pollMessages();
+        expect(net.getStatus().consecutiveFailures).toBe(0);
+
+        // undici: `TypeError: fetch failed` with the DNS code on `cause`.
+        const dnsDown = (): Error =>
+          Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('getaddrinfo ENOTFOUND api.crewlyai.com'), { code: 'ENOTFOUND' }) });
+        mockFetch.mockImplementation(async () => {
+          throw dnsDown();
+        });
+        await service.pollMessages();
+        await service.pollMessages();
+        expect(net.isOffline()).toBe(false);
+        await service.pollMessages();
+        expect(net.isOffline()).toBe(true);
+        expect(net.getStatus()).toMatchObject({ lastFailureSource: 'cloud-sync', lastErrorCode: 'ENOTFOUND' });
+
+        mockFetch.mockResolvedValue(mockResponse({ success: true, messages: [] }));
+        await service.pollMessages();
+        expect(net.isOffline()).toBe(false);
+      } finally {
+        NetworkStatusService.resetInstance();
+      }
     });
 
     it('long-polls with ?wait= once a queueId is registered', async () => {

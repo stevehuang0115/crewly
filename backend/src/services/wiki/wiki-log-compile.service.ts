@@ -155,10 +155,30 @@ export class WikiLogCompileService {
 
     const week = isoWeekLabel(now);
     const pagePath = `${WIKI_LOG_CONSTANTS.COMPILE_DIR}/${week}.md`;
-    const { records, others } = this.splitRecords(candidates);
-    const groups = this.group(others);
-    const body = this.renderBody(groups, candidates, now, records);
-    const result: WikiLogCompileResult = { ...base, compiled: true, entriesCompiled: candidates.length, pagePath, groups: groups.length };
+    // The ingest refuses a body over its cap, so a long week is compiled in
+    // parts: the oldest entries now, the rest on the next run (they stay
+    // uncompiled candidates while they are in the window).
+    let taken = candidates;
+    let split = this.splitRecords(taken);
+    let groups = this.group(split.others);
+    let body = this.renderBody(groups, taken, now, split.records);
+    while (Buffer.byteLength(body, 'utf8') > WIKI_LOG_CONSTANTS.COMPILE_MAX_BODY_BYTES && taken.length > minEntries) {
+      taken = taken.slice(0, Math.max(minEntries, Math.floor(taken.length * 0.75)));
+      split = this.splitRecords(taken);
+      groups = this.group(split.others);
+      body = this.renderBody(groups, taken, now, split.records);
+    }
+    if (taken.length < candidates.length) {
+      this.logger.info('WikiLogCompile: digest trimmed to fit the ingest body cap; the rest waits for the next run', {
+        vaultPath,
+        pagePath,
+        candidates: candidates.length,
+        compiled: taken.length,
+        bytes: Buffer.byteLength(body, 'utf8'),
+      });
+    }
+    const { records, others } = split;
+    const result: WikiLogCompileResult = { ...base, compiled: true, entriesCompiled: taken.length, pagePath, groups: groups.length };
 
     if (dryRun) {
       this.logger.info('WikiLogCompile dry run — would write digest', { vaultPath, pagePath, entries: candidates.length, groups: groups.length, records: records.length });
@@ -168,7 +188,7 @@ export class WikiLogCompileService {
     const counts = this.categoryCounts(others);
     const summaryLead = records.length > 0
       ? `${records.length} work record${records.length === 1 ? '' : 's'}${others.length > 0 ? ` and ${others.length} learnings (${counts})` : ''} from the vault log`
-      : `${candidates.length} learnings from the vault log (${counts})`;
+      : `${taken.length} learnings from the vault log (${counts})`;
     const outcome = await this.ingest.ingest({
       vaultPath,
       sourceType: 'record_learning',
@@ -182,16 +202,22 @@ export class WikiLogCompileService {
       tags: ['digest', week],
     });
     if (!outcome.ok) {
-      this.logger.warn('WikiLogCompile: ingest refused the digest page (non-fatal)', { vaultPath, pagePath, reason: outcome.reason });
+      this.logger.warn('WikiLogCompile: ingest refused the digest page (non-fatal)', {
+        vaultPath,
+        pagePath,
+        reason: outcome.reason,
+        message: 'message' in outcome ? outcome.message : undefined,
+        bytes: Buffer.byteLength(body, 'utf8'),
+      });
       return { ...base, reason: 'ingest_refused', candidates: candidates.length };
     }
 
-    const keys = [...state.compiledKeys, ...candidates.map((e) => logBodyKey(e.body))];
+    const keys = [...state.compiledKeys, ...taken.map((e) => logBodyKey(e.body))];
     await this.writeState(vaultPath, {
       compiledKeys: keys.slice(-WIKI_LOG_CONSTANTS.COMPILE_STATE_MAX_KEYS),
       lastCompiledAt: new Date(now).toISOString(),
     });
-    this.logger.info('WikiLogCompile wrote digest', { vaultPath, pagePath, entries: candidates.length, groups: groups.length });
+    this.logger.info('WikiLogCompile wrote digest', { vaultPath, pagePath, entries: taken.length, ofCandidates: candidates.length, groups: groups.length });
     return result;
   }
 

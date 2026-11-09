@@ -154,8 +154,8 @@ describe('HarnessStatusService', () => {
 	});
 
 	describe('Claude login', () => {
-		it('prefers the credential Crewly stores', async () => {
-			credentials.setClaudeOauthToken('sk-ant-oat01-xxxxxxxxxxxxxxxxxxxxxxxx');
+		it('prefers the credential Crewly stores (a token an older Crewly saved still counts until it is migrated)', async () => {
+			credentials.write({ claude: { oauthToken: 'sk-ant-oat01-xxxxxxxxxxxxxxxxxxxxxxxx', updatedAt: 'then' } });
 			expect(await make().getStatus('claude-code')).toMatchObject({ loginState: 'logged_in', loginSource: 'crewly-subscription' });
 			credentials.setAnthropicApiKey('sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxx');
 			expect(await make().getStatus('claude-code')).toMatchObject({ loginState: 'logged_in', loginSource: 'crewly-api-key' });

@@ -35,6 +35,7 @@ import {
   Bot,
   Copy,
   CornerUpLeft,
+  MailOpen,
   MessageSquare,
   SmilePlus,
   Link as LinkIcon,
@@ -85,6 +86,14 @@ export interface MessageThreadProps {
    */
   onReplyInThread?(message: Message): void;
   /**
+   * Owner read state (#1400; additive — omit and no action is shown).
+   *
+   * When provided (quiet variant), each sent message's "⋯" menu gets
+   * "Mark unread": the host sets the channel's read marker to just before
+   * that message (`message.channelId` + `message.seq`), keeping it for later.
+   */
+  onMarkUnread?(message: Message): void;
+  /**
    * Slack-style threading — when true, messages that are thread replies
    * (have a `threadId`) are filtered out of this timeline. The main
    * channel passes `true`; the thread panel passes `false` so it shows
@@ -131,6 +140,7 @@ export function MessageThread({
   unreadDividerLabel = 'New',
   layout = 'bubble',
   onReplyInThread,
+  onMarkUnread,
   hideReplies = false,
   messages: controlledMessages,
   agentThinking: controlledAgentThinking,
@@ -216,7 +226,7 @@ export function MessageThread({
         }`}
         data-variant={quiet ? 'quiet' : undefined}
       >
-        {renderTimeline({ messages, unreadAfterSeq, unreadDividerLabel, layout, onReplyInThread, quiet })}
+        {renderTimeline({ messages, unreadAfterSeq, unreadDividerLabel, layout, onReplyInThread, onMarkUnread, quiet })}
         {agentThinking && <AgentThinkingRow agentName={agentName} layout={layout} quiet={quiet} />}
         {loading && (
           <li
@@ -248,9 +258,10 @@ function renderTimeline(args: {
   unreadDividerLabel: string;
   layout: 'bubble' | 'flat';
   onReplyInThread?(message: Message): void;
+  onMarkUnread?(message: Message): void;
   quiet?: boolean;
 }): React.ReactNode[] {
-  const { messages, unreadAfterSeq, unreadDividerLabel, layout, onReplyInThread, quiet = false } = args;
+  const { messages, unreadAfterSeq, unreadDividerLabel, layout, onReplyInThread, onMarkUnread, quiet = false } = args;
   const out: React.ReactNode[] = [];
 
   // In flat (Slack) mode, consecutive messages from the same author group
@@ -261,8 +272,15 @@ function renderTimeline(args: {
   const hasMatchingSeq =
     unreadAfterSeq != null && messages.some((m) => m.seq === unreadAfterSeq);
 
-  // Edge case: matching seq paged off-screen — surface the divider at the top.
-  if (unreadAfterSeq != null && !hasMatchingSeq && messages.length > 0) {
+  // The marker's own message may not be in this list (paged off-screen, or a
+  // thread reply hidden from the main timeline). Then the boundary sits just
+  // before the first message past the marker; when every loaded message is at
+  // or before the marker it falls back to the top, as before.
+  const boundarySeq =
+    unreadAfterSeq != null && !hasMatchingSeq
+      ? messages.find((m) => m.seq > unreadAfterSeq)?.seq ?? null
+      : null;
+  if (unreadAfterSeq != null && !hasMatchingSeq && messages.length > 0 && boundarySeq === null) {
     out.push(<UnreadDividerRow key="unread-divider" label={unreadDividerLabel} layout={layout} />);
   }
 
@@ -281,6 +299,13 @@ function renderTimeline(args: {
       prevAuthor = null;
     }
     prevDayIso = m.createdAt;
+    // Boundary divider (marker not in the list): after the day separator, so
+    // the day label stays above "Unread".
+    if (!dividerInserted && boundarySeq !== null && m.seq === boundarySeq) {
+      out.push(<UnreadDividerRow key="unread-divider" label={unreadDividerLabel} layout={layout} />);
+      dividerInserted = true;
+      prevAuthor = null;
+    }
     const groupStart = layout !== 'flat' || prevAuthor !== m.author.id;
     out.push(
       quiet ? (
@@ -289,6 +314,7 @@ function renderTimeline(args: {
           message={m}
           groupStart={groupStart}
           onReplyInThread={onReplyInThread}
+          onMarkUnread={onMarkUnread}
         />
       ) : (
         <MessageRow
@@ -968,10 +994,12 @@ function QuietMessageRow({
   message,
   groupStart,
   onReplyInThread,
+  onMarkUnread,
 }: {
   message: Message;
   groupStart: boolean;
   onReplyInThread?(message: Message): void;
+  onMarkUnread?(message: Message): void;
 }): JSX.Element {
   const status = message.deliveryStatus;
   const name = message.author.name ?? message.author.id;
@@ -988,6 +1016,10 @@ function QuietMessageRow({
   const items: QuietMenuItem[] = [
     ...(canReply
       ? [{ label: 'Reply in thread', icon: CornerUpLeft, onClick: () => onReplyInThread?.(message), testId: `msg-menu-reply-${message.id}` }]
+      : []),
+    // Only server-stored rows have a real seq to mark from (optimistic ones are -1).
+    ...(onMarkUnread && status !== 'pending' && status !== 'failed' && message.seq > 0
+      ? [{ label: 'Mark unread', icon: MailOpen, onClick: () => onMarkUnread(message), testId: `msg-menu-unread-${message.id}` }]
       : []),
     {
       label: 'Copy text',

@@ -10,7 +10,7 @@ import { ACTIVE_WORK_HEADING } from './active-work.module.js';
  * agent-registration.service.ts hardcoded commands, role prompts
  * (Session Recovery Protocol), and session-handoff.service.ts.
  *
- * Produces the mandatory startup sequence: recall → get-my-context → assess.
+ * Produces the mandatory startup sequence: get-my-context (one memory search, #857) → active work → register → assess.
  * This module is non-compactable because skipping recovery causes
  * duplicate work and lost context.
  *
@@ -65,19 +65,27 @@ export class RecoveryModule implements PromptModule {
 
 **IMMEDIATELY after registering**, you MUST execute the following context recovery steps before saying "Ready" or accepting any tasks. This ensures you recover context from previous sessions and avoid repeating work or missing ongoing tasks.
 
-### Step 1: Recall previous knowledge
-If a \`## Standing Answers\` section appears above, it already answers the recurring
-questions (decisions in force, open gotchas, your unfinished work); recall fills in the rest.
+### Step 1: Load your context (one memory search)
+\`get-my-context\` runs your memory recall for you and adds goals, focus, today's log,
+learnings and your own task timings. Do **not** run \`recall\` separately at startup —
+that is the same search twice (#857). If a \`## Standing Answers\` section appears above,
+it already answers the recurring questions (decisions in force, open gotchas, your
+unfinished work); this step fills in the rest.
 \`\`\`bash
-bash ${skillsPath}/core/recall/execute.sh '{"agentId":"${agentId}","context":"${role} session startup, recent tasks, unfinished work, blockers, key decisions","projectPath":"${projectPath}"}'
+bash ${skillsPath}/core/get-my-context/execute.sh '{"agentId":"${agentId}","agentRole":"${role}","projectPath":"${projectPath}","context":"${role} session startup, recent tasks, unfinished work, blockers, key decisions"}'
 \`\`\`
 
-### Step 1.5: Read your active work (authoritative state)
+### Step 2: Read your active work (authoritative state)
 Your current Requests + WorkItems are in the \`${ACTIVE_WORK_HEADING}\` section above
 (and, when there is one, your session memory is under \`## Your Previous Knowledge\`).
 That section is the source of truth. **State always wins over memory.** If a row
 carries a \`(memory: ...)\` annotation, the state value is what you should act on;
 the memory note flags a divergence to investigate, not to override the state.
+
+It already lists every task of yours that is still open — do not fetch your task
+history (\`get-my-tasks\`) on top of it. For a task you were in the middle of,
+\`read-task\` shows its workingNotes (your hypothesis, what you tried, where you left
+off): resume from there, don't restart from scratch.
 
 Run this skill now if that section says it was **not injected**, and mid-session if
 the briefing was truncated (\`... and X more\` marker) or stale (>5 minutes since
@@ -86,27 +94,14 @@ registration, especially after long-running tasks):
 bash ${skillsPath}/core/get-my-active-work/execute.sh --session ${agentId} --role ${role}
 \`\`\`
 
-### Step 2: Load your full context
-\`\`\`bash
-bash ${skillsPath}/core/get-my-context/execute.sh '{"agentId":"${agentId}","agentRole":"${role}","projectPath":"${projectPath}"}'
-\`\`\`
-
-### Step 3: Check for pending tasks
-\`\`\`bash
-bash ${skillsPath}/core/get-my-tasks/execute.sh '{"sessionName":"${agentId}"}'
-\`\`\`
-If you have assigned tasks from a previous session, review and accept them using the accept-task endpoint.
-If any task has workingNotes, read them carefully — they contain your previous working state
-(current hypothesis, what you've tried, where you left off). Resume from there, don't restart from scratch.
-
-### Step 4: Register yourself as active
+### Step 3: Register yourself as active
 **CRITICAL:** You MUST call register-self to transition your status from "started" to "active". The system will NOT deliver any messages (Slack, tasks, etc.) to you until you register. Run this BEFORE reporting status:
 \`\`\`bash
 bash ${skillsPath}/core/register-self/execute.sh '{"sessionName":"${agentId}","role":"${role}"}'
 \`\`\`
 
-### Step 5: Assess and report
-After reviewing the results from Steps 1-3:
+### Step 4: Assess and report
+After reviewing the results from Steps 1-2:
 1. **Check for unfinished work** — If you find tasks that were in progress but not completed, note them
 2. **Check for pending blockers** — If previous sessions recorded blockers, note them
 3. **Report status** — Include a brief summary of recovered context in your first status message

@@ -65,4 +65,16 @@ if [ "${CREWLY_SKILL_DRY_RUN:-}" = "1" ]; then
   exit 0
 fi
 
-api_call GET "$ENDPOINT"
+# Posts an agent makes with `reply --work-item` / `--new-thread` / `--ticket` are filed
+# in the chat history when the Slack channel is a team room or an agent DM (CREW-877).
+# In any other Slack channel they go to Slack only, so say so: a missing hit there is
+# not proof the post failed. The reply itself returned the proof (messageTs).
+NOTE="Not searched: posts in a Slack channel that is not a team room or an agent DM are not in this history. A missing hit does not mean a post failed; ask the poster for its messageTs (the reply returns it) or read the Slack thread."
+if ! RESP=$(api_call GET "$ENDPOINT"); then
+  exit 1
+fi
+if printf '%s' "$RESP" | jq -e 'type == "object"' >/dev/null 2>&1; then
+  printf '%s' "$RESP" | jq -c --arg note "$NOTE" '. + {note: $note}'
+else
+  printf '%s\n' "$RESP"
+fi

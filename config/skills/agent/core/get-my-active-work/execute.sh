@@ -1,6 +1,6 @@
 #!/bin/bash
 # get-my-active-work — fetch the live Request + WorkItem briefing for this
-# agent. Backs the recovery protocol's Step 1.5 freshness escape hatch:
+# agent. Backs the recovery protocol's Step 2 freshness escape hatch:
 # the startup briefing is already injected at registration time, but a
 # long-running session can call this skill to refresh after the snapshot
 # ages out (e.g. >5min after registration).

@@ -14,7 +14,8 @@ Options:
   --file    | -f   Path to the markdown file to convert (required)
   --title   | -T   Title for the uploaded PDF (optional)
   --text    | -t   Initial comment to include with the upload (optional)
-  --thread  | -r   Slack thread timestamp for threaded upload (optional)
+  --thread  | -r   Slack thread timestamp the PDF answers (without it the harness picks the thread, or the upload is refused)
+  --allow-new-thread  Post at the channel's top level on purpose (a new thread)
   --help    | -h   Show this help
 EOF_USAGE
 }
@@ -24,6 +25,7 @@ MD_FILE=""
 TITLE=""
 TEXT=""
 THREAD_TS=""
+ALLOW_NEW_THREAD="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,6 +48,10 @@ while [[ $# -gt 0 ]]; do
     --thread|-r)
       THREAD_TS="$2"
       shift 2
+      ;;
+    --allow-new-thread)
+      ALLOW_NEW_THREAD="true"
+      shift
       ;;
     --help|-h)
       print_usage
@@ -177,9 +183,11 @@ BODY=$(jq -n \
   --arg title "$UPLOAD_TITLE" \
   --arg initialComment "${TEXT:-}" \
   --arg threadTs "${THREAD_TS:-}" \
+  --argjson allowNewThread "$ALLOW_NEW_THREAD" \
   '{channelId: $channelId, filePath: $filePath, filename: $filename, title: $title} +
    (if $initialComment != "" then {initialComment: $initialComment} else {} end) +
-   (if $threadTs != "" then {threadTs: $threadTs} else {} end)')
+   (if $threadTs != "" then {threadTs: $threadTs} else {} end) +
+   (if $allowNewThread then {allowNewThread: true} else {} end)')
 
 # Upload to Slack
 RESULT=$(api_call POST "/slack/upload-file" "$BODY")

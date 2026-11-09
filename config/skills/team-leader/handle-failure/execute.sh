@@ -19,6 +19,11 @@ RETRIES=$(printf '%s' "$INPUT" | jq -r '.failureInfo.retries // 0')
 FAILURE_TYPE=$(printf '%s' "$INPUT" | jq -r '.failureInfo.failureType // "unknown"')
 ERROR_MSG=$(printf '%s' "$INPUT" | jq -r '.failureInfo.error // "Unknown error"')
 FAILED_STEPS=$(printf '%s' "$INPUT" | jq -c '.failureInfo.failedSteps // []')
+# Correction ladder (#810): a classed failure is counted per project; the
+# second occurrence of a class sends this lead a WorkItem asking for a check
+# in code instead of another retry note.
+CORRECTION_CLASS=$(printf '%s' "$INPUT" | jq -r '.failureInfo.correctionClass // empty')
+PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
 
 require_param "workerId" "$WORKER_ID"
 
@@ -97,6 +102,17 @@ if [ "$ACTION" = "reassign" ] && [ -n "$TEAM_ID" ]; then
   fi
 fi
 
+# Correction ladder (#810): count the classed failure; the answer says whether
+# this occurrence raised the ladder WorkItem. Never fails the decision.
+CORRECTION_JSON="null"
+if [ -n "$CORRECTION_CLASS" ] && [ -n "$PROJECT_PATH" ]; then
+  export _HF_PROJECT="$PROJECT_PATH" _HF_CLASS="$CORRECTION_CLASS" _HF_AGENT="${WORKER_SESSION:-$WORKER_ID}" _HF_TEXT="$ERROR_MSG" _HF_TASK="$TASK_DESCRIPTION"
+  CORR_BODY=$(jq -n '{projectPath: env._HF_PROJECT, correctionClass: env._HF_CLASS, agentId: env._HF_AGENT, text: env._HF_TEXT, source: "failure"} + (if env._HF_TASK != "" then {relatedTask: env._HF_TASK} else {} end)')
+  unset _HF_PROJECT _HF_CLASS _HF_AGENT _HF_TEXT _HF_TASK
+  CORRECTION_JSON=$( (api_call POST "/memory/corrections" "$CORR_BODY" 2>/dev/null || true) | jq -c '.data // null' 2>/dev/null || true)
+  [ -z "$CORRECTION_JSON" ] && CORRECTION_JSON="null"
+fi
+
 # Output decision
 jq -n \
   --arg action "$ACTION" \
@@ -106,8 +122,10 @@ jq -n \
   --arg originalWorkerId "$WORKER_ID" \
   --arg failureType "$FAILURE_TYPE" \
   --arg retries "$RETRIES" \
+  --argjson correction "$CORRECTION_JSON" \
   '{
     action: $action,
+    correction: $correction,
     nextWorkerId: (if $nextWorkerId != "" then $nextWorkerId else null end),
     nextWorkerSession: (if $nextWorkerSession != "" then $nextWorkerSession else null end),
     instructions: $instructions,

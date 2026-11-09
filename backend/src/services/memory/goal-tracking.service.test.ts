@@ -10,7 +10,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { GoalTrackingService } from './goal-tracking.service.js';
+import { GoalTrackingService, isGoalStatus } from './goal-tracking.service.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -37,6 +37,7 @@ jest.mock('../../constants.js', () => ({
       FOCUS_FILE: 'current_focus.md',
       DECISIONS_LOG: 'decisions_log.md',
     },
+    GOAL_STATUSES: { ACTIVE: 'active', REACHED: 'reached', SUPERSEDED: 'superseded', CANCELLED: 'cancelled' },
   },
 }));
 
@@ -132,6 +133,19 @@ describe('setGoal', () => {
     const content = await fs.readFile(path.join(goalsDir(), 'goals.md'), 'utf-8');
     // ISO timestamp pattern: YYYY-MM-DDTHH:MM:SS
     expect(content).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  });
+
+  it('writes a status word into the heading (a reached goal is a retro milestone, #985) and refuses unknown ones', async () => {
+    await service.setGoal(tmpDir, 'Ship v2.0');
+    await service.setGoal(tmpDir, 'Ship v2.0\n- shipped 10/25', 'orchestrator', 'reached');
+    const content = await fs.readFile(path.join(goalsDir(), 'goals.md'), 'utf-8');
+    expect(content).toMatch(/^### \[\d{4}-\d{2}-\d{2}T[^\]]+\] REACHED — Set by orchestrator\nShip v2.0\n- shipped 10\/25$/m);
+    // The original entry is untouched (append-only log).
+    expect(content).toMatch(/^### \[[^\]]+\] Set by user\nShip v2.0$/m);
+    await expect(service.setGoal(tmpDir, 'x', 'user', 'finished')).rejects.toThrow('Unknown goal status "finished"');
+    expect(isGoalStatus('Reached')).toBe(true);
+    expect(isGoalStatus('finished')).toBe(false);
+    expect(isGoalStatus(undefined)).toBe(false);
   });
 });
 

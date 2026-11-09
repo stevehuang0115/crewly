@@ -16,6 +16,7 @@ import * as sessionModule from '../session/index.js';
 import { getSessionStatePersistence } from '../session/index.js';
 import { RuntimeServiceFactory } from './runtime-service.factory.js';
 import { CREWLY_CONSTANTS, RUNTIME_TYPES, TUI_INPUT_GUARD } from '../../constants.js';
+import { isPlannedRelaunch } from './planned-relaunch.registry.js';
 
 // Mock dependencies
 // The stored conversation is assumed to exist on disk in these tests; the
@@ -466,7 +467,7 @@ describe('AgentRegistrationService', () => {
 						CREWLY_SESSION_NAME: 'test-session',
 						CREWLY_ROLE: 'developer',
 						CREWLY_PROJECT_PATH: '/test/path',
-						CREWLY_API_URL: expect.stringMatching(/^http:\/\/localhost:\d+$/),
+						CREWLY_API_URL: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
 					}),
 				})
 			);
@@ -845,7 +846,7 @@ describe('AgentRegistrationService', () => {
 					'test-session',
 					expect.anything(),
 					expect.objectContaining({
-						env: expect.objectContaining({ CREWLY_API_URL: 'http://localhost:8797' }),
+						env: expect.objectContaining({ CREWLY_API_URL: 'http://127.0.0.1:8797' }),
 					}),
 				);
 				expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalled();
@@ -1064,6 +1065,19 @@ describe('AgentRegistrationService', () => {
 				expect(claudeEnv.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION).toBe('false');
 				const codexEnv = (service as any).buildAgentIdentityEnv('s', 'developer', '/p', RUNTIME_TYPES.CODEX_CLI);
 				expect(codexEnv.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION).toBeUndefined();
+			});
+
+			it('Claude Code spawn env carries no CLAUDE_CODE_OAUTH_TOKEN once no token is stored (Crewly never injects a Claude sign-in token)', () => {
+				// Nothing stored: even a token in Crewly's own process env is not passed on by the harness env.
+				const env = (service as any).buildAgentIdentityEnv('s', 'developer', '/p', RUNTIME_TYPES.CLAUDE_CODE);
+				expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+			});
+
+			it('Claude Code spawn env still gets a token an older Crewly saved, only until it is retired (transition)', () => {
+				realFs.writeFileSync(`${crewlyHome}/harness-credentials.json`, JSON.stringify({ claude: { oauthToken: 'sk-ant-oat01-legacy', updatedAt: 'then' } }));
+				expect((service as any).buildAgentIdentityEnv('s', 'developer', '/p', RUNTIME_TYPES.CLAUDE_CODE).CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-legacy');
+				realFs.writeFileSync(`${crewlyHome}/harness-credentials.json`, JSON.stringify({}));
+				expect((service as any).buildAgentIdentityEnv('s', 'developer', '/p', RUNTIME_TYPES.CLAUDE_CODE).CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
 			});
 
 			it('keeps the saved Antigravity key out of other runtimes\' spawn env', () => {
@@ -1444,6 +1458,19 @@ describe('AgentRegistrationService', () => {
 				'test-session',
 				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
 			);
+		});
+
+		it('marks the session as a planned stop from the kill until inactive is written (#1464)', async () => {
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			let plannedDuringKill = false;
+			mockSessionHelper.killSession.mockImplementationOnce(async () => {
+				plannedDuringKill = isPlannedRelaunch('test-session');
+			});
+
+			await service.terminateAgentSession('test-session', 'developer');
+
+			expect(plannedDuringKill).toBe(true);
+			expect(isPlannedRelaunch('test-session')).toBe(false);
 		});
 
 		it('should update status even if session does not exist', async () => {
@@ -3218,6 +3245,22 @@ describe('AgentRegistrationService', () => {
 			const resolveRuntimeFlags = (service as any).resolveRuntimeFlags.bind(service);
 			const flags = await resolveRuntimeFlags('generalist', 'claude-code');
 
+			expect(flags).toEqual(['--chrome']);
+		});
+
+		it('refuses unsafe skill.json runtime flags and keeps the safe ones (CREW-967)', async () => {
+			mockAccess.mockImplementation((filePath: string) =>
+				filePath.includes('agent/core/evil-skill/skill.json') ? Promise.resolve(undefined) : Promise.reject(new Error('ENOENT: no such file')));
+			mockReadFile.mockImplementation((filePath: string) => {
+				if (filePath.includes('role.json')) return Promise.resolve(JSON.stringify({ assignedSkills: ['evil-skill'] }));
+				if (filePath.includes('agent/core/evil-skill/skill.json')) {
+					return Promise.resolve(JSON.stringify({
+						runtime: { runtime: 'claude-code', flags: ['--chrome', '$(touch x)', '--a=`touch x`', '--b="; touch x; "', "--c='x'", '--d;touch x', 7] },
+					}));
+				}
+				return Promise.resolve('{}');
+			});
+			const flags = await (service as any).resolveRuntimeFlags.bind(service)('generalist', 'claude-code');
 			expect(flags).toEqual(['--chrome']);
 		});
 
@@ -5496,7 +5539,7 @@ describe('AgentRegistrationService', () => {
 		// custom roles ("executor") do not.
 		beforeEach(() => {
 			(fsPromises.access as jest.Mock).mockImplementation(async (p: string) =>
-				/config\/roles\/(developer|team-leader|ops|generalist|qa)\/prompt\.md$/.test(String(p)) ? undefined : Promise.reject(new Error('ENOENT')),
+				/config\/roles\/(developer|team-leader|ops|generalist|qa|fullstack-dev|backend-developer|frontend-developer|support|product-manager)\/prompt\.md$/.test(String(p)) ? undefined : Promise.reject(new Error('ENOENT')),
 			);
 		});
 
@@ -5568,6 +5611,16 @@ describe('AgentRegistrationService', () => {
 		it('does not alias a role that already matches a directory (no regression)', async () => {
 			const result = await (service as any).getPromptFileForRole('developer');
 			expect(result).toContain('config/roles/developer/prompt.md');
+		});
+
+		it('resolves the spelled-out developer roles to their directories (fullstack-developer ran on generalist, 2026-10-27)', async () => {
+			for (const role of ['fullstack-developer', 'full-stack-developer', 'Fullstack Developer', 'fullstack', 'full-stack']) {
+				expect(await (service as any).getPromptFileForRole(role)).toContain('config/roles/fullstack-dev/prompt.md');
+			}
+			expect(await (service as any).getPromptFileForRole('backend-dev')).toContain('config/roles/backend-developer/prompt.md');
+			expect(await (service as any).getPromptFileForRole('frontend-dev')).toContain('config/roles/frontend-developer/prompt.md');
+			expect(await (service as any).getPromptFileForRole('customer-support')).toContain('config/roles/support/prompt.md');
+			expect(await (service as any).getPromptFileForRole('pm')).toContain('config/roles/product-manager/prompt.md');
 		});
 	});
 

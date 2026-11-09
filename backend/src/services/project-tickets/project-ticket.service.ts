@@ -21,7 +21,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { DUPLICATE_CREATION_CONSTANTS, PROJECT_TICKET_CONSTANTS } from '../../constants.js';
+import { DUPLICATE_CREATION_CONSTANTS, PROJECT_TICKET_CONSTANTS, TICKET_HOLD_CONSTANTS } from '../../constants.js';
 import { normalizeForDedupe } from '../../utils/duplicate-creation.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
@@ -49,6 +49,7 @@ import {
 import { allocateTicketId, withTicketFolderLock } from './ticket-folder-lock.js';
 import { ensureTicketsTracked, type TicketTrackingOutcome } from './ticket-tracking.js';
 import { traceProjectTicketCreated } from '../trace/trace-recorder.js';
+import { extractWorkRefs, findHeldMatches, heldDescriptionNote, linkedHoldReason, type HeldTicketMatch } from './ticket-hold.js';
 
 /** An error with the HTTP status the API should answer with. */
 export class ProjectTicketError extends Error {
@@ -91,6 +92,11 @@ export interface UpdateProjectTicketInput {
   requestId?: string | null;
   /** `YYYY-MM-DD` / ISO time to keep the ticket out of triage until; `null` or '' clears it */
   deferUntil?: string | null;
+  /**
+   * Put the ticket on hold with this reason (the owner's words), or lift the
+   * hold with `null` / '' (crewly#1369). Held work may only be closed.
+   */
+  hold?: string | null;
   description?: string;
   acceptance?: Array<string | ProjectTicketCriterion>;
 }
@@ -334,8 +340,13 @@ export class ProjectTicketService {
             nowMs - Date.parse(t.createdAt) >= 0 &&
             nowMs - Date.parse(t.createdAt) <= DUPLICATE_CREATION_CONSTANTS.TICKET_WINDOW_MS,
         );
-        if (twin) return { twin, fileName: '', filePath: '', content: '' };
+        if (twin) return { twin, fileName: '', filePath: '', content: '', held: undefined };
       }
+      // A ticket about a PR / branch / worktree that a held ticket names is held
+      // too (crewly#1369: CREW-646 "Decide the fate of PR #1138" ignored CREW-257's HOLD).
+      const held: HeldTicketMatch | undefined = input.migratedFrom
+        ? undefined
+        : findHeldMatches(extractWorkRefs(`${title}\n${input.description ?? ''}`), (await this.list(root)).tickets)[0];
       const id = await allocateTicketId(dir, projectName);
       const fields: ProjectTicketFields = {
         id,
@@ -352,17 +363,25 @@ export class ProjectTicketService {
         requestId: input.requestId ?? null,
         source: input.source ?? null,
         migratedFrom: input.migratedFrom ?? null,
+        ...(held ? { hold: linkedHoldReason(held) } : {}),
       };
       const fileName = `${id}-${slugifyTitle(title)}.md`;
       const filePath = path.join(dir, fileName);
+      const logLines = [formatLogLine(actor, `created (${status})`, now)];
+      if (held) {
+        logLines.push(
+          formatLogLine('system', `${TICKET_HOLD_CONSTANTS.LOG_PREFIX} linked to ${held.hold.heldBy ?? held.ticketId} (${held.matchedOn.join(', ')}); allowed: ${TICKET_HOLD_CONSTANTS.ALLOWED_ACTIONS}`, now),
+        );
+      }
+      const description = held ? [heldDescriptionNote(held), input.description?.trim() ?? ''].filter((l) => l).join('\n\n') : input.description ?? '';
       const content = renderNewTicketFile({
         fields,
-        description: input.description ?? '',
+        description,
         acceptance: toCriteria(input.acceptance ?? []),
-        logLines: [formatLogLine(actor, `created (${status})`, now)],
+        logLines,
       });
       await atomicWriteFile(filePath, content);
-      return { twin: undefined, fileName, filePath, content };
+      return { twin: undefined, fileName, filePath, content, held };
     });
 
     if (created.twin) {
@@ -373,6 +392,13 @@ export class ProjectTicketService {
     const parsed = parseTicketFile(created.content);
     if (!parsed.ok) throw new ProjectTicketError(500, `created ticket did not parse: ${parsed.error}`);
     this.logger.info('Project ticket created', { projectPath: root, id: parsed.file.fields.id, actor });
+    if (created.held) {
+      const root0 = created.held.hold.heldBy ?? created.held.ticketId;
+      this.logger.warn('New ticket references held work — held too', { projectPath: root, id: parsed.file.fields.id, heldBy: root0, matchedOn: created.held.matchedOn });
+      await this.appendLog(root, root0, 'system', `${parsed.file.fields.id} was opened about this work (${created.held.matchedOn.join(', ')}) and is held through this ticket`).catch((err) =>
+        this.logger.debug('Could not log the linked ticket on the held one', { error: err instanceof Error ? err.message : String(err) }),
+      );
+    }
     traceProjectTicketCreated({ id: parsed.file.fields.id, title, requestId: input.requestId, assignee: input.assignee }, actor);
     return this.toTicket(parsed, created.fileName, created.filePath, root, true);
   }
@@ -504,10 +530,17 @@ export class ProjectTicketService {
         fields.deferUntil = raw || null;
         changed.push(raw ? `deferUntil ${raw}` : 'deferUntil cleared');
       }
+      const holdLog: string[] = [];
+      if (input.hold !== undefined) {
+        const reason = input.hold === null ? '' : String(input.hold).replace(/\s+/g, ' ').trim();
+        fields.hold = reason || null;
+        changed.push(reason ? 'hold' : 'hold cleared');
+        holdLog.push(reason ? `${TICKET_HOLD_CONSTANTS.LOG_PREFIX} ${reason}` : TICKET_HOLD_CONSTANTS.LIFT_LOG_LINE);
+      }
       if (input.description !== undefined) changed.push('description');
       if (input.acceptance !== undefined) changed.push('acceptance criteria');
       if (changed.length === 0 && !note) return null;
-      const log = changed.length > 0 ? [`updated ${changed.join(', ')}${note ? ` — ${note}` : ''}`] : [String(note)];
+      const log = [...(changed.length > 0 ? [`updated ${changed.join(', ')}${note ? ` — ${note}` : ''}`] : [String(note)]), ...holdLog];
       return {
         fields,
         description: input.description,

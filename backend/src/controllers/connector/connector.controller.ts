@@ -16,6 +16,9 @@ import { RemoteMcpService, remoteMcpConnectorId } from '../../services/connector
 import { readAgentSessionHeader, resolveAgentCaller } from '../../utils/agent-caller.utils.js';
 import { isOwnerCaller, rejectNonOwner, sendOwnerAuthRequired } from '../../middleware/caller-identity.middleware.js';
 import { getActingFor, runAsActor, type Actor } from '../../services/people/acting-for.service.js';
+import { actorFromRequest, recordActivity, summarizeChange, type ActivityActor } from '../../services/activity/activity-log.service.js';
+import { getConnectorUseAudit } from '../../services/connector/connector-use-audit.service.js';
+import { getPrivateSourceTracker } from '../../services/people/private-source.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('ConnectorController');
 
@@ -58,12 +61,22 @@ export function requireConnectorAccess(connectorId: string) {
         sendOwnerAuthRequired(res, req);
         return;
       }
+      const person = actorOf(caller.session);
+      // Issue #969: the audit names the same agent the role decision was made for.
+      const fromRequest = actorFromRequest(req);
+      const actor: ActivityActor = caller.session ? { ...fromRequest, type: 'agent', id: caller.session } : fromRequest;
       if (await ConnectorAccessService.getInstance().isAllowed(connectorId, caller.role)) {
-        runAsActor(actorOf(caller.session), () => next());
+        // Who used which connection, acting for whom (once an hour per trio).
+        getConnectorUseAudit().allowed({ connectorId, actor, actingFor: person, what: req.path });
+        // What this session reads now is that person's data: wiki pages it
+        // writes inside the window are visible to that person only (#969).
+        getPrivateSourceTracker().note(caller.session, person.id, connectorId);
+        runAsActor(person, () => next());
         return;
       }
       const allowed = await ConnectorAccessService.getInstance().allowedRoles(connectorId);
       logger.warn('Connector access refused', { connectorId, session: caller.session, role: caller.role, allowed });
+      getConnectorUseAudit().refused({ connectorId, actor, actingFor: person, reason: 'role_not_allowed', allowedRoles: allowed, what: req.path });
       res.status(403).json({
         success: false,
         error: 'connector_forbidden',
@@ -138,7 +151,16 @@ export async function updateConnectorAccess(req: Request, res: Response): Promis
       res.status(400).json({ success: false, error: 'validation', message: 'allowedRoles must be an array of role names (empty = every agent)' });
       return;
     }
-    const rule = await ConnectorAccessService.getInstance().setAllowedRoles(connectorId, body.allowedRoles.map((r) => String(r)));
+    const service = ConnectorAccessService.getInstance();
+    const previous = ((await service.list().catch(() => ({}))) as Record<string, { allowedRoles?: string[] } | undefined>)[connectorId]?.allowedRoles ?? [];
+    const rule = await service.setAllowedRoles(connectorId, body.allowedRoles.map((r) => String(r)));
+    // Who widened or narrowed which agents may use this connection (#881).
+    recordActivity({
+      actor: actorFromRequest(req),
+      action: 'connector.access.updated',
+      target: { type: 'connector', id: connectorId },
+      ...summarizeChange({ allowedRoles: previous }, { allowedRoles: rule.allowedRoles }),
+    });
     res.json({ success: true, data: { connectorId, ...rule } });
   } catch (err) {
     logger.error('Failed to update connector access', { error: err instanceof Error ? err.message : String(err) });

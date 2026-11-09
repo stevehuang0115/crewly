@@ -230,7 +230,11 @@ describe('receiveAgentHook — team-lead execution nudge (crewly#1083)', () => {
 			ownerNote.mockReturnValue('[OWNER MESSAGE] answer now\n\nowner: hi');
 			const r = await callAsync(SESSION, { event: 'PostToolUse', toolUseId: 'toolu_1', toolName: 'Bash' });
 			expect(r.json).toMatchObject({ success: true, additionalContext: '[OWNER MESSAGE] answer now\n\nowner: hi' });
-			expect(ownerNote).toHaveBeenCalledWith('crewly-dev-1');
+			// The owner note is given the room the other notes leave (it is fitted, never sliced).
+			expect(ownerNote).toHaveBeenCalledWith('crewly-dev-1', expect.anything(), undefined, expect.any(Number));
+			const room = (ownerNote.mock.calls[0] as unknown[])[3] as number;
+			expect(room).toBeLessThan(6000);
+			expect(room).toBeGreaterThan(5000);
 		});
 
 		it('puts the owner message ahead of the nudge', async () => {

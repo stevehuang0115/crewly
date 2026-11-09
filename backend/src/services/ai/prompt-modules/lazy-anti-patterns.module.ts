@@ -23,6 +23,10 @@ import { PromptModule, ModuleConfig } from './prompt-module.interface.js';
  *   → memory-reference. The agent finishes authority context with "here is
  *   what counts as failure" right before data context begins.
  *
+ * The second list (#857, "wasting the task's budget") is the don't-repeat
+ * rule set from the Purdue cost-inefficiency study; it is prompt-only, not
+ * mirrored into the role prompts.
+ *
  * Static role prompts under `config/roles/{role}/prompt.md` ALSO contain the
  * same headers verbatim — this is intentional belt-and-suspenders coverage
  * for the legacy `prompt-builder.service.ts` load path which does not run
@@ -38,7 +42,7 @@ import { PromptModule, ModuleConfig } from './prompt-module.interface.js';
 export class LazyAntiPatternsModule implements PromptModule {
 	name = 'lazy-anti-patterns';
 	priority = 3.7;
-	maxTokens = 200;
+	maxTokens = 260;
 	compactable = false;
 
 	/**
@@ -77,6 +81,14 @@ export class LazyAntiPatternsModule implements PromptModule {
 			'- Stop after partial progress without assigning next action.',
 			'- Delegate without checking completion (a subagent\'s "completed" is not proof: check its commits, files or test output before you rely on it).',
 			'- Produce status updates but no artifact, code, decision, or verified result.',
+			'',
+			// #857: repeated retrieval, near-duplicate scripts and re-running
+			// unchanged checks cost 7-23% of a task; a fixed rule in the prompt
+			// cuts that about twice as well as a self-written one (arXiv 2609.30725).
+			'You are wasting the task\'s budget if you:',
+			'- Search for something you already retrieved in this session — check what you have first.',
+			'- Write a near-duplicate script or helper instead of editing the one you already wrote.',
+			'- Re-run a check or test when nothing has changed since it last ran.',
 		].join('\n');
 	}
 }

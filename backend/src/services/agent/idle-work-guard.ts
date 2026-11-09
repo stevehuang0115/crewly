@@ -13,8 +13,10 @@
  * @see specs/2026-10-10-agent-follow-through.md
  */
 
+import { OPEN_ITEMS_CONSTANTS } from '../../constants.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
 import type { Request } from '../../types/v2/request.types.js';
+import type { OpenItemStatus } from '../../types/v2/open-item.types.js';
 
 /** WorkItem statuses that mean "this agent owes this work". */
 export const HELD_WORK_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>(['queued', 'proposed', 'accepted', 'running']);
@@ -23,7 +25,40 @@ export const HELD_WORK_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemS
 const OWED_TICKET_STATUSES: ReadonlySet<string> = new Set(['open', 'ready', 'running']);
 
 /** Why an agent must not be idle-stopped. */
-export type HoldReason = 'work_item' | 'ticket' | 'promise' | 'stated_intent' | 'fresh_promise' | 'background_run';
+export type HoldReason = 'work_item' | 'ticket' | 'promise' | 'stated_intent' | 'fresh_promise' | 'background_run' | 'open_commitment';
+
+/**
+ * Commitment statuses in which the agent still owes the owner a report.
+ * `waiting_owner` is left out: then the owner owes the agent an answer.
+ */
+const OWED_COMMITMENT_STATUSES: ReadonlySet<OpenItemStatus> = new Set<OpenItemStatus>(['open', 'ready', 'overdue']);
+
+/** Request statuses that close every open item on it. */
+const CLOSED_REQUEST_STATUSES: ReadonlySet<string> = new Set(['done', 'cancelled']);
+
+/**
+ * Whether `session` has an open commitment to the owner (an open item on an
+ * owner request: "让它们跑完，对比后看差多少", "I'll send it tonight") made
+ * within {@link OPEN_ITEMS_CONSTANTS.IDLE_HOLD_MAX_AGE_MS}. Idle output is not
+ * "nothing to do" while the owner waits on a promised next step: Pia was
+ * idle-stopped with her three-step plan still open (crewly#1386).
+ *
+ * @param requests - Owner requests (with their open items)
+ * @param session - Agent session
+ * @param now - Epoch ms
+ * @returns True when an owed, recent commitment exists
+ */
+export function hasOpenOwnerCommitment(requests: readonly Request[], session: string, now: number): boolean {
+	return requests.some(
+		(r) =>
+			!CLOSED_REQUEST_STATUSES.has(r.status) &&
+			(r.openItems ?? []).some((i) => {
+				if (i.type !== 'commitment' || i.agent !== session || !OWED_COMMITMENT_STATUSES.has(i.status)) return false;
+				const made = Date.parse(i.createdAt);
+				return Number.isFinite(made) && now - made <= OPEN_ITEMS_CONSTANTS.IDLE_HOLD_MAX_AGE_MS;
+			}),
+	);
+}
 
 /**
  * A promise or stated intent younger than this is kept even under memory
@@ -80,6 +115,9 @@ export async function holdReasonFor(session: string, deps: IdleWorkGuardDeps): P
 	) {
 		return 'ticket';
 	}
+	// Not 'fresh_promise': under memory pressure the agent is still stopped, and
+	// the stall watcher's promise ladder wakes it to report.
+	if (hasOpenOwnerCommitment(tickets, session, now)) return 'open_commitment';
 	return null;
 }
 

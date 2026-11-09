@@ -1,6 +1,6 @@
 /**
  * Tests for the login broker state machine, driven by a fake PTY that replays
- * the captured `claude setup-token` / `codex login --device-auth` output.
+ * the captured `claude auth login` / `codex login --device-auth` output.
  */
 
 import * as fs from 'fs';
@@ -43,6 +43,7 @@ class FakePty implements BrokerPty {
 const CLAUDE_URL =
 	'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG&code_challenge_method=S256&state=HIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx';
 const WRAP_AT = CLAUDE_URL.indexOf('Ainference');
+/** A token-shaped value (fake). Crewly must never store it or expose it. */
 const CLAUDE_TOKEN = `sk-ant-oat01-${'Zq9'.repeat(30)}-AA`;
 
 const CLAUDE_SCREEN = [
@@ -77,6 +78,7 @@ const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve
 describe('LoginBrokerService', () => {
 	let dir: string;
 	let credentials: HarnessCredentialsStore;
+	let afterClaudeLogin: jest.Mock;
 	let ptys: FakePty[];
 	let spawnPty: jest.Mock;
 	let prepareClaudeConfig: jest.Mock;
@@ -93,6 +95,7 @@ describe('LoginBrokerService', () => {
 		});
 		prepareClaudeConfig = jest.fn();
 		verify = jest.fn(async () => true);
+		afterClaudeLogin = jest.fn(async () => undefined);
 	});
 	afterEach(() => {
 		jest.useRealTimers();
@@ -112,31 +115,34 @@ describe('LoginBrokerService', () => {
 			resolveCommand: (cmd) => `/usr/local/bin/${cmd}`,
 			env: { PATH: '/usr/bin', CREWLY_API_TOKEN: 'owner-token', CLAUDECODE: '1', HOME: dir },
 			homeDir: dir,
-			credentials,
 			prepareClaudeConfig,
 			verify,
+			afterClaudeLogin,
 			idFactory: () => `s${++n}`,
 			submitDelayMs: 0,
 			...overrides,
 		});
 	}
 
-	it('spawns the login command in a wide PTY with a safe env', () => {
-		const broker = make();
+	it('spawns Claude Code\'s own login in a wide PTY with a safe env: no token or key, no API token', () => {
+		const broker = make({ env: { PATH: '/usr/bin', CREWLY_API_TOKEN: 'owner-token', CLAUDECODE: '1', HOME: dir, CLAUDE_CODE_OAUTH_TOKEN: 'in-env', ANTHROPIC_API_KEY: 'sk-in-env' } });
 		const session = broker.start('claude-code', 'subscription');
 		expect(session).toMatchObject({ id: 's1', harnessId: 'claude-code', method: 'subscription', state: 'starting', url: null, needsInput: false });
 		const [file, args, options] = spawnPty.mock.calls[0];
 		expect(file).toBe('/usr/local/bin/claude');
-		expect(args).toEqual(['setup-token']);
+		expect(args).toEqual(['auth', 'login']);
+		expect(args).not.toContain('setup-token');
 		expect(options.cols).toBeGreaterThanOrEqual(500);
 		expect(options.cwd).toBe(dir);
 		expect(options.env.CREWLY_API_TOKEN).toBeUndefined();
 		expect(options.env.CLAUDECODE).toBeUndefined();
+		expect(options.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+		expect(options.env.ANTHROPIC_API_KEY).toBeUndefined();
 		expect(options.env.BROWSER).toBe('true');
 		expect(options.env.PATH).toContain('npm-global/bin');
 	});
 
-	it('Claude: URL + prompt → awaiting_user → input → token → succeeded (token stored, never exposed)', async () => {
+	it('Claude: URL + prompt → awaiting_user → code typed → exit 0 → verified by a real turn → succeeded; nothing is stored', async () => {
 		const broker = make();
 		const updates: LoginSession[] = [];
 		broker.on(LOGIN_BROKER_EVENTS.UPDATE, (s: LoginSession) => updates.push(s));
@@ -154,19 +160,19 @@ describe('LoginBrokerService', () => {
 		expect(pty.written).toEqual(['the-code#the-state\r']);
 		expect(session).toMatchObject({ state: 'verifying', needsInput: false });
 
-		pty.emit('the-code#the-state\r\n');
-		expect(broker.get(id).state).toBe('verifying');
-
 		const done = broker.waitForCompletion(id);
-		pty.emit(CLAUDE_TOKEN_SCREEN);
+		pty.emit('Login successful.\r\n');
+		pty.exit(0);
 		await flush();
 		session = await done;
 		expect(session.state).toBe('succeeded');
-		expect(credentials.read().claude?.oauthToken).toBe(CLAUDE_TOKEN);
+		// Verified with a real turn on Claude Code's own login (default login: no account).
+		expect(verify).toHaveBeenCalledWith('claude-code', undefined);
+		expect(afterClaudeLogin).toHaveBeenCalledWith(null);
 		expect(prepareClaudeConfig).toHaveBeenCalled();
-		expect(pty.killed).toBe(true);
-		expect(session.screen).not.toContain(CLAUDE_TOKEN);
-		expect(session.screen).toContain('[redacted]');
+		// The broker has no credential store: nothing was written anywhere.
+		expect(fs.existsSync(path.join(dir, 'creds.json'))).toBe(false);
+		expect(credentials.read()).toEqual({});
 		for (const update of updates) expect(JSON.stringify(update)).not.toContain(CLAUDE_TOKEN);
 	});
 
@@ -197,20 +203,21 @@ describe('LoginBrokerService', () => {
 			expect(broker.getActiveSession('claude-code', 'b')?.id).toBe(b.id);
 		});
 
-		it('stores the token for that account only', async () => {
+		it('a verified native login for that account: verified on its own config dir, nothing stored, migration told which account', async () => {
 			const prepareAccount = jest.fn();
 			const broker = make({ ensureAccountDir: (a) => path.join(dir, a), prepareAccount });
 			const { id } = broker.start('claude-code', 'subscription', { account: 'b' });
 			ptys[0].emit(CLAUDE_SCREEN);
 			broker.input(id, 'code#state');
 			const done = broker.waitForCompletion(id);
-			ptys[0].emit(CLAUDE_TOKEN_SCREEN);
+			ptys[0].exit(0);
 			await flush();
 			expect((await done).state).toBe('succeeded');
-			expect(credentials.getClaudeAccountToken('b')).toBe(CLAUDE_TOKEN);
-			expect(credentials.read().claude).toBeUndefined();
+			expect(verify).toHaveBeenCalledWith('claude-code', 'b');
+			expect(afterClaudeLogin).toHaveBeenCalledWith('b');
 			expect(prepareAccount).toHaveBeenCalledWith('b');
 			expect(prepareClaudeConfig).not.toHaveBeenCalled();
+			expect(credentials.read()).toEqual({});
 		});
 
 		it('refuses an account for a harness without accounts', () => {
@@ -263,47 +270,65 @@ describe('LoginBrokerService', () => {
 		expect(broker.get(id)).toMatchObject({ state: 'awaiting_user', needsInput: true, message: 'Invalid code. Please make sure the full code was copied.' });
 	});
 
-	it('Claude: a failure without a new prompt fails the session', () => {
+	it('Claude: a failure line is kept, the login is not killed mid-write, and the exit decides', async () => {
+		verify.mockResolvedValue(false);
 		const broker = make();
 		const { id } = broker.start('claude-code', 'subscription');
 		ptys[0].emit(CLAUDE_SCREEN);
 		broker.input(id, 'code');
 		ptys[0].emit('OAuth error: access_denied\r\n');
+		// The CLI exits by itself and may still be saving a login: not killed, not failed yet.
+		expect(ptys[0].killed).toBe(false);
+		expect(broker.get(id).message).toBe('OAuth error: access_denied');
+		ptys[0].exit(1);
+		await flush();
 		expect(broker.get(id)).toMatchObject({ state: 'failed', message: 'OAuth error: access_denied' });
-		expect(ptys[0].killed).toBe(true);
+		expect(afterClaudeLogin).not.toHaveBeenCalled();
 	});
 
-	it('Claude: exiting without a token fails the session', async () => {
+	it('Claude: exit 1 and the account still not logged in fails the session', async () => {
+		verify.mockResolvedValue(false);
 		const broker = make();
 		const { id } = broker.start('claude-code', 'subscription');
 		ptys[0].emit(CLAUDE_SCREEN);
 		ptys[0].exit(1);
 		await flush();
 		expect(broker.get(id)).toMatchObject({ state: 'failed', message: expect.stringContaining('code 1') });
-		expect(credentials.getClaudeCredentialKind()).toBeNull();
+		expect(afterClaudeLogin).not.toHaveBeenCalled();
 	});
 
-	it('Claude: a token printed right before exit is still captured', async () => {
+	it('Claude: exit 0 but the real turn does not work fails the session (a login that only looks done is not done)', async () => {
+		verify.mockResolvedValue(false);
 		const broker = make();
 		const { id } = broker.start('claude-code', 'subscription');
-		ptys[0].emit(`Token:\r\n${CLAUDE_TOKEN}`);
-		expect(broker.get(id).state).toBe('starting');
+		ptys[0].emit(CLAUDE_SCREEN);
+		ptys[0].exit(0);
+		await flush();
+		expect(broker.get(id)).toMatchObject({ state: 'failed' });
+		expect(afterClaudeLogin).not.toHaveBeenCalled();
+		expect(prepareClaudeConfig).not.toHaveBeenCalled();
+	});
+
+	it('Claude: a token printed on the screen is not read: it is not stored, not exposed, and is not a success', async () => {
+		const broker = make();
+		const { id } = broker.start('claude-code', 'subscription');
+		ptys[0].emit(CLAUDE_SCREEN);
+		ptys[0].emit(`Your OAuth token:\r\n${CLAUDE_TOKEN}\r\n`);
+		expect(broker.get(id).state).not.toBe('succeeded');
+		expect(broker.get(id).screen).not.toContain(CLAUDE_TOKEN);
+		expect(broker.get(id).screen).toContain('[redacted]');
+		expect(credentials.read()).toEqual({});
+		expect(fs.existsSync(path.join(dir, 'creds.json'))).toBe(false);
+	});
+
+	it('Claude: a failing migration step does not fail a login that worked', async () => {
+		afterClaudeLogin.mockRejectedValue(new Error('migration broke'));
+		const broker = make();
+		const { id } = broker.start('claude-code', 'subscription');
+		ptys[0].emit(CLAUDE_SCREEN);
 		ptys[0].exit(0);
 		await flush();
 		expect(broker.get(id).state).toBe('succeeded');
-		expect(credentials.read().claude?.oauthToken).toBe(CLAUDE_TOKEN);
-	});
-
-	it('Claude: a store failure fails the session without leaking the token', async () => {
-		const broken = { setClaudeOauthToken: () => { throw new Error('disk full'); } } as unknown as HarnessCredentialsStore;
-		const broker = make({ credentials: broken });
-		const { id } = broker.start('claude-code', 'subscription');
-		ptys[0].emit(CLAUDE_TOKEN_SCREEN);
-		await flush();
-		const session = broker.get(id);
-		expect(session.state).toBe('failed');
-		expect(session.message).toContain('disk full');
-		expect(JSON.stringify(session)).not.toContain(CLAUDE_TOKEN);
 	});
 
 	it('Codex: URL + code → awaiting_user; exit 0 → verified → succeeded', async () => {
@@ -316,7 +341,7 @@ describe('LoginBrokerService', () => {
 		ptys[0].exit(0);
 		const session = await broker.waitForCompletion(id);
 		expect(session.state).toBe('succeeded');
-		expect(verify).toHaveBeenCalledWith('codex-cli');
+		expect(verify).toHaveBeenCalledWith('codex-cli', undefined);
 		expect(verify).toHaveBeenCalledTimes(1);
 	});
 
@@ -375,7 +400,7 @@ describe('LoginBrokerService', () => {
 		ptys[0].exit(1);
 		const session = await broker.waitForCompletion(id);
 		expect(session.state).toBe('succeeded');
-		expect(verify).toHaveBeenCalledWith('codex-cli');
+		expect(verify).toHaveBeenCalledWith('codex-cli', undefined);
 	});
 
 	it('Codex: an error line with no exit fails after the grace period', () => {

@@ -285,6 +285,17 @@ describe('OwnerMessageWatchdogService', () => {
       expect(h.service.size).toBe(0);
     });
 
+    it('an agent waiting for a running-agent slot → no note in the owner thread (2026-10-19 Dex)', async () => {
+      const h = makeHarness();
+      h.nudgeOutcome.value = { outcome: 'blocked', reason: 'slot_wait' };
+      h.service.track(slackInput());
+      h.clock.t += C.NUDGE_AFTER_MS;
+      await h.service.tick();
+      expect(h.nudges).toHaveLength(1);
+      expect(h.notes).toHaveLength(0);
+      expect(h.service.size).toBe(0);
+    });
+
     // specs/2026-10-02-spend-cap.md: a capped agent starts no new turn, so a
     // nudge would only queue again — the owner is told why instead.
     it('daily token cap → no nudge, one note naming the cap and how to boost it', async () => {

@@ -4,6 +4,7 @@
  * @module services/task-pool/task-pool.service.test
  */
 
+import { ThreadAnswerLog, setThreadAnswerLog } from '../messaging/thread-answer-log.js';
 import { TaskPoolService, WorkItemClaimedError } from './task-pool.service.js';
 import { originOfWorkItem } from '../orc/work-item-destination.js';
 import { setOwnerThreadSentinel, type OwnerThreadSentinelService } from '../messaging/owner-thread-sentinel.service.js';
@@ -178,6 +179,46 @@ describe('TaskPoolService', () => {
         expect(storedVerify.metadata?.origin).toEqual(stored.metadata?.origin);
       });
 
+      describe('team lead report stamp (crewly#1371)', () => {
+        const stamp = { lead: 'ella', worker: 'luna', teamId: 'mkt', teamName: 'Marketing', slackChannelId: 'C0MKT', channelName: 'marketing' };
+        afterEach(() => service.setLeadReportResolver(null));
+
+        it('owner work the orc delegates is stamped; its verify item copies the stamp without asking again', async () => {
+          const resolver = jest.fn(async () => stamp);
+          service.setLeadReportResolver(resolver);
+          service.setTurnOriginLookup((s) => (s === 'crewly-orc' ? ownerTurn : undefined));
+          const delegate = makeWorkItem({ target: 'luna', metadata: { delegatedBy: 'crewly-orc', ownerThread: 'C0BRIEF:1790856242.596149' } });
+          await service.addToPool(delegate, { creatorSession: 'crewly-orc' });
+          const stored = (await service.getAllItems()).find((w) => w.id === delegate.id)!;
+          expect(stored.metadata?.leadReport).toEqual(stamp);
+          expect(resolver).toHaveBeenCalledWith(expect.objectContaining({ creator: 'crewly-orc' }));
+
+          service.setTurnOriginLookup(() => undefined);
+          const verify = makeWorkItem({ id: `${delegate.id}:verify:${delegate.id}`, type: 'review', target: 'ella', parentWorkItemId: delegate.id, metadata: { verifyOf: delegate.id } });
+          await service.addToPool(verify);
+          expect((await service.getAllItems()).find((w) => w.id === verify.id)!.metadata?.leadReport).toEqual(stamp);
+          expect(resolver).toHaveBeenCalledTimes(1);
+        });
+
+        it('non-owner work is never offered to the resolver; a failing resolver adds nothing', async () => {
+          const resolver = jest.fn(async () => stamp);
+          service.setLeadReportResolver(resolver);
+          service.setTurnOriginLookup(() => undefined);
+          const own = makeWorkItem({ target: 'luna', metadata: { delegatedBy: 'ella' } });
+          await service.addToPool(own, { creatorSession: 'ella' });
+          expect(resolver).not.toHaveBeenCalled();
+          expect((await service.getAllItems())[0].metadata?.leadReport).toBeUndefined();
+
+          service.setLeadReportResolver(async () => Promise.reject(new Error('teams')));
+          service.setTurnOriginLookup(() => ownerTurn);
+          const owner = makeWorkItem({ target: 'luna', metadata: { delegatedBy: 'crewly-orc', ownerThread: 'C0BRIEF:1790856242.596149' } });
+          await service.addToPool(owner, { creatorSession: 'crewly-orc' });
+          const stored = (await service.getAllItems()).find((w) => w.id === owner.id)!;
+          expect(stored.metadata?.origin).toMatchObject({ kind: 'owner' });
+          expect(stored.metadata?.leadReport).toBeUndefined();
+        });
+      });
+
       it('a retry / give-up review linked by sourceWorkItemId inherits too', async () => {
         service.setTurnOriginLookup(() => ownerTurn);
         const source = makeWorkItem({ target: 'atlas' });
@@ -186,6 +227,23 @@ describe('TaskPoolService', () => {
         const review = makeWorkItem({ type: 'review', target: 'atlas', metadata: { sourceWorkItemId: source.id } });
         await service.addToPool(review);
         expect((await service.getAllItems()).find((w) => w.id === review.id)!.metadata?.origin).toMatchObject({ kind: 'owner', conversationId: 'room-brief' });
+      });
+
+      /**
+       * Message-routing audit 2026-10-18: an agent's own create-task used to
+       * inherit its last owner turn, so the work later answered in whatever
+       * thread the owner last wrote in. It inherits nothing unless it names
+       * the place (--thread / --conversation).
+       */
+      it("a self-assigned item from create-task (inheritCreatorTurn:false) does not take the creator's owner turn; a named thread is still used", async () => {
+        service.setTurnOriginLookup((s) => (s === 'atlas' ? ownerTurn : undefined));
+        const own = makeWorkItem({ target: 'atlas' });
+        await service.addToPool(own, { creatorSession: 'atlas', inheritCreatorTurn: false });
+        expect((await service.getAllItems()).find((w) => w.id === own.id)!.metadata?.origin).toBeUndefined();
+
+        const named = makeWorkItem({ target: 'atlas', metadata: { ownerThread: 'C0BRIEF:1790856242.596149' } });
+        await service.addToPool(named, { creatorSession: 'atlas', inheritCreatorTurn: false });
+        expect((await service.getAllItems()).find((w) => w.id === named.id)!.metadata?.origin).toMatchObject({ kind: 'owner', conversationId: 'room-brief', threadTs: '1790856242.596149' });
       });
 
       it('no owner turn and no current work → self work gets no origin; an explicit origin is never replaced', async () => {
@@ -228,6 +286,109 @@ describe('TaskPoolService', () => {
         const delegate = makeWorkItem({ target: 'vera', metadata: { delegatedBy: 'owen', ownerThread: 'fbecfa4b-3474-4c61-8a72-79cccb0d1941' } });
         await service.addToPool(delegate, { creatorSession: 'owen' });
         expect((await service.getAllItems())[0].metadata?.origin).toEqual({ kind: 'owner', conversationId: 'room-ce', slackChannelId: 'C0PROCE', threadTs: '1791379103.320929', receivedBy: 'owen' });
+      });
+
+      describe('an owner thread named as <conversation>:<chat thread> (Atlas → Kai, 2026-10-18)', () => {
+        const conv = '4c090d56-0e5c-4efe-a60f-102179761f67';
+        const thread = '2abe83ec-1643-4a0f-b8a2-be5350e726c4';
+
+        it('resolves to that thread\'s Slack place in that conversation', async () => {
+          service.setTurnOriginLookup(() => undefined);
+          service.setChatMessageThreadLookup(async (id) => (id === thread ? { slackChannelId: 'C0DAILY', threadTs: '1792300000.000100', conversationId: conv } : null));
+          const delegate = makeWorkItem({ target: 'kai', metadata: { delegatedBy: 'atlas', ownerThread: `${conv}:${thread}`, projectTicket: 'CREW-786' } });
+          await service.addToPool(delegate, { creatorSession: 'atlas' });
+          expect((await service.getAllItems())[0].metadata?.origin).toEqual(
+            expect.objectContaining({ kind: 'owner', conversationId: conv, slackChannelId: 'C0DAILY', threadTs: '1792300000.000100', chatThreadId: thread }),
+          );
+        });
+
+        it('a chat-only thread keeps the conversation and its thread', async () => {
+          service.setTurnOriginLookup(() => undefined);
+          service.setChatMessageThreadLookup(async () => null);
+          const delegate = makeWorkItem({ target: 'kai', metadata: { delegatedBy: 'atlas', ownerThread: `${conv}:${thread}` } });
+          await service.addToPool(delegate, { creatorSession: 'atlas' });
+          expect((await service.getAllItems())[0].metadata?.origin).toEqual(expect.objectContaining({ kind: 'owner', conversationId: conv, chatThreadId: thread }));
+        });
+
+        it('a thread of another conversation is not used', async () => {
+          service.setTurnOriginLookup(() => undefined);
+          service.setChatMessageThreadLookup(async () => ({ slackChannelId: 'C0OTHER', threadTs: '1.2', conversationId: 'room-other' }));
+          const delegate = makeWorkItem({ target: 'kai', metadata: { delegatedBy: 'atlas', ownerThread: `${conv}:${thread}` } });
+          await service.addToPool(delegate, { creatorSession: 'atlas' });
+          expect((await service.getAllItems())[0].metadata?.origin).not.toEqual(expect.objectContaining({ kind: 'owner' }));
+        });
+      });
+
+      it('isOwnerThreadUnreadable: true only for a named thread Crewly cannot read', async () => {
+        service.setChatMessageThreadLookup(async () => null);
+        expect(await service.isOwnerThreadUnreadable(undefined)).toBe(false);
+        expect(await service.isOwnerThreadUnreadable('  ')).toBe(false);
+        expect(await service.isOwnerThreadUnreadable('C0BRIEF:1790856242.596149')).toBe(false);
+        expect(await service.isOwnerThreadUnreadable('4c090d56-0e5c-4efe-a60f-102179761f67:2abe83ec-1643-4a0f-b8a2-be5350e726c4')).toBe(false);
+        expect(await service.isOwnerThreadUnreadable('garbage')).toBe(true);
+        expect(await service.isOwnerThreadUnreadable('fbecfa4b-3474-4c61-8a72-79cccb0d1941')).toBe(true);
+      });
+
+      // CREW-878: another agent already answered the owner in the named thread.
+      describe('agentAnswersInOwnerThread (CREW-878)', () => {
+        const KEY = 'C0MKT:1792400000.000100';
+        const ownerTurn878 = { conversationId: 'room-mkt', slackChannelId: 'C0MKT', slackThreadKey: KEY, receivedAt: 1_000_000 };
+        let log: ThreadAnswerLog;
+        let clock = 1_000_000;
+        beforeEach(() => {
+          clock = 1_000_000;
+          log = new ThreadAnswerLog(() => clock);
+          setThreadAnswerLog(log);
+          service.setTurnOriginLookup((s) => (s === 'ella' ? ownerTurn878 : undefined));
+          jest.spyOn(Date, 'now').mockImplementation(() => clock);
+        });
+        afterEach(() => {
+          setThreadAnswerLog(null);
+          jest.restoreAllMocks();
+        });
+
+        it('lists a post another agent made (reply --work-item included) after the owner message', async () => {
+          clock += 60_000;
+          log.record({ agent: 'luna', slackChannelId: 'C0MKT', threadTs: '1792400000.000100', text: 'Answered via work item' });
+          const answers = await service.agentAnswersInOwnerThread(KEY, 'ella');
+          expect(answers.map((a) => a.agent)).toEqual(['luna']);
+          expect(answers[0].preview).toBe('Answered via work item');
+        });
+
+        it('no answer, no warning', async () => {
+          expect(await service.agentAnswersInOwnerThread(KEY, 'ella')).toEqual([]);
+        });
+
+        it('the delegator\'s own post is not "someone else answered"', async () => {
+          clock += 1000;
+          log.record({ agent: 'ella', slackChannelId: 'C0MKT', threadTs: '1792400000.000100', text: 'On it' });
+          expect(await service.agentAnswersInOwnerThread(KEY, 'ella')).toEqual([]);
+        });
+
+        it('the target\'s own post is not "someone else answered"', async () => {
+          clock += 1000;
+          log.record({ agent: 'luna', slackChannelId: 'C0MKT', threadTs: '1792400000.000100', text: 'First part' });
+          expect(await service.agentAnswersInOwnerThread(KEY, 'ella', 'luna')).toEqual([]);
+          expect((await service.agentAnswersInOwnerThread(KEY, 'ella', 'sam')).map((p) => p.agent)).toEqual(['luna']);
+        });
+
+        it('a post older than the owner\'s last message does not count', async () => {
+          log.record({ agent: 'luna', slackChannelId: 'C0MKT', threadTs: '1792400000.000100', text: 'earlier answer' });
+          clock += 5000;
+          service.setTurnOriginLookup(() => ({ ...ownerTurn878, receivedAt: clock }));
+          expect(await service.agentAnswersInOwnerThread(KEY, 'ella')).toEqual([]);
+        });
+
+        it('unknown owner time or no log never blocks', async () => {
+          clock += 1000;
+          log.record({ agent: 'luna', slackChannelId: 'C0MKT', threadTs: '1792400000.000100', text: 'x' });
+          service.setTurnOriginLookup(() => undefined);
+          service.setOwnerAskedAtLookup(async () => null);
+          expect(await service.agentAnswersInOwnerThread(KEY, 'ella')).toEqual([]);
+          setThreadAnswerLog(null);
+          expect(await service.agentAnswersInOwnerThread(KEY, 'ella')).toEqual([]);
+          expect(await service.agentAnswersInOwnerThread('garbage', 'ella')).toEqual([]);
+        });
       });
 
       it('an unreadable explicit thread falls back to normal inheritance (a delegation: the delegator)', async () => {
@@ -2675,6 +2836,19 @@ describe('TaskPoolService', () => {
         expect.objectContaining({ workItemId: wi.id, teamId: '' }),
       ]);
     });
+
+    it('task:verified on lead-reported team work carries the orchestrator note (crewly#1371)', async () => {
+      const leadReport = { lead: 'ella', leadName: 'Ella', worker: 'think-tank-sage', teamId: 'team-think-tank', teamName: 'Think Tank', slackChannelId: 'C0TT', channelName: 'think-tank' };
+      const wi = makeWorkItem({ target: 'think-tank-sage', metadata: { reviewer: 'tl-sam', leadReport } });
+      await service.addToPool(wi);
+      await service.claimSpecificItem('think-tank-sage', wi.id);
+      await service.submitForVerification(wi.id, { role: 'agent', session: 'think-tank-sage' });
+      await service.verifyItem(wi.id, { role: 'owner' }, 'verified');
+
+      const verified = published.filter((e) => e.type === 'task:verified');
+      expect(verified).toHaveLength(1);
+      expect(verified[0].orchestratorNote).toBe('No owner post needed — Ella reports it in #think-tank; do not post it in your thread with the owner.');
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -4423,6 +4597,74 @@ describe('TaskPoolService', () => {
       await service.addToPool(wi);
       await expect(service.blockItem(wi.id, { agentId: AGENT })).rejects.toThrow(/Invalid status transition/);
     });
+
+    // block-task `until`: work that can only proceed at a known time parks
+    // itself and comes back on its own — no holding the item `running`
+    // while waiting, no reporting it done before it is.
+    describe('block with `until`', () => {
+      const find = async (id: string) => (await service.getAllItems()).find((w) => w.id === id)!;
+
+      it('records the time; the reconciler lifts the block once it has passed, back to queued for the same agent', async () => {
+        const wi = makeWorkItem({ title: 'GA4 readout after the window closes', target: AGENT });
+        await service.addToPool(wi);
+        await service.claimFromPool(AGENT);
+        const until = new Date(Date.now() - 1_000).toISOString();
+        await service.blockItem(wi.id, { agentId: AGENT, reason: 'needs the full 7-day window', until });
+
+        let after = await find(wi.id);
+        expect(after.status).toBe('blocked');
+        expect(after.blockSource).toBe(WORK_ITEM_BLOCK_SOURCES.EXPLICIT);
+        expect(after.metadata?.blockedUntil).toBe(until);
+        expect((await service.getActiveClaims()).filter((c) => c.workItemId === wi.id)).toHaveLength(0);
+
+        await new ReconcilerService(makeProvider(activeHealth())).runFull();
+        after = await find(wi.id);
+        expect(after.status).toBe('queued');
+        expect(after.target).toBe(AGENT);
+        expect(after.metadata?.blockedUntil).toBeUndefined();
+        expect((await service.claimFromPool(AGENT))?.workItem.id).toBe(wi.id);
+      });
+
+      it('stays blocked on the tick while the time is still ahead', async () => {
+        const wi = makeWorkItem({ title: 'later', target: AGENT });
+        await service.addToPool(wi);
+        await service.claimFromPool(AGENT);
+        const until = new Date(Date.now() + 60 * 60_000).toISOString();
+        await service.blockItem(wi.id, { agentId: AGENT, reason: 'runs at 08:30Z', until });
+
+        await new ReconcilerService(makeProvider(activeHealth())).runFull();
+        const after = await find(wi.id);
+        expect(after.status).toBe('blocked');
+        expect(after.metadata?.blockedUntil).toBe(until);
+        expect(after.releaseCount ?? 0).toBe(0);
+        expect(await service.claimFromPool(AGENT)).toBeNull();
+      });
+
+      it('a later block without `until` does not inherit the earlier time', async () => {
+        const wi = makeWorkItem({ title: 'twice blocked', target: AGENT });
+        await service.addToPool(wi);
+        await service.claimFromPool(AGENT);
+        await service.blockItem(wi.id, { agentId: AGENT, reason: 'first', until: new Date(Date.now() + 60_000).toISOString() });
+        await service.releaseBack(wi.id, 'unblocked early');
+        expect((await find(wi.id)).metadata?.blockedUntil).toBeUndefined();
+
+        await service.claimFromPool(AGENT);
+        await service.blockItem(wi.id, { agentId: AGENT, reason: 'second, open-ended' });
+        const after = await find(wi.id);
+        expect(after.status).toBe('blocked');
+        expect(after.metadata?.blockedUntil).toBeUndefined();
+        await new ReconcilerService(makeProvider(activeHealth())).runFull();
+        expect((await find(wi.id)).status).toBe('blocked');
+      });
+
+      it('an unparsable `until` is refused before anything changes', async () => {
+        const wi = makeWorkItem({ title: 'bad time', target: AGENT });
+        await service.addToPool(wi);
+        await service.claimFromPool(AGENT);
+        await expect(service.blockItem(wi.id, { agentId: AGENT, reason: 'x', until: 'tomorrow 8:30' })).rejects.toThrow(/Invalid until/);
+        expect((await find(wi.id)).status).toBe('running');
+      });
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -4544,6 +4786,20 @@ describe('TaskPoolService', () => {
         await service.completeItem(ce19, { summary: 'done anyway' }, veraActor);
         const done = await service.findWorkItem(ce19);
         expect(done?.status).toBe('done_by_worker');
+        expect(typeof done?.metadata?.completedWhileBlockedAt).toBe('string');
+      });
+
+      it('finishing a timed block early drops its until (CE-316 kept blockedUntil after verified)', async () => {
+        const { ce19 } = await seed();
+        await service.claimSpecificItem(VERA, ce19);
+        const until = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+        await service.blockItem(ce19, { agentId: VERA, reason: 'readout window', until });
+        expect((await service.findWorkItem(ce19))?.metadata?.blockedUntil).toBe(until);
+
+        await service.completeItem(ce19, { summary: 'readout sent early' }, veraActor);
+        const done = await service.findWorkItem(ce19);
+        expect(done?.status).toBe('done_by_worker');
+        expect(done?.metadata?.blockedUntil).toBeUndefined();
         expect(typeof done?.metadata?.completedWhileBlockedAt).toBe('string');
       });
 

@@ -633,6 +633,83 @@ describe('ProjectMemoryService', () => {
       const results = await service.searchAll(testProjectPath, 'nonexistent');
       expect(results.totalCount).toBe(0);
     });
+
+    it('hides entries tagged visibleToPeople from other people but not from the owner (#969)', async () => {
+      await service.addPattern(testProjectPath, {
+        category: 'api',
+        title: 'Auth header for Alice',
+        description: 'Alice auth token lives in her Drive',
+        discoveredBy: 'dev-001',
+        visibleToPeople: ['UALICE'],
+      });
+      await service.addDecision(testProjectPath, {
+        title: 'Auth vendor for Alice',
+        decision: 'Alice auth goes through Okta',
+        rationale: 'her contract',
+        decidedBy: 'dev-001',
+        visibleToPeople: ['UALICE'],
+      });
+      await service.addGotcha(testProjectPath, {
+        title: 'Alice auth expiry',
+        problem: 'Alice auth cookie expires daily',
+        solution: 'renew',
+        severity: 'low',
+        discoveredBy: 'dev-001',
+        visibleToPeople: ['UALICE'],
+      });
+
+      const owner = await service.searchAll(testProjectPath, 'auth');
+      expect(owner.totalCount).toBe(6);
+      const alice = await service.searchAll(testProjectPath, 'auth', { person: 'UALICE' });
+      expect(alice.totalCount).toBe(6);
+      const bob = await service.searchAll(testProjectPath, 'auth', { person: 'UBOB' });
+      expect(bob.totalCount).toBe(3);
+      expect(bob.patterns.map((p) => p.title)).toEqual(['Authentication Pattern']);
+      expect(bob.decisions.map((d) => d.title)).toEqual(['Auth Decision']);
+      expect(bob.gotchas.map((g) => g.title)).toEqual(['Auth Token Expiry']);
+    });
+
+    it('a dedup hit from a private source tags the existing entry; a public one never clears the tag (#969)', async () => {
+      await service.addPattern(testProjectPath, {
+        category: 'api',
+        title: 'Authentication Pattern',
+        description: 'JWT authentication flow',
+        discoveredBy: 'dev-002',
+        visibleToPeople: ['UALICE'],
+      });
+      await service.addDecision(testProjectPath, {
+        title: 'Auth Decision',
+        decision: 'Use JWT for authentication',
+        rationale: 'Stateless auth',
+        decidedBy: 'dev-002',
+        visibleToPeople: ['UALICE'],
+      });
+      await service.addGotcha(testProjectPath, {
+        title: 'Auth Token Expiry',
+        problem: 'Tokens expire silently',
+        solution: 'Implement refresh token flow',
+        severity: 'medium',
+        discoveredBy: 'dev-002',
+        visibleToPeople: ['UALICE'],
+      });
+      // A later public write of the same entries changes nothing.
+      await service.addGotcha(testProjectPath, {
+        title: 'Auth Token Expiry',
+        problem: 'Tokens expire silently',
+        solution: 'Implement refresh token flow',
+        severity: 'medium',
+        discoveredBy: 'dev-003',
+      });
+
+      expect((await service.getPatterns(testProjectPath))).toHaveLength(1);
+      expect((await service.getPatterns(testProjectPath))[0].visibleToPeople).toEqual(['UALICE']);
+      expect((await service.getDecisions(testProjectPath))[0].visibleToPeople).toEqual(['UALICE']);
+      const gotchas = await service.getGotchas(testProjectPath);
+      expect(gotchas).toHaveLength(1);
+      expect(gotchas[0].visibleToPeople).toEqual(['UALICE']);
+      const bob = await service.searchAll(testProjectPath, 'auth', { person: 'UBOB' });
+      expect(bob.totalCount).toBe(0);
+    });
   });
 
   describe('getProjectMemory', () => {

@@ -200,6 +200,41 @@ async function checkArtifact(
   };
 }
 
+/** A named artifact that no longer checks out (crewly#1315). */
+export interface ArtifactDiscrepancy {
+  /** The path as the worker sent it */
+  artifact: string;
+  /** What is wrong with it now */
+  problem: string;
+}
+
+/**
+ * Re-check a verified WorkItem's artifacts some time after completion
+ * (crewly#1315): each local artifact must still exist and be non-empty.
+ * No age check — the file was accepted then; only its presence is in
+ * question now. URLs pass as at completion. Read-only.
+ *
+ * @param workItem - The WorkItem (its `output.evidence` is read)
+ * @param options - File check and home directory, injectable for tests
+ * @returns One entry per artifact that is gone or empty; empty when all hold
+ */
+export async function recheckArtifacts(
+  workItem: Pick<WorkItem, 'output' | 'metadata'>,
+  options: Pick<EvidenceCheckOptions, 'statPath' | 'homeDir'> = {},
+): Promise<ArtifactDiscrepancy[]> {
+  const v = validateCompletionEvidence(workItem.output?.['evidence']);
+  if (!v.ok) return [];
+  const bases = artifactBaseDirs(workItem);
+  const opts = { statPath: options.statPath ?? defaultStatPath, homeDir: options.homeDir ?? os.homedir(), notBeforeMs: null };
+  const out: ArtifactDiscrepancy[] = [];
+  for (const e of v.evidence) {
+    if (e.type !== 'artifact') continue;
+    const check = await checkArtifact(e, bases, opts);
+    if (!check.ok) out.push({ artifact: e.path, problem: check.problem });
+  }
+  return out;
+}
+
 /**
  * An existing local artifact: a file must have content and be newer than the
  * WorkItem (a placeholder or an earlier task's output is not evidence).
@@ -254,6 +289,33 @@ export function blockedReason(blocked: BlockedEvidence[]): string {
  * @param output - The completed WorkItem's `output` (evidence at `output.evidence`)
  * @returns A sentence starting with "Evidence:"
  */
+/**
+ * The worker's decision record (#875), read by the reviewer beside the
+ * evidence: the key decisions made, the options considered and not taken
+ * (with the reason), and the assumptions relied on. Each is an optional list
+ * of short strings on the completion result (a lone string counts as one
+ * entry). Returns '' when the worker recorded none, so a brief without one
+ * stays as it was.
+ */
+export function describeDecisionsForReviewer(output: Record<string, unknown> | undefined): string {
+  const blocks: string[] = [];
+  for (const field of C.DECISION_FIELDS) {
+    const entries = decisionEntries(output?.[field]);
+    if (entries.length === 0) continue;
+    const shown = entries.slice(0, C.REVIEW_LISTED_DECISIONS).map((e) => `  - ${e.slice(0, C.DECISION_ENTRY_MAX_CHARS)}`);
+    if (entries.length > shown.length) shown.push(`  … and ${entries.length - shown.length} more`);
+    blocks.push(`${C.DECISION_LABELS[field]}:\n${shown.join('\n')}`);
+  }
+  if (blocks.length === 0) return '';
+  return `Worker's record — check these hold, not only that the work exists:\n${blocks.join('\n')}`;
+}
+
+/** One decision field as a list of non-empty strings; anything else is nothing. */
+function decisionEntries(raw: unknown): string[] {
+  const list = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : [];
+  return list.filter((e): e is string => typeof e === 'string' && e.trim().length > 0).map((e) => e.trim());
+}
+
 export function describeEvidenceForReviewer(output: Record<string, unknown> | undefined): string {
   const v = validateCompletionEvidence(output?.['evidence']);
   const evidence = v.ok ? v.evidence : [];

@@ -175,3 +175,32 @@ export function skillLabel(method: string, apiPath: string): string {
 	});
 	return `${method.toUpperCase()} ${segments.join('/')}`;
 }
+
+/** Sender header of a chat-routed post written by an agent: `<Name (agent)@#room>`. */
+const AGENT_SENDER_HEADER = /^\s*\[G?CHAT:[^\]]*\]\s*<([^>]*?)\s*\(agent\)@[^>]*>/;
+
+/** A room digest the harness delivers as background (`[Context only — …]`). */
+const CONTEXT_ONLY = /^\s*(?:\[G?CHAT:[^\]]*\]\s*)?(?:<[^>]*>\s*)?\[Context only\b/;
+
+/**
+ * Whether a chat-routed delivery was written by an agent, not the owner:
+ * another agent's room post (and the thread digest it carries) or a
+ * context-only room digest. Both share the owner's `[CHAT:…]` prefix
+ * (crewly#1389).
+ *
+ * @param text - Delivered text
+ * @returns True when the owner is not the author
+ */
+export function isAgentAuthoredChat(text: string): boolean {
+	return AGENT_SENDER_HEADER.test(text) || CONTEXT_ONLY.test(text);
+}
+
+/**
+ * The agent named in a chat post's sender header.
+ *
+ * @param text - Delivered text
+ * @returns The agent's display name, or undefined
+ */
+export function agentSenderName(text: string): string | undefined {
+	return AGENT_SENDER_HEADER.exec(text)?.[1]?.trim() || undefined;
+}

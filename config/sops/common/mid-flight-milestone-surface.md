@@ -22,6 +22,11 @@ tags:
   - proactive
   - milestone
   - silent-shipping
+# Rule metadata (#877): what this rule prevents, where seen, when to re-test
+prevents: "Workers and team leads shipped milestones silently: 21 role prompts had 0–1 mentions of 'milestone', so progress surfaced only when someone asked (RC1, QW-1)"
+seenOn: "claude-code, model not recorded (2026-05)"
+reviewBy: 2027-01-31
+source: https://github.com/stevehuang0115/crewly/issues/427
 ---
 
 # Mid-Flight Milestone Surface

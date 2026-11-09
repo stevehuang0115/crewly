@@ -387,6 +387,8 @@ export class ChannelStore {
     const result = this.db
       .prepare(`DELETE FROM chat_channels WHERE id = ?`)
       .run(id);
+    // The read marker has no FK (its DDL is a fixed contract), so drop it here.
+    this.db.prepare(`DELETE FROM chat_read_state WHERE channel_id = ?`).run(id);
     return result.changes > 0;
   }
 

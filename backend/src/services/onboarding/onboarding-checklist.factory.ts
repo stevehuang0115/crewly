@@ -16,6 +16,7 @@ import { TemplateService } from '../template/template.service.js';
 import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import { CloudClientService } from '../cloud/cloud-client.service.js';
 import { getSlackService } from '../slack/slack.service.js';
+import { BrowserBridgeService } from '../browser/browser-bridge.service.js';
 import { sendChatMessageToOrchestrator } from '../../controllers/chat/chat.controller.js';
 import { OnboardingStateStore } from './onboarding-state.store.js';
 import { getBundleCatalog } from '../bundle/bundle-apply.factory.js';
@@ -85,6 +86,7 @@ export function createDefaultOnboardingDeps(): OnboardingChecklistDeps {
 			return { connected, tier: connected ? cloud.getTier() : null };
 		},
 		isSlackConnected: () => getSlackService().isConnected(),
+		isBrowserConnected: () => BrowserBridgeService.getInstance().isConnected(),
 		sendToOrchestrator: sendViaChat,
 		now: () => new Date(),
 	};

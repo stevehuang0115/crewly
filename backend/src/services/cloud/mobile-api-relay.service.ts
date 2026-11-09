@@ -116,6 +116,10 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // internet should be able to act as one.
   { method: 'GET', prefix: '/browser/sessions' },
   { method: 'POST', prefix: '/browser/sessions' },
+  // Whether a Chrome is connected (drivable) on this machine. The portal's
+  // Browser page uses it to offer "Install Crewly in Chrome" only to someone
+  // who has none connected. Read-only; exact, so no other /browser/* GET opens.
+  { method: 'GET', prefix: '/browser/status', exact: true },
   // "Back up now" from the portal: start a cloud backup of this machine and
   // watch it finish. Restoring is left to the machine itself — overwriting a
   // workspace should need someone at it.

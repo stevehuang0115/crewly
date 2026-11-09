@@ -52,7 +52,7 @@ the owner owns; never use it for another person's account.
 ## What happens
 
 1. Crewly starts the harness's own login command in a terminal it keeps alive
-   (`claude setup-token` for Claude, `codex login --device-auth` for Codex) —
+   (`claude auth login` for Claude, `codex login --device-auth` for Codex) —
    even when the harness is still logged in, because the owner asked.
 2. The owner gets the link (and Codex's one-time code) in Slack, in the thread
    they asked in.

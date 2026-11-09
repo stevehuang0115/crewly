@@ -57,6 +57,35 @@ bash execute.sh --question "Send the partner email on Monday?" \
 | `--deadline` | Optional, ISO (`2026-10-02T12:00`). Default: tomorrow 12:00 |
 | `--ticket APP-12 --project P` | Optional. Ask about a ticket; the card goes in the ticket's thread, asked by its assignee |
 | `--sensitive email\|publish\|deploy\|spend` | Required for messages to outside people, public publishing, prod deploys, spending money. These are never auto-applied: the owner is re-asked once, then the question is parked |
+| `--requested-by "Ella, Oct 6"` | Optional. Who asked for this work, and when |
+| `--owner-last-said "…"` | Optional. What the owner said last about it (quote them) |
+| `--runtime-changes "…"` | What changes at runtime if the owner says yes: new background jobs, polling, scopes, data written. **Required on a merge card** |
+| `--link URL` | Optional. The PR / doc link; shown in a short "Details" line under the card |
+
+**Write the card for the owner, not for the team.** The card's title IS your question, so:
+
+- Plain words, in the **owner's language**. If the owner writes Chinese, the question and your options
+  must be Chinese; an English question to a Chinese-speaking owner is rejected. Generic buttons
+  ("Yes", "Not now", "Remind me tomorrow") are translated for you.
+- No ticket ids (`CREW-646`), PR numbers (`PR #1138`), branch or worktree names, or `GOAL:` prefixes.
+  Crewly strips them from the question; if nothing plain is left, the ask is rejected: rewrite it as
+  what changes for the owner ("Should agents' Gmail emails go out only after you approve them?").
+  Put the PR link in `--link`.
+- Name the options by their outcome ("Merge" / "Not now"), not "Yes / No / Skip". For a Chinese
+  owner, write the example below in Chinese: question, options and context alike.
+
+**Merge cards** (the question or an option is about merging) must carry what the owner needs to decide
+without opening the PR: `--runtime-changes` (required), and `--requested-by` / `--owner-last-said` when
+you know them. Before asking, check the ticket for an earlier "hold" or "no" from the owner; if there is
+one, ask whether to **close** it, quoting their words, never "merge?".
+
+```bash
+bash execute.sh --question "Should agents' Gmail emails go out only after you tap Approve on a card?" \
+  --option "Merge — every email waits for you" --option "Not now" --default wait \
+  --requested-by "Ella, Oct 6" --owner-last-said "我要的是视频 不是新增功能" \
+  --runtime-changes "Checks Gmail every 30 s from boot and adds the send-mail permission" \
+  --link https://github.com/org/repo/pull/1138
+```
 
 **"A or B?" is ONE card with options.** When the answers exclude each other (change it now / try the
 current version first), post a single ask with one `--option` per alternative. Never post two Yes/No
@@ -81,6 +110,8 @@ What happens:
 - The owner can **Skip** a card. You then get `[DECISION D-7] The owner skipped this — drop it,
   don't ask again`. Drop that work. Asking the same question again in that ticket or request
   within 30 days is refused with an error.
+- While your card is open, the work item you asked it from (and the ticket's work) is not cancelled
+  by the 24 h work-item TTL: the owner's answer is what it waits for.
 - If nobody answers by the deadline, the default is applied and you are told. A `wait` default or a
   sensitive ask never goes ahead without an answer. For a `wait` default nothing is posted to the
   owner at the deadline; you are told, and if the question is already settled (for example the

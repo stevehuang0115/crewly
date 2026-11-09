@@ -13,14 +13,14 @@
  */
 
 import type { Request, Response } from 'express';
-import { AGENT_STATUS_HOOK_CONSTANTS, CREDENTIAL_GUARD_CONSTANTS, ORCHESTRATOR_SESSION_NAME, TEAM_ROSTER_CONSTANTS, TL_DELEGATION_CONSTANTS, TRACE_CONSTANTS, TURN_STATE_CONSTANTS } from '../../constants.js';
+import { AGENT_STATUS_HOOK_CONSTANTS, CREDENTIAL_GUARD_CONSTANTS, ORCHESTRATOR_SESSION_NAME, OWNER_HOOK_MESSAGE_CONSTANTS, TEAM_ROSTER_CONSTANTS, TL_DELEGATION_CONSTANTS, TRACE_CONSTANTS, TURN_STATE_CONSTANTS } from '../../constants.js';
 import { TeamRosterService } from '../../services/team-roster/team-roster.service.js';
 import { TlDelegationService } from '../../services/tl-delegation/tl-delegation.service.js';
 import { CredentialGuardAlertService } from '../../services/monitoring/credential-guard-alerts.js';
 import { recordHookEvent } from '../../services/monitoring/agent-hook-state.js';
 import { AgentTurnStateService, type TurnHookIds } from '../../services/monitoring/agent-turn-state.js';
 import { traceSubagentSendBack } from '../../services/trace/trace-recorder.js';
-import { joinHookNotes, ownerHookNoteFor } from '../../services/messaging/owner-hook-message.js';
+import { HOOK_NOTE_JOIN_RESERVE, joinHookNotes, ownerHookNoteFor } from '../../services/messaging/owner-hook-message.js';
 import { WindDownService } from '../../services/system/wind-down.service.js';
 import { getBoardActivity } from '../../services/board/board-activity.tracker.js';
 import { parseToolInput } from '../../services/board/board-activity.normalizer.js';
@@ -178,7 +178,11 @@ export function receiveAgentHook(req: Request, res: Response): void {
 		if (!ids.agentId) {
 			try {
 				// A wind-down note (Crewly is shutting down / restarting) goes first.
-				ownerNote = joinHookNotes([WindDownService.getInstance()?.noteForHook(sessionName), ownerHookNoteFor(sessionName)]);
+				// The owner note gets the room the other notes leave, so the
+				// owner's text is fitted (or pointed to) instead of sliced.
+				const windDown = WindDownService.getInstance()?.noteForHook(sessionName) ?? null;
+				const room = OWNER_HOOK_MESSAGE_CONSTANTS.MAX_CONTEXT_CHARS - HOOK_NOTE_JOIN_RESERVE - (windDown ? windDown.length + 2 : 0);
+				ownerNote = joinHookNotes([windDown, ownerHookNoteFor(sessionName, process.env, undefined, room)], OWNER_HOOK_MESSAGE_CONSTANTS.MAX_CONTEXT_CHARS - HOOK_NOTE_JOIN_RESERVE);
 			} catch {
 				ownerNote = null;
 			}

@@ -9,6 +9,7 @@ import {
   OwnerThreadSentinelService,
   detectPromise,
   getOwnerThreadSentinel,
+  onAgentSlackPost,
   owingAgentsOnDisk,
   parsePromisedMinutes,
   reportOwnerThreadAgentPost,
@@ -533,6 +534,19 @@ describe('singleton helpers', () => {
     await new Promise((r) => setImmediate(r));
     expect(h.posts).toHaveLength(1);
     expect(threadKey(THREAD)).toBe(`${CH}:${TS}`);
+  });
+
+  it('agent post listeners get every post with its author, survive a throwing listener and unsubscribe (crewly#1376)', () => {
+    const seen: string[] = [];
+    const offBad = onAgentSlackPost(() => {
+      throw new Error('boom');
+    });
+    const off = onAgentSlackPost((p) => seen.push(`${p.agent}@${p.slackChannelId}:${p.threadTs}`));
+    reportOwnerThreadAgentPost({ ...THREAD, agent: 'sage', text: 'PDF' });
+    off();
+    offBad();
+    reportOwnerThreadAgentPost({ ...THREAD, agent: 'sage', text: 'again' });
+    expect(seen).toEqual([`sage@${CH}:${TS}`]);
   });
 });
 

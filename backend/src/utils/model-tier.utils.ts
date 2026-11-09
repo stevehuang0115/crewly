@@ -12,7 +12,7 @@
  */
 
 import { MODEL_TIER_CONSTANTS } from '../constants.js';
-import type { ModelTier, TeamTierModels } from '../types/index.js';
+import type { ModelTier, Team, TeamTierModels, TierChangeMode } from '../types/index.js';
 import { isSafeModelId } from './runtime-model-flags.utils.js';
 
 /** Tiers, strongest first. */
@@ -26,6 +26,37 @@ export const MODEL_TIERS: readonly ModelTier[] = MODEL_TIER_CONSTANTS.TIERS;
  */
 export function isModelTier(value: unknown): value is ModelTier {
   return typeof value === 'string' && (MODEL_TIERS as readonly string[]).includes(value);
+}
+
+/**
+ * Whether a value names a tier change mode.
+ *
+ * @param value - Candidate
+ * @returns True for `approve` or `auto`
+ */
+export function isTierChangeMode(value: unknown): value is TierChangeMode {
+  return typeof value === 'string' && (MODEL_TIER_CONSTANTS.CHANGE_MODES as readonly string[]).includes(value);
+}
+
+/**
+ * A team's tier change mode (default `approve`).
+ *
+ * @param team - Team
+ * @returns Mode
+ */
+export function tierChangeModeOf(team: Pick<Team, 'tierChangeMode'>): TierChangeMode {
+  return isTierChangeMode(team.tierChangeMode) ? team.tierChangeMode : MODEL_TIER_CONSTANTS.DEFAULT_CHANGE_MODE;
+}
+
+/**
+ * Whether the lead's tier changes apply at once for this team: "Optimize
+ * usage" is on and the owner chose "Lead decides, tells me".
+ *
+ * @param team - Team
+ * @returns True in auto mode
+ */
+export function leadChangesTiersItself(team: Pick<Team, 'optimizeUsage' | 'tierChangeMode'>): boolean {
+  return team.optimizeUsage === true && tierChangeModeOf(team) === 'auto';
 }
 
 /**

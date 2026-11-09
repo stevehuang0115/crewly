@@ -4,7 +4,7 @@
  *
  * Exposes a single GET endpoint that returns a JSON briefing of the
  * authoritative Request + WorkItem state for the calling agent. This is the
- * "freshness escape hatch" referenced in the recovery protocol Step 1.5:
+ * "freshness escape hatch" referenced in the recovery protocol Step 2:
  * the briefing is also injected server-side at registration time, but a
  * long-running session can call this endpoint to refresh after restart-time
  * snapshot ages out.

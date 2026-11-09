@@ -1,0 +1,14 @@
+{
+  "month": "2026-09",
+  "income": 4620.5,
+  "expenses": 2000.43,
+  "net": 2620.07,
+  "byCategory": {
+    "sales": 4620.5,
+    "software": -90.38,
+    "travel": -68.8,
+    "office_supplies": -41.25,
+    "advertising": -300.0,
+    "rent": -1500.0
+  }
+}

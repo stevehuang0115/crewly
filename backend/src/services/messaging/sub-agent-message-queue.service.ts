@@ -19,6 +19,7 @@ import { mkdirSync, existsSync } from 'fs';
 import { atomicWriteFileSync, quarantineCorruptFileSync, readJsonStoreSync, CorruptJsonFileError } from '../../utils/file-io.utils.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { AgentPostLog, currentQueueMeta, type QueueMessageMeta } from './queue-priority.js';
+import { canonicalAgentSession } from '../../utils/orchestrator-alias.utils.js';
 
 /**
  * A single queued message destined for a sub-agent.
@@ -49,8 +50,14 @@ export interface QueuedAgentMessage {
 	queuedAt: number;
 	/** The target session name */
 	sessionName: string;
+	/** Times a flush found the agent busy and kept this message (log noise is cut after the first) */
+	deferrals?: number;
+	/** The last time a flush kept it because the agent was busy (ms): not stale while this is recent */
+	lastDeferredAt?: number;
 	/** Failed delivery attempts so far (a send that threw or reported failure) */
 	attempts?: number;
+	/** Times it was kept, instead of dropped, because the agent was down */
+	keptWhileDown?: number;
 	/**
 	 * The WorkItem this message hands over (a `/deliver` with `workItemId`
 	 * held by the restart drain): its hand-over — dispatcher dedup, fresh
@@ -188,6 +195,8 @@ export class SubAgentMessageQueue {
 	private refresher: QueuedMessageRefresher | null = null;
 	/** Told when undelivered messages are dropped (never silently: crewly#1014) */
 	private dropListener: QueueDropListener | null = null;
+	/** Whether an agent's session is down (no live session) */
+	private isDown: ((sessionName: string) => boolean) | null = null;
 	/** Prepares queued WorkItem briefs (wired by the terminal controller) */
 	private handOverPreparer: QueuedHandOverPreparer | null = null;
 	/** Told about each message the flush delivered */
@@ -242,7 +251,9 @@ export class SubAgentMessageQueue {
 		}
 		if (!stored?.queues) return true;
 		let restored = 0;
-		for (const [sessionName, messages] of Object.entries(stored.queues)) {
+		for (const [storedName, messages] of Object.entries(stored.queues)) {
+			// A queue saved under an alias before 1.20.425 joins the session's own.
+			const sessionName = canonicalAgentSession(storedName);
 			const current = this.pendingMessages.get(sessionName) ?? [];
 			const have = new Set(current.map((m) => `${m.queuedAt}|${m.data}`));
 			const valid = (messages ?? [])
@@ -332,18 +343,22 @@ export class SubAgentMessageQueue {
 	 * submitted a paste of it that had been sitting in the box), so a held
 	 * retry does not deliver it twice.
 	 *
+	 * Also takes back a message held while its agent was being started, once
+	 * it is about to be sent directly.
+	 *
 	 * @param sessionName - The agent
 	 * @param data - The message
+	 * @param why - Why it is removed (logged)
 	 * @returns True when a queued copy was removed
 	 */
-	remove(sessionName: string, data: string): boolean {
+	remove(sessionName: string, data: string, why = 'delivered from the input box'): boolean {
 		const queue = this.pendingMessages.get(sessionName);
 		if (!queue) return false;
 		const i = queue.findIndex((m) => m.data === data);
 		if (i < 0) return false;
 		queue.splice(i, 1);
 		this.save();
-		this.logger.info('Removed a queued message that was delivered from the input box', { sessionName });
+		this.logger.info('Removed a queued message', { sessionName, why });
 		return true;
 	}
 
@@ -354,6 +369,18 @@ export class SubAgentMessageQueue {
 	 *
 	 * @param listener - The listener, or null
 	 */
+	/**
+	 * Install the check for an agent whose session is down. Messages that ran
+	 * out of attempts because the agent was not running are kept for its next
+	 * start (the queued-wake sweep starts it) instead of dropped: 10-16 Pia and
+	 * Atlas each lost owner work that way (2026-10-22 audit).
+	 *
+	 * @param check - Whether a session is down, or null to always drop
+	 */
+	setDownCheck(check: ((sessionName: string) => boolean) | null): void {
+		this.isDown = check;
+	}
+
 	setDropListener(listener: QueueDropListener | null): void {
 		this.dropListener = listener;
 		if (!listener) return;
@@ -553,7 +580,10 @@ export class SubAgentMessageQueue {
 	 * @param data - The raw data string to deliver later
 	 * @param meta - `workItemId` when the message hands over a WorkItem; `queueMeta` to override the context
 	 */
-	enqueue(sessionName: string, data: string, meta: { workItemId?: string; queueMeta?: QueueMessageMeta } = {}): void {
+	enqueue(queuedFor: string, data: string, meta: { workItemId?: string; queueMeta?: QueueMessageMeta } = {}): void {
+		// A message held for "Orchestrator" (its display name) would wait for a
+		// session that never goes idle: the queue is keyed by session (D-952).
+		const sessionName = canonicalAgentSession(queuedFor);
 		const queueMeta = meta.queueMeta ?? currentQueueMeta(sessionName, data);
 		let queue = this.pendingMessages.get(sessionName);
 		if (!queue) {
@@ -788,12 +818,17 @@ export class SubAgentMessageQueue {
 					// `send` re-queued it at the back; take that copy out — it goes
 					// back at its original place, with its original queuedAt.
 					this.removeRequeuedCopy(sessionName, sentText, knownIds);
+					queued.deferrals = (queued.deferrals ?? 0) + 1;
+					queued.lastDeferredAt = Date.now();
+					pending[i] = queued;
 					heldAgain = pending.slice(i);
 					out.deferred += heldAgain.length;
-					this.logger.info('Queued message deferred again — agent still busy; it and the messages after it keep their order', {
+					// Every 30 s while the agent is busy: say it once, then every tenth time (657 lines on 2026-10-22, crewly#1431).
+					this.logger[queued.deferrals === 1 || queued.deferrals % 10 === 0 ? 'info' : 'debug']('Queued message deferred again — agent still busy; it and the messages after it keep their order', {
 						sessionName,
 						queuedAt: new Date(queued.queuedAt).toISOString(),
 						keptBehindIt: heldAgain.length - 1,
+						deferrals: queued.deferrals,
 					});
 					break;
 				} else {
@@ -822,7 +857,24 @@ export class SubAgentMessageQueue {
 			this.pendingMessages.set(sessionName, ownerFirst([...failedAgain, ...heldAgain, ...queue]));
 			this.save();
 		}
-		if (undeliverable.length > 0) this.reportDrop(sessionName, undeliverable, 'undeliverable');
+		if (undeliverable.length > 0) {
+			let down = false;
+			try {
+				down = this.isDown?.(sessionName) ?? false;
+			} catch {
+				down = false;
+			}
+			const maxKeeps = SUB_AGENT_QUEUE_CONSTANTS.MAX_KEEPS_WHILE_DOWN;
+			const keep = down ? undeliverable.filter((m) => (m.keptWhileDown ?? 0) < maxKeeps) : [];
+			const drop = undeliverable.filter((m) => !keep.includes(m));
+			if (keep.length > 0) {
+				const rest = this.pendingMessages.get(sessionName) ?? [];
+				this.pendingMessages.set(sessionName, ownerFirst([...keep.map((m) => ({ ...m, attempts: 0, keptWhileDown: (m.keptWhileDown ?? 0) + 1 })), ...rest]));
+				this.save();
+				this.logger.warn('Queued messages kept for the next start: the agent is down', { sessionName, kept: keep.length });
+			}
+			if (drop.length > 0) this.reportDrop(sessionName, drop, 'undeliverable');
+		}
 		if (out.skippedStale > 0) {
 			this.logger.info('Dropped stale queued messages instead of delivering them', {
 				sessionName,

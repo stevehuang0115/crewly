@@ -262,9 +262,9 @@ export const listComments = handle((req, caller) => getAppsParts().service.listC
 /** GET /api/apps/:appId/comments/:commentId */
 export const getComment = handle((req, caller) => getAppsParts().service.getComment(req.params.appId, req.params.commentId, caller));
 
-/** POST /api/apps/:appId/comments/:commentId/replies `{ text }` */
+/** POST /api/apps/:appId/comments/:commentId/replies `{ text, note? }` (`note`: the reply a resolve posts first) */
 export const replyComment = handle(
-  (req, caller) => getAppsParts().service.replyComment(req.params.appId, req.params.commentId, body(req).text, caller),
+  (req, caller) => getAppsParts().service.replyComment(req.params.appId, req.params.commentId, body(req).text, caller, body(req).note === true),
   201,
 );
 

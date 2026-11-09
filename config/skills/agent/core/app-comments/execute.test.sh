@@ -88,7 +88,7 @@ check "reply: request" "$(reqs)" "{\"method\":\"POST\",\"path\":\"/api/apps/$A/c
 check "reply: output" "$OUT" '{"success":true,"id":"c1","number":3,"replies":1,"status":"open"}'
 
 OUT=$(run --app $A --resolve c1 --text "Done in v5")
-check "resolve with text: reply then resolve" "$(reqs)" "{\"method\":\"POST\",\"path\":\"/api/apps/$A/comments/c1/replies\",\"body\":{\"text\":\"Done in v5\"}}|{\"method\":\"POST\",\"path\":\"/api/apps/$A/comments/c1/resolve\",\"body\":null}"
+check "resolve with text: reply then resolve" "$(reqs)" "{\"method\":\"POST\",\"path\":\"/api/apps/$A/comments/c1/replies\",\"body\":{\"text\":\"Done in v5\",\"note\":true}}|{\"method\":\"POST\",\"path\":\"/api/apps/$A/comments/c1/resolve\",\"body\":null}"
 check "resolve: output" "$OUT" '{"success":true,"id":"c1","number":3,"status":"resolved","replies":1}'
 
 run --app $A --reopen c1 >/dev/null

@@ -1,0 +1,47 @@
+{
+  "taskId": "C1",
+  "runtime": "crewly-agent",
+  "startedAt": "2026-04-01T17:12:17.051Z",
+  "completedAt": "2026-04-01T17:13:57.378Z",
+  "durationSeconds": 100.327,
+  "completionType": "agent_done",
+  "verificationResults": [
+    {
+      "name": "typescript",
+      "passed": true,
+      "output": "",
+      "exitCode": 0
+    },
+    {
+      "name": "tests",
+      "passed": true,
+      "output": "> c1-extract-constants-fixture@1.0.0 test\n> vitest run\n\n\n RUN  v3.2.4 eval/runs/C1-crewly-agent-1775063522665\n\n ✓ src/services/connection.service.test.ts (6 tests) 11ms\n ✓ src/config/constants.test.ts (6 tests) 13ms\n\n Test Files  2 passed (2)\n      Tests  12 passed (12)\n   Start at  13:13:54\n   Duration  2.22s (transform 2.13s, setup 0ms, collect 2.16s, tests 24ms, environment 0ms, prepare 277ms)",
+      "exitCode": 0
+    },
+    {
+      "name": "no_hardcoded_ports",
+      "passed": true,
+      "output": "0",
+      "exitCode": 1
+    },
+    {
+      "name": "constants_exist",
+      "passed": true,
+      "output": "exists",
+      "exitCode": 0
+    }
+  ],
+  "scores": {
+    "d1Correctness": 100,
+    "d2CodeQuality": 85,
+    "d3Reasoning": 24,
+    "d4Autonomy": 100,
+    "d5ContextMgmt": 73,
+    "d6Collaboration": 0,
+    "d7CostEfficiency": 100
+  },
+  "overallScore": 75,
+  "toolCallCount": 25,
+  "estimatedCostUsd": 0.057770999999999996,
+  "logPath": "eval/results/crewly-agent-v3/logs/C1-crewly-agent-1775063629196.log"
+}

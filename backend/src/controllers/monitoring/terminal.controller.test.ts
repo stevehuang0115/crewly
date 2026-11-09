@@ -13,7 +13,7 @@ import * as terminalController from './terminal.controller.js';
 import { setOfflineAgentWaker, resetOfflineAgentWakes } from '../../services/messaging/offline-agent-message.js';
 import { setSpendCapGate, type SpendStop } from '../../services/spend/spend-cap.gate.js';
 import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../../services/team/team-pause.registry.js';
-import { markOwner } from '../../middleware/caller-identity.testing.js';
+import { markOwner, schedulerAuthHeaders } from '../../middleware/caller-identity.testing.js';
 import { setCallerIdentity } from '../../middleware/caller-identity.middleware.js';
 import { harnessPastesSinceOutsideInput, lastOutsideInputAt, noteHarnessPaste, resetInputLedgerForTesting } from '../../services/session/input-ledger.js';
 
@@ -27,6 +27,11 @@ jest.mock('../../services/session/index.js', () => ({
 	// resetAllMocks does not wipe it.
 	createSessionCommandHelper: (backend: { getSession: (n: string) => { write: (d: string) => void } }) => ({
 		sendMessage: async (name: string, message: string): Promise<void> => {
+			if (message === 'HOLD') {
+				// An earlier paste of ours is still settling in the box.
+				const { TuiPasteHoldError } = jest.requireActual<typeof import('../../services/session/tui-input-guard.js')>('../../services/session/tui-input-guard.js');
+				throw new TuiPasteHoldError('just-submitted');
+			}
 			if (message === 'GUARD') {
 				const { TuiInputGuardError } = jest.requireActual<typeof import('../../services/session/tui-input-guard.js')>('../../services/session/tui-input-guard.js');
 				throw new TuiInputGuardError('before-submit', { state: 'foreign', text: '按这个草稿回吧GUARD', lineCount: 1 });
@@ -78,6 +83,7 @@ jest.mock('../../constants.js', () => ({
 		AGENT_READY_TIMEOUT: 120000,
 	},
 	AGENT_MESSAGE_DELIVERY_CONSTANTS: jest.requireActual<typeof import('../../constants.js')>('../../constants.js').AGENT_MESSAGE_DELIVERY_CONSTANTS,
+	MESSAGE_ROUTE_CONSTANTS: jest.requireActual<typeof import('../../constants.js')>('../../constants.js').MESSAGE_ROUTE_CONSTANTS,
 	TERMINAL_CONTROLLER_CONSTANTS: {
 		DEFAULT_CAPTURE_LINES: 50,
 		MAX_CAPTURE_LINES: 500,
@@ -210,6 +216,12 @@ jest.mock('../../services/agent/fresh-task-conversation.service.js', () => ({
 		}),
 	},
 	freshConversationNote: (p: string) => `Fresh conversation for this task — your earlier work is in ${p} and your wiki; read them only if this task needs it.`,
+}));
+
+// The route an agent's message carries (message-routing audit 2026-10-18).
+const mockCurrentRouteOf = jest.fn<(session: string) => Promise<unknown>>(async () => null);
+jest.mock('../../services/orc/reply-destination.wiring.js', () => ({
+	currentRouteOf: (session: string) => mockCurrentRouteOf(session),
 }));
 
 // Direct WorkItem hand-over: the WorkItem lookup and the dispatcher's dedup key.
@@ -532,6 +544,23 @@ describe('TerminalController', () => {
 			expect(mockSession.write).not.toHaveBeenCalledWith('\r');
 		});
 
+		// 2026-10-26 14:21: Quinn's first send to Sam got a 500 ("Just submitted
+		// an earlier paste of ours; holding this message") and was resent by
+		// hand. A settling input box queues the message like a mid-turn hold.
+		it('queues with 202 when an earlier paste of ours is still settling in the box', async () => {
+			mockReq = {
+				params: { sessionName: 'test-session' } as any,
+				body: { data: 'HOLD', mode: 'message' },
+			};
+			mockGetQueueSize.mockReturnValue(1);
+			await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+			expect(mockEnqueue).toHaveBeenCalledWith('test-session', 'HOLD');
+			expect(mockRes.status).toHaveBeenCalledWith(202);
+			expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ queued: true, position: 1, queueSize: 1 }));
+			expect(mockRes.status).not.toHaveBeenCalledWith(500);
+			expect(mockSession.write).not.toHaveBeenCalledWith('\r');
+		});
+
 		// crewly#1015 §6: a message written during the shutdown drain starts a
 		// turn the drain does not know about (Owen, 2026-10-01 16:22).
 		it('queues a message instead of writing it while the restart drain has delivery paused', async () => {
@@ -817,6 +846,39 @@ describe('TerminalController', () => {
 				expect(wake).not.toHaveBeenCalled();
 			});
 
+			it('a scheduled command (the crewly-web release) to a member who is down: queued with its sender label, nobody started (CREW-362)', async () => {
+				mockReq = {
+					params: { sessionName: 'crewly-marketing-dana-45506487' } as any,
+					headers: schedulerAuthHeaders('crewly-web-release'),
+					body: { data: 'crewly-web release: FAILED 1.0.153: test gate failed', mode: 'message' },
+				};
+
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+				expect(mockRes.status).toHaveBeenCalledWith(202);
+				expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, queued: true, waking: false }));
+				expect(mockEnqueue).toHaveBeenCalledTimes(1);
+				expect(mockEnqueue).toHaveBeenCalledWith(
+					'crewly-marketing-dana-45506487',
+					expect.stringContaining('crewly-web release: FAILED 1.0.153: test gate failed'),
+				);
+				expect(String((mockEnqueue as jest.Mock).mock.calls[0][1])).toContain('crewly-web-release');
+				expect(wake).not.toHaveBeenCalled();
+			});
+
+			it('a scheduled command to a session no member is bound to still gets the 404', async () => {
+				mockReq = {
+					params: { sessionName: 'nobody' } as any,
+					headers: schedulerAuthHeaders(),
+					body: { data: 'hello', mode: 'message' },
+				};
+
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+				expect(mockRes.status).toHaveBeenCalledWith(404);
+				expect(mockEnqueue).not.toHaveBeenCalled();
+			});
+
 			it('keeps the 404 for a session no member is bound to', async () => {
 				mockReq = {
 					params: { sessionName: 'nobody' } as any,
@@ -848,7 +910,13 @@ describe('TerminalController', () => {
 				await terminalController.deliverMessage.call(ctx as any, mockReq as Request, mockRes as Response);
 
 				expect(mockRes.status).toHaveBeenCalledWith(202);
-				expect(mockEnqueue).toHaveBeenCalledWith('crewly-marketing-dana-45506487', 'Are the nightly jobs set?');
+				// crewly#1381 item 1 / message-routing audit 2026-10-18: the orchestrator's
+				// /deliver message now names its sender (it used to arrive as bare text,
+				// so the answer went to the recipient's last owner thread).
+				expect(mockEnqueue).toHaveBeenCalledWith(
+					'crewly-marketing-dana-45506487',
+					expect.stringMatching(/^\[MESSAGE from Orc \(Crewly orchestrator\)[^\n]*send-message --to crewly-orc[^\n]*\]\nAre the nightly jobs set\?$/),
+				);
 				expect(wake).toHaveBeenCalledWith('crewly-marketing-dana-45506487');
 				expect(ctx.agentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
 			});
@@ -1634,6 +1702,69 @@ describe('TerminalController', () => {
 			expect(mockRes.status).not.toHaveBeenCalledWith(202);
 		});
 
+		// crewly#1375: Pia got Atlas's message as bare text and answered it in
+		// the owner's thread. An agent's message now names its sender and route.
+		describe('an agent message carries its sender header (crewly#1375)', () => {
+			const ATLAS = 'think-tank-atlas-b4e166f6';
+			const HEADER =
+				'[MESSAGE from Atlas (Think Tank) — a colleague, not the owner. Answer with send-message --to think-tank-atlas-b4e166f6; do not post it in an owner thread.]';
+			beforeEach(() => {
+				(mockFindMemberBySessionName as jest.Mock<(name: string) => Promise<any>>).mockImplementation(async (name: string) =>
+					name === ATLAS ? { team: { id: 'tt', name: 'Think Tank', members: [] }, member: { name: 'Atlas', sessionName: ATLAS, role: 'developer', agentStatus: 'active' } } : null,
+				);
+			});
+			const write = (headers: Record<string, string>, body: Record<string, unknown>) => {
+				mockReq = { params: { sessionName: 'test-session' } as any, headers, body };
+				return terminalController.writeToSession.call(ctx, mockReq as Request, mockRes as Response);
+			};
+
+			it('a queued message keeps the header (it is part of the text)', async () => {
+				await write({ 'x-agent-session': ATLAS }, { data: 'Thanks. Two things.', mode: 'message' });
+				expect(ctx.agentRegistrationService.holdIfMidTurn).toHaveBeenCalledWith('test-session', `${HEADER}\nThanks. Two things.`);
+			});
+
+			it('an idle recipient gets the header typed in with the text', async () => {
+				ctx.agentRegistrationService.holdIfMidTurn.mockResolvedValue(null);
+				await write({ 'x-agent-session': ATLAS }, { data: 'Thanks.', mode: 'message' });
+				expect(mockSession.write).toHaveBeenCalledWith(`\x1b[200~${HEADER}\nThanks.\x1b[201~`);
+			});
+
+			// Message-routing audit 2026-10-18: the route the sender is answering
+			// travels in the header, so the answer goes back along it.
+			it('the header carries the route the sender is answering', async () => {
+				ctx.agentRegistrationService.holdIfMidTurn.mockResolvedValue(null);
+				mockCurrentRouteOf.mockResolvedValueOnce({ kind: 'owner', conversationId: 'room-1', thread: 'C0A:1.2' });
+				await write({ 'x-agent-session': ATLAS }, { data: 'Thanks.', mode: 'message' });
+				const typed = String((mockSession.write as jest.Mock).mock.calls[0]?.[0]);
+				expect(typed).toContain("the owner's thread C0A:1.2 in conversation room-1 {route: owner room-1 thread C0A:1.2}");
+				expect(typed).toContain('Atlas answers the owner on it');
+			});
+
+			it('a message that already carries a harness envelope is not wrapped again', async () => {
+				ctx.agentRegistrationService.holdIfMidTurn.mockResolvedValue(null);
+				await write({ 'x-agent-session': ATLAS }, { data: '[TASK] build it', mode: 'message' });
+				expect(mockSession.write).toHaveBeenCalledWith('\x1b[200~[TASK] build it\x1b[201~');
+			});
+
+			it('a harness service with an agent badge (not a member) is not wrapped', async () => {
+				ctx.agentRegistrationService.holdIfMidTurn.mockResolvedValue(null);
+				await write({ 'x-agent-session': 'workitem-dispatch' }, { data: 'notice', mode: 'message' });
+				expect(mockSession.write).toHaveBeenCalledWith('\x1b[200~notice\x1b[201~');
+			});
+
+			it('the owner (dashboard) is not wrapped', async () => {
+				ctx.agentRegistrationService.holdIfMidTurn.mockResolvedValue(null);
+				mockReq = markOwner({ params: { sessionName: 'test-session' } as any, headers: {}, body: { data: 'hello', mode: 'message' } } as Partial<Request>);
+				await terminalController.writeToSession.call(ctx, mockReq as Request, mockRes as Response);
+				expect(mockSession.write).toHaveBeenCalledWith('\x1b[200~hello\x1b[201~');
+			});
+
+			it('raw keystrokes (no message mode) are not wrapped', async () => {
+				await write({ 'x-agent-session': ATLAS }, { data: 'ls' });
+				expect(mockSession.write).toHaveBeenCalledWith('ls\r');
+			});
+		});
+
 		// A scheduled command (the backend's runner; CREW-312) is neither the
 		// owner nor an agent: its note is labelled and a busy recipient still queues it.
 		describe('from a scheduled command', () => {
@@ -2054,6 +2185,20 @@ describe('noteAgentToAgent (issue #968)', () => {
 		terminalController.noteAgentToAgent('dev-2', { headers: { 'x-agent-session': 'lead-1' }, body: { mode: 'message', data: 'Please re-run the build and tell me what fails' } });
 		const t = getTurnTriggerTracker().noteDelivery('dev-2', 'Please re-run the build and tell me what fails');
 		expect(t).toMatchObject({ triggerKind: 'agent_message', sender: 'lead-1', viaAgents: ['lead-1'] });
+		getTurnTriggerTracker().reset();
+	});
+
+	// crewly#1381 item 3: answering the agent whose message is open closes it.
+	it('closes the sender\'s open message from the target, so a later bare reply is not sent back', async () => {
+		const { getTurnTriggerTracker } = await import('../../services/trace/turn-trigger.js');
+		getTurnTriggerTracker().reset();
+		const callerUtils = await import('../../utils/agent-caller.utils.js');
+		const spy = jest.spyOn(callerUtils, 'readAgentSessionHeader').mockReturnValue('flopost-pia-1a2b3c4d');
+		getTurnTriggerTracker().noteDelivery('flopost-pia-1a2b3c4d', '[MESSAGE from Atlas (Think Tank) — a colleague, not the owner. Answer with send-message --to think-tank-atlas-b4e166f6; do not post it in an owner thread.]\ntimings?');
+		expect(getTurnTriggerTracker().openRoutedTrigger('flopost-pia-1a2b3c4d')?.sender).toBe('think-tank-atlas-b4e166f6');
+		terminalController.noteAgentToAgent('think-tank-atlas-b4e166f6', { headers: { 'x-agent-session': 'flopost-pia-1a2b3c4d' }, body: { mode: 'message', data: '83 s was the cold start' } });
+		expect(getTurnTriggerTracker().openRoutedTrigger('flopost-pia-1a2b3c4d')).toBeNull();
+		spy.mockRestore();
 		getTurnTriggerTracker().reset();
 	});
 

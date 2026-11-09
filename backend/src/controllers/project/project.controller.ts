@@ -19,7 +19,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
-import { exec, spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { ProjectModel, TeamModel } from '../../models/index.js';
 import { ContextLoaderService } from '../../services/index.js';
 import { ProjectTicketService } from '../../services/project-tickets/project-ticket.service.js';
@@ -31,7 +31,8 @@ import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('ProjectController');
 
-const execAsync = promisify(exec);
+/** Runs a program with an argv array and no shell (CREW-967). */
+const execFileAsync = promisify(execFile);
 
 /**
  * The project's own tickets that count toward its progress: everything in
@@ -1029,7 +1030,7 @@ export async function openProjectInFinder(
 			return;
 		}
 		try {
-			await execAsync(`open "${resolvedProjectPath}"`);
+			await execFileAsync('open', [resolvedProjectPath]);
 			res.json({ success: true, message: 'Project folder opened in Finder' } as ApiResponse);
 		} catch (e) {
 			logger.error('Error opening Finder', { error: e instanceof Error ? e.message : String(e) });

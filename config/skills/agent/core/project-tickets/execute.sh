@@ -13,7 +13,7 @@
 #                           [--metric "<goal metric> → <expected effect>"]
 #   bash execute.sh update  --project P --id APP-12 [--title …] [--priority …] [--labels …]
 #                           [--description …] [--acceptance "…" …] [--status …] [--note "…"]
-#                           [--defer-until YYYY-MM-DD|none]
+#                           [--defer-until YYYY-MM-DD|none] [--hold "owner's words"|none]
 #   bash execute.sh claim   --project P --id APP-12
 #   bash execute.sh release --project P --id APP-12 [--note "why"]
 #   bash execute.sh assign  --project P --id APP-12 --to <session> [--no-start]   (owner / orc / lead)
@@ -31,6 +31,7 @@
 #   bash execute.sh stats     --project P [--days 14] [--label feed]       (owner / orc / lead)
 #   bash execute.sh runs      --project P [--days 7] [--label feed]        (owner / orc / lead)
 #   bash execute.sh retro     --project P --day YYYY-MM-DD --summary "…" [--problem "class|title|detail|evidence" …]
+#   bash execute.sh retro     --week YYYY-Www --summary "…" [--problem … …]   (orchestrator: weekly cross-team retro)
 #   bash execute.sh self-review --project P --gap "…" [--moved "…"] --next-bet "…"
 #   bash execute.sh '{"action":"create","project":"P","title":"…"}'
 #
@@ -55,6 +56,10 @@ Usage:
   bash execute.sh update  --project P --id APP-12 [--title …] [--priority …] [--labels …]
                           [--description …] [--acceptance "…" …] [--status …] [--note "…"]
                           [--defer-until YYYY-MM-DD|none]   Keep it out of the autopilot's triage until that date
+                          [--hold "owner's words"|none]     Put it on hold (e.g. "owner: do not merge PR #12"): its
+                                                              PR / branch / worktree may then only be closed; new
+                                                              tickets about them are held too and merge cards about
+                                                              them are refused. none lifts the hold
   bash execute.sh claim   --project P --id APP-12             Take a ready ticket (creates your WorkItem)
   bash execute.sh release --project P --id APP-12 [--note …]  Give your ticket back (→ ready)
   bash execute.sh assign  --project P --id APP-12 --to <session> [--no-start]
@@ -96,6 +101,8 @@ Usage:
                                                               Team lead: file the daily autopilot retro.
                                                               class = agent_judgment | missing_skill |
                                                               harness_gap | owner_dependency
+  bash execute.sh retro     --week YYYY-Www --summary "…" [--problem … …]
+                                                              Orchestrator: file the weekly cross-team retro.
   bash execute.sh self-review --project P --gap "…" [--moved "…"] --next-bet "…"
                                                               Team lead: file the autopilot self-review (gap to
                                                               the target, what moved it, the next bet)
@@ -110,8 +117,8 @@ STATUS=""; SOURCE=""; REQUEST_ID=""; NOTE=""; OWNER_REVIEW=""; ASSIGNEE=""; STAR
 ACCEPTANCE_JSON="null"
 HAS_DESCRIPTION=0
 QUESTION=""; CLEAR=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; AP_ENABLED=""; AP_DRIVER=""; AP_BUDGET=""; AP_MAX=""
-AP_RETRO=""; AP_REPLANS=""; AP_REPLAN_TTL=""; DAYS=""; LABEL=""; DAY=""; SUMMARY=""; PROBLEMS_JSON="[]"
-DEFER_UNTIL=""; AP_SKIP=""
+AP_RETRO=""; AP_REPLANS=""; AP_REPLAN_TTL=""; DAYS=""; LABEL=""; DAY=""; WEEK=""; SUMMARY=""; PROBLEMS_JSON="[]"
+DEFER_UNTIL=""; AP_SKIP=""; HOLD=""; HAS_HOLD=0
 METRIC=""; AP_SPEED=""; GAP=""; MOVED=""; NEXT_BET=""
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -159,6 +166,9 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   MOVED=$(printf '%s' "$J" | jq -r '.moved // empty')
   NEXT_BET=$(printf '%s' "$J" | jq -r '.nextBet // empty')
   DEFER_UNTIL=$(printf '%s' "$J" | jq -r '.deferUntil // empty')
+  if printf '%s' "$J" | jq -e 'has("hold")' >/dev/null; then
+    HOLD=$(printf '%s' "$J" | jq -r '.hold // "none"'); HAS_HOLD=1
+  fi
   AP_SKIP=$(printf '%s' "$J" | jq -r 'if (.skipLabels|type) == "array" then (.skipLabels|join(",")) else (.skipLabels // empty) end')
 fi
 if [[ -z "$ACTION" && $# -gt 0 && ${1:0:1} != '-' ]]; then ACTION="$1"; shift; fi
@@ -204,6 +214,7 @@ while [[ $# -gt 0 ]]; do
     --days)          [ $# -ge 2 ] || error_exit "--days requires a value";        DAYS="$2"; shift 2 ;;
     --label)         [ $# -ge 2 ] || error_exit "--label requires a value";       LABEL="$2"; shift 2 ;;
     --day)           [ $# -ge 2 ] || error_exit "--day requires a value";         DAY="$2"; shift 2 ;;
+    --week)          [ $# -ge 2 ] || error_exit "--week requires YYYY-Www";       WEEK="$2"; shift 2 ;;
     --summary)       [ $# -ge 2 ] || error_exit "--summary requires a value";     SUMMARY="$2"; shift 2 ;;
     --problem)       [ $# -ge 2 ] || error_exit "--problem requires \"class|title|detail|evidence\""
                      PROBLEMS_JSON=$(jq -c --arg p "$2" '. + [($p | split("|")) as $f | {class: ($f[0] // "" | gsub("^\\s+|\\s+$"; "")), title: ($f[1] // "")} + (if ($f[2] // "") != "" then {detail: $f[2]} else {} end) + (if ($f[3:] | join("|")) != "" then {evidence: ($f[3:] | join("|"))} else {} end)]' <<<"$PROBLEMS_JSON"); shift 2 ;;
@@ -214,6 +225,7 @@ while [[ $# -gt 0 ]]; do
     --moved)         [ $# -ge 2 ] || error_exit "--moved requires a value";       MOVED="$2"; shift 2 ;;
     --next-bet)      [ $# -ge 2 ] || error_exit "--next-bet requires a value";    NEXT_BET="$2"; shift 2 ;;
     --defer-until)   [ $# -ge 2 ] || error_exit "--defer-until requires YYYY-MM-DD or none"; DEFER_UNTIL="$2"; shift 2 ;;
+    --hold)          [ $# -ge 2 ] || error_exit "--hold requires the reason (the owner's words) or none"; HOLD="$2"; HAS_HOLD=1; shift 2 ;;
     --skip-labels)   [ $# -ge 2 ] || error_exit "--skip-labels requires a comma-separated list or default"; AP_SKIP="$2"; shift 2 ;;
     --full)          shift ;;
     --help|-h)       print_usage; exit 0 ;;
@@ -227,7 +239,7 @@ done
 enc() { jq -rn --arg v "$1" '$v|@uri'; }
 
 # Compact one-line-per-ticket view for lists.
-TICKET_ROW='{id, title, status, priority, assignee, labels, workItemId, deferUntil}'
+TICKET_ROW='{id, title, status, priority, assignee, labels, workItemId, deferUntil, hold}'
 
 case "$ACTION" in
   list)
@@ -267,8 +279,10 @@ case "$ACTION" in
     BODY=$(jq -n --arg title "$TITLE" --arg description "$DESCRIPTION" --argjson hasDescription "$HAS_DESCRIPTION" \
       --arg priority "$PRIORITY" --arg labels "$LABELS" --arg team "$TEAM" --arg status "$STATUS" \
       --arg note "$NOTE" --arg ownerReview "$OWNER_REVIEW" --arg deferUntil "$DEFER_UNTIL" --argjson acceptance "$ACCEPTANCE_JSON" \
+      --arg hold "$HOLD" --argjson hasHold "$HAS_HOLD" \
       '{}
        + (if $deferUntil == "none" or $deferUntil == "clear" then {deferUntil: null} elif $deferUntil != "" then {deferUntil: $deferUntil} else {} end)
+       + (if $hasHold != 1 then {} elif $hold == "none" or $hold == "clear" or $hold == "" then {hold: null} else {hold: $hold} end)
        + (if $title != "" then {title: $title} else {} end)
        + (if $hasDescription == 1 then {description: $description} else {} end)
        + (if $acceptance != null then {acceptance: $acceptance} else {} end)
@@ -359,11 +373,17 @@ case "$ACTION" in
     fi
     ;;
   retro)
-    require_param "project" "$PROJECT"
-    require_param "day (--day YYYY-MM-DD)" "$DAY"
     require_param "summary (--summary)" "$SUMMARY"
-    BODY=$(jq -n --arg d "$DAY" --arg s "$SUMMARY" --argjson p "$PROBLEMS_JSON" '{day: $d, summary: $s, problems: $p}')
-    api_call POST "/project-ticket-autopilot/$(enc "$PROJECT")/retro" "$BODY" | jq '{success, retro: .data, error}'
+    if [ -n "$WEEK" ]; then
+      # Weekly cross-team retro (owner / orchestrator): no project, the week is the scope.
+      BODY=$(jq -n --arg w "$WEEK" --arg s "$SUMMARY" --argjson p "$PROBLEMS_JSON" '{week: $w, summary: $s, problems: $p}')
+      api_call POST "/project-ticket-autopilot/weekly-retro" "$BODY" | jq '{success, retro: .data, error}'
+    else
+      require_param "project" "$PROJECT"
+      require_param "day (--day YYYY-MM-DD)" "$DAY"
+      BODY=$(jq -n --arg d "$DAY" --arg s "$SUMMARY" --argjson p "$PROBLEMS_JSON" '{day: $d, summary: $s, problems: $p}')
+      api_call POST "/project-ticket-autopilot/$(enc "$PROJECT")/retro" "$BODY" | jq '{success, retro: .data, error}'
+    fi
     ;;
   self-review)
     require_param "project" "$PROJECT"

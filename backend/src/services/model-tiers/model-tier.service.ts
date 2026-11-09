@@ -1,31 +1,37 @@
 /**
- * ModelTierService — model tiers and "Optimize usage" (crewly#1173 phase 1,
- * specs/2026-10-08-model-tiers.md).
+ * ModelTierService — model tiers and "Optimize usage" (crewly#1173 phases 1
+ * and 2, specs/2026-10-08-model-tiers.md).
  *
- * Recommendation mode: nothing here changes a member's tier on its own.
+ * Two change modes per team (`Team.tierChangeMode`, owner-only):
+ * `approve` (default) — the lead proposes, the owner approves each change;
+ * `auto` — the lead's changes apply at once and the owner gets a notice with
+ * one-tap Undo.
  *
  * 1. Review: weekly while a team has "Optimize usage" on (and on demand), the
  *    team lead gets a compact usage report per member and is asked to
  *    propose tier changes and task routing rules.
- * 2. Proposal: the lead adds changes with `propose-tier-change` and submits;
- *    ONE owner card per review carries them all (Apply / Keep as is).
- * 3. Apply: only the owner's yes applies the tiers (and clears a member's
- *    fixed model so the tier takes effect). Each member picks its new model up
- *    at its next start.
+ * 2. Proposal: the lead adds changes with `propose-tier-change` and submits.
+ *    Approve mode: ONE owner card per review carries them all (Apply / Keep
+ *    as is). Auto mode: they apply right away, and ONE notice (Undo / Keep)
+ *    goes to the same place.
+ * 3. Apply: the tiers are set (a member's fixed model is cleared so the tier
+ *    takes effect). An idle member whose model changed is restarted so the
+ *    new model takes effect now; a busy one picks it up at its next start.
  * 4. Quality guard: a member moved down is watched over its next settled work
- *    items; when it is sent back clearly more often than before, a revert card
- *    goes to the owner (again only applied on yes).
+ *    items; when it is sent back clearly more often than before, approve mode
+ *    sends a revert card, auto mode moves it back at once and tells the owner
+ *    (with "Keep the lower tier" to undo the revert).
  *
  * @module services/model-tiers/model-tier.service
  */
 
 import { randomUUID } from 'crypto';
 import { MODEL_TIER_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
-import type { ModelTier, Team, TeamMember, TeamTierModels } from '../../types/index.js';
+import type { ModelTier, Team, TeamMember, TeamTierModels, TierChangeMode } from '../../types/index.js';
 import type { DecisionOption, OwnerDecision, TierChangeEntry, TierChangeSubject } from '../../types/decision.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { effectiveMemberModelId } from '../../utils/member-default-model.utils.js';
-import { isModelTier, parseTierModels, resolveTierModel, tierMapFor, tierRank } from '../../utils/model-tier.utils.js';
+import { isModelTier, isTierChangeMode, leadChangesTiersItself, parseTierModels, resolveTierModel, tierChangeModeOf, tierMapFor, tierRank } from '../../utils/model-tier.utils.js';
 import { getTeamLeads, isTeamLead } from '../../utils/team.utils.js';
 import type { DecisionKindHandler, PrebuiltAsk } from '../decisions/decision.service.js';
 import { resolveRate } from '../monitoring/model-pricing.js';
@@ -39,6 +45,8 @@ const C = MODEL_TIER_CONSTANTS;
 const APPLY_KEY = 'a';
 const KEEP_KEY = 'b';
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** What the lead is told about restarts after an apply. */
+const RESTART_NOTE = 'Idle members restart now on their new model; a busy member picks it up at its next start.';
 
 /** A refusal with an HTTP status. */
 export class ModelTierError extends Error {
@@ -60,6 +68,9 @@ export interface TierLogger {
   warn(msg: string, meta?: Record<string, unknown>): void;
 }
 
+/** What restarting an idle member after an apply did. */
+export type TierRestartOutcome = 'restarted' | 'busy' | 'not_running' | 'failed';
+
 /** Collaborators. */
 export interface ModelTierDeps {
   store: ModelTierStore;
@@ -76,6 +87,12 @@ export interface ModelTierDeps {
   teamChannelOf?: (teamId: string) => Promise<string | null>;
   /** Absolute path of the team-leader skills */
   tlSkillsPath: string;
+  /**
+   * Restart a member whose model changed when it is idle (no running turn,
+   * no claimed work in progress), so the new model takes effect now. Never
+   * stops a busy member. Absent = members pick up the model at their next start.
+   */
+  restartIfIdle?: (session: string) => Promise<TierRestartOutcome>;
   now?: () => Date;
   logger?: TierLogger;
 }
@@ -84,6 +101,8 @@ export interface ModelTierDeps {
 export interface TierSettingsView {
   teamId: string;
   optimizeUsage: boolean;
+  /** `approve`: the owner approves each change; `auto`: the lead decides and tells the owner */
+  tierChangeMode: TierChangeMode;
   tierModels: TeamTierModels;
   routingRules: string[];
   /** Effective tier → model per runtime of the team's members */
@@ -101,6 +120,8 @@ export interface TierSettingsView {
 /** Settings patch (owner). */
 export interface TierSettingsPatch {
   optimizeUsage?: unknown;
+  /** `approve` | `auto` */
+  tierChangeMode?: unknown;
   tierModels?: unknown;
   /** memberId → tier, '' / null clears */
   memberTiers?: unknown;
@@ -142,6 +163,9 @@ function tierLabel(tier: ModelTier | null, model?: string): string {
 export class ModelTierService implements DecisionKindHandler {
   private timer: NodeJS.Timeout | null = null;
   private ticking = false;
+  private restarts: Promise<void> = Promise.resolve();
+
+  private readonly submitting = new Set<string>();
 
   constructor(private readonly deps: ModelTierDeps) {}
 
@@ -190,6 +214,7 @@ export class ModelTierService implements DecisionKindHandler {
     return {
       teamId,
       optimizeUsage: team.optimizeUsage === true,
+      tierChangeMode: tierChangeModeOf(team),
       tierModels: team.tierModels ?? {},
       routingRules: team.tierRoutingRules ?? [],
       tierMaps,
@@ -228,6 +253,10 @@ export class ModelTierService implements DecisionKindHandler {
     if (patch.optimizeUsage !== undefined) {
       if (typeof patch.optimizeUsage !== 'boolean') throw new ModelTierError(400, 'optimizeUsage is true or false');
       team.optimizeUsage = patch.optimizeUsage;
+    }
+    if (patch.tierChangeMode !== undefined) {
+      if (!isTierChangeMode(patch.tierChangeMode)) throw new ModelTierError(400, 'tierChangeMode is "approve" or "auto"');
+      team.tierChangeMode = patch.tierChangeMode;
     }
     if (patch.tierModels !== undefined) {
       const parsed = parseTierModels(patch.tierModels);
@@ -305,8 +334,13 @@ export class ModelTierService implements DecisionKindHandler {
   reviewMessage(team: Team, report: TeamTierReport, reviewId: string, trigger: 'weekly' | 'on_demand'): string {
     const skill = `bash ${this.deps.tlSkillsPath}/propose-tier-change/execute.sh`;
     const rules = team.tierRoutingRules?.length ? `\nRouting rules in force: ${team.tierRoutingRules.map((r) => `"${r}"`).join('; ')}.` : '';
+    const auto = leadChangesTiersItself(team);
+    const who = auto ? 'you decide: your changes apply as soon as you submit, and the owner is told and can undo them' : 'the owner approves every change';
+    const send = auto
+      ? `4. Send it: ${skill} --submit. The changes apply at once: idle members restart on their new model, busy ones switch at their next start, and the owner gets one notice with Undo. If nothing should change, still run --submit (nothing is posted).`
+      : `4. Send it: ${skill} --submit. One card goes to the owner; nothing changes until the owner says yes. If nothing should change, still run --submit (no card is posted).`;
     return [
-      `[MODEL TIER REVIEW] ${trigger === 'weekly' ? 'Weekly' : 'Requested'} usage review for team ${team.name} (${reviewId}). "Optimize usage" is on; the owner approves every change.`,
+      `[MODEL TIER REVIEW] ${trigger === 'weekly' ? 'Weekly' : 'Requested'} usage review for team ${team.name} (${reviewId}). "Optimize usage" is on; ${who}.`,
       '',
       renderTierReport(report),
       rules,
@@ -315,7 +349,7 @@ export class ModelTierService implements DecisionKindHandler {
       '1. For each member, decide whether its work needs its tier. strong = hard reasoning, design, reviewing others. mid = normal implementation and writing. weak = routine work: polling, checks, formatting, sorting, first-pass triage, summaries.',
       `2. Propose a change for each member that should move: ${skill} --member "<name>" --tier weak --reason "<the work it does and why the tier fits>"`,
       `3. Propose routing rules for incoming work: ${skill} --routing "polling / formatting / sorting -> <member>"`,
-      `4. Send it: ${skill} --submit. One card goes to the owner; nothing changes until the owner says yes. If nothing should change, still run --submit (no card is posted).`,
+      send,
       'Do not lower a member whose work was often sent back, and do not lower yourself below mid.',
     ].join('\n');
   }
@@ -408,6 +442,17 @@ export class ModelTierService implements DecisionKindHandler {
   }
 
   private async submit(ctx: LeadContext): Promise<Record<string, unknown>> {
+    // The hourly auto-submit and the lead's own --submit can overlap; one wins.
+    if (this.submitting.has(ctx.team.id)) throw new ModelTierError(409, 'This review is being submitted already');
+    this.submitting.add(ctx.team.id);
+    try {
+      return await this.submitOnce(ctx);
+    } finally {
+      this.submitting.delete(ctx.team.id);
+    }
+  }
+
+  private async submitOnce(ctx: LeadContext): Promise<Record<string, unknown>> {
     const state = await this.deps.store.get(ctx.team.id);
     const draft = state.draft;
     if (!draft || (draft.changes.length === 0 && draft.routing.length === 0)) {
@@ -416,9 +461,121 @@ export class ModelTierService implements DecisionKindHandler {
     }
     await this.refreshOpenDecision(ctx.team.id, state);
     if (state.openDecisionId) throw new ModelTierError(409, `The last tier proposal (${state.openDecisionId}) still waits for the owner; add to it next review`);
+    if (leadChangesTiersItself(ctx.team)) return this.applyNow(ctx, draft);
     const decision = await this.askOwner(ctx.team, ctx.lead, draft, 'review');
     await this.deps.store.update(ctx.team.id, (s) => ({ ...s, draft: undefined, openDecisionId: decision.id }));
     return { submitted: true, decisionId: decision.id, changes: draft.changes.length, routing: draft.routing.length, note: 'One card went to the owner. Nothing changes until the owner says yes; you will be told the answer.' };
+  }
+
+  /**
+   * Auto mode: apply the lead's draft at once (the same apply path as the
+   * owner's Apply), then post ONE notice where the card would go, whose Undo
+   * puts back exactly these changes.
+   *
+   * @param ctx - The lead and its team
+   * @param draft - The submitted draft
+   * @returns What happened (for the skill output)
+   */
+  private async applyNow(ctx: LeadContext, draft: TierDraft): Promise<Record<string, unknown>> {
+    if (!this.deps.decisions()) throw new ModelTierError(503, 'Owner notices are not running on this machine, so the change cannot be applied (the owner must be able to undo it).');
+    const before = ctx.team.tierRoutingRules ?? [];
+    const subject: TierChangeSubject = {
+      teamId: ctx.team.id,
+      teamName: ctx.team.name,
+      reviewId: draft.reviewId,
+      kind: 'review',
+      changes: draft.changes,
+      routing: draft.routing,
+      askerSession: sessionOf(ctx.lead),
+      askerName: ctx.lead.name,
+    };
+    // Priced before the apply: the estimate compares each member's current model with its new one.
+    const saving = this.estimateSaving(ctx.team, draft.changes);
+    const applied = await this.apply(subject, draft.reviewId);
+    await this.deps.store.update(ctx.team.id, (s) => ({ ...s, draft: undefined }));
+    const team = await this.team(ctx.team.id);
+    const undo: TierChangeSubject = {
+      ...subject,
+      kind: 'undo',
+      notice: 'applied',
+      undoOf: draft.reviewId,
+      changes: applied.map((c) => reverseEntry(c, team, 'the owner undid it')),
+      routing: before.filter((r) => !(team.tierRoutingRules ?? []).includes(r)),
+      removeRouting: draft.routing.filter((r) => !before.includes(r)),
+    };
+    let noticeId: string | null = null;
+    try {
+      noticeId = (await this.postNotice(team, ctx.lead, undo, applied, draft.routing, saving)).id;
+    } catch (err) {
+      this.deps.logger?.warn('Tier changes applied but the owner notice could not be posted', { teamId: team.id, error: err instanceof Error ? err.message : String(err) });
+    }
+    return {
+      submitted: true,
+      applied: true,
+      changes: applied.length,
+      routing: draft.routing.length,
+      ...(noticeId ? { noticeId } : {}),
+      note: `Applied now. ${RESTART_NOTE} ${noticeId ? 'The owner got one notice and can undo it.' : 'The owner notice could not be posted; tell the owner what you changed.'}`,
+    };
+  }
+
+  /**
+   * Post an auto-mode notice: the change already happened; its one action
+   * (`APPLY_KEY`) applies `subject` — the undo. Default and plain "yes" = keep.
+   *
+   * @param team - Team
+   * @param asker - The lead (its bot posts it, it gets the outcome)
+   * @param subject - The undo the action applies
+   * @param done - What happened (the lead's changes, or the guard's move back)
+   * @param routing - Routing rules that went in (applied notices)
+   * @param saving - Weekly saving estimate of the lead's changes, or null
+   * @returns The notice decision
+   */
+  private async postNotice(team: Team, asker: TeamMember, subject: TierChangeSubject, done: TierChangeEntry[], routing: string[], saving: number | null): Promise<OwnerDecision> {
+    const decisions = this.deps.decisions();
+    if (!decisions) throw new ModelTierError(503, 'Owner notices are not running on this machine.');
+    const reverted = subject.notice === 'reverted';
+    const body: string[] = [];
+    let question: string;
+    let options: DecisionOption[];
+    if (reverted) {
+      const c = done[0];
+      const m = subject.changes[0];
+      question = `${c.memberName}'s work was sent back more often on the ${c.from} tier, so it was moved back to ${tierLabel(c.clearTier ? null : c.to, c.toModel)}.`;
+      body.push(`${c.reason[0].toUpperCase()}${c.reason.slice(1)}.`);
+      options = [
+        { key: APPLY_KEY, label: 'Keep the lower tier', detail: `moves ${m.memberName} to ${m.to} again` },
+        { key: KEEP_KEY, label: 'OK', detail: 'leave it moved back' },
+      ];
+    } else {
+      const summary = done.map((c) => `${c.memberName} → ${targetLabel(c)}`).join(', ');
+      question = summary ? `${asker.name} changed model tiers for ${team.name}: ${summary}.` : `${asker.name} set new work routing for ${team.name}.`;
+      for (const c of done) {
+        const fixed = c.clearsModelId ? ` (its fixed model \`${c.clearsModelId}\` was cleared)` : '';
+        body.push(`• *${c.memberName}*: ${tierLabel(c.from, c.fromModel)} → ${tierLabel(c.clearTier ? null : c.to, c.toModel)}${fixed} — ${c.reason}`);
+      }
+      if (routing.length) body.push(`New work routing: ${routing.map((r) => `"${r}"`).join('; ')}`);
+      if (saving !== null) body.push(`Estimated change: ${saving >= 0 ? 'saves' : 'adds'} about $${Math.abs(saving).toFixed(2)} a week at API list price (from the last ${C.REPORT_WINDOW_DAYS} days).`);
+      options = [
+        { key: APPLY_KEY, label: 'Undo', detail: 'puts these back as they were' },
+        { key: KEEP_KEY, label: 'Keep', detail: 'nothing more to do' },
+      ];
+    }
+    if (done.length) body.push('Idle members switch to the new model now; busy ones at their next start.');
+    const channel = await this.deps.teamChannelOf?.(team.id).catch(() => null);
+    return decisions.askPrebuilt({
+      kind: C.DECISION_KIND,
+      asker: sessionOf(asker),
+      question,
+      title: reverted ? `Model tiers — quality check, ${team.name}` : `Model tiers — ${team.name}`,
+      body,
+      options,
+      defaultKey: KEEP_KEY,
+      yesKey: KEEP_KEY,
+      deadline: new Date(this.now().getTime() + C.NOTICE_DEADLINE_MS),
+      tierChange: subject,
+      ...(channel ? { place: { slackChannelId: channel } } : {}),
+    });
   }
 
   /** Post the owner card for a draft (review) or a revert. */
@@ -448,9 +605,9 @@ export class ModelTierService implements DecisionKindHandler {
     if (draft.routing.length) body.push(`Routing: ${draft.routing.map((r) => `"${r}"`).join('; ')}`);
     const saving = kind === 'review' ? this.estimateSaving(team, draft.changes) : null;
     if (saving !== null) body.push(`Estimated change: ${saving >= 0 ? 'saves' : 'adds'} about $${Math.abs(saving).toFixed(2)} a week at API list price (from the last ${C.REPORT_WINDOW_DAYS} days).`);
-    body.push('Applies at each member\'s next start.');
+    body.push('On Apply, idle members switch to the new model right away; busy ones at their next start.');
     const options: DecisionOption[] = [
-      { key: APPLY_KEY, label: kind === 'revert' ? 'Move back' : 'Apply', detail: 'takes effect at each member\'s next start' },
+      { key: APPLY_KEY, label: kind === 'revert' ? 'Move back' : 'Apply', detail: 'idle members switch now, busy ones at their next start' },
       { key: KEEP_KEY, label: 'Keep as is', detail: 'nothing changes' },
     ];
     const channel = await this.deps.teamChannelOf?.(team.id).catch(() => null);
@@ -532,6 +689,7 @@ export class ModelTierService implements DecisionKindHandler {
     const s = decision.tierChange;
     if (!s) return null;
     await this.deps.store.update(s.teamId, (st) => (st.openDecisionId === decision.id ? { ...st, openDecisionId: undefined } : st));
+    if (s.notice) return this.onNoticeSettled(decision, s);
     if (decision.status !== 'resolved' || decision.chosenKey !== APPLY_KEY) {
       if (s.kind === 'revert') return `[MODEL TIERS] The owner kept the lower tier (${decision.id}). Nothing changed.`;
       return `[MODEL TIERS] The owner kept the tiers as they are (${decision.id}). Nothing changed; do not propose the same change again this week.`;
@@ -540,7 +698,7 @@ export class ModelTierService implements DecisionKindHandler {
       const applied = await this.apply(s, decision.id);
       const lines = applied.map((c) => `${c.memberName} → ${tierLabel(c.clearTier ? null : c.to, c.toModel)}`);
       const routing = s.routing.length ? ` Routing rules now in force: ${s.routing.map((r) => `"${r}"`).join('; ')}. Route new work by them.` : '';
-      return `[MODEL TIERS] The owner approved ${decision.id}: ${lines.join(', ') || 'routing rules only'}. Each member picks up its new model at its next start; to apply now, stop-agent + start-agent a member while it is idle.${routing}`;
+      return `[MODEL TIERS] The owner approved ${decision.id}: ${lines.join(', ') || 'routing rules only'}. ${RESTART_NOTE}${routing}`;
     } catch (err) {
       this.deps.logger?.warn('Applying tier changes failed', { decisionId: decision.id, error: String(err) });
       return `[MODEL TIERS] The owner approved ${decision.id}, but applying it failed (${err instanceof Error ? err.message : String(err)}). Tell the owner.`;
@@ -548,10 +706,41 @@ export class ModelTierService implements DecisionKindHandler {
   }
 
   /**
-   * Apply an approved subject to the team and record it for the guard.
+   * An auto-mode notice settled: its one action undoes what the notice is
+   * about; anything else (Keep, the deadline, skip) leaves it as it is.
+   *
+   * @param decision - The settled notice
+   * @param s - Its subject (the undo)
+   * @returns Note for the lead, or null
+   */
+  private async onNoticeSettled(decision: OwnerDecision, s: TierChangeSubject): Promise<string | null> {
+    if (decision.status !== 'resolved' || decision.chosenKey !== APPLY_KEY) return null;
+    try {
+      const applied = await this.apply(s, decision.id);
+      const lines = applied.map((c) => `${c.memberName} → ${tierLabel(c.clearTier ? null : c.to, c.toModel)}`);
+      const skipped = s.changes.length - applied.length;
+      const skippedNote = skipped > 0 ? ` ${skipped} member(s) were left as they are: their tier changed again since.` : '';
+      if (s.notice === 'reverted') {
+        return `[MODEL TIERS] The owner chose to keep the lower tier after the quality check: ${lines.join(', ') || 'nothing to change'}. It is not watched again.${skippedNote} ${RESTART_NOTE}`;
+      }
+      const routing = s.removeRouting?.length ? ` Routing rules removed: ${s.removeRouting.map((r) => `"${r}"`).join('; ')}.` : '';
+      return `[MODEL TIERS] The owner undid your tier changes: ${lines.join(', ') || 'routing rules only'}.${routing}${skippedNote} Do not make the same change again this week. ${RESTART_NOTE}`;
+    } catch (err) {
+      this.deps.logger?.warn('Undoing tier changes failed', { decisionId: decision.id, error: String(err) });
+      return `[MODEL TIERS] The owner tapped Undo, but undoing failed (${err instanceof Error ? err.message : String(err)}). Tell the owner.`;
+    }
+  }
+
+  /**
+   * Apply a subject to the team (owner's Apply, the lead's change in auto
+   * mode, an undo or a revert), record it for the guard, and restart idle
+   * members whose model changed.
+   *
+   * An `undo` changes only members still on the tier it expects (`from`): a
+   * member whose tier changed again since is left alone.
    *
    * @param s - Subject
-   * @param decisionId - The approving decision
+   * @param decisionId - The approving decision, or the batch id of an auto apply
    * @returns The applied entries
    */
   async apply(s: TierChangeSubject, decisionId: string): Promise<TierChangeEntry[]> {
@@ -559,21 +748,44 @@ export class ModelTierService implements DecisionKindHandler {
     const items = await this.deps.workItems().catch(() => [] as WorkItem[]);
     const now = this.now();
     const applied: AppliedTierChange[] = [];
+    const modelChanged: string[] = [];
+    // An undo puts back only members whose latest change is the one undone:
+    // a later change (by the owner's card or another batch) wins.
+    const latest = new Map<string, string>();
+    if (s.kind === 'undo') for (const a of (await this.deps.store.get(s.teamId)).applied) latest.set(a.memberId, a.decisionId);
     for (const c of s.changes) {
       const m = team.members.find((x) => x.id === c.memberId);
-      if (!m) continue;
+      if (!m || m.role === 'orchestrator') continue;
+      if (s.kind === 'undo' && ((m.tier ?? null) !== c.from || (s.undoOf && latest.get(m.id) !== s.undoOf))) continue;
+      const runtime = m.runtimeType ?? RUNTIME_TYPES.CLAUDE_CODE;
+      const modelBefore = effectiveMemberModelId(team, { ...m, runtimeType: runtime });
+      // What the member had right now, not when the change was proposed: the
+      // record (and the undo built from it) must put back this state.
+      const tierBefore = m.tier ?? null;
+      const fixedBefore = m.modelId;
       if (c.clearTier) delete m.tier;
       else m.tier = c.to;
       if (c.clearsModelId && m.modelId === c.clearsModelId) delete m.modelId;
-      if (c.restoreModelId) m.modelId = c.restoreModelId;
-      const lowered = !c.clearTier && tierRank(c.to) < tierRank(effectiveFromTier(c, m.runtimeType ?? RUNTIME_TYPES.CLAUDE_CODE, team.tierModels));
+      // Never overwrite a fixed model someone set after the change being reverted.
+      if (c.restoreModelId && !m.modelId) m.modelId = c.restoreModelId;
+      if (effectiveMemberModelId(team, { ...m, runtimeType: runtime }) !== modelBefore && sessionOf(m)) modelChanged.push(sessionOf(m));
+      const actual: TierChangeEntry = { ...c, from: tierBefore, fromModel: modelBefore };
+      delete actual.clearsModelId;
+      if (fixedBefore && !m.modelId) actual.clearsModelId = fixedBefore;
+      const lowered = !c.clearTier && tierRank(c.to) < tierRank(effectiveFromTier(actual, runtime, team.tierModels));
       applied.push({
-        ...c,
+        ...actual,
         appliedAt: now.toISOString(),
         decisionId,
         baseline: baselineBefore(items, memberLedgerKeys(m), now.getTime()),
         guard: lowered && s.kind === 'review' ? 'watching' : 'not_watched',
       });
+    }
+    // Removal first, so an undo can take its rules out and put back the ones they pushed out.
+    if (s.removeRouting?.length) {
+      const rules = (team.tierRoutingRules ?? []).filter((r) => !s.removeRouting!.includes(r));
+      if (rules.length) team.tierRoutingRules = rules;
+      else delete team.tierRoutingRules;
     }
     if (s.routing.length) {
       const rules = [...(team.tierRoutingRules ?? [])];
@@ -582,9 +794,44 @@ export class ModelTierService implements DecisionKindHandler {
     }
     team.updatedAt = now.toISOString();
     await this.deps.saveTeam(team);
-    await this.deps.store.update(s.teamId, (st) => ({ ...st, applied: [...st.applied, ...applied] }));
-    this.deps.logger?.info('Model tier changes applied', { teamId: s.teamId, decisionId, changes: applied.map((a) => `${a.memberName}:${a.to}`) });
+    const undone = new Set(s.kind === 'undo' && s.undoOf ? applied.map((a) => a.memberId) : []);
+    await this.deps.store.update(s.teamId, (st) => ({
+      ...st,
+      applied: [
+        ...st.applied.map((a) => (a.decisionId === s.undoOf && undone.has(a.memberId) && a.guard !== 'auto_reverted' ? { ...a, guard: 'undone' as const, guardCheckedAt: now.toISOString() } : a)),
+        ...applied,
+      ],
+    }));
+    this.deps.logger?.info('Model tier changes applied', { teamId: s.teamId, decisionId, kind: s.kind, changes: applied.map((a) => `${a.memberName}:${a.to}`) });
+    this.restartIdle(modelChanged);
     return applied;
+  }
+
+  /**
+   * Restart, one after another in the background, each member whose model
+   * changed and that is idle; busy or stopped members pick the model up at
+   * their next start.
+   *
+   * @param sessions - Members whose effective model changed
+   */
+  private restartIdle(sessions: string[]): void {
+    const restart = this.deps.restartIfIdle;
+    if (!restart || !sessions.length) return;
+    this.restarts = this.restarts.then(async () => {
+      for (const session of new Set(sessions)) {
+        const outcome = await restart(session).catch(() => 'failed' as const);
+        this.deps.logger?.info('Model tier change: restart of an idle member', { session, outcome });
+      }
+    });
+  }
+
+  /**
+   * Resolves once the restarts scheduled so far are done (tests, shutdown).
+   *
+   * @returns Promise
+   */
+  restartsSettled(): Promise<void> {
+    return this.restarts;
   }
 
   // -------------------------------------------------------------------- tick
@@ -639,6 +886,59 @@ export class ModelTierService implements DecisionKindHandler {
   }
 
   /**
+   * Auto mode: move a member whose work got worse back at once (the revert
+   * the approve-mode card would apply), tell the lead, and post the owner a
+   * notice whose one action — "Keep the lower tier" — undoes the move back.
+   *
+   * @param team - Team
+   * @param lead - Its lead (posts the notice)
+   * @param a - The watched change
+   * @param back - The reverse entry
+   * @returns The notice id, or null when it could not be posted / nothing moved
+   */
+  private async autoRevert(team: Team, lead: TeamMember, a: AppliedTierChange, back: TierChangeEntry): Promise<string | null> {
+    const batch = `TG-${randomUUID().slice(0, 8)}`;
+    const subject: TierChangeSubject = {
+      teamId: team.id,
+      teamName: team.name,
+      reviewId: batch,
+      kind: 'revert',
+      changes: [back],
+      routing: [],
+      askerSession: sessionOf(lead),
+      askerName: lead.name,
+    };
+    const done = await this.apply(subject, batch);
+    if (!done.length) return null;
+    const forward: TierChangeEntry = {
+      memberId: a.memberId,
+      memberName: a.memberName,
+      session: a.session,
+      from: back.clearTier ? null : back.to,
+      to: a.to,
+      fromModel: back.toModel,
+      toModel: a.toModel,
+      ...(a.clearsModelId ? { clearsModelId: a.clearsModelId } : {}),
+      reason: a.reason,
+    };
+    const undo: TierChangeSubject = { ...subject, kind: 'undo', notice: 'reverted', undoOf: batch, changes: [forward] };
+    let id: string | null = null;
+    try {
+      id = (await this.postNotice(await this.team(team.id), lead, undo, done, [], null)).id;
+    } catch (err) {
+      this.deps.logger?.warn('Member moved back, but the owner notice could not be posted', { teamId: team.id, member: a.memberName, error: String(err) });
+    }
+    const to = tierLabel(back.clearTier ? null : back.to, back.toModel);
+    await this.deps
+      .deliverToAgent(
+        sessionOf(lead),
+        `[MODEL TIERS] Quality check: ${a.memberName}'s work was sent back more often on ${a.to} (${back.reason}), so it was moved back to ${to}. The owner was told and can keep the lower tier. Do not lower ${a.memberName} again this month unless its work changes. ${RESTART_NOTE}`,
+      )
+      .catch(() => false);
+    return id;
+  }
+
+  /**
    * Quality guard for one team: judge every watched (lowered) member and ask
    * the owner to move back the ones whose work got worse.
    *
@@ -672,21 +972,20 @@ export class ModelTierService implements DecisionKindHandler {
       }
       const lead = getTeamLeads(team)[0];
       if (!lead) continue;
-      const back: TierChangeEntry = {
-        memberId: m.id,
-        memberName: m.name,
-        session: sessionOf(m),
-        from: a.to,
-        to: a.from ?? effectiveFromTier(a, m.runtimeType ?? RUNTIME_TYPES.CLAUDE_CODE, team.tierModels),
-        ...(a.from === null ? { clearTier: true } : {}),
-        fromModel: a.toModel,
-        toModel: a.fromModel,
-        ...(a.clearsModelId ? { restoreModelId: a.clearsModelId } : {}),
-        reason: `since moving to ${a.to}: ${describeStats(after)}; before: ${describeStats(a.baseline)}`,
-      };
+      const back = reverseEntry(a, team, `since moving to ${a.to}: ${describeStats(after)}; before: ${describeStats(a.baseline)}`);
+      if (leadChangesTiersItself(team)) {
+        try {
+          const id = await this.autoRevert(team, lead, a, back);
+          updates.set(key, { guard: 'auto_reverted', guardDecisionId: id ?? undefined, guardCheckedAt: now.toISOString(), guardAfter: after });
+          reverts.push(id ?? `reverted:${m.name}`);
+        } catch (err) {
+          this.deps.logger?.warn('Quality guard could not move a member back', { teamId: team.id, member: m.name, error: String(err) });
+        }
+        continue;
+      }
       try {
         const d = await this.askOwner(team, lead, { reviewId: `guard-${a.decisionId}`, changes: [back], routing: [] }, 'revert', [
-          `${m.name} was moved to ${a.to} in ${a.decisionId}. Since then ${describeStats(after)}; before the change ${describeStats(a.baseline)}.`,
+          `${m.name} was moved to ${a.to}. Since then ${describeStats(after)}; before the change ${describeStats(a.baseline)}.`,
         ]);
         updates.set(key, { guard: 'revert_proposed', guardDecisionId: d.id, guardCheckedAt: now.toISOString(), guardAfter: after });
         reverts.push(d.id);
@@ -705,6 +1004,32 @@ export class ModelTierService implements DecisionKindHandler {
     }
     return reverts;
   }
+}
+
+/**
+ * The entry that puts a change back: from its target to the tier (and fixed
+ * model) the member had before it.
+ *
+ * @param c - The change to reverse
+ * @param team - Team (tier map)
+ * @param reason - Why it is put back
+ * @returns The reverse entry
+ */
+export function reverseEntry(c: TierChangeEntry, team: Pick<Team, 'members' | 'tierModels'>, reason: string): TierChangeEntry {
+  const m = team.members.find((x) => x.id === c.memberId);
+  const runtime = m?.runtimeType ?? RUNTIME_TYPES.CLAUDE_CODE;
+  return {
+    memberId: c.memberId,
+    memberName: c.memberName,
+    session: c.session,
+    from: c.to,
+    to: c.from ?? effectiveFromTier(c, runtime, team.tierModels),
+    ...(c.from === null ? { clearTier: true } : {}),
+    fromModel: c.toModel,
+    toModel: c.fromModel,
+    ...(c.clearsModelId ? { restoreModelId: c.clearsModelId } : {}),
+    reason,
+  };
 }
 
 /** "weak" / "no tier" for the target of a change. */

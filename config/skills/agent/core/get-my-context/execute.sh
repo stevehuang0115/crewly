@@ -18,6 +18,8 @@ Options:
   --agent    | -a   Agent session name/ID (required)
   --role     | -r   Agent role: product-manager, developer, etc. (required)
   --project  | -p   Project root path (required)
+  --context  | -c   What to recall for (optional; default: "<role> agent context for current work").
+                    This is your ONE memory search at startup — do not run recall as well (#857)
   --json     | -j   Raw JSON payload (same as legacy)
   --help     | -h   Show this help
 EOF_USAGE
@@ -27,6 +29,7 @@ INPUT_JSON=""
 AGENT_ID=""
 AGENT_ROLE=""
 PROJECT_PATH=""
+RECALL_CONTEXT=""
 
 # Detect legacy JSON argument as the first parameter
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -46,6 +49,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --project|-p)
       PROJECT_PATH="$2"
+      shift 2
+      ;;
+    --context|-c)
+      RECALL_CONTEXT="$2"
       shift 2
       ;;
     --json|-j)
@@ -85,6 +92,7 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$AGENT_ID" ] && AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agentId // empty')
   [ -z "$AGENT_ROLE" ] && AGENT_ROLE=$(printf '%s' "$INPUT" | jq -r '.agentRole // empty')
   [ -z "$PROJECT_PATH" ] && PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
+  [ -z "$RECALL_CONTEXT" ] && RECALL_CONTEXT=$(printf '%s' "$INPUT" | jq -r '.context // empty')
 fi
 
 require_param "agentId (--agent)" "$AGENT_ID"
@@ -95,6 +103,8 @@ BODY=$(jq -n \
   --arg agentId "$AGENT_ID" \
   --arg agentRole "$AGENT_ROLE" \
   --arg projectPath "$PROJECT_PATH" \
-  '{agentId: $agentId, agentRole: $agentRole, projectPath: $projectPath}')
+  --arg context "$RECALL_CONTEXT" \
+  '{agentId: $agentId, agentRole: $agentRole, projectPath: $projectPath}
+   + (if $context != "" then {context: $context} else {} end)')
 
 api_call POST "/memory/my-context" "$BODY"
