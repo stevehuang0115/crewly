@@ -9,7 +9,7 @@
 
 import { createHash } from 'node:crypto';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
-import { ORCHESTRATOR_SESSION_NAME, REPLY_ROUTING_CONSTANTS, TURN_TRIGGER_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, PEOPLE_CONSTANTS, REPLY_ROUTING_CONSTANTS, TURN_TRIGGER_CONSTANTS } from '../../constants.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { parseSlackThreadKey } from '../slack/slack-thread-key.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -165,6 +165,13 @@ export interface DeliverReplyInput {
    * while the owner's message in that DM is recent.
    */
   share?: boolean;
+  /**
+   * Set by the delivery itself, never by the caller: people whose connector
+   * grants the agent read inside the private-source window. Stored on the
+   * chat row as `privateSourcePeople` so support access withholds it
+   * (crewly#1558).
+   */
+  privateSourcePeople?: string[];
 }
 
 /**
@@ -184,7 +191,8 @@ export interface DeliverReplyInput {
  */
 export async function deliverReply(input: DeliverReplyInput, deps?: ReplyDeliveryDeps): Promise<ReplyDelivery> {
   // Trace ids are harness plumbing: never shown to the owner.
-  const clean = { ...input, content: stripTraceMarkers(input.content) };
+  // `privateSourcePeople` is the delivery's own mark, never the caller's.
+  const clean = { ...input, content: stripTraceMarkers(input.content), privateSourcePeople: undefined };
   // Double-send guard (#1109): the same text from the same agent within a
   // short window is the retry of a message that already landed.
   const dupKey = clean.interim === true ? undefined : `${clean.session}\u0000${createHash('sha1').update(JSON.stringify([clean.content.trim(), clean.reference ?? null, clean.hints ?? null, clean.addsNew === true])).digest('hex')}`;
@@ -319,6 +327,15 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
   let heldFrom: string | undefined;
   let held: HeldReply | undefined;
   if (d.audience) {
+    // crewly#1558: mark what draws on a connector, wherever it lands.
+    const people = (() => {
+      try {
+        return d.audience!.recentPeople(input.session);
+      } catch {
+        return [];
+      }
+    })();
+    input = { ...input, privateSourcePeople: people.length > 0 ? people : undefined };
     const audience = { ...d.audience, ...(d.conversationPlace ? { conversationPlace: d.conversationPlace } : {}) };
     const shared = input.share === true && (await ownerSaidShare(input.session, d)) ? recordPrivateShare(input.session, dest, audience) : [];
     if (shared.length > 0) {
@@ -733,7 +750,8 @@ async function attempt(
     answeredWorkItem ? { workItemId: answeredWorkItem } : undefined,
     dest.kind === 'conversation' ? dest.thread : undefined,
   );
-  const metadata = { ...(deliversTicket ?? {}), ...(provenance?.metadata ?? {}) };
+  const privateMark = input.privateSourcePeople?.length ? { [PEOPLE_CONSTANTS.PRIVATE_SOURCE_METADATA_KEY]: input.privateSourcePeople } : undefined;
+  const metadata = { ...(deliversTicket ?? {}), ...(provenance?.metadata ?? {}), ...(privateMark ?? {}) };
   if (provenance?.content !== undefined) input = { ...input, content: provenance.content };
   input = { ...input, content: stripOwnerTextIds(input.content) };
   if (dest.kind === 'conversation') {

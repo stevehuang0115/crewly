@@ -92,6 +92,20 @@ describe('deliverReply', () => {
     expect(r2.ok && r2.destination).toEqual(expect.objectContaining({ conversationId: 'room-ce' }));
   });
 
+  it('marks a reply written after a connector read as private-sourced, wherever it lands (crewly#1558)', async () => {
+    const audience = { recentPeople: (s: string) => (s === 'owen' ? ['owner'] : []), conversationKind: () => 'dm' as const, ownerDm: async () => 'dm-owen', record: jest.fn() };
+    const d = deps({ audience });
+    await deliverReply({ session: 'owen', content: 'Your inbox has 3 new invoices', hints: { conversationId: 'dm-owen' }, privateSourcePeople: ['forged'] }, d);
+    expect(d.deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'dm-owen', metadata: expect.objectContaining({ privateSourcePeople: ['owner'] }) }));
+
+    // No connector read: no mark, and a caller-supplied mark is ignored.
+    resetReplyDeliveryGuardForTesting();
+    const d2 = deps({ audience: { ...audience, recentPeople: () => [] } });
+    await deliverReply({ session: 'quinn', content: 'All agents are up', hints: { conversationId: 'dm-owen' }, privateSourcePeople: ['forged'] }, d2);
+    const meta = (d2.deliver.mock.calls[0][0] as { metadata?: Record<string, unknown> }).metadata;
+    expect(meta?.privateSourcePeople).toBeUndefined();
+  });
+
   it('a held reply raises the Share / Keep private card under the DM copy, and a Share posts it as written (#969)', async () => {
     const record = jest.fn();
     const privateShareCard = jest.fn(async (_held: unknown) => null);

@@ -113,6 +113,11 @@ describe('ActivityLogService', () => {
 });
 
 describe('helpers', () => {
+	it('isActivityActorType knows the support grantee actor (crewly#1558)', () => {
+		expect(isActivityActorType('support')).toBe(true);
+		expect(isActivityActorType('robot')).toBe(false);
+	});
+
 	it('summarizeChange keeps only the changed fields, masked, and leaves out equal and absent ones', () => {
 		expect(summarizeChange({ name: 'Ella', role: 'dev', modelId: 'a' }, { name: 'Ella', role: 'lead', modelId: undefined, token: 'xoxb' })).toEqual({
 			before: { role: 'dev', modelId: 'a' },

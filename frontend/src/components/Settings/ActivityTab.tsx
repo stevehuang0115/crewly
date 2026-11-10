@@ -34,6 +34,7 @@ export const ACTOR_TYPE_LABELS: Record<ActivityActorType, string> = {
   owner: 'Owner',
   agent: 'Agent',
   system: 'System',
+  support: 'Support',
 };
 
 /**

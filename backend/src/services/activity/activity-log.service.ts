@@ -25,8 +25,8 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getCallerIdentity, type CallerIdentity, type IdentifiableRequest } from '../../middleware/caller-identity.middleware.js';
 
-/** Who acted. */
-export type ActivityActorType = 'owner' | 'agent' | 'system';
+/** Who acted: the owner, an agent, Crewly itself, or a support grantee (crewly#1558). */
+export type ActivityActorType = 'owner' | 'agent' | 'system' | 'support';
 
 /** The actor of an entry. */
 export interface ActivityActor {
@@ -110,13 +110,13 @@ export interface ActivityLogOptions {
 	logger?: ComponentLogger;
 }
 
-const ACTOR_TYPES: ReadonlySet<string> = new Set<ActivityActorType>(['owner', 'agent', 'system']);
+const ACTOR_TYPES: ReadonlySet<string> = new Set<ActivityActorType>(['owner', 'agent', 'system', 'support']);
 
 /**
  * Whether a string names an actor type.
  *
  * @param value - Candidate
- * @returns True for owner / agent / system
+ * @returns True for owner / agent / system / support
  */
 export function isActivityActorType(value: unknown): value is ActivityActorType {
 	return typeof value === 'string' && ACTOR_TYPES.has(value);

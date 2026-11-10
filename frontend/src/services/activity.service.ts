@@ -13,8 +13,8 @@
 /** Base path of the activity API. */
 export const ACTIVITY_API_BASE = '/api/activity';
 
-/** Who did it. */
-export type ActivityActorType = 'owner' | 'agent' | 'system';
+/** Who did it: the owner, an agent, Crewly itself, or a support grantee (crewly#1558). */
+export type ActivityActorType = 'owner' | 'agent' | 'system' | 'support';
 
 /** The actor of one entry. */
 export interface ActivityActor {

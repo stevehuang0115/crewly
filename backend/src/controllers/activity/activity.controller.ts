@@ -36,7 +36,7 @@ export function parseActivityQuery(q: Record<string, unknown>): ActivityQuery | 
 		return new Date(BARE_DATE.test(v) && endOfDay ? ms + DAY_MS - 1 : ms).toISOString();
 	};
 	const actorType = str(Q.ACTOR_TYPE);
-	if (actorType !== undefined && !isActivityActorType(actorType)) return { error: `${Q.ACTOR_TYPE} must be owner, agent or system` };
+	if (actorType !== undefined && !isActivityActorType(actorType)) return { error: `${Q.ACTOR_TYPE} must be owner, agent, system or support` };
 	const since = date(Q.SINCE, false);
 	if (since && typeof since === 'object') return since;
 	const until = date(Q.UNTIL, true);

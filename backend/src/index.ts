@@ -3949,6 +3949,25 @@ void (async () => {
 								error: mobileErr instanceof Error ? mobileErr.message : String(mobileErr),
 							});
 						}
+
+						// Support access (crewly#1558): a Crewly account the owner granted
+						// support access calls /api/support/* through the relay. Served in
+						// process to the relay-vouched grantee only. Non-fatal.
+						try {
+							const { startSupportRelay } = await import('./services/support/support.wiring.js');
+							startSupportRelay({
+								cloudSync: sync,
+								chat: () => chatService,
+								teams: () => this.storageService.getTeams(),
+								orchestrator: () => this.storageService.getOrchestratorStatus(),
+								crewlyHome: this.config.crewlyHome,
+								agentRegistration: () => this.apiController.agentRegistrationService,
+							});
+						} catch (supportErr) {
+							this.logger.warn('SupportRelayService wiring skipped', {
+								error: supportErr instanceof Error ? supportErr.message : String(supportErr),
+							});
+						}
 					}
 				} catch (err) {
 					// Adapter wiring failure is non-fatal — local OSS UI still works.

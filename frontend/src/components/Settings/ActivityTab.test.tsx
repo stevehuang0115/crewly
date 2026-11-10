@@ -45,6 +45,10 @@ describe('ActivityTab helpers', () => {
     expect(describeTarget({ type: 'settings', id: 'all' })).toBe('settings · all');
   });
 
+  it('names a support grantee (crewly#1558)', () => {
+    expect(describeActor({ type: 'support', id: 'help@crewlyai.com', via: 'support-grant' })).toBe('Support · help@crewlyai.com (support-grant)');
+  });
+
   it('renders changed fields as before → after lines', () => {
     expect(changeLines(ENTRY)).toEqual(['role: developer → qa', 'model: sonnet']);
     expect(changeLines({ ...ENTRY, before: { until: '2026-11-01' }, after: undefined })).toEqual(['until: 2026-11-01 → —']);
