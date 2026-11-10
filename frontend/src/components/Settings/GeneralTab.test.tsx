@@ -242,6 +242,22 @@ describe('GeneralTab', () => {
       expect(checkbox).not.toBeChecked();
     });
 
+    it('shows keep-awake on by default and saves keepAwakeOnPower: false when switched off', async () => {
+      render(<GeneralTab />);
+
+      const checkbox = screen.getByLabelText('Keep this Mac awake while plugged in');
+      expect(checkbox).toBeChecked();
+
+      fireEvent.click(checkbox);
+      fireEvent.click(screen.getByText('Save changes'));
+
+      await waitFor(() => {
+        expect(mockUpdateSettings).toHaveBeenCalledWith(
+          expect.objectContaining({ general: expect.objectContaining({ keepAwakeOnPower: false }) }),
+        );
+      });
+    });
+
     it('should update local state on select change', () => {
       render(<GeneralTab />);
 

@@ -246,6 +246,14 @@ export const GeneralTab: React.FC = () => {
           checked={g.autoUpdate !== false}
           onChange={(v) => handleChange('general', 'autoUpdate', v)}
         />
+        <ToggleRow
+          id="keepAwakeOnPower"
+          label="Keep this Mac awake while plugged in"
+          meta="Stops the Mac sleeping when idle so Slack and Cloud keep working"
+          help="macOS only. The screen can still turn off. Closing the lid or running on battery follows your Mac's normal behaviour. System power settings are not changed."
+          checked={g.keepAwakeOnPower !== false}
+          onChange={(v) => handleChange('general', 'keepAwakeOnPower', v)}
+        />
         <SettingRow label="Max concurrent agents" htmlFor="maxAgents" meta="Most agents that can run at once">
           <FormInput
             id="maxAgents"

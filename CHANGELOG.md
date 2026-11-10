@@ -4,6 +4,9 @@ User-visible changes. Newest first.
 
 ## Unreleased
 
+### Added
+- **Crewly can keep a Mac awake while it is plugged in.** A Mac that idle-sleeps on the power adapter (`pmset sleep 20`) made the backend go silent after ~15 minutes: Crewly Cloud sent "machine has been offline" alerts and Slack went deaf. Settings › General now has "Keep this Mac awake while plugged in" (on by default, macOS only). While it is on, the backend holds a `caffeinate -i -s` power assertion tied to its own process, so the Mac stays awake on AC without any change to system power settings; the screen can still turn off, and closing the lid or running on battery follows macOS as before. Turning the setting off releases it at once, and `/health` shows `keepAwake: { enabled, active }`.
+
 ### Changed
 - **The orchestrator can no longer implement work itself on Claude Code (#1539).** "Delegate, never implement" was held only by the prompt, and a busy orchestrator that judged a job small could still edit files or browse. Its Claude Code session now starts without Edit, Write, NotebookEdit, WebFetch, WebSearch and the Playwright and chrome-devtools MCP tools (Bash and Read stay, so every orchestrator skill still runs). The list lives in `ROLE_DISALLOWED_TOOLS` in `backend/src/constants.ts`, keyed by role, so other roles can opt in later; workers and team leaders are unchanged. Other runtimes have no equivalent flag, so the orchestrator runs unrestricted there and a warning is logged once. The orchestrator prompt's "NEVER do these yourself" list is shortened to match.
 
