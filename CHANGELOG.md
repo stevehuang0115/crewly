@@ -5,6 +5,7 @@ User-visible changes. Newest first.
 ## Unreleased
 
 ### Added
+- **The Usage page shows what the Claude subscription has actually spent (#1264, thanks @Snep147moldov).** The ledger never attributes the owner's own Claude Code sessions, so a 5-hour window could run out with nothing unusual in it. A new "Subscription windows" section and `GET /api/system/usage/claude-window` count tokens spent in the rolling 5-hour (and, opt-in, 7-day) windows from every Claude Code transcript on the machine, plus the last refusal Anthropic sent. It reports tokens spent, not quota left, since Anthropic publishes no such figure. Only token counts and timestamps are read, never message text. Reports are cached for 60 s per window selection.
 - **Crewly can keep a Mac awake while it is plugged in.** A Mac that idle-sleeps on the power adapter (`pmset sleep 20`) made the backend go silent after ~15 minutes: Crewly Cloud sent "machine has been offline" alerts and Slack went deaf. Settings › General now has "Keep this Mac awake while plugged in" (on by default, macOS only). While it is on, the backend holds a `caffeinate -i -s` power assertion tied to its own process, so the Mac stays awake on AC without any change to system power settings; the screen can still turn off, and closing the lid or running on battery follows macOS as before. Turning the setting off releases it at once, and `/health` shows `keepAwake: { enabled, active }`.
 
 ### Changed
