@@ -144,6 +144,11 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	RETRY_BACKOFF_MAX_MS: 24 * 60 * 60 * 1000,
 	/** Labels of a harness-gap ticket filed by a retro */
 	RETRO_GAP_LABELS: ['harness-gap', 'from-retro'] as readonly string[],
+	/**
+	 * Roles that may self-claim a `harness-gap` ticket, and that make a team an
+	 * engineering team (#1554). An explicit list: never substring matching.
+	 */
+	RETRO_ENGINEERING_ROLES: ['developer', 'backend-developer', 'frontend-developer', 'fullstack-dev', 'fullstack-developer', 'architect', 'qa-engineer'] as readonly string[],
 	/** Most harness-gap tickets filed per day, across projects */
 	RETRO_MAX_GAPS_PER_DAY: 3,
 	/** Word overlap (Jaccard) at or above which a gap duplicates an open ticket / earlier gap */

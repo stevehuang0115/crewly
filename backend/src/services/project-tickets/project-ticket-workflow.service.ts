@@ -22,6 +22,7 @@ import {
 } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { Project, Team, TeamMember } from '../../types/index.js';
+import { isEngineeringRole } from './ticket-autopilot-retro.js';
 import {
   MAX_BRIEF_MARKDOWN_BYTES,
   createWorkItem,
@@ -613,6 +614,12 @@ export class ProjectTicketWorkflowService {
     if (!ticket) throw new ProjectTicketError(404, `Ticket not found: ${id}`);
     const teamId = await this.eligibleTeamOf(project, ticket, caller.session);
     if (!teamId) throw new ProjectTicketError(403, `${caller.session} is not on a team that works on ${ticket.id}`);
+    // Harness gaps are engineering work: only an engineering role self-claims one (#1554).
+    if (ticket.labels.includes(TICKET_AUTOPILOT_CONSTANTS.RETRO_GAP_LABELS[0])) {
+      const teams = this.projectTeams(project, await this.directory.getTeams());
+      const isEngineer = teams.some((t) => (t.members ?? []).some((m) => isSession(m, caller.session as string) && isEngineeringRole(m.role)));
+      if (!isEngineer) throw new ProjectTicketError(403, `${ticket.id} is a harness gap: only engineering roles (${TICKET_AUTOPILOT_CONSTANTS.RETRO_ENGINEERING_ROLES.join(', ')}) claim it; ask a lead to assign it`);
+    }
     return this.startWork(project, id, caller.session, caller.session, teamId, { self: true, allowed: ['ready'] });
   }
 

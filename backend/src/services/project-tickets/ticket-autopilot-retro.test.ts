@@ -22,6 +22,8 @@ import {
   RetroInputError,
   statsLines,
   titleSimilarity,
+  pickEngineeringTeam,
+  isEngineeringRole,
   topStallCauses,
   validateRetroInput,
 } from './ticket-autopilot-retro.js';
@@ -294,5 +296,37 @@ describe('ticket-autopilot-retro', () => {
       expect(md).toContain('### Harness gap');
       expect(md).toContain("- CREWLY-9: Brief misreads paused teams (waiting for the owner's OK)");
     });
+  });
+});
+
+describe('harness-gap engineering routing (#1554)', () => {
+  const team = (id: string, roles: string[], over: Record<string, unknown> = {}) => ({ id, name: id, projectIds: ['p1'], members: roles.map((role) => ({ role })), ...over });
+  const project = { id: 'p1' };
+
+  it('matches roles from the explicit list only', () => {
+    expect(isEngineeringRole('developer')).toBe(true);
+    expect(isEngineeringRole('fullstack-dev')).toBe(true);
+    expect(isEngineeringRole('content-developer-relations')).toBe(false);
+    expect(isEngineeringRole('product-manager')).toBe(false);
+  });
+
+  it('picks the single team on the project with an engineering member', () => {
+    expect(pickEngineeringTeam(project, [team('mkt', ['content-strategist']), team('eng', ['team-leader', 'developer'])])).toBe('eng');
+  });
+
+  it('returns null when none or several qualify', () => {
+    expect(pickEngineeringTeam(project, [team('mkt', ['designer'])])).toBeNull();
+    expect(pickEngineeringTeam(project, [team('a', ['developer']), team('b', ['architect'])])).toBeNull();
+  });
+
+  it('ignores archived teams and teams on other projects', () => {
+    expect(pickEngineeringTeam(project, [team('old', ['developer'], { archived: true }), team('x', ['developer'], { projectIds: ['p2'] })])).toBeNull();
+  });
+
+  it('prefers the engineeringTeam setting (id or name) when that team works the project', () => {
+    const p = { id: 'p1', ticketAutopilot: { engineeringTeam: 'Platform' } };
+    const teams = [team('a', ['developer']), team('b', ['developer'], { name: 'Platform' })];
+    expect(pickEngineeringTeam(p, teams)).toBe('b');
+    expect(pickEngineeringTeam({ id: 'p1', ticketAutopilot: { engineeringTeam: 'other' } }, teams)).toBeNull();
   });
 });

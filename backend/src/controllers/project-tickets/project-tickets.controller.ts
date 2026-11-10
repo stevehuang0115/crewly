@@ -24,7 +24,7 @@ import { StorageService } from '../../services/core/storage.service.js';
 import { isProjectTicketStatus } from '../../types/project-ticket.types.js';
 import { TicketAutopilotService, type AutopilotRetroDeps, type OwnerNotice } from '../../services/project-tickets/ticket-autopilot.service.js';
 import { goalChangedAt, openExperimentsOf, readProjectGoal, readRetroMilestones } from '../../services/project-tickets/ticket-autopilot-goal.js';
-import { applyRetroGapDecision } from '../../services/project-tickets/ticket-autopilot-retro.js';
+import { applyRetroGapDecision, pickEngineeringTeam } from '../../services/project-tickets/ticket-autopilot-retro.js';
 import { ExperimentService, supervisionOf } from '../../services/experiments/experiment.service.js';
 import { WikiIngestService, type WikiIngestOutcome } from '../../services/wiki/wiki-ingest.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
@@ -230,7 +230,10 @@ export function createAutopilotRetroDeps(): AutopilotRetroDeps {
       return (await StorageService.getInstance().getProjects()).find((p) => p.name.toLowerCase() === wanted) ?? null;
     },
     createTicket: async (project, input) => {
-      const t = await tickets.create(project.path, project.name, { ...input, status: 'backlog' }, 'autopilot');
+      // A harness-gap ticket gets an engineering team so a marketing team on the project cannot claim it (#1554).
+      const isGap = TICKET_AUTOPILOT_CONSTANTS.RETRO_GAP_LABELS.every((l) => input.labels.includes(l));
+      const team = isGap ? pickEngineeringTeam(project, await StorageService.getInstance().getTeams()) : null;
+      const t = await tickets.create(project.path, project.name, { ...input, status: 'backlog', ...(team ? { team } : {}) }, 'autopilot');
       return { id: t.id, title: t.title };
     },
     applyGapDecision: (projectPath, id, approve, note) => applyRetroGapDecision(tickets, projectPath, id, approve, note),
@@ -686,7 +689,7 @@ export async function submitTicketAutopilotSelfReview(req: Request, res: Respons
 
 /**
  * POST /api/project-ticket-autopilot/:project — change the switch:
- * `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro?, replansPerDay?, replanTtlHours?, speedMode?, skipLabels? }` (null resets
+ * `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro?, replansPerDay?, replanTtlHours?, speedMode?, skipLabels?, engineeringTeam? }` (null resets
  * a field to its default). Owner / orchestrator only.
  *
  * @param req - Request
@@ -708,6 +711,7 @@ export async function setTicketAutopilot(req: Request, res: Response): Promise<v
         replanTtlHours: b.replanTtlHours,
         speedMode: b.speedMode,
         skipLabels: b.skipLabels,
+        engineeringTeam: b.engineeringTeam,
       },
       callerOf(req),
     );
