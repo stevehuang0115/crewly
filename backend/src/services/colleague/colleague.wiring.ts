@@ -123,13 +123,18 @@ export function buildColleagueDeps(): ColleagueDeps {
       const { CloudSyncService } = await import('../cloud/cloud-sync.service.js');
       const sync = CloudSyncService.getInstance();
       if (!sync.isStarted()) return { ok: false, code: 'cloud_unavailable', error: 'this machine is not connected to Crewly Cloud' };
-      // Only a machine in this account's own device list is ever addressed:
-      // the relay queue id comes from that list, never from the message.
-      if (!sync.getDevices().some((d) => d.deviceId === instanceId && !!d.sessionId)) {
+      // Only a machine of this account is ever addressed, and the relay queue
+      // id comes from the account's machine list, never from the message. The
+      // machine list carries the queue the machine polls now; the device list's
+      // sessionId for an instance id can be an old queue nobody polls (Fern →
+      // Pia, 11-10: "delivered", never arrived), so it is only the fallback.
+      const queueId = (await accountInstances()).get(instanceId)
+        ?? sync.getDevices().find((d) => d.deviceId === instanceId && !!d.sessionId)?.sessionId;
+      if (!queueId) {
         return { ok: false, code: 'machine_unknown', error: 'that machine is not in the list of this account\'s machines (is it signed in to the same Crewly account?)' };
       }
       try {
-        await sync.sendMessage(instanceId, COLLEAGUE_MESSAGE_CONSTANTS.MESSAGE_TYPE, wire);
+        await sync.sendToPeerQueueId(queueId, COLLEAGUE_MESSAGE_CONSTANTS.MESSAGE_TYPE, wire);
         return { ok: true };
       } catch (err) {
         return { ok: false, code: 'send_failed', error: err instanceof Error ? err.message : String(err) };
@@ -160,7 +165,52 @@ function cloudDevices(): CloudDeviceLite[] {
   return cloudSyncRef?.getDevices() ?? [];
 }
 function accountDeviceIds(): Set<string> {
-  return new Set(cloudDevices().map((d) => d.deviceId));
+  const ids = new Set(cloudDevices().map((d) => d.deviceId));
+  for (const id of instancesCache?.queues.keys() ?? []) ids.add(id);
+  return ids;
+}
+
+let instancesCache: { at: number; queues: Map<string, string> } | null = null;
+
+/**
+ * The account's machines (instance id → relay queue id they poll now), from
+ * `GET /api/cloud/slack/instances`, cached briefly. Empty when Cloud is not
+ * reachable. Never throws.
+ */
+export async function accountInstances(): Promise<Map<string, string>> {
+  if (instancesCache && Date.now() - instancesCache.at < COLLEAGUE_MESSAGE_CONSTANTS.INSTANCES_CACHE_MS) {
+    return instancesCache.queues;
+  }
+  try {
+    const { CloudClientService } = await import('../cloud/cloud-client.service.js');
+    const client = CloudClientService.getInstance();
+    const token = client.getToken();
+    const base = client.getCloudUrl();
+    if (!token || !base) return instancesCache?.queues ?? new Map();
+    const response = await fetch(`${base.replace(/\/$/, '')}/api/cloud/slack/instances`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(COLLEAGUE_MESSAGE_CONSTANTS.DIRECTORY_LOOKUP_MS),
+    });
+    if (!response.ok) return instancesCache?.queues ?? new Map();
+    const body = (await response.json().catch(() => ({}))) as { data?: unknown };
+    const queues = new Map<string, string>();
+    for (const row of Array.isArray(body.data) ? body.data : []) {
+      const r = row as { instanceId?: unknown; relayQueueId?: unknown };
+      if (typeof r.instanceId === 'string' && r.instanceId && typeof r.relayQueueId === 'string' && r.relayQueueId) {
+        queues.set(r.instanceId, r.relayQueueId);
+      }
+    }
+    instancesCache = { at: Date.now(), queues };
+    return queues;
+  } catch (err) {
+    logger.debug('Could not list the account\'s machines', { error: err instanceof Error ? err.message : String(err) });
+    return instancesCache?.queues ?? new Map();
+  }
+}
+
+/** Forget the cached machine list (tests). */
+export function resetAccountInstancesCache(): void {
+  instancesCache = null;
 }
 
 /**
@@ -184,9 +234,11 @@ export async function startColleagueMessaging(agentRegistration: AgentRegistrati
     listening = true;
     sync.on('message', (msg: { type: string; payload: unknown; id?: string }) => {
       if (msg.type !== COLLEAGUE_MESSAGE_CONSTANTS.MESSAGE_TYPE) return;
-      void instance
-        ?.receive(msg.payload)
+      // Refresh the machine list first so a sender known only to it passes the account check.
+      void accountInstances()
+        .then(() => instance?.receive(msg.payload))
         .then((out) => {
+          if (!out) return;
           const from = isColleagueWireMessage(msg.payload) ? msg.payload.from.name : 'unknown';
           logger.info('Colleague message received', { from, handled: out.handled, ...('delivered' in out ? { delivered: out.delivered } : {}), ...(out.reason ? { reason: out.reason } : {}) });
         })
