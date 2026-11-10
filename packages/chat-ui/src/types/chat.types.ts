@@ -106,6 +106,12 @@ export interface Channel {
   lastReadSeq?: number;
   /** Unread messages past `lastReadSeq` (agent messages only). */
   unreadCount?: number;
+  /** Shared channel with another company's Crewly account (crewly#1543). */
+  external?: boolean;
+  /** For an external channel: the other company's name. */
+  counterpartName?: string;
+  /** The channel takes no new posts (a revoked external link). */
+  readOnly?: boolean;
 }
 
 /** A channel's read marker + unread count (REST body, relay RPC result, WS frame). */

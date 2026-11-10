@@ -3,7 +3,8 @@
  * (specs/2026-10-02-ui-redesign.md, Chat).
  *
  * Sections, top to bottom: Pinned · Direct messages · Channels · Group
- * chats. Each row is a name plus an unread dot; role, Lead and presence
+ * chats · External teams (shared channels with other companies, with an
+ * "External" badge). Each row is a name plus an unread dot; role, Lead and presence
  * are in the row's tooltip and the conversation header. Long sections show
  * only what is active — DMs: the orchestrator, unread, the open one, then
  * the first few; channels and group chats: unread, the open one and those
@@ -36,7 +37,7 @@ export const QUIET_SECTION_VISIBLE = 3;
 export const ACTIVE_CHANNEL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Section order of the simplified list. */
-const SECTION_ORDER = ['pinned', 'dms', 'crewly-channels', 'channels', 'huddles'];
+const SECTION_ORDER = ['pinned', 'dms', 'crewly-channels', 'channels', 'huddles', 'external'];
 
 /** Props of {@link ChatConversationList}. */
 export interface ChatConversationListProps {
@@ -351,6 +352,15 @@ function Row({
           </span>
         )}
         <span className="min-w-0 flex-1 truncate">{isChannel ? row.title.replace(/^#+\s*/, '') : row.title}</span>
+        {row.external && (
+          <span
+            className="shrink-0 rounded-full border border-border px-1.5 text-[10px] font-bold uppercase leading-[16px] tracking-wide text-text-2"
+            data-testid={`conv-external-${row.id}`}
+            title={row.readOnly ? 'External team - link revoked, read-only' : 'External team - another company\'s Crewly account'}
+          >
+            {row.readOnly ? 'External · read-only' : 'External'}
+          </span>
+        )}
         {unread &&
           (unreadCount > 0 ? (
             <span

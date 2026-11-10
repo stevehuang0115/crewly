@@ -1073,7 +1073,8 @@ export class MessageStore {
    * @returns Hits, newest first
    */
   private runSearch(scope: string | null, params: Array<string | number>, opts: ChatSearchOptions): ChatSearchRow[] {
-    let where = `m.sender_type != 'system'`;
+    // External shared channels (crewly#1543) hold another company's text: never searchable.
+    let where = `m.sender_type != 'system' AND m.channel_id NOT LIKE 'external-%'`;
     if (scope) where += ` AND ${scope}`;
     for (const term of opts.terms) {
       where += ` AND m.content LIKE ? ESCAPE '\\'`;
@@ -1121,7 +1122,7 @@ export class MessageStore {
                 m.source, m.direction, m.sender_kind, m.agent_session, m.ext_ref,
                 c.name AS channel_name, c.type AS channel_type
          FROM chat_messages m JOIN chat_channels c ON c.id = m.channel_id
-         WHERE m.created_at >= ? AND c.archived_at IS NULL
+         WHERE m.created_at >= ? AND c.archived_at IS NULL AND m.channel_id NOT LIKE 'external-%'
          ORDER BY m.created_at DESC, m.rowid DESC
          LIMIT ?`,
       )

@@ -124,6 +124,10 @@ export interface ConversationRow {
    * Portal-safe; rows without it render unchanged.
    */
   badge?: string;
+  /** Shared channel with another company's Crewly account (crewly#1543): shown with an "External" badge. */
+  external?: boolean;
+  /** The conversation takes no new posts (a revoked external link). */
+  readOnly?: boolean;
 }
 
 /**
