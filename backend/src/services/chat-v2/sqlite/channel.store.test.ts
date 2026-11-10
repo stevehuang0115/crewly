@@ -342,6 +342,14 @@ describe('ChannelStore', () => {
       expect(store.listBridged().map((r) => r.id)).toEqual(['slack-D0-1']);
     });
 
+    it('includes external shared channels (crewly#1543) and setPurpose updates one', () => {
+      store.create({ id: 'external-l1', agentSession: '', ownerUserId: 'system', name: 'Acme Co', type: 'channel' });
+      expect(store.listBridged().map((r) => r.id)).toEqual(['external-l1']);
+      expect(store.setPurpose('external-l1', 'x')).toBe(true);
+      expect(store.getById('external-l1')?.purpose).toBe('x');
+      expect(store.setPurpose('nope', 'x')).toBe(false);
+    });
+
     it('skips archived bridged channels', () => {
       const row = store.create({
         id: 'slack-D0-2',

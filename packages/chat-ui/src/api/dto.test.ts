@@ -40,6 +40,14 @@ describe('channelFromDTO', () => {
     expect(ch.presence).toBe('busy');
   });
 
+  it('carries the external flag, counterpart name and read-only (crewly#1543)', () => {
+    const base: ChannelDTO = { id: 'external-1', agentSession: '', name: 'Acme Co', createdAt: 0, type: 'channel', agentPresence: { status: 'offline', lastSeenAt: null } };
+    expect(channelFromDTO({ ...base, external: true, counterpartName: 'Acme Co', readOnly: true })).toMatchObject({ external: true, counterpartName: 'Acme Co', readOnly: true });
+    const plain = channelFromDTO(base);
+    expect(plain.external).toBeUndefined();
+    expect(plain.readOnly).toBeUndefined();
+  });
+
   it('maps wire `starting` to UI `online` (UI has no "starting" state)', () => {
     const dto: ChannelDTO = {
       id: 'ch-1',

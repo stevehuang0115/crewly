@@ -4644,6 +4644,17 @@ void (async () => {
 				});
 			}
 
+			// Shared channels with other companies' Crewly accounts (crewly#1543): the
+			// receive side mirrors Cloud pushes into Team Chat.
+			try {
+				const { startSharedChannels } = await import('./services/shared-channel/shared-channel.wiring.js');
+				await startSharedChannels(this.apiController.agentRegistrationService);
+			} catch (sharedErr) {
+				this.logger.warn('Shared channels not wired (non-critical)', {
+					error: sharedErr instanceof Error ? sharedErr.message : String(sharedErr),
+				});
+			}
+
 			// Idle-boundary context cap for Claude Code members: a long single
 			// task keeps growing its conversation (sessions at 650k–965k per
 			// turn); between turns, save + clear + re-orient it past the cap

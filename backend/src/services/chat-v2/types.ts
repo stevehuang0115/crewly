@@ -216,6 +216,15 @@ export interface ChatChannelDTO {
    */
   lastReadSeq: number;
   /**
+   * True for a shared channel with another company's Crewly account
+   * (`external-<linkId>`, crewly#1543). Absent otherwise.
+   */
+  external?: boolean;
+  /** For an external channel: the other company's display name (or email). */
+  counterpartName?: string;
+  /** True when the channel takes no new posts (a revoked external link). */
+  readOnly?: boolean;
+  /**
    * Unread messages in this channel (not the owner's own, not system notes,
    * thread replies included) past `lastReadSeq`.
    */

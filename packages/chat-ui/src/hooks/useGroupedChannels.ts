@@ -113,6 +113,8 @@ function toRow(channel: Channel, kind: ConversationKind): ConversationRow {
     lastMessageAt: channel.lastMessageAt,
     presence: kind === 'dm' ? mapPresence(channel.presence) : undefined,
     agentSession: kind === 'dm' ? channel.agentSession : undefined,
+    ...(channel.external ? { external: true, badge: 'External' } : {}),
+    ...(channel.readOnly ? { readOnly: true } : {}),
   };
 }
 

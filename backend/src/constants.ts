@@ -10393,6 +10393,39 @@ export const NETWORK_STATUS_CONSTANTS = {
 } as const;
 
 /**
+ * Shared channels between two companies' Crewly accounts (crewly#1543 slice 4,
+ * receive side): messages pushed by Cloud are mirrored into Team Chat.
+ */
+export const SHARED_CHANNEL_CONSTANTS = {
+	/** Relay type: a message arrived on a linked channel */
+	MESSAGE_TYPE: 'shared_channel_message',
+	/** Relay type: a link was revoked */
+	REVOKED_TYPE: 'shared_channel_revoked',
+	/** `fromDeviceName` of pushes from Cloud (the virtual Cloud device) */
+	CLOUD_DEVICE_NAME: 'crewly-cloud-slack',
+	/** Wire format version */
+	WIRE_VERSION: 1,
+	/** Cloud paths (machine token) */
+	LINKS_PATH: '/api/cloud/shared-channels',
+	/** Page size of a history fetch */
+	PAGE_SIZE: 100,
+	/** Most pages one backfill reads per link (safety cap) */
+	MAX_PAGES: 50,
+	/** HTTP timeout for Cloud calls (ms) */
+	REQUEST_TIMEOUT_MS: 15_000,
+	/** Longest message text mirrored (characters) */
+	MAX_TEXT_LENGTH: 8000,
+	/** Chat-v2 channel id prefix (`external-<linkId>`) */
+	CHAT_CHANNEL_PREFIX: 'external-',
+	/** Purpose text that marks a revoked (read-only) channel */
+	REVOKED_PURPOSE: 'Link revoked - read-only',
+	/** Cursor file under the Crewly home directory */
+	CURSOR_FILE: 'shared-channel-cursors.json',
+	/** Extra backfills after boot while Cloud may still be unreachable (ms) */
+	BOOT_RETRY_DELAYS_MS: [30_000, 2 * 60_000, 10 * 60_000],
+} as const;
+
+/**
  * Colleague messages — one agent writing to another by name, on any machine
  * of the same Crewly account (2026-11-10: Fern on the Air could not reach Pia
  * on the Mac; the only cross-machine route was an @ in a shared Slack room).

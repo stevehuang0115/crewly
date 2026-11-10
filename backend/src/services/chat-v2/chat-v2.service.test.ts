@@ -2554,6 +2554,74 @@ describe('ChatV2Service', () => {
       });
     });
 
+    describe('external shared channels (crewly#1543 slice 4)', () => {
+      const rec = (extra: Partial<Parameters<ChatV2Service['recordExternalMessage']>[0]> = {}) =>
+        service.recordExternalMessage({
+          linkId: 'link-1', counterpart: 'Acme Co', messageId: 'm1', senderName: 'Fern (Acme Co)',
+          direction: 'received', text: 'Can we see the Q3 plan?', createdAtMs: 5000, ...extra,
+        });
+
+      it('files messages in external-<linkId>, created on first use, as agent rows from the counterpart', () => {
+        expect(rec()).toBeTruthy();
+        expect(rec({ messageId: 'm2', text: 'Thanks' })).toBeTruthy();
+        const ch = db.prepare('SELECT name, type, agent_session, team_id FROM chat_channels WHERE id = ?').get('external-link-1') as Record<string, unknown>;
+        expect(ch).toMatchObject({ name: 'Acme Co', type: 'channel', agent_session: '', team_id: null });
+        const rows = db.prepare('SELECT sender_type, sender_id, created_at FROM chat_messages ORDER BY seq').all() as Array<Record<string, unknown>>;
+        expect(rows.map((r) => r.sender_type)).toEqual(['agent', 'agent']);
+        expect(rows[0]).toMatchObject({ sender_id: 'Fern (Acme Co)', created_at: 5000 });
+      });
+
+      it('is a no-op for a redelivery and emits no chat_message (nothing is dispatched or mirrored)', () => {
+        const emitted = jest.fn();
+        service.on('chat_message', emitted);
+        expect(rec()).toBeTruthy();
+        expect(rec()).toBeNull();
+        expect(emitted).not.toHaveBeenCalled();
+        expect((db.prepare('SELECT COUNT(*) AS n FROM chat_messages').get() as { n: number }).n).toBe(1);
+      });
+
+      it('lists the channel with the external flag and counterpart name, readable by the owner', () => {
+        rec();
+        const dto = service.listChannels({ principal: owner }).find((c) => c.id === 'external-link-1');
+        expect(dto).toMatchObject({ external: true, counterpartName: 'Acme Co', type: 'channel', unreadCount: 1 });
+        expect(dto?.readOnly).toBeUndefined();
+        expect(service.listMessages({ channelId: 'external-link-1', principal: owner }).messages).toHaveLength(1);
+      });
+
+      it('refuses chat posts to it', () => {
+        rec();
+        expect(() => service.sendMessage({ channelId: 'external-link-1', principal: owner, content: 'hi' })).toThrow(/external team/);
+      });
+
+      it('keeps its text out of cross-conversation search and the agent search', () => {
+        rec({ text: 'confidential-plan numbers' });
+        expect(service.searchMessagesForAgent({ principal: owner, query: 'confidential-plan' })).toEqual([]);
+        expect(service.searchMessagesForAgent({ agentSession: 'orc', principal: { ...owner, agentSession: 'orc' }, query: 'confidential-plan' })).toEqual([]);
+        expect(service.getOwnerFeed({ sinceMs: 0, limit: 50 }).messages).toEqual([]);
+      });
+
+      it('marks a revoked link read-only, keeps the history and writes one note', () => {
+        rec();
+        expect(service.markExternalChannelRevoked('link-1', 'Acme Co')).toBe(true);
+        expect(service.markExternalChannelRevoked('link-1', 'Acme Co')).toBe(false);
+        const dto = service.listChannels({ principal: owner }).find((c) => c.id === 'external-link-1');
+        expect(dto).toMatchObject({ external: true, readOnly: true });
+        const msgs = service.listMessages({ channelId: 'external-link-1', principal: owner }).messages;
+        expect(msgs.map((m) => m.content)).toEqual(expect.arrayContaining(['Can we see the Q3 plan?', expect.stringContaining('revoked')]));
+        expect(msgs).toHaveLength(2);
+      });
+
+      it('does not create a channel when a link with no messages is revoked', () => {
+        expect(service.markExternalChannelRevoked('link-9', 'Nobody')).toBe(false);
+        expect(db.prepare('SELECT COUNT(*) AS n FROM chat_channels').get()).toEqual({ n: 0 });
+      });
+
+      it('rejects empty text or ids', () => {
+        expect(() => rec({ text: '' })).toThrow();
+        expect(() => rec({ messageId: '' })).toThrow();
+      });
+    });
+
     describe('recordSlackOnlyAgentPost (work-item posts made searchable, CREW-877)', () => {
       beforeEach(() => {
         service.close();

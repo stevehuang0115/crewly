@@ -208,7 +208,12 @@ export type MessageType =
   // Colleague message (message-colleague skill): one agent writes to another
   // agent of the same account on this machine. `data` is a
   // ColleagueWireMessage (services/colleague/colleague-message.types.ts).
-  | 'colleague_message';
+  | 'colleague_message'
+  // Shared channels (crewly#1543): another company's Crewly account wrote on a
+  // linked channel (`data` = `{v, linkId, messageId}`, no text; the body is
+  // fetched from Cloud) or a link was revoked (`data` = `{v, linkId}`).
+  | 'shared_channel_message'
+  | 'shared_channel_revoked';
 
 /** Valid message type values for runtime validation. */
 export const MESSAGE_TYPES: readonly MessageType[] = [
@@ -232,6 +237,8 @@ export const MESSAGE_TYPES: readonly MessageType[] = [
   'team_move',
   'canvas_action',
   'colleague_message',
+  'shared_channel_message',
+  'shared_channel_revoked',
 ] as const;
 
 /**

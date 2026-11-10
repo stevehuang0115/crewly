@@ -167,3 +167,18 @@ describe('buildConversationGroups', () => {
     expect(groups[2].rows.map((r) => r.title)).toEqual(['Apple', 'Banana']);
   });
 });
+
+describe('external shared channels (crewly#1543)', () => {
+  it('flags external channels with an External badge and carries read-only', () => {
+    const groups = buildConversationGroups([
+      { id: 'external-1', agentSession: '', name: 'Acme Co', createdAt: '2026-11-10T00:00:00Z', type: 'channel', external: true, counterpartName: 'Acme Co' },
+      { id: 'external-2', agentSession: '', name: 'Beta', createdAt: '2026-11-10T00:00:00Z', type: 'channel', external: true, readOnly: true },
+      { id: 'c3', agentSession: '', name: 'general', createdAt: '2026-11-10T00:00:00Z', type: 'channel' },
+    ]);
+    const rows = groups.find((g) => g.id === 'channels')!.rows;
+    expect(rows.find((r) => r.id === 'external-1')).toMatchObject({ external: true, badge: 'External' });
+    expect(rows.find((r) => r.id === 'external-1')?.readOnly).toBeUndefined();
+    expect(rows.find((r) => r.id === 'external-2')).toMatchObject({ external: true, readOnly: true });
+    expect(rows.find((r) => r.id === 'c3')?.external).toBeUndefined();
+  });
+});

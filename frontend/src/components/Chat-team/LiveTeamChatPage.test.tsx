@@ -765,6 +765,39 @@ describe('LiveTeamChatPage — review fixes', () => {
     expect(screen.queryByTestId('conv-group-channels')).not.toBeInTheDocument();
   });
 
+  describe('external shared channels (crewly#1543)', () => {
+    const ext = (over: Partial<Channel> = {}): Channel => ({
+      id: 'external-l1', agentSession: '', name: 'Acme Co', createdAt: ISO, type: 'channel', external: true, counterpartName: 'Acme Co', ...over,
+    });
+
+    it('lists them in their own "External teams" section with an External badge, apart from team channels', async () => {
+      const { client } = makeStubClient([orcDm, TEAM_GENERAL, ext()]);
+      render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[PRODUCT_TEAM]} />);
+      await waitFor(() => expect(screen.getByTestId('conv-group-external')).toBeInTheDocument());
+      const group = screen.getByTestId('conv-group-external');
+      expect(within(group).getByTestId('conv-row-external-l1')).toHaveTextContent('Acme Co');
+      expect(within(group).getByTestId('conv-external-external-l1')).toHaveTextContent('External');
+      expect(within(screen.getByTestId('conv-group-channels')).queryByTestId('conv-row-external-l1')).not.toBeInTheDocument();
+    });
+
+    it('opens read-only: no composer, a notice that sending is not available yet', async () => {
+      const { client } = makeStubClient([orcDm, ext()]);
+      render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
+      await waitFor(() => expect(screen.getByTestId('conv-row-external-l1')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('conv-row-external-l1'));
+      await waitFor(() => expect(screen.getByTestId('external-channel-notice')).toHaveTextContent('not available yet'));
+      expect(screen.queryByPlaceholderText(/Message/)).not.toBeInTheDocument();
+    });
+
+    it('a revoked link says so and is marked read-only in the list', async () => {
+      const { client } = makeStubClient([orcDm, ext({ readOnly: true })]);
+      render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
+      await waitFor(() => expect(screen.getByTestId('conv-external-external-l1')).toHaveTextContent('read-only'));
+      fireEvent.click(screen.getByTestId('conv-row-external-l1'));
+      await waitFor(() => expect(screen.getByTestId('external-channel-notice')).toHaveTextContent('revoked'));
+    });
+  });
+
   it('shows the agent name for a DM that was created under its raw session name', async () => {
     const raw: Channel = { id: 'dm-raw', agentSession: 'sess-ella-1a2b', name: 'sess-ella-1a2b', createdAt: ISO, type: 'dm' };
     const { client } = makeStubClient([orcDm, raw]);

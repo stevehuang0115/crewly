@@ -63,6 +63,23 @@ describe('ChatConversationList', () => {
     expect(within(screen.getByTestId('conv-row-ch-1')).getByText('#')).toBeInTheDocument();
   });
 
+  it('shows an External badge on shared channels, "read-only" once the link is revoked', () => {
+    const external: ConversationGroup = {
+      id: 'external',
+      label: 'External teams',
+      rows: [
+        { id: 'external-a', kind: 'channel', title: 'Acme Co', external: true, badge: 'External' },
+        { id: 'external-b', kind: 'channel', title: 'Beta Ltd', external: true, readOnly: true, badge: 'External' },
+      ],
+    };
+    render(<ChatConversationList {...base} groups={[...groups, external]} />);
+    expect(screen.getByTestId('conv-external-external-a')).toHaveTextContent('External');
+    expect(screen.getByTestId('conv-external-external-a')).not.toHaveTextContent('read-only');
+    expect(screen.getByTestId('conv-external-external-b')).toHaveTextContent('read-only');
+    expect(screen.queryByTestId('conv-external-ch-1')).not.toBeInTheDocument();
+    expect(Array.from(document.querySelectorAll('h3')).map((h) => h.textContent).pop()).toBe('External teams');
+  });
+
   it('shows the server unread count instead of a dot when a count is supplied (99+ capped)', () => {
     const counts: Record<string, number> = { 'dm-2': 3, 'ch-1': 150 };
     render(

@@ -309,7 +309,9 @@ export class ChannelStore {
   listBridged(options?: { includeArchived?: boolean; limit?: number }): ChatChannelRow[] {
     const includeArchived = options?.includeArchived ?? false;
     const limit = Math.min(options?.limit ?? 100, 200);
-    const where: string[] = ["id LIKE 'slack-%'"];
+    // External shared channels (`external-<linkId>`, crewly#1543) belong to the owner
+    // of this machine too and are surfaced the same way.
+    const where: string[] = ["(id LIKE 'slack-%' OR id LIKE 'external-%')"];
     if (!includeArchived) where.push('archived_at IS NULL');
     const sql = `
       SELECT ${CHANNEL_SELECT_COLUMNS}
@@ -319,6 +321,17 @@ export class ChannelStore {
       LIMIT ?
     `;
     return this.db.prepare(sql).all(limit) as ChatChannelRow[];
+  }
+
+  /**
+   * Replace a channel's purpose text.
+   *
+   * @param id - The channel id
+   * @param purpose - New purpose (null clears it)
+   * @returns True if a row was updated
+   */
+  setPurpose(id: string, purpose: string | null): boolean {
+    return this.db.prepare(`UPDATE chat_channels SET purpose = ? WHERE id = ?`).run(purpose, id).changes > 0;
   }
 
   /**

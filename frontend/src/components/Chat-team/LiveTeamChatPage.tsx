@@ -418,7 +418,9 @@ function LiveTeamChatPageBody({
       return tid ? teams.find((t) => t.id === tid)?.name : undefined;
     };
     const crewlyRows = crewlyChannels.map(crewlyChannelRow);
-    const channelRows = allChannelRows.map((r) => {
+    // Shared channels with other companies (crewly#1543) get their own section.
+    const externalRows = allChannelRows.filter((r) => r.external);
+    const channelRows = allChannelRows.filter((r) => !r.external).map((r) => {
       const name = teamNameOf(r.id);
       return name ? { ...r, title: name } : r;
     });
@@ -452,12 +454,14 @@ function LiveTeamChatPageBody({
         .map(withMeta),
       ...channelRows.filter((r) => pinnedChats.isPinned(pinKeyOf(r))),
       ...allHuddleRows.filter((r) => pinnedChats.isPinned(pinKeyOf(r))),
+      ...externalRows.filter((r) => pinnedChats.isPinned(pinKeyOf(r))),
       ...crewlyRows.filter((r) => pinnedChats.isPinned(pinKeyOf(r))),
     ];
     const pinnedKeys = new Set(pinnedRows.map((r) => pinKeyOf(r)));
     const unpinnedChannelRows = channelRows.filter((r) => !pinnedKeys.has(pinKeyOf(r)));
     const unpinnedHuddleRows = allHuddleRows.filter((r) => !pinnedKeys.has(pinKeyOf(r)));
     const unpinnedCrewlyRows = crewlyRows.filter((r) => !pinnedKeys.has(pinKeyOf(r)));
+    const unpinnedExternalRows = externalRows.filter((r) => !pinnedKeys.has(pinKeyOf(r)));
 
     // Direct messages: everything not lifted into Pinned.
     const dmRows = [...agentDmRows]
@@ -475,6 +479,7 @@ function LiveTeamChatPageBody({
     }
     if (dmRows.length > 0) out.push({ id: 'dms', label: 'Direct messages', rows: dmRows });
     if (unpinnedHuddleRows.length > 0) out.push({ id: 'huddles', label: 'Group chats', rows: unpinnedHuddleRows });
+    if (unpinnedExternalRows.length > 0) out.push({ id: 'external', label: 'External teams', rows: unpinnedExternalRows });
     return out;
   }, [
     teams,
@@ -1158,12 +1163,24 @@ function ConversationView({
           }
         />
 
-        <MentionComposer
-          mentionables={mentionables}
-          onSend={handleSend}
-          variant="compact"
-          placeholder={`Message ${title}`}
-        />
+        {conversation.external ? (
+          <p
+            className="m-0 border-t border-border px-4 py-3 text-[13px] text-text-2"
+            role="status"
+            data-testid="external-channel-notice"
+          >
+            {conversation.readOnly
+              ? 'This link was revoked. The channel is read-only; its history stays here.'
+              : `This is a channel with ${title}, another company's Crewly account. Replies to external teams will go through a send path that can hold them for you; it is not available yet.`}
+          </p>
+        ) : (
+          <MentionComposer
+            mentionables={mentionables}
+            onSend={handleSend}
+            variant="compact"
+            placeholder={`Message ${title}`}
+          />
+        )}
       </div>
 
       {/* Slack-style thread panel: beside the timeline on desktop, full screen on phones. */}

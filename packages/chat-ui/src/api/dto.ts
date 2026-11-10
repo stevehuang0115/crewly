@@ -68,6 +68,12 @@ export interface ChannelDTO {
   lastReadSeq?: number;
   /** Unread messages past the marker; absent on older servers. */
   unreadCount?: number;
+  /** Shared channel with another company's Crewly account (crewly#1543). */
+  external?: boolean;
+  /** For an external channel: the other company's name. */
+  counterpartName?: string;
+  /** The channel takes no new posts (a revoked external link). */
+  readOnly?: boolean;
 }
 
 /** Wire shape for messages. */
@@ -218,6 +224,8 @@ export function channelFromDTO(dto: ChannelDTO): Channel {
       : {}),
     lastReadSeq: dto.lastReadSeq,
     unreadCount: dto.unreadCount,
+    ...(dto.external ? { external: true, counterpartName: dto.counterpartName } : {}),
+    ...(dto.readOnly ? { readOnly: true } : {}),
   };
 }
 

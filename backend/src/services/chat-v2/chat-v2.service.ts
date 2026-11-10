@@ -16,7 +16,7 @@ import { EventEmitter } from 'events';
 import { MessageStore } from './sqlite/message.store.js';
 import { ReadStateStore } from './sqlite/read-state.store.js';
 import { redactOpenLinkTokens } from '../apps/app-open-link.js';
-import { CHAT_SEARCH_CONSTANTS, TURN_TRIGGER_CONSTANTS } from '../../constants.js';
+import { CHAT_SEARCH_CONSTANTS, SHARED_CHANNEL_CONSTANTS, TURN_TRIGGER_CONSTANTS } from '../../constants.js';
 import { openChatDatabase, type ChatDatabase } from './sqlite/chat-db.js';
 import { CloudOutboxStore } from './sqlite/cloud-outbox.store.js';
 import { reclassifyOwnerSlackRows, type OwnerIdentity } from './sqlite/unified-log.js';
@@ -313,6 +313,16 @@ export interface ListMessagesArgs {
 // ---------------------------------------------------------------------------
 
 /** Default presence provider used until AgentRegistrationService is wired. */
+/** True for the channel of a shared link with another company (`external-<linkId>`, crewly#1543). */
+export function isExternalChannelId(id: string): boolean {
+  return id.startsWith(SHARED_CHANNEL_CONSTANTS.CHAT_CHANNEL_PREFIX);
+}
+
+/** A link id as part of a channel id. */
+function safeChannelKey(v: string): string {
+  return v.replace(/[^A-Za-z0-9_.-]+/g, '-').slice(0, 120);
+}
+
 const DEFAULT_PRESENCE = () => ({
   status: 'offline' as const,
   lastSeenAt: null,
@@ -1966,6 +1976,12 @@ export class ChatV2Service extends EventEmitter {
    */
   sendMessage(args: SendMessageArgs): ChatMessageDTO {
     const row = this.requireReadableChannel(args.channelId, args.principal);
+    // External shared channels take no posts here: replies to another company go
+    // through the shared-channel send path (crewly#1543 slice 5), never a chat post
+    // that could fan out to agents or Slack.
+    if (isExternalChannelId(row.id)) {
+      throw new ChatError(CHAT_ERROR_CODES.FORBIDDEN, 403, 'This is a channel with an external team and cannot be posted to from chat yet');
+    }
 
     const content = args.content ?? '';
     if (content.length === 0) {
@@ -2324,6 +2340,114 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * File one message of a shared channel with another company's Crewly account
+   * (crewly#1543) in its `external-<linkId>` channel, created on first use.
+   * Like {@link recordColleagueMessage} it emits no `chat_message`: nothing is
+   * dispatched to an agent, mirrored to Slack or counted as an owner turn. The
+   * row is an `agent` row (so it counts as unread) whose sender name carries
+   * the other company; it is never an owner or user row.
+   *
+   * @param input.linkId - Cloud link id (channel key)
+   * @param input.counterpart - Other company's display name or email (channel title)
+   * @param input.messageId - Cloud message id (idempotency key)
+   * @param input.senderName - Name shown on the row
+   * @param input.direction - `received` = the other company wrote it, `sent` = this account did
+   * @param input.text - Message text
+   * @param input.createdAtMs - When it was written
+   * @param input.replyTo - Message id it answers
+   * @returns The new row id, or null for a redelivery
+   * @throws {ChatError} `validation_error` (400) on empty text or ids
+   */
+  recordExternalMessage(input: {
+    linkId: string;
+    counterpart: string;
+    messageId: string;
+    senderName: string;
+    direction: 'sent' | 'received';
+    text: string;
+    createdAtMs?: number;
+    replyTo?: string;
+  }): string | null {
+    if (!input.text) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'text is required');
+    if (!input.linkId || !input.messageId) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'linkId and messageId are required');
+    const channelId = this.ensureExternalChannel(input.linkId, input.counterpart);
+    const content = Buffer.byteLength(input.text, 'utf-8') > this.config.maxMessageBytes
+      ? input.text.slice(0, this.config.maxMessageBytes)
+      : input.text;
+    const { row, deduped } = this.messages.insert({
+      channelId,
+      senderType: 'agent',
+      senderId: input.senderName,
+      content,
+      clientMessageId: `external:${input.messageId}`,
+      metadata: {
+        source: 'shared-channel',
+        externalMessage: true,
+        direction: input.direction,
+        counterpart: input.counterpart,
+        ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+        // Not an owner turn and already delivered by its own route: no mirror may post it.
+        slackAlreadyPosted: true,
+      },
+      nowMs: input.createdAtMs ?? this.now(),
+    });
+    if (!deduped) this.emit('read_state', this.readState.get(channelId));
+    return deduped ? null : row.id;
+  }
+
+  /**
+   * Make a shared channel read-only after its link was revoked. History stays
+   * visible; one system note says why. No-op when the channel does not exist
+   * (a link with no messages) or is already marked.
+   *
+   * @param linkId - Cloud link id
+   * @param counterpart - Other company's display name or email
+   * @returns True when the channel was newly marked
+   */
+  markExternalChannelRevoked(linkId: string, counterpart: string): boolean {
+    const channelId = `${SHARED_CHANNEL_CONSTANTS.CHAT_CHANNEL_PREFIX}${safeChannelKey(linkId)}`;
+    const row = this.channels.getById(channelId);
+    if (!row || row.purpose === SHARED_CHANNEL_CONSTANTS.REVOKED_PURPOSE) return false;
+    this.channels.setPurpose(channelId, SHARED_CHANNEL_CONSTANTS.REVOKED_PURPOSE);
+    this.messages.insert({
+      channelId,
+      senderType: 'system',
+      senderId: 'shared-channel',
+      content: `The link with ${counterpart} was revoked. This channel is read-only; its history stays here.`,
+      contentType: 'system_note',
+      clientMessageId: `external:revoked:${linkId}`,
+      metadata: { source: 'shared-channel', externalRevoked: true, slackAlreadyPosted: true },
+      nowMs: this.now(),
+    });
+    this.emit('read_state', this.readState.get(channelId));
+    return true;
+  }
+
+  /** The `external-<linkId>` channel, created when absent; the title follows the counterpart's name. */
+  private ensureExternalChannel(linkId: string, counterpart: string): string {
+    const channelId = `${SHARED_CHANNEL_CONSTANTS.CHAT_CHANNEL_PREFIX}${safeChannelKey(linkId)}`;
+    const title = counterpart.trim().slice(0, 120) || 'External team';
+    const existing = this.channels.getById(channelId);
+    if (!existing) {
+      this.channels.create({
+        id: channelId,
+        agentSession: '',
+        ownerUserId: 'system',
+        name: title,
+        purpose: null,
+        type: 'channel',
+        teamId: null,
+        projectId: null,
+        targetMemberId: null,
+        nowMs: this.now(),
+      });
+    } else if (existing.name !== title) {
+      this.channels.rename(channelId, title);
+    }
+    return channelId;
+  }
+
+  /**
    * Phase A — validate the mentions array passed to sendMessage.
    * Returns the cleaned array (or undefined when input is empty/missing).
    *
@@ -2511,7 +2635,7 @@ export class ChatV2Service extends EventEmitter {
     const isOwner = row.owner_user_id === principal.userId;
     const isBoundAgent =
       !!principal.agentSession && principal.agentSession === row.agent_session;
-    const isSharedBridged = row.id.startsWith('slack-');
+    const isSharedBridged = row.id.startsWith('slack-') || isExternalChannelId(row.id);
     const isHuddleMember =
       !!principal.agentSession &&
       row.type === 'huddle' &&
@@ -2674,6 +2798,13 @@ export class ChatV2Service extends EventEmitter {
       targetMemberId: row.target_member_id ?? undefined,
       lastReadSeq: readState.lastReadSeq,
       unreadCount: readState.unreadCount,
+      ...(isExternalChannelId(row.id)
+        ? {
+            external: true,
+            counterpartName: row.name,
+            ...(row.purpose === SHARED_CHANNEL_CONSTANTS.REVOKED_PURPOSE ? { readOnly: true } : {}),
+          }
+        : {}),
       // Phase B-2: huddle channels surface their roster inline so the
       // Portal can render member avatars without a second round-trip.
       // Non-huddle rows leave this undefined.
