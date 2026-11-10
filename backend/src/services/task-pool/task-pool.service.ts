@@ -1774,6 +1774,70 @@ export class TaskPoolService {
   }
 
   /**
+   * Explain why a targeted claim of `workItemId` by `agentId` is (or would be)
+   * refused, so callers never have to guess between "not queued", "target
+   * mismatch", "slot busy" and "agent not active". Read-only: it mirrors the
+   * gates in {@link claimSpecificItem} and never changes a claim outcome.
+   *
+   * @param agentId - Agent that tried to claim
+   * @param workItemId - WorkItem it tried to claim
+   * @returns Machine-readable code, human message, and the blocking WorkItem id when relevant
+   */
+  async explainClaimRefusal(
+    agentId: string,
+    workItemId: string,
+  ): Promise<{ code: string; message: string; blockingWorkItemId?: string }> {
+    if (this.isAgentActive) {
+      const alive = await this.isAgentActive(agentId).catch(() => false);
+      if (!alive) {
+        return { code: 'agent_not_active', message: `agent ${agentId} has no active session` };
+      }
+    }
+    const wi = await this.storage.findWorkItem(workItemId);
+    if (!wi) {
+      return { code: 'not_found', message: `WorkItem ${workItemId} does not exist` };
+    }
+    const claims = await this.storage.getClaims();
+    const holder = claims.find((c) => c.workItemId === workItemId && c.status === 'active');
+    if (holder) {
+      return {
+        code: 'already_claimed',
+        message: `WorkItem ${workItemId} is already claimed by ${holder.agentId}`,
+      };
+    }
+    if (wi.status !== 'queued') {
+      return { code: 'not_queued', message: `WorkItem ${workItemId} is ${wi.status}, not queued` };
+    }
+    if (wi.target && wi.target !== agentId) {
+      return {
+        code: 'target_mismatch',
+        message: `WorkItem ${workItemId} is targeted at ${wi.target}, not ${agentId}`,
+      };
+    }
+    const held = await this.storage.findActiveClaimByAgent(agentId);
+    if (held) {
+      return {
+        code: 'slot_occupied',
+        message: `${agentId} already has WorkItem ${held.workItemId} running; finish or release it first`,
+        blockingWorkItemId: held.workItemId,
+      };
+    }
+    if (!wi.target && this.ticketClaimPolicy) {
+      const allowed = await this.orderClaimCandidates(agentId, [wi]);
+      if (allowed.length === 0) {
+        return {
+          code: 'ticket_locked',
+          message: `WorkItem ${workItemId} belongs to a ticket held by another agent`,
+        };
+      }
+    }
+    return {
+      code: 'not_claimable',
+      message: `WorkItem ${workItemId} is not claimable by ${agentId}`,
+    };
+  }
+
+  /**
    * Claims a specific WorkItem by ID for an agent.
    * Used by AgentAutoClaimService for score-based selection where the caller
    * already identified the best item (not FIFO).

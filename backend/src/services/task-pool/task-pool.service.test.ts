@@ -1074,6 +1074,61 @@ describe('TaskPoolService', () => {
     });
   });
 
+  describe('explainClaimRefusal (self-explaining claim refusals)', () => {
+    afterEach(() => service.setTicketClaimPolicy(null));
+
+    it('reports slot_occupied with the id of the item the agent already runs', async () => {
+      const running = makeWorkItem({ title: 'running', target: 'tl' });
+      const queued = makeWorkItem({ title: 'queued', target: 'tl' });
+      await service.addToPool(running);
+      await service.addToPool(queued);
+      await service.claimSpecificItem('tl', running.id);
+
+      expect(await service.claimSpecificItem('tl', queued.id)).toBeNull();
+      const why = await service.explainClaimRefusal('tl', queued.id);
+      expect(why.code).toBe('slot_occupied');
+      expect(why.blockingWorkItemId).toBe(running.id);
+      expect(why.message).toContain(running.id);
+    });
+
+    it('reports not_found, target_mismatch, already_claimed and not_queued distinctly', async () => {
+      expect((await service.explainClaimRefusal('tl', 'nope')).code).toBe('not_found');
+
+      const other = makeWorkItem({ title: 'other', target: 'leo' });
+      await service.addToPool(other);
+      expect((await service.explainClaimRefusal('tl', other.id)).code).toBe('target_mismatch');
+      await service.claimSpecificItem('leo', other.id);
+      expect((await service.explainClaimRefusal('tl', other.id)).code).toBe('already_claimed');
+
+      const blocked = makeWorkItem({ title: 'blocked', target: 'tl', dependsOn: ['elsewhere'] });
+      await service.addToPool(blocked);
+      expect((await service.explainClaimRefusal('tl', blocked.id)).code).toBe('not_queued');
+    });
+
+    it('reports agent_not_active when the liveness probe says the session is down', async () => {
+      const item = makeWorkItem({ title: 'x', target: 'tl' });
+      await service.addToPool(item);
+      service.setIsAgentActive(async () => false);
+      expect((await service.explainClaimRefusal('tl', item.id)).code).toBe('agent_not_active');
+      service.setIsAgentActive(null);
+    });
+
+    it('reports ticket_locked when the ticket lock holds an untargeted item back', async () => {
+      service.setTicketClaimPolicy({
+        snapshot: async () =>
+          new Map([
+            ['rA', { id: 'rA', priority: 'normal' as const }],
+            ['rB', { id: 'rB', priority: 'urgent' as const }],
+          ]),
+      });
+      await service.addToPool(makeWorkItem({ title: 'A part 2', requestId: 'rA', target: 'ann', dependsOn: ['elsewhere'] }));
+      const b = makeWorkItem({ title: 'B', requestId: 'rB' });
+      await service.addToPool(b);
+      expect(await service.claimSpecificItem('ann', b.id)).toBeNull();
+      expect((await service.explainClaimRefusal('ann', b.id)).code).toBe('ticket_locked');
+    });
+  });
+
   describe('review verdict (ticket-loop Phase 3)', () => {
     /**
      * A source item in done_by_worker plus its review item.
