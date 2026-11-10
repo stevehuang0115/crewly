@@ -780,13 +780,14 @@ describe('LiveTeamChatPage — review fixes', () => {
       expect(within(screen.getByTestId('conv-group-channels')).queryByTestId('conv-row-external-l1')).not.toBeInTheDocument();
     });
 
-    it('opens read-only: no composer, a notice that sending is not available yet', async () => {
+    it('an active link has a composer for the owner and says agents\' messages may wait for approval', async () => {
       const { client } = makeStubClient([orcDm, ext()]);
       render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
       await waitFor(() => expect(screen.getByTestId('conv-row-external-l1')).toBeInTheDocument());
       fireEvent.click(screen.getByTestId('conv-row-external-l1'));
-      await waitFor(() => expect(screen.getByTestId('external-channel-notice')).toHaveTextContent('not available yet'));
-      expect(screen.queryByPlaceholderText(/Message/)).not.toBeInTheDocument();
+      await waitFor(() => expect(screen.getByTestId('external-channel-composer')).toBeInTheDocument());
+      expect(screen.getByTestId('external-channel-notice')).toHaveTextContent('wait for your approval');
+      expect(within(screen.getByTestId('external-channel-composer')).getByPlaceholderText(/Message/)).toBeInTheDocument();
     });
 
     it('a revoked link says so and is marked read-only in the list', async () => {
@@ -795,6 +796,8 @@ describe('LiveTeamChatPage — review fixes', () => {
       await waitFor(() => expect(screen.getByTestId('conv-external-external-l1')).toHaveTextContent('read-only'));
       fireEvent.click(screen.getByTestId('conv-row-external-l1'));
       await waitFor(() => expect(screen.getByTestId('external-channel-notice')).toHaveTextContent('revoked'));
+      expect(screen.queryByTestId('external-channel-composer')).not.toBeInTheDocument();
+      expect(screen.queryByPlaceholderText(/Message/)).not.toBeInTheDocument();
     });
   });
 

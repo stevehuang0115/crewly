@@ -4,7 +4,7 @@
  * @module services/chat-v2/chat-v2.service.test
  */
 
-import { ChatV2Service } from './chat-v2.service.js';
+import { ChatV2Service, parseExternalMeta } from './chat-v2.service.js';
 import { openChatDatabase, type ChatDatabase } from './sqlite/chat-db.js';
 import { loadChatV2Config } from './config.js';
 import { ChatError, type ChatPrincipal } from './types.js';
@@ -2609,6 +2609,24 @@ describe('ChatV2Service', () => {
         const msgs = service.listMessages({ channelId: 'external-link-1', principal: owner }).messages;
         expect(msgs.map((m) => m.content)).toEqual(expect.arrayContaining(['Can we see the Q3 plan?', expect.stringContaining('revoked')]));
         expect(msgs).toHaveLength(2);
+      });
+
+      it('prepareExternalPost: owner only, not on a revoked link, maps a reply to its Cloud id', () => {
+        const rowId = rec();
+        expect(rowId).toBeTruthy();
+        expect(service.prepareExternalPost('external-link-1', owner)).toEqual({});
+        expect(service.prepareExternalPost('external-link-1', owner, rowId!)).toEqual({ replyTo: 'm1' });
+        expect(() => service.prepareExternalPost('external-link-1', owner, 'nope')).toThrow(/not found/);
+        expect(() => service.prepareExternalPost('external-link-1', { ...owner, agentSession: 'orc' })).toThrow(/post-shared-channel/);
+        service.markExternalChannelRevoked('link-1', 'Acme Co');
+        expect(() => service.prepareExternalPost('external-link-1', owner)).toThrow(/read-only/);
+      });
+
+      it('parseExternalMeta reads the Cloud id and tolerates junk', () => {
+        expect(parseExternalMeta(JSON.stringify({ externalMessageId: 'm9' }))).toBe('m9');
+        expect(parseExternalMeta(JSON.stringify({ externalMessageId: 3 }))).toBeNull();
+        expect(parseExternalMeta('{nope')).toBeNull();
+        expect(parseExternalMeta(null)).toBeNull();
       });
 
       it('does not create a channel when a link with no messages is revoked', () => {

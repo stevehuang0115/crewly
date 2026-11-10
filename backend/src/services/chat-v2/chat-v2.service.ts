@@ -17,6 +17,7 @@ import { MessageStore } from './sqlite/message.store.js';
 import { ReadStateStore } from './sqlite/read-state.store.js';
 import { redactOpenLinkTokens } from '../apps/app-open-link.js';
 import { CHAT_SEARCH_CONSTANTS, SHARED_CHANNEL_CONSTANTS, TURN_TRIGGER_CONSTANTS } from '../../constants.js';
+import { externalChannelIdOf } from '../shared-channel/shared-channel.types.js';
 import { openChatDatabase, type ChatDatabase } from './sqlite/chat-db.js';
 import { CloudOutboxStore } from './sqlite/cloud-outbox.store.js';
 import { reclassifyOwnerSlackRows, type OwnerIdentity } from './sqlite/unified-log.js';
@@ -312,17 +313,40 @@ export interface ListMessagesArgs {
 // Service
 // ---------------------------------------------------------------------------
 
-/** Default presence provider used until AgentRegistrationService is wired. */
+/** One message of a shared channel ({@link ChatV2Service.recordExternalMessage}). */
+export interface ExternalMessageInput {
+  linkId: string;
+  counterpart: string;
+  messageId: string;
+  senderName: string;
+  direction: 'sent' | 'received';
+  text: string;
+  createdAtMs?: number;
+  replyTo?: string;
+}
+
 /** True for the channel of a shared link with another company (`external-<linkId>`, crewly#1543). */
 export function isExternalChannelId(id: string): boolean {
   return id.startsWith(SHARED_CHANNEL_CONSTANTS.CHAT_CHANNEL_PREFIX);
 }
 
-/** A link id as part of a channel id. */
-function safeChannelKey(v: string): string {
-  return v.replace(/[^A-Za-z0-9_.-]+/g, '-').slice(0, 120);
+/**
+ * The Cloud message id stored on a shared-channel row's metadata.
+ *
+ * @param metadata - The row's metadata JSON, or null
+ * @returns `externalMessageId`, or null when absent or unparsable
+ */
+export function parseExternalMeta(metadata: string | null): string | null {
+  if (!metadata) return null;
+  try {
+    const m = JSON.parse(metadata) as { externalMessageId?: unknown };
+    return typeof m.externalMessageId === 'string' && m.externalMessageId ? m.externalMessageId : null;
+  } catch {
+    return null;
+  }
 }
 
+/** Default presence provider used until AgentRegistrationService is wired. */
 const DEFAULT_PRESENCE = () => ({
   status: 'offline' as const,
   lastSeenAt: null,
@@ -1967,6 +1991,40 @@ export class ChatV2Service extends EventEmitter {
   // -------------------------------------------------------------------------
 
   /**
+   * Check that the caller may post to a shared channel with another company
+   * (crewly#1543 slice 5) and find the Cloud message a reply answers. Only the
+   * owner posts here (his own words, no hold); agents use the shared-channel
+   * send endpoint, which classifies and holds. A revoked link is read-only.
+   *
+   * @param channelId - `external-<linkId>` channel id
+   * @param principal - Caller
+   * @param threadId - Local message the post answers, if any
+   * @returns The Cloud message id the post replies to, if any
+   * @throws {ChatError} `channel_not_found` (404) for an unknown or unreadable
+   *   channel, `forbidden` (403) for a non-external channel, an agent caller or
+   *   a revoked link, `not_found` (404) for an unknown `threadId`
+   */
+  prepareExternalPost(channelId: string, principal: ChatPrincipal, threadId?: string): { replyTo?: string } {
+    const row = this.requireReadableChannel(channelId, principal);
+    if (!isExternalChannelId(row.id)) {
+      throw new ChatError(CHAT_ERROR_CODES.FORBIDDEN, 403, 'Not a channel with an external team');
+    }
+    if (principal.agentSession) {
+      throw new ChatError(CHAT_ERROR_CODES.FORBIDDEN, 403, 'Agents write to an external team with the post-shared-channel skill, not a chat post');
+    }
+    if (row.purpose === SHARED_CHANNEL_CONSTANTS.REVOKED_PURPOSE) {
+      throw new ChatError(CHAT_ERROR_CODES.FORBIDDEN, 403, 'This link was revoked; the channel is read-only');
+    }
+    if (!threadId) return {};
+    const parent = this.messages.getById(threadId);
+    if (!parent || parent.channel_id !== row.id) {
+      throw new ChatError(CHAT_ERROR_CODES.NOT_FOUND, 404, 'The message this answers was not found in the channel');
+    }
+    const meta = parseExternalMeta(parent.metadata);
+    return meta ? { replyTo: meta } : {};
+  }
+
+  /**
    * Persist a message sent by the caller. The server decides `sender_type`
    * and `sender_id` from the auth principal; client fields are ignored.
    *
@@ -1980,7 +2038,7 @@ export class ChatV2Service extends EventEmitter {
     // through the shared-channel send path (crewly#1543 slice 5), never a chat post
     // that could fan out to agents or Slack.
     if (isExternalChannelId(row.id)) {
-      throw new ChatError(CHAT_ERROR_CODES.FORBIDDEN, 403, 'This is a channel with an external team and cannot be posted to from chat yet');
+      throw new ChatError(CHAT_ERROR_CODES.FORBIDDEN, 403, 'This is a channel with an external team: the owner posts from Team Chat, agents with the post-shared-channel skill');
     }
 
     const content = args.content ?? '';
@@ -2358,16 +2416,21 @@ export class ChatV2Service extends EventEmitter {
    * @returns The new row id, or null for a redelivery
    * @throws {ChatError} `validation_error` (400) on empty text or ids
    */
-  recordExternalMessage(input: {
-    linkId: string;
-    counterpart: string;
-    messageId: string;
-    senderName: string;
-    direction: 'sent' | 'received';
-    text: string;
-    createdAtMs?: number;
-    replyTo?: string;
-  }): string | null {
+  recordExternalMessage(input: ExternalMessageInput): string | null {
+    const { id, deduped } = this.recordExternalMessageRow(input);
+    return deduped ? null : id;
+  }
+
+  /**
+   * Like {@link recordExternalMessage}, but always answers the row: the new
+   * one, or the one already filed under the same Cloud message id. The send
+   * path uses it to answer the owner's post with its row.
+   *
+   * @param input - See {@link recordExternalMessage}
+   * @returns The row id and whether it pre-existed
+   * @throws {ChatError} `validation_error` (400) on empty text or ids
+   */
+  recordExternalMessageRow(input: ExternalMessageInput): { id: string; deduped: boolean } {
     if (!input.text) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'text is required');
     if (!input.linkId || !input.messageId) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'linkId and messageId are required');
     const channelId = this.ensureExternalChannel(input.linkId, input.counterpart);
@@ -2383,6 +2446,7 @@ export class ChatV2Service extends EventEmitter {
       metadata: {
         source: 'shared-channel',
         externalMessage: true,
+        externalMessageId: input.messageId,
         direction: input.direction,
         counterpart: input.counterpart,
         ...(input.replyTo ? { replyTo: input.replyTo } : {}),
@@ -2392,7 +2456,7 @@ export class ChatV2Service extends EventEmitter {
       nowMs: input.createdAtMs ?? this.now(),
     });
     if (!deduped) this.emit('read_state', this.readState.get(channelId));
-    return deduped ? null : row.id;
+    return { id: row.id, deduped };
   }
 
   /**
@@ -2405,7 +2469,7 @@ export class ChatV2Service extends EventEmitter {
    * @returns True when the channel was newly marked
    */
   markExternalChannelRevoked(linkId: string, counterpart: string): boolean {
-    const channelId = `${SHARED_CHANNEL_CONSTANTS.CHAT_CHANNEL_PREFIX}${safeChannelKey(linkId)}`;
+    const channelId = externalChannelIdOf(linkId);
     const row = this.channels.getById(channelId);
     if (!row || row.purpose === SHARED_CHANNEL_CONSTANTS.REVOKED_PURPOSE) return false;
     this.channels.setPurpose(channelId, SHARED_CHANNEL_CONSTANTS.REVOKED_PURPOSE);
@@ -2425,7 +2489,7 @@ export class ChatV2Service extends EventEmitter {
 
   /** The `external-<linkId>` channel, created when absent; the title follows the counterpart's name. */
   private ensureExternalChannel(linkId: string, counterpart: string): string {
-    const channelId = `${SHARED_CHANNEL_CONSTANTS.CHAT_CHANNEL_PREFIX}${safeChannelKey(linkId)}`;
+    const channelId = externalChannelIdOf(linkId);
     const title = counterpart.trim().slice(0, 120) || 'External team';
     const existing = this.channels.getById(channelId);
     if (!existing) {

@@ -25,6 +25,9 @@ import type { ChatV2Service } from '../../services/chat-v2/chat-v2.service.js';
 import type { ChatV2DispatcherService } from '../../services/chat-v2/chat-v2.dispatcher.service.js';
 import type { ChatV2Gateway } from '../../websocket/chat-v2.gateway.js';
 import { buildMessageEvent } from '../../websocket/chat-v2.gateway.js';
+import { isExternalChannelId } from '../../services/chat-v2/chat-v2.service.js';
+import { getSharedChannelSendService } from '../../services/shared-channel/shared-channel.wiring.js';
+import { SHARED_SEND_STATUS_BY_CODE } from '../shared-channel/shared-channel.controller.js';
 import { getChatV2RealtimeDeps } from '../../services/chat-v2/chat-v2.realtime-holder.js';
 import { TICKET_CONSTANTS } from '../../constants.js';
 import {
@@ -704,6 +707,55 @@ export function createChatV2Controller(
     };
   };
 
+  /**
+   * The owner's post into a shared channel with another company (crewly#1543
+   * slice 5): straight to Cloud, no hold, recorded as a `sent` row; the row
+   * is answered and broadcast like any chat post. Agents and revoked links
+   * are refused by {@link ChatV2Service.prepareExternalPost}.
+   *
+   * @param req - POST /channels/:id/messages for an `external-*` channel
+   * @param res - Response
+   */
+  const sendOwnerExternalPost = async (req: Request, res: Response): Promise<void> => {
+    const body = (req.body ?? {}) as { content?: unknown; threadId?: unknown };
+    const channelId = req.params.id;
+    const prepared = runHandler(res, () =>
+      service.prepareExternalPost(channelId, principalFromRequest(req), typeof body.threadId === 'string' && body.threadId ? body.threadId : undefined),
+    );
+    if (!prepared) return;
+    const text = typeof body.content === 'string' ? body.content.trim() : '';
+    if (!text) {
+      sendChatError(res, new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'content is required'));
+      return;
+    }
+    const sender = getSharedChannelSendService();
+    if (!sender) {
+      res.status(503).json({ success: false, error: { code: 'cloud_unavailable', message: 'Shared channels are not running on this machine yet.' } });
+      return;
+    }
+    const result = await sender.sendFromOwner({ channelId, text, ...(prepared.replyTo ? { replyTo: prepared.replyTo } : {}) });
+    if (!result.success) {
+      res.status(SHARED_SEND_STATUS_BY_CODE[result.code ?? 'send_failed']).json({
+        success: false,
+        error: { code: result.code ?? 'send_failed', message: result.error ?? 'The message could not be sent' },
+      });
+      return;
+    }
+    const row = result.chatMessageId ? service.getMessageForBridge(result.chatMessageId) : null;
+    if (!row) {
+      // Sent to Cloud but not filed here: the next history fetch files it.
+      res.status(201).json({ success: true, data: null, sent: { messageId: result.messageId } });
+      return;
+    }
+    const dto: ChatMessageDTO = row;
+    res.status(201).json({ success: true, data: dto });
+    try {
+      resolveDeps().gateway?.broadcast(dto.channelId, buildMessageEvent(dto.channelId, dto));
+    } catch {
+      // broadcast must never break the ack
+    }
+  };
+
   return {
     listChannels: (req, res) =>
       runHandler(res, () => {
@@ -831,6 +883,12 @@ export function createChatV2Controller(
      * a broken WS / missing agent never blocks the HTTP ack.
      */
     sendMessage: async (req, res) => {
+      // A channel with another company (crewly#1543): the owner's post goes
+      // to Cloud as his own words; agents are refused (they use the skill).
+      if (isExternalChannelId(req.params.id)) {
+        await sendOwnerExternalPost(req, res);
+        return;
+      }
       // An agent naming a Slack thread key from ANOTHER channel than this
       // conversation's (`reply-channel --channel A --thread <key of B>`): the
       // harness decides where it belongs instead of letting the mirror swap

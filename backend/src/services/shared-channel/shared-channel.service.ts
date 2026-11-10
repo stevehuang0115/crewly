@@ -176,7 +176,7 @@ export class SharedChannelService {
     // Without a cursor this is the first read of the link: old history is mirrored silently,
     // unless a push says something new just arrived.
     const hadCursor = this.deps.cursors.get(linkId) !== undefined;
-    const wake: Array<{ agent: string; text: string }> = [];
+    const wake: Array<{ agent: string; text: string; messageId: string }> = [];
     for (let page = 0; page < SHARED_CHANNEL_CONSTANTS.MAX_PAGES; page++) {
       const after = this.deps.cursors.get(linkId);
       const got = await this.deps.fetchMessages(linkId, after, SHARED_CHANNEL_CONSTANTS.PAGE_SIZE);
@@ -198,7 +198,7 @@ export class SharedChannelService {
         this.deps.cursors.set(linkId, m.id);
         if (fresh) {
           result.mirrored += 1;
-          if (m.direction === 'received' && (live || hadCursor)) wake.push({ agent: m.fromAgentName, text: m.text });
+          if (m.direction === 'received' && (live || hadCursor)) wake.push({ agent: m.fromAgentName, text: m.text, messageId: m.id });
         }
       }
       if (!got.hasMore || got.messages.length === 0) break;
@@ -206,7 +206,7 @@ export class SharedChannelService {
     // Only the newest few wake the responder; the rest are in the channel for the owner.
     for (const w of wake.slice(-MAX_WAKES_PER_SYNC)) {
       try {
-        await this.deps.notifyOrchestrator(formatExternalMessage(w.agent, counterpart, w.text));
+        await this.deps.notifyOrchestrator(formatExternalMessage(w.agent, counterpart, w.text, { linkId, messageId: w.messageId }));
         result.woke += 1;
       } catch (err) {
         this.deps.log?.warn('Could not hand a shared-channel message to the orchestrator', { error: err instanceof Error ? err.message : String(err) });

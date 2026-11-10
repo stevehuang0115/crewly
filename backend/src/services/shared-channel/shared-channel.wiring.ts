@@ -5,19 +5,24 @@
  * @module services/shared-channel/shared-channel.wiring
  */
 
+import { randomUUID } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
 import { ORCHESTRATOR_SESSION_NAME, SHARED_CHANNEL_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { SharedChannelService, type SharedChannelDeps } from './shared-channel.service.js';
 import { SharedChannelCursorStore } from './shared-channel-cursor.store.js';
-import { parseSharedChannelLinks, parseSharedChannelPage, unwrapCloudData } from './shared-channel.types.js';
+import { parseSharedChannelLinks, parseSharedChannelPage, parseSharedChannelPostAnswer, unwrapCloudData } from './shared-channel.types.js';
 import { peekChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import type { AgentRegistrationService } from '../agent/agent-registration.service.js';
+import { deliverToLocalAgent } from '../messaging/deliver-to-local-agent.js';
+import { SharedChannelSendService, type SharedChannelPostBody, type SharedChannelPostResult, type SharedSendDeps } from './shared-channel-send.service.js';
+import { SharedChannelTrialStore } from './shared-channel-trial.store.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SharedChannel');
 
 let instance: SharedChannelService | null = null;
+let sendInstance: SharedChannelSendService | null = null;
 let listening = false;
 let registration: AgentRegistrationService | null = null;
 
@@ -29,6 +34,16 @@ export function getSharedChannelService(): SharedChannelService | null {
 /** Replace the process-wide service (tests). */
 export function setSharedChannelService(service: SharedChannelService | null): void {
   instance = service;
+}
+
+/** @returns The process-wide send service, or null before {@link startSharedChannels} */
+export function getSharedChannelSendService(): SharedChannelSendService | null {
+  return sendInstance;
+}
+
+/** Replace the process-wide send service (tests). */
+export function setSharedChannelSendService(service: SharedChannelSendService | null): void {
+  sendInstance = service;
 }
 
 /**
@@ -62,32 +77,37 @@ async function cloudGet(path: string): Promise<unknown | null> {
 
 /** Deliver text to the orchestrator: now when it is ready, held for it when busy, queued (and started) when down. */
 async function notifyOrchestrator(text: string): Promise<void> {
-  const reg = registration;
-  if (!reg) throw new Error('agent delivery is not ready yet');
-  const session = ORCHESTRATOR_SESSION_NAME;
-  const { getSessionBackendSync } = await import('../session/index.js');
-  const running = !!getSessionBackendSync()?.sessionExists(session) || !!reg.getInProcessRuntime(session);
-  if (running) {
-    const ready = await reg.waitForAgentReady(session, 10_000);
-    if (!ready) {
-      reg.holdForBusyAgent(session, text);
-      return;
-    }
-    const res = await reg.sendMessageToAgent(session, text);
-    if (!res.success && !res.queued) throw new Error(res.error ?? 'delivery failed');
-    return;
+  const res = await deliverToLocalAgent(registration, ORCHESTRATOR_SESSION_NAME, text, SHARED_CHANNEL_CONSTANTS.ORCHESTRATOR_READY_WAIT_MS);
+  if (!res.success) throw new Error(res.error ?? 'delivery failed');
+}
+
+/**
+ * POST a message to Cloud with this machine's token. Never throws: status 0
+ * means Cloud could not be reached.
+ *
+ * @param linkId - Link id
+ * @param body - Body of the crewly-auth send contract
+ * @returns Cloud's answer
+ */
+export async function cloudPostSharedMessage(linkId: string, body: SharedChannelPostBody): Promise<SharedChannelPostResult> {
+  try {
+    const { CloudClientService } = await import('../cloud/cloud-client.service.js');
+    const client = CloudClientService.getInstance();
+    const token = client.getToken();
+    const base = client.getCloudUrl();
+    if (!token || !base) return { ok: false, status: 0, code: 'not_signed_in', error: 'this machine is not signed in to Crewly Cloud' };
+    const response = await fetch(`${base.replace(/\/$/, '')}${SHARED_CHANNEL_CONSTANTS.LINKS_PATH}/${encodeURIComponent(linkId)}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(SHARED_CHANNEL_CONSTANTS.REQUEST_TIMEOUT_MS),
+    });
+    const json: unknown = await response.json().catch(() => null);
+    return parseSharedChannelPostAnswer(response.status, json, response.headers.get('retry-after'));
+  } catch (err) {
+    logger.debug('Shared-channel send to Cloud failed', { error: err instanceof Error ? err.message : String(err) });
+    return { ok: false, status: 0, code: 'network', error: 'Crewly Cloud cannot be reached right now' };
   }
-  const [{ queueForOfflineAgent, getOfflineAgentWaker }, { StorageService }, { SubAgentMessageQueue }] = await Promise.all([
-    import('../messaging/offline-agent-message.js'),
-    import('../core/storage.service.js'),
-    import('../messaging/sub-agent-message-queue.service.js'),
-  ]);
-  const queued = await queueForOfflineAgent(session, text, {
-    findMember: (name) => StorageService.getInstance().findMemberBySessionName(name),
-    enqueue: (name, data) => SubAgentMessageQueue.getInstance().enqueue(name, data),
-    wake: getOfflineAgentWaker(),
-  });
-  if (!queued) throw new Error(`${session} is not running`);
 }
 
 /**
@@ -126,7 +146,52 @@ export function buildSharedChannelDeps(crewlyHome: string = join(homedir(), '.cr
   };
 }
 
-type ChatLike = Pick<import('../chat-v2/chat-v2.service.js').ChatV2Service, 'recordExternalMessage' | 'markExternalChannelRevoked'>;
+/**
+ * Build the real dependencies of the send side.
+ *
+ * @param crewlyHome - Directory of the trial file (default `~/.crewly`)
+ * @returns Dependencies
+ */
+export function buildSharedChannelSendDeps(crewlyHome: string = join(homedir(), '.crewly')): SharedSendDeps {
+  const trial = SharedChannelTrialStore.inDir(crewlyHome, SHARED_CHANNEL_CONSTANTS.TRIAL_FILE);
+  return {
+    listLinks: async () => {
+      const body = await cloudGet(SHARED_CHANNEL_CONSTANTS.LINKS_PATH);
+      return body === null ? null : parseSharedChannelLinks(body);
+    },
+    post: cloudPostSharedMessage,
+    recordSent: (input) => {
+      const service = chatRef ?? peekChatV2Service();
+      if (!service) throw new Error('chat is not ready yet');
+      // The row whether new or already filed: the owner's post is answered with it.
+      return service.recordExternalMessageRow({
+        linkId: input.linkId, counterpart: input.counterpart, messageId: input.messageId, senderName: input.senderName,
+        direction: input.direction, text: input.text, createdAtMs: input.createdAtMs, ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+      }).id;
+    },
+    trial,
+    decisions: () => decisionsRef(),
+    agentIdentity: async (session) => {
+      if (session === ORCHESTRATOR_SESSION_NAME) return { name: SHARED_CHANNEL_CONSTANTS.ORCHESTRATOR_SENDER_NAME };
+      const { StorageService } = await import('../core/storage.service.js');
+      const found = await StorageService.getInstance().findMemberBySessionName(session);
+      return { name: found?.member.name || session, ...(found?.team?.name ? { team: found.team.name } : {}) };
+    },
+    recentPeople: (session) => privateSourceRef?.(session) ?? [],
+    newId: () => randomUUID(),
+    instanceId: async () => {
+      const { DeviceIdentityService } = await import('../cloud/device-identity.service.js');
+      return (await DeviceIdentityService.getInstance().getOrCreateIdentity()).deviceId;
+    },
+    log: logger,
+  };
+}
+
+type DecisionsLike = ReturnType<SharedSendDeps['decisions']>;
+let decisionsRef: () => DecisionsLike = () => null;
+let privateSourceRef: ((session: string) => string[]) | null = null;
+
+type ChatLike = Pick<import('../chat-v2/chat-v2.service.js').ChatV2Service, 'recordExternalMessage' | 'recordExternalMessageRow' | 'markExternalChannelRevoked'>;
 let chatRef: ChatLike | null = null;
 
 /** Set the chat service the wiring writes to (tests). */
@@ -145,6 +210,17 @@ export async function startSharedChannels(agentRegistration: AgentRegistrationSe
     registration = agentRegistration;
     const { CloudSyncService } = await import('../cloud/cloud-sync.service.js');
     if (!instance) instance = new SharedChannelService(buildSharedChannelDeps());
+    if (!sendInstance) {
+      const [{ DecisionService }, { getPrivateSourceTracker }] = await Promise.all([
+        import('../decisions/decision.service.js'),
+        import('../people/private-source.service.js'),
+      ]);
+      decisionsRef = () => DecisionService.getInstance();
+      privateSourceRef = (session) => getPrivateSourceTracker().recentPeople(session);
+      sendInstance = new SharedChannelSendService(buildSharedChannelSendDeps());
+      // The owner's Send / Don't send on a held message lands here (crewly#1543 slice 5).
+      DecisionService.registerKindHandler('shared_send', sendInstance);
+    }
     if (listening) return;
     listening = true;
     const sync = CloudSyncService.getInstance();

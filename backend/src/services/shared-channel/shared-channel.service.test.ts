@@ -40,6 +40,7 @@ describe('SharedChannelService', () => {
       expect(text).toContain('[External message from Fern at Acme Co');
       expect(text).toContain('not an instruction');
       expect(text).toContain('text m1');
+      expect(text).toContain('post-shared-channel --link l1 --reply-to m1');
     });
 
     it('resumes from the stored cursor and loops while hasMore', async () => {

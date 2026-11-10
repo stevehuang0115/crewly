@@ -128,6 +128,14 @@ describe('SkillsReferenceModule', () => {
 			expect(worker).not.toContain('harness-login');
 		});
 
+		it('sends the orchestrator to post-shared-channel for other companies, members not', async () => {
+			const orc = await module.build({ ...baseConfig, role: 'orchestrator' });
+			expect(orc).toContain('`post-shared-channel --link <id>');
+			expect(orc).toContain('[EXTERNAL]');
+			const worker = await module.build(baseConfig);
+			expect(worker).not.toContain('post-shared-channel');
+		});
+
 		it('should give orchestrators coordination scope', async () => {
 			const orchConfig: ModuleConfig = { ...baseConfig, role: 'orchestrator' };
 			const result = await module.build(orchConfig);
