@@ -51,6 +51,17 @@ export interface SharedChannelPage {
   hasMore: boolean;
 }
 
+/**
+ * The chat-v2 channel id of a link: `external-<linkId>`, with characters a
+ * channel id cannot carry replaced.
+ *
+ * @param linkId - Cloud link id
+ * @returns Channel id
+ */
+export function externalChannelIdOf(linkId: string): string {
+  return `${SHARED_CHANNEL_CONSTANTS.CHAT_CHANNEL_PREFIX}${linkId.replace(/[^A-Za-z0-9_.-]+/g, '-').slice(0, 120)}`;
+}
+
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 const optStr = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
@@ -151,4 +162,31 @@ export function parseSharedChannelPage(body: unknown): SharedChannelPage | null 
     messages: body['messages'].map(parseSharedChannelMessage).filter((m): m is SharedChannelMessage => m !== null),
     hasMore: body['hasMore'] === true,
   };
+}
+
+/** Cloud's answer to `POST /:linkId/messages`. `status` 0 = Cloud could not be reached. */
+export type SharedChannelPostAnswer =
+  | { ok: true; messageId: string; createdAt: string; duplicate: boolean }
+  | { ok: false; status: number; code: string; error: string; retryAfterS?: number };
+
+/**
+ * Parse Cloud's answer to a send: `{success:true, data:{message, duplicate}}`
+ * (201, or 200 for a retry of a stored id) or `{success:false, error, code}`.
+ *
+ * @param status - HTTP status
+ * @param body - JSON body (null when not JSON)
+ * @param retryAfter - `Retry-After` header, if any
+ * @returns The outcome
+ */
+export function parseSharedChannelPostAnswer(status: number, body: unknown, retryAfter?: string | null): SharedChannelPostAnswer {
+  if (status >= 200 && status < 300) {
+    const data = unwrapCloudData(body);
+    const message = isObj(data) && isObj(data['message']) ? parseSharedChannelMessage(data['message']) : null;
+    if (message) return { ok: true, messageId: message.id, createdAt: message.createdAt, duplicate: isObj(data) && data['duplicate'] === true };
+    return { ok: false, status, code: 'malformed', error: 'Crewly Cloud gave an answer this version does not understand' };
+  }
+  const code = isObj(body) && typeof body['code'] === 'string' ? body['code'] : `http_${status}`;
+  const error = isObj(body) && typeof body['error'] === 'string' && body['error'] ? body['error'] : `Crewly Cloud answered ${status}`;
+  const wait = retryAfter ? Number(retryAfter) : NaN;
+  return { ok: false, status, code, error, ...(Number.isFinite(wait) && wait > 0 ? { retryAfterS: wait } : {}) };
 }

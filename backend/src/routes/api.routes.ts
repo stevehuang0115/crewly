@@ -37,6 +37,7 @@ import { createAgentHooksRouter } from '../controllers/agent-hooks/agent-hooks.r
 import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
 import { createCrossMachineRouter } from '../controllers/cross-machine/index.js';
 import { createColleagueRouter } from '../controllers/colleague/index.js';
+import { createSharedChannelRouter } from '../controllers/shared-channel/index.js';
 import { createWebsiteAnalysisRouter } from '../controllers/onboarding/website-analysis.routes.js';
 import { createOnboardingRouter } from '../controllers/onboarding/onboarding.routes.js';
 import { createOnboardingChecklistRouter } from '../controllers/onboarding/onboarding-checklist.routes.js';
@@ -202,6 +203,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Direct message to a colleague agent on any machine of this account (message-colleague skill)
   router.use('/colleagues', createColleagueRouter());
+
+  // Shared channels with another company's Crewly account (post-shared-channel skill, crewly#1543)
+  router.use('/shared-channels', createSharedChannelRouter());
 
   // Website Analysis routes for KR3 magic onboarding — SSE + sync analysis
   router.use('/website-analysis', createWebsiteAnalysisRouter());

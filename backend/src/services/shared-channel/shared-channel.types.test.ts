@@ -1,6 +1,6 @@
 import {
   isSharedChannelMessagePush, isSharedChannelRevokedPush, parseSharedChannelLink, parseSharedChannelLinks,
-  parseSharedChannelMessage, parseSharedChannelPage, unwrapCloudData,
+  parseSharedChannelMessage, parseSharedChannelPage, parseSharedChannelPostAnswer, unwrapCloudData, externalChannelIdOf,
 } from './shared-channel.types.js';
 
 describe('shared channel wire guards', () => {
@@ -38,5 +38,19 @@ describe('shared channel wire guards', () => {
     const links = unwrapCloudData({ success: true, data: { links: [{ linkId: 'l', status: 'active' }] } });
     expect(parseSharedChannelLinks(links)).toHaveLength(1);
     expect(unwrapCloudData({ links: [] })).toEqual({ links: [] });
+  });
+
+  it('parses Cloud\'s answer to a send', () => {
+    const message = { id: 'msg-00000001', linkId: 'l', direction: 'sent', fromAgentName: 'Orc', fromTeam: '', text: 'hi', createdAt: '2026-11-10T00:00:00.000Z', status: 'queued' };
+    expect(parseSharedChannelPostAnswer(201, { success: true, data: { message, duplicate: false } })).toEqual({ ok: true, messageId: 'msg-00000001', createdAt: '2026-11-10T00:00:00.000Z', duplicate: false });
+    expect(parseSharedChannelPostAnswer(200, { success: true, data: { message, duplicate: true } })).toMatchObject({ ok: true, duplicate: true });
+    expect(parseSharedChannelPostAnswer(201, { success: true, data: {} })).toMatchObject({ ok: false, code: 'malformed' });
+    expect(parseSharedChannelPostAnswer(429, { success: false, error: 'Too many', code: 'rate_limited' }, '30')).toEqual({ ok: false, status: 429, code: 'rate_limited', error: 'Too many', retryAfterS: 30 });
+    expect(parseSharedChannelPostAnswer(502, null)).toEqual({ ok: false, status: 502, code: 'http_502', error: 'Crewly Cloud answered 502' });
+  });
+
+  it('builds the chat channel id of a link', () => {
+    expect(externalChannelIdOf('l-1_a.b')).toBe('external-l-1_a.b');
+    expect(externalChannelIdOf('a/b c')).toBe('external-a-b-c');
   });
 });

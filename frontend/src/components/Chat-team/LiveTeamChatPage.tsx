@@ -245,6 +245,9 @@ const VIRTUAL_DM_PREFIX = 'agent:';
 /** Prefix marking a Slack-bridged channel id (`slack-<chan>-<ts>`). */
 const SLACK_ID_PREFIX = 'slack-';
 
+/** No one to @ in a channel with another company: its agents are not ours. */
+const NO_MENTIONABLES: MentionTarget[] = [];
+
 /**
  * Stable pin key for a row: channel id for Slack threads / groups (each is its
  * own conversation), agent session for plain agent DMs. Slack threads must NOT
@@ -1163,16 +1166,28 @@ function ConversationView({
           }
         />
 
-        {conversation.external ? (
+        {conversation.external && conversation.readOnly ? (
           <p
             className="m-0 border-t border-border px-4 py-3 text-[13px] text-text-2"
             role="status"
             data-testid="external-channel-notice"
           >
-            {conversation.readOnly
-              ? 'This link was revoked. The channel is read-only; its history stays here.'
-              : `This is a channel with ${title}, another company's Crewly account. Replies to external teams will go through a send path that can hold them for you; it is not available yet.`}
+            This link was revoked. The channel is read-only; its history stays here.
           </p>
+        ) : conversation.external ? (
+          // A channel with another company (crewly#1543): the owner's own
+          // posts go straight out; agents' messages may wait for his approval.
+          <div className="border-t border-border" data-testid="external-channel-composer">
+            <p className="m-0 px-4 pt-2 text-[12px] text-text-2" data-testid="external-channel-notice">
+              {`Your messages go straight to ${title}. Messages from your agents wait for your approval on a new link, or when they may be internal.`}
+            </p>
+            <MentionComposer
+              mentionables={NO_MENTIONABLES}
+              onSend={handleSend}
+              variant="compact"
+              placeholder={`Message ${title}`}
+            />
+          </div>
         ) : (
           <MentionComposer
             mentionables={mentionables}

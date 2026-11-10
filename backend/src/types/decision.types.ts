@@ -32,8 +32,12 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  * - `private_share`: a reply the audience check moved to the owner DM because
  *   it draws on someone's private data — post it in the room it was held
  *   from, or keep it private (crewly#969, specs/per-person-access.md)
+ * - `shared_send`: a message the orchestrator wants to send to another
+ *   company's Crewly account over a shared channel, held during the link's
+ *   trial or because it may be internal — send it, or not (crewly#1543,
+ *   specs/2026-11-10-shared-channel-send.md)
  */
-export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator' | 'app_template' | 'model_tier_change' | 'gmail_send' | 'private_share';
+export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator' | 'app_template' | 'model_tier_change' | 'gmail_send' | 'private_share' | 'shared_send';
 
 /** How a decision came to be: asked live, or carded by the open-items backfill. */
 export type DecisionSource = 'live' | 'backfill';
@@ -188,6 +192,34 @@ export interface GmailSendSubject {
 }
 
 /**
+ * The held message a `shared_send` decision is about (crewly#1543). Fixed when
+ * it is held; only the owner's tap sends it, with the same message id (so a
+ * retry is idempotent on Cloud).
+ */
+export interface SharedSendSubject {
+  /** Cloud link id */
+  linkId: string;
+  /** The other company, as the owner knows it */
+  counterpart: string;
+  /** Client-generated Cloud message id */
+  messageId: string;
+  /** The message text, as the agent wrote it */
+  text: string;
+  /** Agent that wrote it */
+  agentSession: string;
+  /** Sender name the other side sees */
+  agentName: string;
+  /** Sender team the other side sees (may be empty) */
+  fromTeam: string;
+  /** Cloud message id it answers */
+  replyTo?: string;
+  /** Why it was held, in words ("trial", "an email address", …) */
+  reasons: string[];
+  /** True when it was held only because the link is in its trial period */
+  trialOnly: boolean;
+}
+
+/**
  * The held reply a `private_share` decision is about (crewly#969). Fixed when
  * the reply is moved to the owner DM; only the owner's tap posts it.
  */
@@ -311,6 +343,8 @@ export interface OwnerDecision {
   gmail?: GmailSendSubject;
   /** The held reply (kind `private_share`) */
   privateShare?: PrivateShareSubject;
+  /** The held external message (kind `shared_send`) */
+  sharedSend?: SharedSendSubject;
   /** What the owner would grant (kind `app_collaborator`) */
   appCollaborator?: AppCollaboratorSubject;
   /** The template the owner would list (kind `app_template`) */

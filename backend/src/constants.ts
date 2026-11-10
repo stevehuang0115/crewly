@@ -10423,6 +10423,27 @@ export const SHARED_CHANNEL_CONSTANTS = {
 	CURSOR_FILE: 'shared-channel-cursors.json',
 	/** Extra backfills after boot while Cloud may still be unreachable (ms) */
 	BOOT_RETRY_DELAYS_MS: [30_000, 2 * 60_000, 10 * 60_000],
+	/**
+	 * Send side (slice 5): the first this-many agent messages on each link are
+	 * held for the owner whatever the classifier says (owner decision 2026-11-10).
+	 */
+	TRIAL_HELD_SENDS: 10,
+	/** Per-link count of owner-approved sends, under the Crewly home directory */
+	TRIAL_FILE: 'shared-channel-trial.json',
+	/** How long a held message waits for the owner before "Don't send" applies (ms) */
+	SEND_DECISION_DEADLINE_MS: 24 * 60 * 60 * 1000,
+	/** Characters of a held message quoted on the owner's card */
+	SEND_PREVIEW_CHARS: 400,
+	/** Characters of a held message quoted in the card question (the dashboard shows only the question) */
+	SEND_QUESTION_EXCERPT_CHARS: 120,
+	/** Sender name the other side sees on the owner's own posts */
+	OWNER_SENDER_NAME: 'Owner',
+	/** Sender name of the orchestrator when it has no display name */
+	ORCHESTRATOR_SENDER_NAME: 'Orc',
+	/** Message text above this many characters is held as "unsure" */
+	CLASSIFIER_LONG_TEXT_CHARS: 1500,
+	/** How long a running orchestrator may take to be ready before a wake is held for it (ms) */
+	ORCHESTRATOR_READY_WAIT_MS: 10_000,
 } as const;
 
 /**

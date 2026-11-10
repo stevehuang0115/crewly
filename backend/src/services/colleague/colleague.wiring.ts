@@ -12,6 +12,7 @@ import { ColleagueMessageService, type ColleagueDeps, type ColleagueRecord } fro
 import { isColleagueWireMessage } from './colleague-message.types.js';
 import { colleagueNotFoundHint } from './colleague-framing.js';
 import type { AgentRegistrationService } from '../agent/agent-registration.service.js';
+import { deliverToLocalAgent } from '../messaging/deliver-to-local-agent.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('ColleagueMessage');
 
@@ -66,32 +67,8 @@ async function localAgents(): Promise<DirectoryEntry[]> {
 }
 
 /** Deliver text to a local agent: now when it runs, queued (and the agent started) when it is down. */
-async function deliverLocal(session: string, text: string): Promise<{ success: boolean; queued?: boolean; error?: string }> {
-  const reg = registration;
-  if (!reg) return { success: false, error: 'agent delivery is not ready yet' };
-  const { getSessionBackendSync } = await import('../session/index.js');
-  const running = !!getSessionBackendSync()?.sessionExists(session) || !!reg.getInProcessRuntime(session);
-  if (running) {
-    const ready = await reg.waitForAgentReady(session, COLLEAGUE_MESSAGE_CONSTANTS.LIVE_READY_WAIT_MS);
-    if (!ready) {
-      reg.holdForBusyAgent(session, text);
-      return { success: true, queued: true };
-    }
-    const res = await reg.sendMessageToAgent(session, text);
-    return { success: res.success || !!res.queued, ...(res.queued ? { queued: true } : {}), ...(res.error ? { error: res.error } : {}) };
-  }
-  // Down: the same queue-and-wake path an owner or agent message to a stopped member takes.
-  const [{ queueForOfflineAgent, getOfflineAgentWaker }, { StorageService }, { SubAgentMessageQueue }] = await Promise.all([
-    import('../messaging/offline-agent-message.js'),
-    import('../core/storage.service.js'),
-    import('../messaging/sub-agent-message-queue.service.js'),
-  ]);
-  const queued = await queueForOfflineAgent(session, text, {
-    findMember: (name) => StorageService.getInstance().findMemberBySessionName(name),
-    enqueue: (name, data) => SubAgentMessageQueue.getInstance().enqueue(name, data),
-    wake: getOfflineAgentWaker(),
-  });
-  return queued ? { success: true, queued: true } : { success: false, error: `${session} is not running` };
+function deliverLocal(session: string, text: string): Promise<{ success: boolean; queued?: boolean; error?: string }> {
+  return deliverToLocalAgent(registration, session, text, COLLEAGUE_MESSAGE_CONSTANTS.LIVE_READY_WAIT_MS);
 }
 
 /** Build the real dependencies. */

@@ -86,6 +86,7 @@ const REVIEW_DECISION_KINDS: ReadonlySet<NonNullable<OwnerDecision['kind']>> = n
   'browser_action',
   'gmail_send',
   'private_share',
+  'shared_send',
   'app_collaborator',
   'app_template',
   'model_tier_change',

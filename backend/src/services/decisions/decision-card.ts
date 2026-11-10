@@ -248,7 +248,7 @@ export function canRemind(d: Pick<OwnerDecision, 'kind' | 'system'> & Partial<Pi
  * "no", applied unanswered; no snooze or skip, and words that are neither
  * yes nor no leave them open.
  */
-export const HELD_ACTION_KINDS: ReadonlySet<DecisionKind> = new Set<DecisionKind>(['browser_action', 'gmail_send', 'private_share']);
+export const HELD_ACTION_KINDS: ReadonlySet<DecisionKind> = new Set<DecisionKind>(['browser_action', 'gmail_send', 'private_share', 'shared_send']);
 
 /**
  * Whether a decision holds an action until the owner approves it ({@link HELD_ACTION_KINDS}).

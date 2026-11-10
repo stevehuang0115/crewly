@@ -284,6 +284,8 @@ export interface PrebuiltAsk {
   gmail?: OwnerDecision['gmail'];
   /** The held reply the owner may post into the room (kind `private_share`) */
   privateShare?: OwnerDecision['privateShare'];
+  /** The held message to another company's account (kind `shared_send`) */
+  sharedSend?: OwnerDecision['sharedSend'];
   /** What the owner would grant (kind `app_collaborator`) */
   appCollaborator?: OwnerDecision['appCollaborator'];
   /** The template the owner would list (kind `app_template`) */
@@ -737,6 +739,7 @@ export class DecisionService {
       ...(ask.browser ? { browser: ask.browser } : {}),
       ...(ask.gmail ? { gmail: ask.gmail } : {}),
       ...(ask.privateShare ? { privateShare: ask.privateShare } : {}),
+      ...(ask.sharedSend ? { sharedSend: ask.sharedSend } : {}),
       ...(ask.appCollaborator ? { appCollaborator: ask.appCollaborator } : {}),
       ...(ask.appTemplate ? { appTemplate: ask.appTemplate } : {}),
       ...(ask.tierChange ? { tierChange: ask.tierChange } : {}),

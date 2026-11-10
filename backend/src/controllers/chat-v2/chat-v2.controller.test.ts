@@ -19,6 +19,8 @@ import {
   relayAuthHeaders,
 } from '../../middleware/caller-identity.testing.js';
 import { setCallerIdentity } from '../../middleware/caller-identity.middleware.js';
+import { setSharedChannelSendService } from '../../services/shared-channel/shared-channel.wiring.js';
+import type { SharedChannelSendService } from '../../services/shared-channel/shared-channel-send.service.js';
 import {
   buildChatV2SourceId,
   isOrchestratorRoutedChatV2Channel,
@@ -1619,6 +1621,66 @@ describe('chat-v2 read state (#1400)', () => {
       const res = await request(app).get('/api/chat/unread');
       expect(res.status).toBe(200);
       expect(res.body.data).toEqual({ total: 2, channels: [{ channelId: a, lastReadSeq: 0, unreadCount: 2 }] });
+    } finally {
+      service.close();
+    }
+  });
+});
+
+describe('chat-v2 controller — owner posts to a shared channel (crewly#1543 slice 5)', () => {
+  const sendFromOwner = jest.fn();
+  const rec = (service: ChatV2Service, messageId: string, direction: 'received' | 'sent' = 'received', text = 'Can we see the plan?') =>
+    service.recordExternalMessageRow({ linkId: 'link-1', counterpart: 'Acme Co', messageId, senderName: direction === 'sent' ? 'Owner' : 'Fern (Acme Co)', direction, text, createdAtMs: 5000 }).id;
+
+  beforeEach(() => {
+    sendFromOwner.mockReset();
+    setSharedChannelSendService({ sendFromOwner } as unknown as SharedChannelSendService);
+  });
+  afterAll(() => setSharedChannelSendService(null));
+
+  it('sends the owner post through the shared-channel service, answers the filed row and maps a reply', async () => {
+    const { app, service } = buildApp();
+    try {
+      const parent = rec(service, 'cloud-1');
+      sendFromOwner.mockImplementation(async () => ({ success: true, status: 'sent', messageId: 'cloud-2', chatMessageId: rec(service, 'cloud-2', 'sent', 'Sure, attached') }));
+      const res = await request(app).post('/api/chat/channels/external-link-1/messages').send({ content: ' Sure, attached ', threadId: parent });
+      expect(res.status).toBe(201);
+      expect(res.body.data).toMatchObject({ channelId: 'external-link-1', content: 'Sure, attached' });
+      expect(sendFromOwner).toHaveBeenCalledWith({ channelId: 'external-link-1', text: 'Sure, attached', replyTo: 'cloud-1' });
+    } finally {
+      service.close();
+    }
+  });
+
+  it('refuses agents, revoked links and empty text, and passes Cloud refusals on', async () => {
+    const { app, service } = buildApp();
+    try {
+      rec(service, 'cloud-1');
+      const agent = await request(app).post('/api/chat/channels/external-link-1/messages').set(agentAuthHeaders(ORCHESTRATOR_SESSION_NAME)).send({ content: 'hi' });
+      expect(agent.status).toBe(403);
+      expect(agent.body.error.message).toMatch(/post-shared-channel/);
+      expect((await request(app).post('/api/chat/channels/external-link-1/messages').send({ content: '  ' })).status).toBe(400);
+      sendFromOwner.mockResolvedValueOnce({ success: false, code: 'rate_limited', error: 'slow down' });
+      const limited = await request(app).post('/api/chat/channels/external-link-1/messages').send({ content: 'hi' });
+      expect(limited.status).toBe(429);
+      expect(limited.body.error).toEqual({ code: 'rate_limited', message: 'slow down' });
+      service.markExternalChannelRevoked('link-1', 'Acme Co');
+      const revoked = await request(app).post('/api/chat/channels/external-link-1/messages').send({ content: 'hi' });
+      expect(revoked.status).toBe(403);
+      expect(revoked.body.error.message).toMatch(/read-only/);
+      expect(sendFromOwner).toHaveBeenCalledTimes(1);
+    } finally {
+      service.close();
+    }
+  });
+
+  it('answers 503 when shared channels are not running', async () => {
+    const { app, service } = buildApp();
+    try {
+      rec(service, 'cloud-1');
+      setSharedChannelSendService(null);
+      const res = await request(app).post('/api/chat/channels/external-link-1/messages').send({ content: 'hi' });
+      expect(res.status).toBe(503);
     } finally {
       service.close();
     }
