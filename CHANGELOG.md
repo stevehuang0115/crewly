@@ -4,6 +4,9 @@ User-visible changes. Newest first.
 
 ## Unreleased
 
+### Changed
+- **The orchestrator can no longer implement work itself on Claude Code (#1539).** "Delegate, never implement" was held only by the prompt, and a busy orchestrator that judged a job small could still edit files or browse. Its Claude Code session now starts without Edit, Write, NotebookEdit, WebFetch, WebSearch and the Playwright and chrome-devtools MCP tools (Bash and Read stay, so every orchestrator skill still runs). The list lives in `ROLE_DISALLOWED_TOOLS` in `backend/src/constants.ts`, keyed by role, so other roles can opt in later; workers and team leaders are unchanged. Other runtimes have no equivalent flag, so the orchestrator runs unrestricted there and a warning is logged once. The orchestrator prompt's "NEVER do these yourself" list is shortened to match.
+
 ### Fixed
 - **A reply in an app-comment Slack thread gets the agent's 👀.** Replying under a "💬 Comment on …" post sends the reply to the app comment and skips the normal DM routing, so the agent's bot never reacted and the owner could not tell the agent had it. The agent's bot now adds 👀 once the reply reaches the comment.
 

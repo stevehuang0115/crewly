@@ -1,6 +1,6 @@
 import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
 import { SessionCommandHelper } from '../session/index.js';
-import { RUNTIME_TYPES, type RuntimeType } from '../../constants.js';
+import { RUNTIME_TYPES, ORCHESTRATOR_SESSION_NAME, ROLE_DISALLOWED_TOOLS, type RuntimeType } from '../../constants.js';
 import * as settingsServiceModule from '../settings/settings.service.js';
 import { getDefaultSettings } from '../../types/settings.types.js';
 import { readFile } from 'fs/promises';
@@ -32,12 +32,13 @@ const mockSafeReadJson = safeReadJson as jest.MockedFunction<typeof safeReadJson
 
 // Test implementation of abstract class
 class TestRuntimeService extends RuntimeAgentService {
+	runtime: RuntimeType = RUNTIME_TYPES.CLAUDE_CODE;
 	constructor(sessionHelper: SessionCommandHelper, projectRoot: string) {
 		super(sessionHelper, projectRoot);
 	}
 
 	protected getRuntimeType(): RuntimeType {
-		return RUNTIME_TYPES.CLAUDE_CODE;
+		return this.runtime;
 	}
 
 	protected async detectRuntimeSpecific(sessionName: string): Promise<boolean> {
@@ -1222,6 +1223,54 @@ echo "second command"
 				['claude --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode'],
 				'/test/path',
 			);
+		});
+	});
+
+	describe('orchestrator tool restriction (#1539)', () => {
+		const ORC_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'mcp__playwright', 'mcp__chrome-devtools'];
+
+		async function launch(svc: RuntimeAgentService, session: string, cmd = 'claude --dangerously-skip-permissions'): Promise<string> {
+			jest.spyOn(svc as any, 'getRuntimeConfig').mockReturnValue({
+				initScript: 'x.sh', displayName: 'X', welcomeMessage: 'Welcome', timeout: 1000, description: 'X',
+			});
+			jest.spyOn(svc as any, 'loadInitScript').mockResolvedValue([cmd]);
+			const send = jest.spyOn(svc as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+			await svc.executeRuntimeInitScript(session, '/test/path');
+			return (send.mock.calls[0] as [string, string[]])[1][0];
+		}
+
+		beforeEach(() => {
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockImplementation(() => {
+				throw new Error('settings unavailable');
+			});
+		});
+
+		it('config lists exactly the orchestrator implementation tools', () => {
+			expect([...ROLE_DISALLOWED_TOOLS.orchestrator]).toEqual(ORC_TOOLS);
+		});
+
+		it('orchestrator launch removes plan mode plus the implementation tools, keeps Bash and Read', async () => {
+			const cmd = await launch(service, ORCHESTRATOR_SESSION_NAME);
+			expect(cmd).toBe(`claude --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode,${ORC_TOOLS.join(',')}`);
+			const flag = cmd.split('--disallowedTools ')[1].split(',');
+			expect(flag).not.toContain('Bash');
+			expect(flag).not.toContain('Read');
+		});
+
+		it('a worker launch only removes plan mode', async () => {
+			const cmd = await launch(service, 'some-worker-session');
+			expect(cmd).toBe('claude --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode');
+		});
+
+		it('other runtimes get no flag; the orchestrator warning is logged once', async () => {
+			const svc = new TestRuntimeService(mockSessionHelper, '/test/project');
+			svc.runtime = RUNTIME_TYPES.CODEX_CLI;
+			const warn = jest.spyOn((svc as any).logger, 'warn');
+			const first = await launch(svc, ORCHESTRATOR_SESSION_NAME, 'codex -a never');
+			const second = await launch(svc, ORCHESTRATOR_SESSION_NAME, 'codex -a never');
+			expect(first).not.toContain('--disallowedTools');
+			expect(second).not.toContain('--disallowedTools');
+			expect(warn.mock.calls.filter(c => String(c[0]).includes('without tool restriction')).length).toBeLessThanOrEqual(1);
 		});
 	});
 
