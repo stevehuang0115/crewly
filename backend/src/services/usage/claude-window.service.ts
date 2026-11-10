@@ -148,7 +148,13 @@ export function parseLimitLine(line: string): ClaudeLimitEvent | null {
 	// `windows` is matched unquoted on purpose: in the shape that carries the
 	// utilisation the JSON is escaped inside a string, so the quotes around the
 	// key are backslashed and a quoted test never fires.
-	if (!line.includes('quotaLimits') && !line.includes('rate_limit_info') && !line.includes('windows')) return null;
+	if (
+		!line.includes('quotaLimits') &&
+		!line.includes('rate_limit_info') &&
+		!(line.includes('windows') && line.includes('utilization'))
+	) {
+		return null;
+	}
 
 	let entry: Record<string, unknown>;
 	try {
@@ -234,13 +240,17 @@ export async function listRecentTranscripts(dataDir: string, now: Date): Promise
 
 	const cutoff = now.getTime() - C.MAX_FILE_AGE_HOURS * 60 * 60 * 1000;
 	const withTimes: { file: string; mtime: number }[] = [];
-	for (const file of entries) {
-		try {
-			const stat = await fs.stat(file);
-			if (stat.mtimeMs >= cutoff) withTimes.push({ file, mtime: stat.mtimeMs });
-		} catch {
-			// a transcript deleted between listing and stat is simply not counted
-		}
+	for (let i = 0; i < entries.length; i += C.STAT_CONCURRENCY) {
+		await Promise.all(
+			entries.slice(i, i + C.STAT_CONCURRENCY).map(async (file) => {
+				try {
+					const stat = await fs.stat(file);
+					if (stat.mtimeMs >= cutoff) withTimes.push({ file, mtime: stat.mtimeMs });
+				} catch {
+					// a transcript deleted between listing and stat is simply not counted
+				}
+			}),
+		);
 	}
 	return withTimes.sort((a, b) => b.mtime - a.mtime).map((entry) => entry.file);
 }
@@ -324,7 +334,7 @@ export async function readTranscriptTail(file: string, since: Date, seen: Set<st
 			for (let i = parts.length - 1; i >= 0; i--) {
 				const line = parts[i];
 				if (!line.trim()) continue;
-				lines.unshift(line);
+				lines.push(line); // newest first; reversed below (unshift is quadratic)
 				if (isOlderThan(line, since)) {
 					reachedOldTurn = true;
 					break;
@@ -333,6 +343,7 @@ export async function readTranscriptTail(file: string, since: Date, seen: Set<st
 			if (reachedOldTurn) break;
 		}
 
+		lines.reverse();
 		const text = lines.join('\n');
 		const turns = parseTranscriptTurns(text, seen).filter((turn) => new Date(turn.timestamp).getTime() >= since.getTime());
 
@@ -481,6 +492,9 @@ export async function buildClaudeWindowReport(deps: ClaudeWindowDeps = {}): Prom
 	let unreadBefore: number | null = null;
 
 	for (const file of files) {
+		// Parsing a large tail is synchronous; yield between files so a big
+		// report cannot starve the event loop for its whole duration.
+		await new Promise<void>((resolve) => setImmediate(resolve));
 		const slice = await readTranscriptTail(file, since, seen);
 		turns.push(...slice.turns);
 		if (slice.truncated) {

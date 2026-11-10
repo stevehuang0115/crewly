@@ -8727,7 +8727,9 @@ export const CLAUDE_WINDOW_CONSTANTS = {
 	 */
 	LIMIT_SCAN_TAIL_BYTES: 8 * 1024 * 1024,
 	/** Report is recomputed at most this often (ms). */
-	CACHE_TTL_MS: 30_000,
+	CACHE_TTL_MS: 60_000,
+	/** Transcripts stat'ed in parallel while listing (bounds open file handles). */
+	STAT_CONCURRENCY: 16,
 } as const;
 
 /** One rolling window of a Claude subscription. */

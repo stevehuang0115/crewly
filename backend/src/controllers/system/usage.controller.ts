@@ -172,12 +172,12 @@ async function claudeWindow(
   build: (windows?: ClaudeWindowId[]) => Promise<ClaudeWindowReport>,
   windows: ClaudeWindowId[] | undefined,
 ): Promise<ClaudeWindowReport> {
-  const key = (windows ?? []).join(',');
+  const key = [...(windows ?? [])].sort().join(',');
   const cached = windowCache.get(key);
   if (cached && Date.now() - cached.at < CLAUDE_WINDOW_CONSTANTS.CACHE_TTL_MS) return cached.report;
 
   const report = build(windows).catch((err: unknown) => {
-    // a failed build must not be cached, or the next 30 s all fail with it
+    // a failed build must not be cached, or the next minute of requests all fail with it
     windowCache.delete(key);
     throw err;
   });

@@ -82,6 +82,15 @@ describe('usage routes', () => {
 			expect(claudeWindow).toHaveBeenCalledTimes(1);
 		});
 
+		it('shares one cached report between window orderings', async () => {
+			const claudeWindow = jest.fn(async (windows?: ClaudeWindowId[]) => report(windows));
+			const server = app({ ...deps, claudeWindow });
+			await request(server).get('/api/system/usage/claude-window?windows=five_hour,seven_day');
+			await request(server).get('/api/system/usage/claude-window?windows=seven_day,five_hour');
+
+			expect(claudeWindow).toHaveBeenCalledTimes(1);
+		});
+
 		it('answers 500 and does not cache a failed build', async () => {
 			const claudeWindow = jest.fn(async () => {
 				throw new Error('transcripts unreadable');
