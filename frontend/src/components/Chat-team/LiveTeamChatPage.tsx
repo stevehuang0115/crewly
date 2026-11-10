@@ -73,6 +73,8 @@ import { CreateGroupModal } from './CreateGroupModal';
 import { ChannelSettingsModal } from './ChannelSettingsModal';
 import { ChatConversationList } from './ChatConversationList';
 import { ChatSearchResults } from './ChatSearchResults';
+import { SharedChannelNormsPanel } from './SharedChannelNormsPanel';
+import { linkIdOfExternalChannel } from '../../services/shared-channel-norms.service';
 import { usePinnedChats } from '../../hooks/usePinnedChats';
 import { useChatReadState } from '../../hooks/useChatReadState';
 import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
@@ -1178,8 +1180,12 @@ function ConversationView({
           // A channel with another company (crewly#1543): the owner's own
           // posts go straight out; agents' messages may wait for his approval.
           <div className="border-t border-border" data-testid="external-channel-composer">
+            {linkIdOfExternalChannel(conversation.id) && (
+              // The owner's norm for this partner (crewly#1543 slice 6).
+              <SharedChannelNormsPanel linkId={linkIdOfExternalChannel(conversation.id)!} counterpart={conversation.title} />
+            )}
             <p className="m-0 px-4 pt-2 text-[12px] text-text-2" data-testid="external-channel-notice">
-              {`Your messages go straight to ${title}. Messages from your agents wait for your approval on a new link, or when they may be internal.`}
+              {`Your messages go straight to ${title}. Messages from your agents wait for your approval on a new link, or when they may be internal and your norm does not allow that kind.`}
             </p>
             <MentionComposer
               mentionables={NO_MENTIONABLES}

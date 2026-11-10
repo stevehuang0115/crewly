@@ -13,7 +13,7 @@ jest.mock('../cloud/device-identity.service.js', () => ({ DeviceIdentityService:
 const findMember = jest.fn();
 jest.mock('../core/storage.service.js', () => ({ StorageService: { getInstance: () => ({ findMemberBySessionName: findMember }) } }));
 
-import { buildSharedChannelDeps, buildSharedChannelSendDeps, cloudPostSharedMessage, setSharedChannelChat } from './shared-channel.wiring.js';
+import { buildSharedChannelDeps, buildSharedChannelSendDeps, cloudPostSharedMessage, getSharedChannelNormsStore, setSharedChannelChat } from './shared-channel.wiring.js';
 
 describe('shared channel wiring', () => {
   let home: string;
@@ -102,5 +102,13 @@ describe('shared channel wiring', () => {
       deps.trial.noteApproved('l1');
       expect(buildSharedChannelSendDeps(home).trial.approvedCount('l1')).toBe(1);
     });
+  });
+
+  it('shares one norms store per Crewly home between the receive side, the send side and the routes', () => {
+    const store = getSharedChannelNormsStore(home);
+    expect(getSharedChannelNormsStore(home)).toBe(store);
+    store.set('l1', { norm: 'Printer partner', allow: ['money'] });
+    expect(buildSharedChannelDeps(home).normOf?.('l1')).toMatchObject({ norm: 'Printer partner', allow: ['money'] });
+    expect(buildSharedChannelSendDeps(home).norms?.get('l1').allow).toEqual(['money']);
   });
 });

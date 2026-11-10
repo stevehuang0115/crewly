@@ -1,8 +1,25 @@
 import { ORCHESTRATOR_SESSION_NAME, SHARED_CHANNEL_CONSTANTS } from '../../constants.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import { SHARED_SEND_ACTIONS, SHARED_SEND_KEYS, SharedChannelSendService, type SharedSendDeps } from './shared-channel-send.service.js';
+import { SHARED_NORM_ACTIONS, type SharedNormAllowance } from './shared-channel-norms.js';
 
 const ORC = ORCHESTRATOR_SESSION_NAME;
+
+/** In-memory norms with the store's surface. */
+function normsDouble(initial: Record<string, { norm?: string; allow: SharedNormAllowance[] }> = {}) {
+  const data: Record<string, { norm: string; allow: SharedNormAllowance[]; updatedAt: string }> = {};
+  for (const [k, v] of Object.entries(initial)) data[k] = { norm: v.norm ?? '', allow: v.allow, updatedAt: '' };
+  return {
+    data,
+    get: jest.fn((l: string) => ({ ...(data[l] ?? { norm: '', allow: [], updatedAt: '' }) })),
+    addAllowances: jest.fn((l: string, keys: readonly SharedNormAllowance[]) => {
+      const before = { ...(data[l] ?? { norm: '', allow: [], updatedAt: '' }) };
+      const after = { ...before, allow: [...new Set([...before.allow, ...keys])], updatedAt: 'now' };
+      data[l] = after;
+      return { before, after };
+    }),
+  };
+}
 const TRIAL = SHARED_CHANNEL_CONSTANTS.TRIAL_HELD_SENDS;
 
 function setup(over: Partial<SharedSendDeps> = {}) {
@@ -190,6 +207,117 @@ describe('SharedChannelSendService.onSettled', () => {
   });
 });
 
+describe('per-link norms (slice 6)', () => {
+  it('after the trial, a hold reason the norm allows no longer holds; the send is logged with it', async () => {
+    const { svc, deps, askPrebuilt, counts } = setup({ norms: normsDouble({ l1: { allow: ['money'] } }) });
+    counts['l1'] = TRIAL;
+    const r = await svc.sendFromAgent({ fromSession: ORC, linkId: 'l1', text: 'Our price is $4,000' });
+    expect(r).toMatchObject({ success: true, status: 'sent' });
+    expect(r.note).toContain("the owner's norm allows money");
+    expect(askPrebuilt).not.toHaveBeenCalled();
+    expect(deps.record).toHaveBeenCalledWith(expect.objectContaining({ action: SHARED_SEND_ACTIONS.SENT, after: expect.objectContaining({ allowedByNorm: ['money'] }) }));
+  });
+
+  it('the trial gate stays whatever the norm allows', async () => {
+    const { svc, deps, askPrebuilt } = setup({ norms: normsDouble({ l1: { allow: ['money'] } }) });
+    const r = await svc.sendFromAgent({ fromSession: ORC, linkId: 'l1', text: 'Our price is $4,000' });
+    expect(r.status).toBe('held');
+    expect(deps.post).not.toHaveBeenCalled();
+    const ask = askPrebuilt.mock.calls[0]![0] as Record<string, any>;
+    expect(ask.sharedSend.trialOnly).toBe(true);
+    expect(ask.sharedSend.allowOnSend).toBeUndefined();
+    expect(ask.options.map((o: { key: string }) => o.key)).toEqual([SHARED_SEND_KEYS.SEND, SHARED_SEND_KEYS.DONT_SEND]);
+    expect(ask.body).toContain('Your norm for Acme Co already allows money (amounts, prices, budgets).');
+  });
+
+  it('holds what the norm does not cover, naming only that', async () => {
+    const { svc, askPrebuilt, counts } = setup({ norms: normsDouble({ l1: { allow: ['money'] } }) });
+    counts['l1'] = TRIAL;
+    await svc.sendFromAgent({ fromSession: ORC, linkId: 'l1', text: 'Price $4,000, the file is ~/Desktop/quote.pdf' });
+    const ask = askPrebuilt.mock.calls[0]![0] as Record<string, any>;
+    expect(ask.body[1]).toBe('It may contain internal information: a file path or file name.');
+    expect(ask.sharedSend.reasons).toEqual(['a file path or file name']);
+    expect(ask.sharedSend.allowOnSend).toEqual(['file_names']);
+  });
+
+  it('never lets a refusal through, whatever the norm', async () => {
+    const all: SharedNormAllowance[] = ['money', 'file_names', 'contact_details', 'internal_links', 'internal_refs', 'wiki_notes', 'code_blocks', 'long_messages'];
+    const { svc, deps, counts } = setup({ norms: normsDouble({ l1: { allow: all } }) });
+    counts['l1'] = TRIAL;
+    expect(await svc.sendFromAgent({ fromSession: ORC, linkId: 'l1', text: 'token ghp_abcdefghijklmnopqrstuvwxyz0123 costs $5' })).toMatchObject({ code: 'refused' });
+    expect(await svc.sendFromAgent({ fromSession: ORC, linkId: 'l1', text: 'Amy is 7 years old, student at our camp' })).toMatchObject({ code: 'refused' });
+    expect(deps.post).not.toHaveBeenCalled();
+  });
+
+  it('offers no "always allow" when a hold reason can never be allowed', async () => {
+    const { svc, askPrebuilt, counts } = setup({ norms: normsDouble() });
+    counts['l1'] = TRIAL;
+    await svc.sendFromAgent({ fromSession: ORC, linkId: 'l1', text: 'Confidential: price is $4,000' });
+    const ask = askPrebuilt.mock.calls[0]![0] as Record<string, any>;
+    expect(ask.sharedSend.allowOnSend).toBeUndefined();
+    expect(ask.options).toHaveLength(2);
+  });
+
+  it('offers "Send, always allow" and, when chosen, sends and adds the allowance, logged', async () => {
+    const norms = normsDouble();
+    const { svc, deps, askPrebuilt, counts, open } = setup({ norms });
+    counts['l1'] = TRIAL;
+    await svc.sendFromAgent({ fromSession: ORC, linkId: 'l1', text: 'Our price is $4,000' });
+    const ask = askPrebuilt.mock.calls[0]![0] as Record<string, any>;
+    expect(ask.options.map((o: { key: string }) => o.key)).toEqual([SHARED_SEND_KEYS.SEND, SHARED_SEND_KEYS.SEND_ALLOW, SHARED_SEND_KEYS.DONT_SEND]);
+    const allowOpt = ask.options[1];
+    expect(allowOpt.label.length).toBeLessThanOrEqual(40);
+    expect(allowOpt.detail.length).toBeLessThanOrEqual(150);
+    expect(allowOpt.detail).toContain('money go to Acme Co without asking');
+    expect(ask.yesKey).toBe(SHARED_SEND_KEYS.SEND);
+
+    const note = await svc.onSettled({ ...open[0]!, status: 'resolved', chosenKey: SHARED_SEND_KEYS.SEND_ALLOW, answeredVia: 'button' });
+    expect(deps.post).toHaveBeenCalledTimes(1);
+    expect(norms.addAllowances).toHaveBeenCalledWith('l1', ['money']);
+    expect(norms.data['l1']!.allow).toEqual(['money']);
+    expect(note).toContain('From now on money may go to Acme Co without his approval');
+    expect(deps.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: SHARED_NORM_ACTIONS.UPDATED,
+      actor: { type: 'owner', via: 'button' },
+      target: { type: 'shared_channel', id: 'l1', name: 'Acme Co' },
+      before: { allow: [] },
+      after: { allow: ['money'], decisionId: 'D-1' },
+    }));
+
+    // The next money message goes straight out.
+    const next = await svc.sendFromAgent({ fromSession: ORC, linkId: 'l1', text: 'And $500 for shipping' });
+    expect(next.status).toBe('sent');
+  });
+
+  it('plain Send does not touch the norm', async () => {
+    const norms = normsDouble();
+    const { svc, counts, open } = setup({ norms });
+    counts['l1'] = TRIAL;
+    await svc.sendFromAgent({ fromSession: ORC, linkId: 'l1', text: 'Our price is $4,000' });
+    await svc.onSettled({ ...open[0]!, status: 'resolved', chosenKey: SHARED_SEND_KEYS.SEND });
+    expect(norms.addAllowances).not.toHaveBeenCalled();
+  });
+
+  it('says so when the allowance cannot be saved; the message is still sent', async () => {
+    const norms = normsDouble();
+    norms.addAllowances.mockImplementation(() => { throw new Error('disk full'); });
+    const { svc, deps, counts, open } = setup({ norms });
+    counts['l1'] = TRIAL;
+    await svc.sendFromAgent({ fromSession: ORC, linkId: 'l1', text: 'Our price is $4,000' });
+    const note = await svc.onSettled({ ...open[0]!, status: 'resolved', chosenKey: SHARED_SEND_KEYS.SEND_ALLOW });
+    expect(deps.post).toHaveBeenCalledTimes(1);
+    expect(note).toContain('could not be saved');
+  });
+
+  it('reads an unreadable norm as no norm', async () => {
+    const norms = normsDouble();
+    norms.get.mockImplementation(() => { throw new Error('bad'); });
+    const { svc, counts } = setup({ norms });
+    counts['l1'] = TRIAL;
+    expect((await svc.sendFromAgent({ fromSession: ORC, linkId: 'l1', text: 'Our price is $4,000' })).status).toBe('held');
+  });
+});
+
 describe('SharedChannelSendService.sendFromOwner', () => {
   it('goes straight through, no classifier and no card, even in the trial', async () => {
     const { svc, deps, askPrebuilt } = setup();
@@ -220,9 +348,16 @@ describe('SharedChannelSendService.listLinks', () => {
     const { svc, counts } = setup();
     counts['l1'] = 3;
     expect(await svc.listLinks()).toEqual([
-      { linkId: 'l1', status: 'active', counterpart: 'Acme Co', approvedSends: 3, trialLeft: TRIAL - 3 },
-      { linkId: 'l2', status: 'revoked', counterpart: 'b@beta.co', approvedSends: 0, trialLeft: TRIAL },
+      { linkId: 'l1', status: 'active', counterpart: 'Acme Co', approvedSends: 3, trialLeft: TRIAL - 3, norm: '', allow: [] },
+      { linkId: 'l2', status: 'revoked', counterpart: 'b@beta.co', approvedSends: 0, trialLeft: TRIAL, norm: '', allow: [] },
     ]);
+  });
+
+  it("shows each link's norm so the orchestrator knows what it may share", async () => {
+    const { svc } = setup({ norms: normsDouble({ l1: { norm: 'Printer partner', allow: ['money'] } }) });
+    const links = await svc.listLinks();
+    expect(links?.[0]).toMatchObject({ norm: 'Printer partner', allow: ['money'] });
+    expect(links?.[1]).toMatchObject({ norm: '', allow: [] });
   });
 
   it('is null when Cloud cannot be reached', async () => {

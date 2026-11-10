@@ -10436,6 +10436,8 @@ export const SHARED_CHANNEL_CONSTANTS = {
 	SEND_PREVIEW_CHARS: 400,
 	/** Characters of a held message quoted in the card question (the dashboard shows only the question) */
 	SEND_QUESTION_EXCERPT_CHARS: 120,
+	/** Characters of the "Send, always allow" option detail (under the card contract's 150) */
+	SEND_ALLOW_DETAIL_CHARS: 140,
 	/** Sender name the other side sees on the owner's own posts */
 	OWNER_SENDER_NAME: 'Owner',
 	/** Sender name of the orchestrator when it has no display name */
@@ -10444,6 +10446,10 @@ export const SHARED_CHANNEL_CONSTANTS = {
 	CLASSIFIER_LONG_TEXT_CHARS: 1500,
 	/** How long a running orchestrator may take to be ready before a wake is held for it (ms) */
 	ORCHESTRATOR_READY_WAIT_MS: 10_000,
+	/** Per-link norms (slice 6): the owner's free-text norm and allowances, under the Crewly home directory */
+	NORMS_FILE: 'shared-channel-norms.json',
+	/** Longest owner-written norm text (characters) */
+	NORM_MAX_CHARS: 2000,
 } as const;
 
 /**

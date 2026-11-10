@@ -22,6 +22,7 @@ import {
   type SharedChannelPage,
 } from './shared-channel.types.js';
 import { counterpartLabel, externalSenderName, formatExternalMessage } from './shared-channel-framing.js';
+import { describeNormForAgent, type SharedChannelNorm } from './shared-channel-norms.js';
 
 /** Most received messages one sync wakes the responder for (older ones are mirrored silently). */
 export const MAX_WAKES_PER_SYNC = 5;
@@ -54,6 +55,8 @@ export interface SharedChannelDeps {
   markRevoked(linkId: string, counterpart: string): void;
   /** Deliver text to the orchestrator (queued when it is down). */
   notifyOrchestrator(text: string): Promise<void>;
+  /** The owner's norm for a link (slice 6), shown in the `[EXTERNAL]` header. Absent: the blanket rule. */
+  normOf?(linkId: string): SharedChannelNorm;
   /** Logger */
   log?: { info(msg: string, meta?: object): void; warn(msg: string, meta?: object): void };
 }
@@ -204,9 +207,18 @@ export class SharedChannelService {
       if (!got.hasMore || got.messages.length === 0) break;
     }
     // Only the newest few wake the responder; the rest are in the channel for the owner.
-    for (const w of wake.slice(-MAX_WAKES_PER_SYNC)) {
+    const waking = wake.slice(-MAX_WAKES_PER_SYNC);
+    let normLine: string | undefined;
+    if (waking.length > 0 && this.deps.normOf) {
       try {
-        await this.deps.notifyOrchestrator(formatExternalMessage(w.agent, counterpart, w.text, { linkId, messageId: w.messageId }));
+        normLine = describeNormForAgent(this.deps.normOf(linkId), counterpart);
+      } catch {
+        normLine = undefined;
+      }
+    }
+    for (const w of waking) {
+      try {
+        await this.deps.notifyOrchestrator(formatExternalMessage(w.agent, counterpart, w.text, { linkId, messageId: w.messageId }, normLine));
         result.woke += 1;
       } catch (err) {
         this.deps.log?.warn('Could not hand a shared-channel message to the orchestrator', { error: err instanceof Error ? err.message : String(err) });

@@ -30,4 +30,11 @@ describe('shared channel framing', () => {
     expect(t).toContain("secrets or children's data are refused");
     expect(t.endsWith('\nhi')).toBe(true);
   });
+
+  it("puts the link's norm in place of the blanket rule", () => {
+    const t = formatExternalMessage('Fern', 'Acme Co', 'hi', { linkId: 'l1', messageId: 'm9' }, 'The owner\'s norm for Acme Co: "printer partner"');
+    expect(t).toContain('Share only what the owner allows. The owner\'s norm for Acme Co: "printer partner"');
+    expect(t).not.toContain('Do not share internal information');
+    expect(formatExternalMessage('Fern', 'Acme Co', 'hi', undefined, '  ')).toContain('Do not share internal information');
+  });
 });

@@ -18,6 +18,7 @@ import type { AgentRegistrationService } from '../agent/agent-registration.servi
 import { deliverToLocalAgent } from '../messaging/deliver-to-local-agent.js';
 import { SharedChannelSendService, type SharedChannelPostBody, type SharedChannelPostResult, type SharedSendDeps } from './shared-channel-send.service.js';
 import { SharedChannelTrialStore } from './shared-channel-trial.store.js';
+import { SharedChannelNormsStore } from './shared-channel-norms.store.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SharedChannel');
 
@@ -25,6 +26,23 @@ let instance: SharedChannelService | null = null;
 let sendInstance: SharedChannelSendService | null = null;
 let listening = false;
 let registration: AgentRegistrationService | null = null;
+const normsStores = new Map<string, SharedChannelNormsStore>();
+
+/**
+ * The per-link norms store of a Crewly home (one instance per file, shared by
+ * the receive side, the send side and the norms routes).
+ *
+ * @param crewlyHome - Directory of the norms file (default `~/.crewly`)
+ * @returns The store
+ */
+export function getSharedChannelNormsStore(crewlyHome: string = join(homedir(), '.crewly')): SharedChannelNormsStore {
+  let store = normsStores.get(crewlyHome);
+  if (!store) {
+    store = SharedChannelNormsStore.inDir(crewlyHome, SHARED_CHANNEL_CONSTANTS.NORMS_FILE);
+    normsStores.set(crewlyHome, store);
+  }
+  return store;
+}
 
 /** @returns The process-wide service, or null before {@link startSharedChannels} */
 export function getSharedChannelService(): SharedChannelService | null {
@@ -117,6 +135,7 @@ export async function cloudPostSharedMessage(linkId: string, body: SharedChannel
  */
 export function buildSharedChannelDeps(crewlyHome: string = join(homedir(), '.crewly')): SharedChannelDeps {
   const cursors = SharedChannelCursorStore.inDir(crewlyHome, SHARED_CHANNEL_CONSTANTS.CURSOR_FILE);
+  const norms = getSharedChannelNormsStore(crewlyHome);
   // `mirror` and `markRevoked` are synchronous in the service contract; the chat
   // service is looked up on each call (it may open after the wiring starts).
   return {
@@ -142,6 +161,7 @@ export function buildSharedChannelDeps(crewlyHome: string = join(homedir(), '.cr
       (chatRef ?? peekChatV2Service())?.markExternalChannelRevoked(linkId, counterpart);
     },
     notifyOrchestrator,
+    normOf: (linkId) => norms.get(linkId),
     log: logger,
   };
 }
@@ -170,6 +190,7 @@ export function buildSharedChannelSendDeps(crewlyHome: string = join(homedir(), 
       }).id;
     },
     trial,
+    norms: getSharedChannelNormsStore(crewlyHome),
     decisions: () => decisionsRef(),
     agentIdentity: async (session) => {
       if (session === ORCHESTRATOR_SESSION_NAME) return { name: SHARED_CHANNEL_CONSTANTS.ORCHESTRATOR_SENDER_NAME };
