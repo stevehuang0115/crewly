@@ -204,7 +204,11 @@ export type MessageType =
   // (message an agent, stop it, open / renew / close its terminal). `data` is
   // `{actionId, instanceId, session, kind}` - no text; CanvasInboundService
   // fetches the action from Cloud with this machine's token.
-  | 'canvas_action';
+  | 'canvas_action'
+  // Colleague message (message-colleague skill): one agent writes to another
+  // agent of the same account on this machine. `data` is a
+  // ColleagueWireMessage (services/colleague/colleague-message.types.ts).
+  | 'colleague_message';
 
 /** Valid message type values for runtime validation. */
 export const MESSAGE_TYPES: readonly MessageType[] = [
@@ -227,6 +231,7 @@ export const MESSAGE_TYPES: readonly MessageType[] = [
   'waiting_action',
   'team_move',
   'canvas_action',
+  'colleague_message',
 ] as const;
 
 /**

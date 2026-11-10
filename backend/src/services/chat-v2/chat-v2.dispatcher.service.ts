@@ -703,6 +703,10 @@ export function peopleAddressingLine(args: FormatPromptArgs, mode: 'required' | 
 export const SOLE_RESPONDER_LINE =
   'Responder: you are the one agent answering this for the room; the others only see it as context and will not reply. If a colleague should answer instead, @ them in your reply.';
 
+/** Who is outside the room and how to reach them (message-colleague): only on the owner's request. */
+export const COLLEAGUE_OUTSIDE_LINE =
+  'To reach someone outside this channel, only when the owner (or your lead for the owner) asks you to: `list-colleagues`, then `message-colleague --to <name>`.';
+
 export function defaultFormatPrompt(args: FormatPromptArgs): string {
   const { channelId, channelName, senderId, content, clientMessageId, responseMode, threadId, replyVia, channelRoster } = args;
   // Nobody named this agent, so it may be reading someone else's
@@ -806,7 +810,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     replyHint + actionGuard,
     ...(args.soleResponder ? [SOLE_RESPONDER_LINE] : []),
     ...(addressedTo ? [addressedTo] : []),
-    ...(channelRoster ? [`Channel members (colleagues you can @): ${channelRoster}`] : []),
+    ...(channelRoster ? [`Channel members (colleagues you can @): ${channelRoster}`, COLLEAGUE_OUTSIDE_LINE] : []),
     ...(args.roomPresence ? [`Who is awake right now: ${args.roomPresence}`] : []),
   ].join('\n');
 }

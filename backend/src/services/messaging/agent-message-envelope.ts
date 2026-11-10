@@ -41,7 +41,7 @@ export const AGENT_MESSAGE_HEADER_PREFIX = '[MESSAGE from ';
  * never wrapped a second time.
  */
 const HARNESS_ENVELOPE =
-  /^\s*\[(?:G?CHAT:|CREWLY-DISPATCH\]|SYSTEM\b|TASK\b|MESSAGE from |RESULT\]|OWNER MESSAGE\]|SLACK[A-Z_-]*[:\]]|REMOTE:|scheduler:)/;
+  /^\s*\[(?:G?CHAT:|CREWLY-DISPATCH\]|SYSTEM\b|TASK\b|MESSAGE from |Message from colleague |RESULT\]|OWNER MESSAGE\]|SLACK[A-Z_-]*[:\]]|REMOTE:|scheduler:)/;
 
 /** The sender named in a header (its reply route). */
 const HEADER_SENDER = /^\s*\[MESSAGE from [^\]\n]*?send-message --to ([A-Za-z0-9_.-]+)/;

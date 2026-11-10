@@ -929,6 +929,10 @@ describe('ChatV2DispatcherService', () => {
       });
       expect(prompt).toContain('Channel members (colleagues you can @): Atlas (Think Tank, this machine) → @Atlas · Mia (Portal, mac-mini) → @Mia');
       expect(defaultFormatPrompt({ channelId: 'h', channelName: 'c', agentSession: 's', senderId: 'U', content: 'x' })).not.toContain('Channel members');
+      // Reaching someone outside the room is on the owner's request only.
+      expect(prompt).toContain('To reach someone outside this channel, only when the owner (or your lead for the owner) asks you to');
+      expect(prompt).toContain('message-colleague --to <name>');
+      expect(defaultFormatPrompt({ channelId: 'h', channelName: 'c', agentSession: 's', senderId: 'U', content: 'x' })).not.toContain('message-colleague');
     });
   });
 

@@ -142,6 +142,7 @@ describe('SkillsReferenceModule', () => {
 			expect(result).toContain('shared Slack team channel');
 			expect(result).toContain('list-colleagues');
 			expect(result).toContain('deprecated');
+			expect(result).toContain('message-colleague --to <name>');
 		});
 
 		it('should give TLs delegation scope', async () => {

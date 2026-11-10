@@ -2508,6 +2508,52 @@ describe('ChatV2Service', () => {
       expect(service.getCloudOutbox().count()).toBe(1);
     });
 
+    describe('recordColleagueMessage (message-colleague history)', () => {
+      const rec = (extra: Partial<Parameters<ChatV2Service['recordColleagueMessage']>[0]> = {}) =>
+        service.recordColleagueMessage({
+          agentSession: 'fern', peerKey: 'dev-mac:flopost-pia', peerLabel: 'Pia (Flopost, steves-mac)',
+          direction: 'out', messageId: 'm1', content: 'Can you send the deck?', ...extra,
+        });
+
+      it('files the exchange in its own channel per agent and colleague, outbound as the agent and inbound as the colleague', () => {
+        const a = rec();
+        const b = rec({ direction: 'in', messageId: 'm2', content: 'Sent.', extra: { replyTo: 'm1' } });
+        expect(a).toBeTruthy();
+        expect(b).toBeTruthy();
+        const rows = db.prepare('SELECT channel_id, sender_type, sender_id, content, direction FROM chat_messages ORDER BY seq').all() as Array<Record<string, string>>;
+        expect(rows.map((r) => r.channel_id)).toEqual(['colleague-fern-dev-mac-flopost-pia', 'colleague-fern-dev-mac-flopost-pia']);
+        expect(rows[0]).toMatchObject({ sender_type: 'agent', sender_id: 'fern', content: 'Can you send the deck?' });
+        expect(rows[1]).toMatchObject({ sender_type: 'system', sender_id: 'colleague', content: 'Sent.' });
+        const ch = db.prepare('SELECT name, agent_session, owner_user_id FROM chat_channels WHERE id = ?').get('colleague-fern-dev-mac-flopost-pia') as Record<string, string>;
+        expect(ch).toMatchObject({ name: 'Colleague: Pia (Flopost, steves-mac)', agent_session: 'fern', owner_user_id: 'system' });
+      });
+
+      it('is a no-op for a redelivery of the same message', () => {
+        expect(rec()).toBeTruthy();
+        expect(rec()).toBeNull();
+        expect((db.prepare('SELECT COUNT(*) AS n FROM chat_messages').get() as { n: number }).n).toBe(1);
+      });
+
+      it('emits nothing, so no agent is woken and nothing is mirrored to Slack or an owner thread', () => {
+        const emitted = jest.fn();
+        service.on('chat_message', emitted);
+        rec();
+        expect(emitted).not.toHaveBeenCalled();
+        expect(service.getOwnerTurnMarks()).toEqual([]);
+      });
+
+      it('flags the row as already delivered and carries the outcome metadata', () => {
+        const id = rec({ extra: { replyTo: 'm0', delivered: false } });
+        const row = db.prepare('SELECT metadata FROM chat_messages WHERE id = ?').get(id) as { metadata: string };
+        expect(JSON.parse(row.metadata)).toMatchObject({ colleagueMessage: true, slackAlreadyPosted: true, replyTo: 'm0', delivered: false, direction: 'out' });
+      });
+
+      it('rejects empty content or ids', () => {
+        expect(() => rec({ content: '' })).toThrow();
+        expect(() => rec({ messageId: '' })).toThrow();
+      });
+    });
+
     describe('recordSlackOnlyAgentPost (work-item posts made searchable, CREW-877)', () => {
       beforeEach(() => {
         service.close();

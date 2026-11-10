@@ -17,6 +17,12 @@ import { markOwner, schedulerAuthHeaders } from '../../middleware/caller-identit
 import { setCallerIdentity } from '../../middleware/caller-identity.middleware.js';
 import { harnessPastesSinceOutsideInput, lastOutsideInputAt, noteHarnessPaste, resetInputLedgerForTesting } from '../../services/session/input-ledger.js';
 
+// The account directory lookup behind the colleague hint on a not-found answer.
+const mockColleagueHint = jest.fn<(target: string, from?: string) => Promise<string | null>>();
+jest.mock('../../services/colleague/colleague.wiring.js', () => ({
+	lookupColleagueHint: (target: string, from?: string) => mockColleagueHint(target, from),
+}));
+
 // Mock the session module
 jest.mock('../../services/session/index.js', () => ({
 	getSessionBackendSync: jest.fn(),
@@ -830,6 +836,25 @@ describe('TerminalController', () => {
 				expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, queued: true, waking: true }));
 				expect(mockEnqueue).toHaveBeenCalledWith('crewly-marketing-dana-45506487', 'WorkItem wi-9 — do the thing');
 				expect(wake).toHaveBeenCalledWith('crewly-marketing-dana-45506487');
+			});
+
+			it('a message to a colleague of another machine: the 404 says where they are and to use message-colleague', async () => {
+				mockColleagueHint.mockResolvedValue('Pia is on the machine "steves-mac", team Flopost — use message-colleague --to Pia');
+				mockReq = {
+					params: { sessionName: 'Pia' } as any,
+					headers: { 'x-agent-session': 'WorkItemDispatch' },
+					body: { data: 'hello Pia', mode: 'message' },
+				};
+
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+				expect(mockRes.status).toHaveBeenCalledWith(404);
+				expect(mockRes.json).toHaveBeenCalledWith({
+					success: false,
+					error: "Session 'Pia' not found. Pia is on the machine \"steves-mac\", team Flopost — use message-colleague --to Pia",
+					hint: 'Pia is on the machine "steves-mac", team Flopost — use message-colleague --to Pia',
+				});
+				expect(mockColleagueHint).toHaveBeenCalledWith('Pia', 'WorkItemDispatch');
 			});
 
 			it('keeps the 404 for a system notifier (not an agent caller)', async () => {
@@ -1816,6 +1841,22 @@ describe('TerminalController', () => {
 					getInProcessRuntime: jest.fn<() => any>().mockReturnValue(undefined),
 				},
 			};
+		});
+
+	it('a deliver (send-message / delegate-task) to a colleague of another machine gets the same hint', async () => {
+			mockColleagueHint.mockResolvedValue('Pia is on the machine "steves-mac", team Flopost — use message-colleague --to Pia');
+			const apiContext: any = {
+				agentRegistrationService: { getInProcessRuntime: jest.fn<() => any>().mockReturnValue(undefined) },
+			};
+			mockBackend.sessionExists.mockReturnValue(false);
+			mockReq = { params: { sessionName: 'Pia' } as any, headers: {}, body: { message: 'hello' } };
+
+			await terminalController.deliverMessage.call(mockApiContext, mockReq as Request, mockRes as Response);
+
+			expect(mockRes.status).toHaveBeenCalledWith(404);
+			const body = (mockRes.json as jest.Mock).mock.calls.pop()?.[0] as { error: string; hint?: string };
+			expect(body.error).toContain('use message-colleague --to Pia');
+			expect(body.hint).toContain('Flopost');
 		});
 
 		it('waits for an in-flight fresh-conversation clear before delivering', async () => {
