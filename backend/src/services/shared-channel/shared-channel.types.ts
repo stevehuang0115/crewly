@@ -119,6 +119,16 @@ export function parseSharedChannelMessage(v: unknown): SharedChannelMessage | nu
 }
 
 /**
+ * Unwrap Cloud's `{success, data}` envelope. A body without one is returned as is.
+ *
+ * @param body - JSON body
+ * @returns The `data` payload, or the body itself
+ */
+export function unwrapCloudData(body: unknown): unknown {
+  return isObj(body) && 'data' in body ? body['data'] : body;
+}
+
+/**
  * Parse a `{links}` answer.
  *
  * @param body - JSON body

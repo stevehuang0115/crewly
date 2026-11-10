@@ -11,7 +11,7 @@ import { ORCHESTRATOR_SESSION_NAME, SHARED_CHANNEL_CONSTANTS } from '../../const
 import { LoggerService } from '../core/logger.service.js';
 import { SharedChannelService, type SharedChannelDeps } from './shared-channel.service.js';
 import { SharedChannelCursorStore } from './shared-channel-cursor.store.js';
-import { parseSharedChannelLinks, parseSharedChannelPage } from './shared-channel.types.js';
+import { parseSharedChannelLinks, parseSharedChannelPage, unwrapCloudData } from './shared-channel.types.js';
 import { peekChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import type { AgentRegistrationService } from '../agent/agent-registration.service.js';
 
@@ -52,7 +52,8 @@ async function cloudGet(path: string): Promise<unknown | null> {
       logger.debug('Cloud answered a shared-channel request with an error', { status: response.status });
       return null;
     }
-    return await response.json().catch(() => null);
+    const body: unknown = await response.json().catch(() => null);
+    return body === null ? null : unwrapCloudData(body);
   } catch (err) {
     logger.debug('Shared-channel request to Cloud failed', { error: err instanceof Error ? err.message : String(err) });
     return null;

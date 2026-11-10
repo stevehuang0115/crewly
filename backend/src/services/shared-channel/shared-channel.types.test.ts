@@ -1,6 +1,6 @@
 import {
   isSharedChannelMessagePush, isSharedChannelRevokedPush, parseSharedChannelLink, parseSharedChannelLinks,
-  parseSharedChannelMessage, parseSharedChannelPage,
+  parseSharedChannelMessage, parseSharedChannelPage, unwrapCloudData,
 } from './shared-channel.types.js';
 
 describe('shared channel wire guards', () => {
@@ -32,5 +32,11 @@ describe('shared channel wire guards', () => {
     expect(parseSharedChannelMessage({ ...m, text: 'x'.repeat(20000) })?.text.length).toBe(8000);
     expect(parseSharedChannelPage({ messages: [m, {}], hasMore: true })).toEqual({ messages: [expect.objectContaining({ id: 'm1' })], hasMore: true });
     expect(parseSharedChannelPage({ hasMore: true })).toBeNull();
+  });
+
+  it('unwraps the Cloud {success, data} envelope', () => {
+    const links = unwrapCloudData({ success: true, data: { links: [{ linkId: 'l', status: 'active' }] } });
+    expect(parseSharedChannelLinks(links)).toHaveLength(1);
+    expect(unwrapCloudData({ links: [] })).toEqual({ links: [] });
   });
 });
