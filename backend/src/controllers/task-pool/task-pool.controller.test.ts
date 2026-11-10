@@ -77,6 +77,7 @@ const mockService = {
   getAvailableItems: jest.fn(),
   claimFromPool: jest.fn(),
   claimSpecificItem: jest.fn(),
+  explainClaimRefusal: jest.fn(),
   releaseBack: jest.fn(),
   getPoolStatus: jest.fn(),
   heartbeat: jest.fn(),
@@ -317,6 +318,36 @@ describe('TaskPoolController', () => {
       const body = res.json.mock.calls[0][0];
       expect(body.error).toMatch(/wi-stuck/);
       expect(mockService.claimFromPool).not.toHaveBeenCalled();
+    });
+
+    it('404 body carries the real reason and the blocking WorkItem id', async () => {
+      mockService.claimSpecificItem.mockResolvedValue(null);
+      mockService.explainClaimRefusal.mockResolvedValue({
+        code: 'slot_occupied',
+        message: 'agent-leo already has WorkItem wi-running running',
+        blockingWorkItemId: 'wi-running',
+      });
+
+      const req = mockReq({ body: { agentId: 'agent-leo', workItemId: 'wi-stuck' } });
+      const res = mockRes();
+      await claimItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      const body = res.json.mock.calls[0][0];
+      expect(body.reason).toBe('slot_occupied');
+      expect(body.blockingWorkItemId).toBe('wi-running');
+      expect(body.error).toContain('wi-running');
+    });
+
+    it('falls back to a generic reason when the explanation throws', async () => {
+      mockService.claimSpecificItem.mockResolvedValue(null);
+      mockService.explainClaimRefusal.mockRejectedValue(new Error('boom'));
+
+      const res = mockRes();
+      await claimItem(mockReq({ body: { agentId: 'agent-leo', workItemId: 'wi-stuck' } }), res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json.mock.calls[0][0].reason).toBe('not_claimable');
     });
 
     describe('targeted claim for an agent that is down (#929)', () => {

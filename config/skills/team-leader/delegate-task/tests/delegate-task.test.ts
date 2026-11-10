@@ -31,6 +31,8 @@ let baseUrl: string;
 let captured: Captured[];
 /** When true the stub fails every delivery attempt. */
 let failDelivery = false;
+/** When true the stub knows a team that owns worker-1. */
+let teamsKnown = false;
 /** Extra fields of the stub's /task-pool/add `data`. */
 let addExtra: Record<string, unknown> = {};
 
@@ -78,6 +80,12 @@ beforeAll((done) => {
         res.end(JSON.stringify({ success: true }));
         return;
       }
+      if (teamsKnown && /\/api\/teams(\/team-1)?$/.test(path) && req.method === 'GET') {
+        const team = { id: 'team-1', members: [{ id: 'm-worker', sessionName: 'worker-1' }] };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: path.endsWith('team-1') ? team : [team] }));
+        return;
+      }
       if (path.includes('/task-pool/add')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, data: { id: 'wi-created-1', ...addExtra } }));
@@ -95,7 +103,7 @@ beforeAll((done) => {
 
 afterAll((done) => { server.close(() => done()); });
 
-beforeEach(() => { captured = []; failDelivery = false; addExtra = {}; });
+beforeEach(() => { captured = []; failDelivery = false; teamsKnown = false; addExtra = {}; });
 
 /** Index of the first captured call whose path matches, or -1. */
 const indexOf = (needle: string): number =>
@@ -246,4 +254,18 @@ describe('delegate-task owner thread + no member fits (crewly#1083)', () => {
     expect(r.code).not.toBe(0);
     expect(indexOf('/teams/lead-self-work')).toBe(-1);
   });
+});
+
+describe('delegate-task auto-start of an offline worker', () => {
+  const args = ['--to', 'worker-1', '--task', 'do the thing', '--project', '/tmp/proj'];
+
+  it('starts the worker via its team, passing the workItemId, even without --team', async () => {
+    failDelivery = true;
+    teamsKnown = true;
+    await runSkill(args);
+
+    const start = captured.find((c) => /\/teams\/team-1\/members\/m-worker\/start/.test(c.path));
+    expect(start).toBeDefined();
+    expect((start?.body as { workItemId?: string })?.workItemId).toBe('wi-created-1');
+  }, 60_000);
 });

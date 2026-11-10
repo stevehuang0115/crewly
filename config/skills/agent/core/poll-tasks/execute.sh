@@ -47,21 +47,8 @@ PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
 # ---------------------------------------------------------------------------
 
 if [ -z "$TYPES" ]; then
-  case "${ROLE}" in
-    developer)
-      TYPES="delegate,project_task,review"
-      ;;
-    researcher|analyst)
-      TYPES="delegate,check,review"
-      ;;
-    team_lead|team-lead)
-      TYPES="delegate,project_task,review,check"
-      ;;
-    *)
-      # Sensible default: delegate + project_task
-      TYPES="delegate,project_task"
-      ;;
-  esac
+  source "${SCRIPT_DIR}/types-for-role.sh"
+  TYPES=$(poll_types_for_role "$ROLE")
 fi
 
 # ---------------------------------------------------------------------------
@@ -182,9 +169,22 @@ CLAIM_RESPONSE=$(CREWLY_API_MAX_TIME="${POLL_TASKS_CLAIM_MAX_TIME:-90}" api_call
     jq -n '{success: true, claimed: false, claimPending: true, message: "Claim pending: the server has not answered yet and may still apply it. Do NOT retry the claim; check get-my-tasks in a minute to see whether the work item is yours."}'
     exit 0
   fi
-  # 404 = no available items (race condition — someone else claimed it)
+  # 404 = the server refused. Say WHY: a targeted refusal carries a reason code
+  # and, when a running item is the cause, that item's id. Never blame "another
+  # agent" unless the server said the item is already claimed.
   if printf '%s' "$CLAIM_ERROR" | grep -q '"status":404'; then
-    jq -n '{success: true, claimed: false, available: 0, message: "No work items available (claimed by another agent)"}'
+    CLAIM_ERR_JSON=$(printf '%s\n' "$CLAIM_ERROR" | grep '"error":true' | tail -n1 || true)
+    REASON=$(printf '%s' "$CLAIM_ERR_JSON" | jq -r '.details.reason // empty' 2>/dev/null || true)
+    DETAIL=$(printf '%s' "$CLAIM_ERR_JSON" | jq -r '.details.error // empty' 2>/dev/null || true)
+    BLOCKING=$(printf '%s' "$CLAIM_ERR_JSON" | jq -r '.details.blockingWorkItemId // empty' 2>/dev/null || true)
+    if [ -n "$REASON" ] && [ "$REASON" != "no_match" ]; then
+      jq -n --arg reason "$REASON" --arg detail "$DETAIL" --arg blocking "$BLOCKING" --arg target "$TARGET_PINNED_ID" \
+        '{success: true, claimed: false, available: 1, reason: $reason, workItemId: $target,
+          blockingWorkItemId: (if $blocking == "" then null else $blocking end),
+          message: ("Not claimed: " + $detail)}'
+    else
+      jq -n '{success: true, claimed: false, available: 0, reason: "no_match", message: "No work items available matching this agent"}'
+    fi
     exit 0
   fi
   error_exit "Failed to claim from Task Pool: ${CLAIM_ERROR}"

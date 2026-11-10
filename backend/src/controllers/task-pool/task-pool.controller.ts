@@ -787,11 +787,30 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
     }
 
     if (!result) {
+      if (hasTarget) {
+        // Read-only explanation of the refusal; never changes the outcome.
+        let why: { code: string; message: string; blockingWorkItemId?: string } | null = null;
+        try {
+          why = (await getService().explainClaimRefusal(agentId.trim(), workItemId.trim())) ?? null;
+        } catch {
+          why = null;
+        }
+        why ??= {
+          code: 'not_claimable',
+          message: 'not queued, already claimed, target mismatch, slot busy, or agent not active',
+        };
+        res.status(404).json({
+          success: false,
+          error: `WorkItem ${workItemId.trim()} is not claimable by ${agentId.trim()}: ${why.message}`,
+          reason: why.code,
+          ...(why.blockingWorkItemId ? { blockingWorkItemId: why.blockingWorkItemId } : {}),
+        });
+        return;
+      }
       res.status(404).json({
         success: false,
-        error: hasTarget
-          ? `WorkItem ${workItemId} is not claimable by ${agentId.trim()} (not queued, already claimed, target mismatch, or agent not active)`
-          : 'No available WorkItem matching filters',
+        error: 'No available WorkItem matching filters',
+        reason: 'no_match',
       });
       return;
     }
