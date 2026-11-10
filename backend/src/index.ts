@@ -4633,6 +4633,17 @@ void (async () => {
 				});
 			}
 
+			// Colleague messages (message-colleague): an agent writes to another agent
+			// of the same account on any machine; this side receives them off the relay.
+			try {
+				const { startColleagueMessaging } = await import('./services/colleague/colleague.wiring.js');
+				await startColleagueMessaging(this.apiController.agentRegistrationService);
+			} catch (colleagueErr) {
+				this.logger.warn('Colleague messaging not wired (non-critical)', {
+					error: colleagueErr instanceof Error ? colleagueErr.message : String(colleagueErr),
+				});
+			}
+
 			// Idle-boundary context cap for Claude Code members: a long single
 			// task keeps growing its conversation (sessions at 650k–965k per
 			// turn); between turns, save + clear + re-orient it past the cap

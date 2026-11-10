@@ -36,6 +36,7 @@ import { createApprovalsRouter } from '../controllers/approvals/approvals.routes
 import { createAgentHooksRouter } from '../controllers/agent-hooks/agent-hooks.routes.js';
 import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
 import { createCrossMachineRouter } from '../controllers/cross-machine/index.js';
+import { createColleagueRouter } from '../controllers/colleague/index.js';
 import { createWebsiteAnalysisRouter } from '../controllers/onboarding/website-analysis.routes.js';
 import { createOnboardingRouter } from '../controllers/onboarding/onboarding.routes.js';
 import { createOnboardingChecklistRouter } from '../controllers/onboarding/onboarding-checklist.routes.js';
@@ -198,6 +199,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Cross-machine communication routes for Slack-based inter-machine messaging
   router.use('/cross-machine', createCrossMachineRouter());
+
+  // Direct message to a colleague agent on any machine of this account (message-colleague skill)
+  router.use('/colleagues', createColleagueRouter());
 
   // Website Analysis routes for KR3 magic onboarding — SSE + sync analysis
   router.use('/website-analysis', createWebsiteAnalysisRouter());

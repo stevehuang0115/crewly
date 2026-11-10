@@ -2253,6 +2253,77 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * File one message of a colleague exchange (`message-colleague`) in the
+   * history of the local agent it concerns. A QUIET write, like
+   * {@link recordSlackOnlyAgentPost}: it inserts the row and emits nothing, so
+   * no dispatcher wakes an agent for it, no Slack mirror posts it and no owner
+   * thread gains a line. The exchange lives in its own channel per (agent,
+   * colleague) pair; a redelivery of the same message id is a no-op.
+   *
+   * @param input.agentSession - The local agent the exchange belongs to
+   * @param input.peerKey - Stable key of the colleague (instance + session)
+   * @param input.peerLabel - Display name for the channel, e.g. `Fern (SteamFun, iriss-air.lan)`
+   * @param input.direction - `out` = this agent wrote it, `in` = the colleague did
+   * @param input.messageId - Colleague message id (idempotency key)
+   * @param input.content - The text as sent or received (not the delivery framing)
+   * @param input.extra - Extra metadata (reply-to id, delivery outcome)
+   * @returns The stored message id, or null for a redelivery
+   * @throws {ChatError} `validation_error` (400) on empty content / ids
+   */
+  recordColleagueMessage(input: {
+    agentSession: string;
+    peerKey: string;
+    peerLabel: string;
+    direction: 'in' | 'out';
+    messageId: string;
+    content: string;
+    extra?: Record<string, unknown>;
+  }): string | null {
+    if (!input.content) throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'content is required');
+    if (!input.agentSession || !input.peerKey || !input.messageId) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'agentSession, peerKey and messageId are required');
+    }
+    const safe = (v: string): string => v.replace(/[^A-Za-z0-9_.-]+/g, '-').slice(0, 120);
+    const channelId = `colleague-${safe(input.agentSession)}-${safe(input.peerKey)}`;
+    if (!this.channels.getById(channelId)) {
+      this.channels.create({
+        id: channelId,
+        agentSession: input.agentSession,
+        ownerUserId: 'system',
+        name: `Colleague: ${input.peerLabel}`.slice(0, 120),
+        purpose: null,
+        type: 'dm',
+        teamId: null,
+        projectId: null,
+        targetMemberId: null,
+        nowMs: this.now(),
+      });
+    }
+    const content = Buffer.byteLength(input.content, 'utf-8') > this.config.maxMessageBytes
+      ? input.content.slice(0, this.config.maxMessageBytes)
+      : input.content;
+    const out = input.direction === 'out';
+    const { row, deduped } = this.messages.insert({
+      channelId,
+      senderType: out ? 'agent' : 'system',
+      senderId: out ? input.agentSession : 'colleague',
+      content,
+      clientMessageId: `colleague:${input.direction}:${input.messageId}`,
+      metadata: {
+        source: 'colleague',
+        colleagueMessage: true,
+        direction: input.direction,
+        colleague: input.peerLabel,
+        // Already delivered by its own route: no outbound mirror may post it.
+        slackAlreadyPosted: true,
+        ...(input.extra ?? {}),
+      },
+      nowMs: this.now(),
+    });
+    return deduped ? null : row.id;
+  }
+
+  /**
    * Phase A — validate the mentions array passed to sendMessage.
    * Returns the cleaned array (or undefined when input is empty/missing).
    *

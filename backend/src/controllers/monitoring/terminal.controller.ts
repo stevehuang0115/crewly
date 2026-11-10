@@ -396,6 +396,23 @@ async function agentMessageSenderOf(target: string, req: Request): Promise<Agent
 }
 
 /**
+ * Where a colleague the sender named is, when it is on another machine of the
+ * account (a hint for a not-found answer). Never throws; null when unknown.
+ *
+ * @param target - The name or session that was not found
+ * @param req - The request (names the sender)
+ * @returns Hint text or null
+ */
+async function colleagueHintFor(target: string, req: Request): Promise<string | null> {
+	try {
+		const { lookupColleagueHint } = await import('../../services/colleague/colleague.wiring.js');
+		return await lookupColleagueHint(target, readAgentSessionHeader(req));
+	} catch {
+		return null;
+	}
+}
+
+/**
  * The sender header of an agent's `/deliver` message (`orchestrator/send-message`,
  * crewly#1381 item 1): the orchestrator or a team member, never a WorkItem
  * hand-over (the dispatch frames that) or the owner. The recipient's answer
@@ -709,9 +726,11 @@ export async function writeToSession(this: unknown, req: Request, res: Response)
 					return;
 				}
 			}
+			const writeHint = req.body.mode === 'message' ? await colleagueHintFor(sessionName, req) : null;
 			res.status(404).json({
 				success: false,
-				error: `Session '${sessionName}' not found`,
+				error: `Session '${sessionName}' not found${writeHint ? `. ${writeHint}` : ''}`,
+				...(writeHint ? { hint: writeHint } : {}),
 			} as ApiResponse);
 			return;
 		}
@@ -1345,10 +1364,13 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 				WorkItemDispatchSubscriber.getInstance().releaseDirectDelivery(handedItem, sessionName);
 			}
 
-			// Neither local nor remote — return 404
+			// Neither local nor remote — return 404. When the name is a colleague on
+			// another machine of this account, say how to reach them.
+			const colleagueHint = await colleagueHintFor(sessionName, req);
 			res.status(404).json({
 				success: false,
-				error: `Session '${sessionName}' not found (local or remote)`,
+				error: `Session '${sessionName}' not found (local or remote)${colleagueHint ? `. ${colleagueHint}` : ''}`,
+				...(colleagueHint ? { hint: colleagueHint } : {}),
 			} as ApiResponse);
 			return;
 		}

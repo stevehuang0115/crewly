@@ -10386,3 +10386,40 @@ export const NETWORK_STATUS_CONSTANTS = {
 	 */
 	OFFLINE_ERROR_CODES: ['ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'ENETDOWN', 'EHOSTUNREACH'],
 } as const;
+
+/**
+ * Colleague messages — one agent writing to another by name, on any machine
+ * of the same Crewly account (2026-11-10: Fern on the Air could not reach Pia
+ * on the Mac; the only cross-machine route was an @ in a shared Slack room).
+ */
+export const COLLEAGUE_MESSAGE_CONSTANTS = {
+	/** Relay message type carrying a colleague message between machines */
+	MESSAGE_TYPE: 'colleague_message',
+	/** Wire format version */
+	WIRE_VERSION: 1,
+	/** Longest message text accepted (characters) */
+	MAX_TEXT_LENGTH: 8000,
+	/**
+	 * Loop cap: at most this many colleague messages between the same two agents
+	 * (both directions together) inside one window. The same idea as
+	 * CREWLY_CHANNEL_CONSTANTS.AGENT_CHAIN_MAX, for a pair of agents with no
+	 * owner message to reset it.
+	 */
+	LOOP_CAP_MESSAGES: 8,
+	/** Window of the loop cap (ms) */
+	LOOP_CAP_WINDOW_MS: 30 * 60 * 1000,
+	/** Pairs the loop guard remembers at most */
+	LOOP_CAP_MAX_PAIRS: 500,
+	/** Message ids remembered to drop a redelivery (relay at-least-once) */
+	DEDUP_MAX_IDS: 500,
+	/** Longest wait for a live agent to be ready before the message is queued for it (ms) */
+	LIVE_READY_WAIT_MS: 10_000,
+	/** Directory is asked for at most this long when a send or a not-found hint needs it (ms) */
+	DIRECTORY_LOOKUP_MS: 4000,
+	/** Chat-v2 channel id prefix of the record of an exchange (`colleague-<agent>-<peer>`) */
+	CHAT_CHANNEL_PREFIX: 'colleague-',
+	/** chat-v2 message metadata: which side wrote the row */
+	CHAT_METADATA_KEY: 'colleagueMessage',
+	/** Most candidates named in a not-found or ambiguous answer */
+	MAX_SUGGESTIONS: 5,
+} as const;
