@@ -229,4 +229,14 @@ describe('skip labels (#1029)', () => {
     expect(applyTicketAutopilotInput({ enabled: true, skipLabels: ['x'] }, { retro: true })).toEqual({ ok: true, settings: { enabled: true, retro: true, skipLabels: ['x'] } });
     for (const bad of [5, [1], { a: 1 }]) expect(applyTicketAutopilotInput({ enabled: true }, { skipLabels: bad }).ok).toBe(false);
   });
+
+  it('sets, keeps and clears engineeringTeam (#1554)', () => {
+    const set = applyTicketAutopilotInput(undefined, { engineeringTeam: ' Platform ' });
+    expect(set).toMatchObject({ ok: true, settings: { engineeringTeam: 'Platform' } });
+    const kept = applyTicketAutopilotInput({ enabled: true, engineeringTeam: 'Platform' }, { enabled: false });
+    expect(kept).toMatchObject({ ok: true, settings: { engineeringTeam: 'Platform' } });
+    const cleared = applyTicketAutopilotInput({ enabled: true, engineeringTeam: 'Platform' }, { engineeringTeam: null });
+    expect(cleared.ok && cleared.settings.engineeringTeam).toBeUndefined();
+    expect(applyTicketAutopilotInput(undefined, { engineeringTeam: 5 }).ok).toBe(false);
+  });
 });

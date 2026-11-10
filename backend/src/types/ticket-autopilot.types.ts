@@ -87,6 +87,11 @@ export interface TicketAutopilotSettings {
    * Absent = {@link TICKET_AUTOPILOT_CONSTANTS.DEFAULT_SKIP_LABELS}; `[]` = skip nothing.
    */
   skipLabels?: string[];
+  /**
+   * Team (id or name) that owns the harness-gap tickets a retro files on this
+   * project (#1554). Absent = the one team on the project with an engineering role.
+   */
+  engineeringTeam?: string;
 }
 
 /** Settings with every default filled in. */
@@ -139,6 +144,8 @@ export interface TicketAutopilotSettingsInput {
   speedMode?: unknown;
   /** A list of labels (or a comma-separated string); `null` / "default" resets to parked, deferred; `[]` skips nothing */
   skipLabels?: unknown;
+  /** Team id (or name) that owns harness-gap tickets filed on this project; `null` resets to automatic */
+  engineeringTeam?: unknown;
 }
 
 /** Outcome of {@link applyTicketAutopilotInput}. */
@@ -254,6 +261,7 @@ export function applyTicketAutopilotInput(
   if (isAutopilotSpeedMode(current?.speedMode)) next.speedMode = current.speedMode;
   const storedSkip = cleanSkipLabels(current?.skipLabels);
   if (storedSkip) next.skipLabels = storedSkip;
+  if (typeof current?.engineeringTeam === 'string' && current.engineeringTeam.trim()) next.engineeringTeam = current.engineeringTeam.trim();
 
   if (input.enabled !== undefined) {
     if (typeof input.enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
@@ -320,6 +328,11 @@ export function applyTicketAutopilotInput(
     if (raw === null || raw === 'default' || raw === '') delete next.speedMode;
     else if (isAutopilotSpeedMode(raw)) next.speedMode = raw;
     else return { ok: false, error: 'speedMode must be rush, normal or chill' };
+  }
+  if (input.engineeringTeam !== undefined) {
+    if (input.engineeringTeam === null || input.engineeringTeam === '') delete next.engineeringTeam;
+    else if (typeof input.engineeringTeam === 'string' && input.engineeringTeam.trim()) next.engineeringTeam = input.engineeringTeam.trim();
+    else return { ok: false, error: 'engineeringTeam must be a team id or name (or null for automatic)' };
   }
   if (input.skipLabels !== undefined) {
     const raw = typeof input.skipLabels === 'string' ? input.skipLabels.trim().toLowerCase() : input.skipLabels;

@@ -731,3 +731,35 @@ export function renderWeeklyRetroMarkdown(input: {
   }
   return out.join('\n');
 }
+
+/**
+ * Whether a member's role is an engineering role (explicit list, no substring match).
+ *
+ * @param role - Member role id
+ * @returns True for a role in RETRO_ENGINEERING_ROLES
+ */
+export function isEngineeringRole(role: unknown): boolean {
+  return typeof role === 'string' && TICKET_AUTOPILOT_CONSTANTS.RETRO_ENGINEERING_ROLES.includes(role);
+}
+
+/**
+ * The team a harness-gap ticket filed on `project` belongs to (#1554): the
+ * project's `engineeringTeam` setting when it names a team working the
+ * project, else the single team working the project that has an engineering
+ * member. Null when there is no such team or more than one candidate (the
+ * claim gate then limits the ticket to engineering roles).
+ *
+ * @param project - Project the ticket is filed on
+ * @param teams - All teams
+ * @returns Team id, or null
+ */
+export function pickEngineeringTeam(
+  project: { id: string; ticketAutopilot?: { engineeringTeam?: string } },
+  teams: ReadonlyArray<{ id: string; name?: string; archived?: boolean; projectIds?: string[]; members?: ReadonlyArray<{ role?: unknown }> }>,
+): string | null {
+  const working = teams.filter((t) => !t.archived && (t.projectIds ?? []).includes(project.id));
+  const wanted = project.ticketAutopilot?.engineeringTeam?.trim().toLowerCase();
+  if (wanted) return working.find((t) => t.id.toLowerCase() === wanted || (t.name ?? '').toLowerCase() === wanted)?.id ?? null;
+  const engineering = working.filter((t) => (t.members ?? []).some((m) => isEngineeringRole(m.role)));
+  return engineering.length === 1 ? engineering[0].id : null;
+}

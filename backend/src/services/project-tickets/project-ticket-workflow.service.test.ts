@@ -149,6 +149,13 @@ describe('ProjectTicketWorkflowService', () => {
   });
 
   describe('claim', () => {
+    it('lets only an engineering role self-claim a harness-gap ticket (#1554)', async () => {
+      teams.push({ id: 't-pm', name: 'PM', members: [member('m-pm', 'app-pm', { role: 'product-manager' })], projectIds: ['p1'], createdAt: '', updatedAt: '' });
+      const t = await readyTicket({ labels: ['harness-gap', 'from-retro'] });
+      await expect(wf.claim('p1', t.id, { session: 'app-pm' })).rejects.toMatchObject({ status: 403 });
+      expect((await wf.claim('p1', t.id, dev)).ticket.assignee).toBe('app-dev');
+    });
+
     it('starts work: in_progress, assignee, a linked + claimed WorkItem', async () => {
       const t = await readyTicket();
       const started = await wf.claim('p1', t.id, dev);
