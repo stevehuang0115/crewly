@@ -428,6 +428,28 @@ export const OWNER_AUTH_CONSTANTS = CONFIG_OWNER_AUTH_CONSTANTS;
 // Re-export specific constants that the backend needs from the main config
 export const ORCHESTRATOR_SESSION_NAME = CONFIG_CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME;
 export const ORCHESTRATOR_ROLE = 'orchestrator';
+
+/**
+ * Tools removed from a role's Claude Code session at launch (--disallowedTools),
+ * on top of the plan-mode pair every agent gets. Keyed by role id so other roles
+ * (for example team leaders) can opt in later; a role with no entry is unchanged.
+ *
+ * Orchestrator (#1539): "delegate, never implement" is enforced by tool removal,
+ * not only by the prompt. Bash and Read stay: skills run through Bash and Read is
+ * for status awareness. MCP servers use the server-level form (`mcp__<server>`),
+ * which Claude Code accepts and which covers every tool the server exposes.
+ */
+export const ROLE_DISALLOWED_TOOLS: Readonly<Record<string, readonly string[]>> = {
+	[ORCHESTRATOR_ROLE]: [
+		'Edit',
+		'Write',
+		'NotebookEdit',
+		'WebFetch',
+		'WebSearch',
+		'mcp__playwright',
+		'mcp__chrome-devtools',
+	],
+};
 export const ORCHESTRATOR_WINDOW_NAME = 'Crewly Orchestrator';
 export const AGENT_INITIALIZATION_TIMEOUT = 90000;
 export const CLAUDE_INITIALIZATION_TIMEOUT = 45000;

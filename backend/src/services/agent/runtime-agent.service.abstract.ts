@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SessionCommandHelper } from '../session/index.js';
-import { RuntimeType, ADDON_CONSTANTS, ANTIGRAVITY_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS, RUNTIME_TYPES } from '../../constants.js';
+import { RuntimeType, ORCHESTRATOR_SESSION_NAME, ORCHESTRATOR_ROLE, ROLE_DISALLOWED_TOOLS, ADDON_CONSTANTS, ANTIGRAVITY_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS, RUNTIME_TYPES } from '../../constants.js';
 import {
 	stripAnsiCodes,
 	isPromptLine,
@@ -86,6 +86,8 @@ export interface RuntimeConfig {
  * Uses Template Method pattern for maximum code reuse while allowing runtime-specific customization.
  */
 export abstract class RuntimeAgentService {
+	/** Runtimes already warned about an unrestricted orchestrator (#1539); log once per process. */
+	private static readonly warnedUnrestrictedRuntimes = new Set<string>();
 	protected logger: ComponentLogger;
 	protected sessionHelper: SessionCommandHelper;
 	protected projectRoot: string;
@@ -412,15 +414,28 @@ export abstract class RuntimeAgentService {
 			}
 
 			// Inject --disallowedTools for Claude Code to prevent plan mode
-			// (replaces prompt-level "NEVER use plan mode" instruction to reduce PI signal)
+			// (replaces prompt-level "NEVER use plan mode" instruction to reduce PI signal).
+			// #1539: the orchestrator also loses its implementation tools (ROLE_DISALLOWED_TOOLS).
 			if (this.getRuntimeType() === 'claude-code') {
+				const roleTools = sessionName === ORCHESTRATOR_SESSION_NAME
+					? (ROLE_DISALLOWED_TOOLS[ORCHESTRATOR_ROLE] ?? [])
+					: [];
+				const disallowed = ['EnterPlanMode', 'ExitPlanMode', ...roleTools].join(',');
 				finalCommands = finalCommands.map(cmd => {
 					if (cmd.includes('--dangerously-skip-permissions') && !cmd.includes('--disallowedTools')) {
-						return `${cmd} --disallowedTools EnterPlanMode,ExitPlanMode`;
+						return `${cmd} --disallowedTools ${disallowed}`;
 					}
 					return cmd;
 				});
-				this.logger.info('Injected --disallowedTools for plan mode prevention', { sessionName });
+				this.logger.info('Injected --disallowedTools', { sessionName, restrictedRole: roleTools.length > 0 });
+			} else if (sessionName === ORCHESTRATOR_SESSION_NAME && (ROLE_DISALLOWED_TOOLS[ORCHESTRATOR_ROLE]?.length ?? 0) > 0) {
+				// #1539: no other runtime CLI has an equivalent tool-removal flag we can rely on.
+				if (!RuntimeAgentService.warnedUnrestrictedRuntimes.has(this.getRuntimeType())) {
+					RuntimeAgentService.warnedUnrestrictedRuntimes.add(this.getRuntimeType());
+					this.logger.warn('Orchestrator runs without tool restriction: runtime has no --disallowedTools equivalent', {
+						runtime: this.getRuntimeType(),
+					});
+				}
 			}
 
 			// Request 72c9427a: control-plane guard (spec 2026-09-24 Part 3).
