@@ -18,6 +18,13 @@
  *   tells the orchestrator it was not sent.
  * - a `plain` message after the trial goes out at once.
  *
+ * Per-link norms (slice 6, {@link SharedChannelNorm}): a hold reason the
+ * link's allowances cover no longer holds the message once the trial is over
+ * (the send is still logged with the reasons it allowed). Refusals and the
+ * private-data holds can never be allowed. When every remaining hold reason
+ * could be allowed, the card offers a third choice, "Send, always allow",
+ * which sends and adds those allowances to the link's norm.
+ *
  * Every message that went out is filed in the link's `external-<linkId>`
  * chat channel under its Cloud id, so the later history fetch of the receive
  * side dedupes it.
@@ -36,9 +43,19 @@ import { externalChannelIdOf, type SharedChannelLink, type SharedChannelPostAnsw
 import type { SharedChannelMirrorInput } from './shared-channel.service.js';
 import { counterpartLabel } from './shared-channel-framing.js';
 import { classifySharedSend, describeFindings } from './shared-channel-classifier.js';
+import {
+  EMPTY_NORM,
+  SHARED_NORM_ACTIONS,
+  allowancesCovering,
+  describeAllowances,
+  normalizeAllowances,
+  splitByNorm,
+  type SharedChannelNorm,
+  type SharedNormAllowance,
+} from './shared-channel-norms.js';
 
 /** Option keys on the owner's card. */
-export const SHARED_SEND_KEYS = { SEND: 'send', DONT_SEND: 'dont_send' } as const;
+export const SHARED_SEND_KEYS = { SEND: 'send', DONT_SEND: 'dont_send', SEND_ALLOW: 'send_allow' } as const;
 
 /** Activity-log actions. */
 export const SHARED_SEND_ACTIONS = {
@@ -124,6 +141,11 @@ export interface SharedSendDeps {
   recordSent(input: SharedChannelMirrorInput): string | null;
   /** Owner-approved send counts per link */
   trial: { approvedCount(linkId: string): number; noteApproved(linkId: string): number };
+  /** Per-link norms (slice 6); absent = no norms (every internal message held) */
+  norms?: {
+    get(linkId: string): SharedChannelNorm;
+    addAllowances(linkId: string, keys: readonly SharedNormAllowance[]): { before: SharedChannelNorm; after: SharedChannelNorm };
+  };
   /** The decision service, or null before it is up */
   decisions(): SharedSendDecisionService | null;
   /** Name (and team) the other side sees for an agent */
@@ -150,6 +172,10 @@ export interface SharedChannelLinkSummary {
   approvedSends: number;
   /** Agent messages still held whatever they say (trial) */
   trialLeft: number;
+  /** The owner's norm for this partner ('' when unset) */
+  norm: string;
+  /** Kinds of content that go without his approval after the trial */
+  allow: SharedNormAllowance[];
 }
 
 /** An agent's request to send. */
@@ -220,6 +246,20 @@ export class SharedChannelSendService implements DecisionKindHandler {
   }
 
   /**
+   * The link's norm; an empty one when there is no store or it cannot be read.
+   *
+   * @param linkId - Link id
+   * @returns Norm
+   */
+  private normOf(linkId: string): SharedChannelNorm {
+    try {
+      return this.deps.norms?.get(linkId) ?? { ...EMPTY_NORM, allow: [] };
+    } catch {
+      return { ...EMPTY_NORM, allow: [] };
+    }
+  }
+
+  /**
    * Validate text and find an active link.
    *
    * @returns The link, or a failed result
@@ -286,12 +326,15 @@ export class SharedChannelSendService implements DecisionKindHandler {
     if (!links) return null;
     return links.map((l) => {
       const approved = this.deps.trial.approvedCount(l.linkId);
+      const norm = this.normOf(l.linkId);
       return {
         linkId: l.linkId,
         status: l.status,
         counterpart: counterpartLabel(l.counterpartDisplayName, l.counterpartEmail),
         approvedSends: approved,
         trialLeft: Math.max(0, SHARED_CHANNEL_CONSTANTS.TRIAL_HELD_SENDS - approved),
+        norm: norm.norm,
+        allow: norm.allow,
       };
     });
   }
@@ -372,7 +415,11 @@ export class SharedChannelSendService implements DecisionKindHandler {
     const identity = await this.deps.agentIdentity(input.fromSession).catch(() => ({ name: SHARED_CHANNEL_CONSTANTS.ORCHESTRATOR_SENDER_NAME }) as { name: string; team?: string });
     const approved = this.deps.trial.approvedCount(link.linkId);
     const inTrial = approved < SHARED_CHANNEL_CONSTANTS.TRIAL_HELD_SENDS;
-    if (!inTrial && verdict.verdict === 'plain') {
+    // The link's norm lets some hold reasons through (never refusals; the trial gate stays).
+    const { allowed, remaining } = splitByNorm(verdict.findings, this.normOf(link.linkId).allow);
+    const allowedCodes = allowed.map((f) => f.code);
+    const allowedNote = allowed.length > 0 ? ` (the owner's norm allows ${describeFindings(allowed)})` : '';
+    if (!inTrial && remaining.length === 0) {
       const sent = await this.deliver(
         { linkId: link.linkId, counterpart },
         { id: this.deps.newId(), text, fromAgentName: identity.name, ...(identity.team ? { fromTeam: identity.team } : {}), ...(replyTo ? { replyTo } : {}) },
@@ -382,10 +429,10 @@ export class SharedChannelSendService implements DecisionKindHandler {
           actor: { type: 'agent', id: input.fromSession },
           action: SHARED_SEND_ACTIONS.SENT,
           target: { type: 'shared_channel', id: link.linkId, name: counterpart },
-          after: { messageId: sent.messageId, by: input.fromSession },
-          note: `${identity.name} wrote to ${counterpart}`,
+          after: { messageId: sent.messageId, by: input.fromSession, ...(allowedCodes.length ? { allowedByNorm: allowedCodes } : {}) },
+          note: `${identity.name} wrote to ${counterpart}${allowedNote}`,
         });
-        sent.note = `Sent to ${counterpart}.`;
+        sent.note = `Sent to ${counterpart}${allowedNote}.`;
       }
       return sent;
     }
@@ -393,7 +440,7 @@ export class SharedChannelSendService implements DecisionKindHandler {
     // Held for the owner.
     const reasons = [
       ...(inTrial ? [`trial: the first ${SHARED_CHANNEL_CONSTANTS.TRIAL_HELD_SENDS} messages on a new link wait for the owner (${approved} approved so far)`] : []),
-      ...verdict.findings.map((f) => f.reason),
+      ...remaining.map((f) => f.reason),
     ];
     const decisions = this.deps.decisions();
     if (!decisions) {
@@ -430,31 +477,48 @@ export class SharedChannelSendService implements DecisionKindHandler {
       fromTeam: identity.team ?? '',
       ...(replyTo ? { replyTo } : {}),
       reasons,
-      trialOnly: inTrial && verdict.verdict === 'plain',
+      trialOnly: inTrial && remaining.length === 0,
     };
+    // "Send, always allow" only when every remaining hold reason can be allowed by a norm.
+    const allowOnSend = subject.trialOnly ? null : allowancesCovering(remaining);
+    if (allowOnSend) subject.allowOnSend = allowOnSend;
     const why = subject.trialOnly
       ? `New link: the first ${SHARED_CHANNEL_CONSTANTS.TRIAL_HELD_SENDS} messages wait for your OK (${approved} approved so far).`
-      : `It may contain internal information: ${describeFindings(verdict.findings)}.`;
+      : `It may contain internal information: ${describeFindings(remaining)}.`;
+    const normLine = allowed.length > 0 ? [`Your norm for ${counterpart} already allows ${describeFindings(allowed)}.`] : [];
+    const options = [
+      { key: SHARED_SEND_KEYS.SEND, label: 'Send', detail: `send it to ${counterpart} as written, once` },
+      ...(allowOnSend
+        ? [{
+            key: SHARED_SEND_KEYS.SEND_ALLOW,
+            label: 'Send, always allow',
+            detail: clip(`send it, and from now on let ${describeAllowances(allowOnSend)} go to ${counterpart} without asking`, SHARED_CHANNEL_CONSTANTS.SEND_ALLOW_DETAIL_CHARS),
+          }]
+        : []),
+      { key: SHARED_SEND_KEYS.DONT_SEND, label: "Don't send", detail: `nothing goes out; ${identity.name} is told` },
+    ];
     const decision = await decisions.askPrebuilt({
       kind: 'shared_send',
       asker: input.fromSession,
       question: `Send ${identity.name}'s message to ${counterpart}? "${clip(text, SHARED_CHANNEL_CONSTANTS.SEND_QUESTION_EXCERPT_CHARS)}"`,
-      options: [
-        { key: SHARED_SEND_KEYS.SEND, label: 'Send', detail: `send it to ${counterpart} as written, once` },
-        { key: SHARED_SEND_KEYS.DONT_SEND, label: "Don't send", detail: `nothing goes out; ${identity.name} is told` },
-      ],
+      options,
       defaultKey: SHARED_SEND_KEYS.DONT_SEND,
       yesKey: SHARED_SEND_KEYS.SEND,
       deadline: new Date((this.deps.now?.() ?? Date.now()) + SHARED_CHANNEL_CONSTANTS.SEND_DECISION_DEADLINE_MS),
       title: `Message to ${counterpart}`,
-      body: [`> ${clip(text, SHARED_CHANNEL_CONSTANTS.SEND_PREVIEW_CHARS).replace(/\n/g, '\n> ')}`, why],
+      body: [`> ${clip(text, SHARED_CHANNEL_CONSTANTS.SEND_PREVIEW_CHARS).replace(/\n/g, '\n> ')}`, why, ...normLine],
       sharedSend: subject,
     });
     this.record({
       actor: { type: 'agent', id: input.fromSession },
       action: SHARED_SEND_ACTIONS.HELD,
       target: { type: 'shared_channel', id: link.linkId, name: counterpart },
-      after: { decisionId: decision.id, trialOnly: subject.trialOnly, codes: verdict.findings.map((f) => f.code) },
+      after: {
+        decisionId: decision.id,
+        trialOnly: subject.trialOnly,
+        codes: remaining.map((f) => f.code),
+        ...(allowedCodes.length ? { allowedByNorm: allowedCodes } : {}),
+      },
       note: `a message to ${counterpart} is waiting for the owner`,
     });
     this.deps.log?.info('Held a shared-channel message for the owner', { decisionId: decision.id, linkId: link.linkId, trialOnly: subject.trialOnly });
@@ -479,7 +543,8 @@ export class SharedChannelSendService implements DecisionKindHandler {
   async onSettled(decision: OwnerDecision): Promise<string | null> {
     const s = decision.sharedSend;
     if (!s) return null;
-    const sendChosen = decision.status === 'resolved' && decision.chosenKey === SHARED_SEND_KEYS.SEND;
+    const alsoAllow = decision.chosenKey === SHARED_SEND_KEYS.SEND_ALLOW;
+    const sendChosen = decision.status === 'resolved' && (decision.chosenKey === SHARED_SEND_KEYS.SEND || alsoAllow);
     if (!sendChosen) {
       if (decision.status === 'cancelled') return null;
       this.record({
@@ -510,6 +575,34 @@ export class SharedChannelSendService implements DecisionKindHandler {
     });
     const left = SHARED_CHANNEL_CONSTANTS.TRIAL_HELD_SENDS - count;
     const trialNote = left > 0 ? ` ${left} more of your messages on this link will wait for the owner.` : '';
-    return `[EXTERNAL] The owner approved your message to ${s.counterpart}; it is sent.${trialNote}`;
+    const normNote = alsoAllow ? this.allowFromCard(decision, s) : '';
+    return `[EXTERNAL] The owner approved your message to ${s.counterpart}; it is sent.${normNote}${trialNote}`;
+  }
+
+  /**
+   * "Send, always allow": add the card's allowances to the link's norm and log it.
+   *
+   * @param decision - The settled decision
+   * @param s - Its held message
+   * @returns A sentence for the orchestrator ('' when nothing was added)
+   */
+  private allowFromCard(decision: OwnerDecision, s: SharedSendSubject): string {
+    const keys = normalizeAllowances(s.allowOnSend ?? []);
+    if (keys.length === 0 || !this.deps.norms) return '';
+    try {
+      const { before, after } = this.deps.norms.addAllowances(s.linkId, keys);
+      this.record({
+        actor: decisionActor(decision),
+        action: SHARED_NORM_ACTIONS.UPDATED,
+        target: { type: 'shared_channel', id: s.linkId, name: s.counterpart },
+        before: { allow: before.allow },
+        after: { allow: after.allow, decisionId: decision.id },
+        note: `the owner allowed ${describeAllowances(keys)} for ${s.counterpart} from a held message`,
+      });
+      return ` From now on ${describeAllowances(keys)} may go to ${s.counterpart} without his approval (after the trial).`;
+    } catch (err) {
+      this.deps.log?.warn('Could not save the allowance the owner chose on a shared-send card', { decisionId: decision.id, error: err instanceof Error ? err.message : String(err) });
+      return ' His "always allow" could not be saved, so such messages will still wait for him.';
+    }
   }
 }

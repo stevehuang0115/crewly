@@ -217,6 +217,11 @@ export interface SharedSendSubject {
   reasons: string[];
   /** True when it was held only because the link is in its trial period */
   trialOnly: boolean;
+  /**
+   * Allowances (`SharedNormAllowance` keys, slice 6) the card's "Send, always
+   * allow" adds to the link's norm. Set only when every hold reason can be allowed.
+   */
+  allowOnSend?: string[];
 }
 
 /**

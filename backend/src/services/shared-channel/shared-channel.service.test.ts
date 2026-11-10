@@ -43,6 +43,24 @@ describe('SharedChannelService', () => {
       expect(text).toContain('post-shared-channel --link l1 --reply-to m1');
     });
 
+    it("tells the orchestrator the link's norm in the header (slice 6)", async () => {
+      const { service, deps } = build({ '': { messages: [msg('m1')], hasMore: false } });
+      deps.normOf = jest.fn(() => ({ norm: 'Our printer: order details are fine.', allow: ['money' as const], updatedAt: '' }));
+      await service.receive('shared_channel_message', { v: 1, linkId: 'l1', messageId: 'm1' });
+      const text = deps.notifyOrchestrator.mock.calls[0]![0];
+      expect(deps.normOf).toHaveBeenCalledWith('l1');
+      expect(text).toContain('Share only what the owner allows. The owner\'s norm for Acme Co: "Our printer: order details are fine."');
+      expect(text).toContain('without his approval: money.');
+      expect(text).not.toContain('Do not share internal information');
+    });
+
+    it('falls back to the blanket rule when the norm cannot be read', async () => {
+      const { service, deps } = build({ '': { messages: [msg('m1')], hasMore: false } });
+      deps.normOf = jest.fn(() => { throw new Error('disk'); });
+      await service.receive('shared_channel_message', { v: 1, linkId: 'l1', messageId: 'm1' });
+      expect(deps.notifyOrchestrator.mock.calls[0]![0]).toContain('Do not share internal information');
+    });
+
     it('resumes from the stored cursor and loops while hasMore', async () => {
       const { service, deps, cursors } = build({
         m0: { messages: [msg('m1'), msg('m2')], hasMore: true },

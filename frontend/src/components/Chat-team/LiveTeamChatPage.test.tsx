@@ -38,6 +38,12 @@ import {
 import { LiveTeamChatPage, __test__, crewlyChannelRow, filterMessages, type ChatTeam } from './LiveTeamChatPage';
 import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
 
+const normsGet = vi.fn(async (linkId: string) => ({ linkId, norm: 'Printer partner', allow: ['money'], updatedAt: null, allowances: [] }));
+vi.mock('../../services/shared-channel-norms.service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/shared-channel-norms.service')>();
+  return { ...actual, sharedChannelNormsService: { get: (l: string) => normsGet(l), save: vi.fn() } };
+});
+
 const ISO = '2026-04-25T20:00:00.000Z';
 
 /** A product team used by the interaction tests so their channel is reachable. */
@@ -790,6 +796,16 @@ describe('LiveTeamChatPage — review fixes', () => {
       expect(within(screen.getByTestId('external-channel-composer')).getByPlaceholderText(/Message/)).toBeInTheDocument();
     });
 
+    it("shows the owner's norm for the link above the composer (slice 6)", async () => {
+      const { client } = makeStubClient([orcDm, ext()]);
+      render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
+      await waitFor(() => expect(screen.getByTestId('conv-row-external-l1')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('conv-row-external-l1'));
+      await waitFor(() => expect(screen.getByTestId('shared-norms-summary')).toHaveTextContent('Norm set · 1 kind allowed without asking'));
+      expect(normsGet).toHaveBeenCalledWith('l1');
+      expect(within(screen.getByTestId('external-channel-composer')).getByTestId('shared-norms-panel')).toBeInTheDocument();
+    });
+
     it('a revoked link says so and is marked read-only in the list', async () => {
       const { client } = makeStubClient([orcDm, ext({ readOnly: true })]);
       render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
@@ -798,6 +814,7 @@ describe('LiveTeamChatPage — review fixes', () => {
       await waitFor(() => expect(screen.getByTestId('external-channel-notice')).toHaveTextContent('revoked'));
       expect(screen.queryByTestId('external-channel-composer')).not.toBeInTheDocument();
       expect(screen.queryByPlaceholderText(/Message/)).not.toBeInTheDocument();
+      expect(screen.queryByTestId('shared-norms-panel')).not.toBeInTheDocument();
     });
   });
 

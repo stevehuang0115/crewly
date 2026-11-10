@@ -87,9 +87,9 @@ keep their query string (OAuth returns).
 
 - **Reach**: sidebar › Chat (unread badge); a team row's "chat" opens the team channel (`?team=<id>`).
 - **Expected**: three panels (conversation list, thread, detail). The orchestrator DM is always present. Messages arrive live over the WebSocket; sending shows a placeholder until the agent answers. Threads open on the right; Slack-bridged conversations are read-only mirrors with a hint.
-- **Elements**: `chat-back`, `chat-search-hits`, `chat-search-back`, `chat-search-close`, `chat-error-toast`, `channel-add-select`, `channel-add-submit`, `channel-settings-modal`, `channel-rename-submit`, `banner-agent-offline`; the message list and composer come from `packages/chat-ui/`.
-- **Backend**: `GET /api/chat/channels`, `POST /api/chat/channels/dm/ensure`, `POST /api/chat/channels/team/ensure`, `GET/POST /api/chat/channels/:id/messages`, `GET /api/chat/search`, WebSocket `chat:*` events (`src/services/websocket.service.ts`).
-- **Source**: `src/components/Chat-team/`, `packages/chat-ui/`, `src/services/chat.service.ts`, `src/services/channels.service.ts`; backend `backend/src/controllers/chat/`, `backend/src/services/chat-v2/`.
+- **Elements**: `chat-back`, `chat-search-hits`, `chat-search-back`, `chat-search-close`, `chat-error-toast`, `channel-add-select`, `channel-add-submit`, `channel-settings-modal`, `channel-rename-submit`, `banner-agent-offline`, `external-channel-composer`, `shared-norms-panel`, `shared-norms-toggle`, `shared-norms-save`; the message list and composer come from `packages/chat-ui/`.
+- **Backend**: `GET /api/chat/channels`, `POST /api/chat/channels/dm/ensure`, `POST /api/chat/channels/team/ensure`, `GET/POST /api/chat/channels/:id/messages`, `GET /api/chat/search`, `GET/PUT /api/shared-channels/:linkId/norms` (an external channel's norm), WebSocket `chat:*` events (`src/services/websocket.service.ts`).
+- **Source**: `src/components/Chat-team/`, `packages/chat-ui/`, `src/services/chat.service.ts`, `src/services/channels.service.ts`, `src/services/shared-channel-norms.service.ts`; backend `backend/src/controllers/chat/`, `backend/src/services/chat-v2/`.
 
 ### Tickets hub (`/tickets`, tabs `board` · `requests` · `runs` · `experiments`)
 
