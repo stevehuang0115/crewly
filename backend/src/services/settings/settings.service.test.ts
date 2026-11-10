@@ -36,6 +36,23 @@ describe('SettingsService', () => {
     resetSettingsService();
   });
 
+  describe('onChange', () => {
+    it('notifies subscribers after update, survives a throwing listener, and unsubscribes', async () => {
+      const seen: Array<boolean | undefined> = [];
+      service.onChange(() => {
+        throw new Error('boom');
+      });
+      const off = service.onChange((s) => seen.push(s.general.keepAwakeOnPower));
+
+      await service.updateSettings({ general: { keepAwakeOnPower: false } });
+      expect(seen).toEqual([false]);
+
+      off();
+      await service.updateSettings({ general: { keepAwakeOnPower: true } });
+      expect(seen).toEqual([false]);
+    });
+  });
+
   describe('getSettings', () => {
     it('should return defaults when no settings file exists', async () => {
       const settings = await service.getSettings();

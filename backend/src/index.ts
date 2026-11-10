@@ -243,6 +243,7 @@ import { assertBuildProvenance } from './utils/build-provenance.js';
 import { isNativeBindingFatalError } from './utils/native-binding.utils.js';
 import { VersionCheckService } from './services/system/version-check.service.js';
 import { AutoUpdateService, createAutoUpdateService } from './services/system/auto-update.service.js';
+import { KeepAwakeService } from './services/system/keep-awake.service.js';
 import { detectInstall, resolveRunningPackageRoot, safeProcessCwd } from './services/system/auto-update.utils.js';
 import { SystemControlService } from './services/system/system-control.service.js';
 import { WindDownService } from './services/system/wind-down.service.js';
@@ -2250,6 +2251,8 @@ void (async () => {
 				cloud: cloudHealthBlock(),
 				// Offline breaker: is this machine on the internet at all (#1463).
 				network: NetworkStatusService.getInstance().getStatus(),
+				// macOS power assertion that stops idle sleep on the adapter.
+				keepAwake: KeepAwakeService.getInstance().getStatus(),
 				// Boot restore progress (staggered restore queue).
 				restoreQueue: getRestoreQueue().stats(),
 				// Adaptive agent limits: normal | pressure, running count, cap.
@@ -4877,6 +4880,7 @@ void (async () => {
 			// orchestrator auto-start so an upgrade boot is known when the
 			// "back online" announcement is composed.
 			this.startAutoUpdate();
+			this.startKeepAwake();
 			// Owner Upgrade / Restart buttons (specs/2026-10-01-upgrade-restart-controls.md)
 			this.startSystemControl();
 
@@ -6566,6 +6570,24 @@ void (async () => {
 			this.logger.warn('Upgrade/restart controls not started (non-fatal)', {
 				error: error instanceof Error ? error.message : String(error),
 			});
+		}
+	}
+
+	/**
+	 * Apply Settings › General "Keep this Mac awake while plugged in" now and on
+	 * every later settings change (macOS only; no-op elsewhere). Never throws.
+	 */
+	private startKeepAwake(): void {
+		try {
+			const keepAwake = KeepAwakeService.getInstance();
+			const settingsService = getSettingsService();
+			settingsService.onChange((s) => keepAwake.setEnabled(s.general.keepAwakeOnPower !== false));
+			void settingsService
+				.getSettings()
+				.then((s) => keepAwake.setEnabled(s.general.keepAwakeOnPower !== false))
+				.catch(() => undefined);
+		} catch (err) {
+			this.logger.warn('Keep-awake setup failed', { error: err instanceof Error ? err.message : String(err) });
 		}
 	}
 
@@ -8610,6 +8632,7 @@ void (async () => {
 		this.logger.info('Shutting down Crewly server...', { reason: options.reason ?? 'unspecified' });
 
 		AutoUpdateService.getInstance()?.stop();
+		KeepAwakeService.getInstance().stop();
 		void import('./services/apps/apps.wiring.js').then((m) => m.stopAppWake()).catch(() => undefined);
 		this.cloudDisconnectNotice?.stop();
 		this.conversationCloudSync?.stop();

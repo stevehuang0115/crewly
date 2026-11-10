@@ -431,6 +431,22 @@ describe('Settings Types', () => {
       expect(result.errors).toContain('autoUpdate must be a boolean');
     });
 
+    it('defaults keepAwakeOnPower to on and rejects a non-boolean value', () => {
+      const settings = getDefaultSettings();
+      expect(settings.general.keepAwakeOnPower).toBe(true);
+
+      settings.general.keepAwakeOnPower = false;
+      expect(validateSettings(settings).valid).toBe(true);
+
+      delete settings.general.keepAwakeOnPower;
+      expect(validateSettings(settings).valid).toBe(true);
+
+      (settings.general as unknown as Record<string, unknown>).keepAwakeOnPower = 'yes';
+      const result = validateSettings(settings);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain('keepAwakeOnPower must be a boolean');
+    });
+
     it('should detect negative checkInIntervalMinutes', () => {
       const settings = getDefaultSettings();
       settings.general.checkInIntervalMinutes = -1;

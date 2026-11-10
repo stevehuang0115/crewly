@@ -84,6 +84,7 @@ export class SettingsService {
   private readonly settingsDir: string;
   private readonly settingsFile: string;
   private settingsCache: CrewlySettings | null = null;
+  private readonly changeListeners = new Set<(settings: CrewlySettings) => void>();
 
   /**
    * Create a new SettingsService instance
@@ -120,6 +121,30 @@ export class SettingsService {
   }
 
   /**
+   * Subscribe to settings changes (update, reset, import). Listener errors are
+   * swallowed so one subscriber cannot break a save.
+   *
+   * @param listener - Called with the new settings after each successful save
+   * @returns Unsubscribe function
+   */
+  onChange(listener: (settings: CrewlySettings) => void): () => void {
+    this.changeListeners.add(listener);
+    return () => {
+      this.changeListeners.delete(listener);
+    };
+  }
+
+  private notifyChanged(settings: CrewlySettings): void {
+    for (const listener of this.changeListeners) {
+      try {
+        listener(settings);
+      } catch {
+        // A subscriber must never break a settings save
+      }
+    }
+  }
+
+  /**
    * Update settings with partial input
    *
    * Merges the input with current settings and validates before saving.
@@ -139,6 +164,7 @@ export class SettingsService {
 
     await this.saveSettings(merged);
     this.settingsCache = merged;
+    this.notifyChanged(merged);
     return merged;
   }
 
@@ -151,6 +177,7 @@ export class SettingsService {
     const defaults = getDefaultSettings();
     await this.saveSettings(defaults);
     this.settingsCache = defaults;
+    this.notifyChanged(defaults);
     return defaults;
   }
 
@@ -171,6 +198,7 @@ export class SettingsService {
 
     await this.saveSettings(updated);
     this.settingsCache = updated;
+    this.notifyChanged(updated);
     return updated;
   }
 
@@ -234,6 +262,7 @@ export class SettingsService {
 
     await this.saveSettings(merged);
     this.settingsCache = merged;
+    this.notifyChanged(merged);
     return merged;
   }
 

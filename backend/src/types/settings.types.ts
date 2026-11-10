@@ -68,6 +68,15 @@ export interface GeneralSettings {
   autoUpdate?: boolean;
 
   /**
+   * macOS only: hold a power assertion (`caffeinate -i -s`) while the backend
+   * runs so the Mac does not idle-sleep on the power adapter. Does not change
+   * system power settings; the display may still sleep; lid-closed and battery
+   * behaviour stay as macOS decides. No-op on other platforms. Optional so
+   * older settings files merge to the default (on).
+   */
+  keepAwakeOnPower?: boolean;
+
+  /**
    * Start a fresh Claude Code conversation (with a saved handover) when a team
    * member gets a task unrelated to its previous one, instead of carrying the
    * whole history into every turn. Never applies to the orchestrator.
@@ -371,6 +380,7 @@ export function getDefaultSettings(): CrewlySettings {
       autoResumeOnRestart: true,
       announceOnBoot: true,
       autoUpdate: true,
+      keepAwakeOnPower: true,
       freshConversationPerTask: true,
       runtimeCommands: {
         'claude-code': 'claude --dangerously-skip-permissions',
@@ -457,6 +467,10 @@ export function validateSettings(settings: CrewlySettings): SettingsValidationRe
 
   if (settings.general.autoUpdate !== undefined && typeof settings.general.autoUpdate !== 'boolean') {
     errors.push('autoUpdate must be a boolean');
+  }
+
+  if (settings.general.keepAwakeOnPower !== undefined && typeof settings.general.keepAwakeOnPower !== 'boolean') {
+    errors.push('keepAwakeOnPower must be a boolean');
   }
 
   if (settings.general.freshConversationPerTask !== undefined && typeof settings.general.freshConversationPerTask !== 'boolean') {

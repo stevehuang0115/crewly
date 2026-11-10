@@ -33,6 +33,11 @@ export interface GeneralSettings {
    * only; a dev checkout never updates itself). Undefined means on.
    */
   autoUpdate?: boolean;
+  /**
+   * macOS only: keep the Mac from idle-sleeping while plugged in. Undefined
+   * means on.
+   */
+  keepAwakeOnPower?: boolean;
   /** Per-runtime CLI init commands. Key = runtime type, value = CLI command string */
   runtimeCommands: Record<AIRuntime, string>;
   /** Minutes of inactivity before an agent is automatically suspended (0 = disabled) */
