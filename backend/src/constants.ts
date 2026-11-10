@@ -10395,6 +10395,11 @@ export const NETWORK_STATUS_CONSTANTS = {
 export const COLLEAGUE_MESSAGE_CONSTANTS = {
 	/** Relay message type carrying a colleague message between machines */
 	MESSAGE_TYPE: 'colleague_message',
+	/**
+	 * How long the account's machine list (`GET /api/cloud/slack/instances`,
+	 * which carries each machine's live relay queue) is reused (ms)
+	 */
+	INSTANCES_CACHE_MS: 60 * 1000,
 	/** Wire format version */
 	WIRE_VERSION: 1,
 	/** Longest message text accepted (characters) */

@@ -3,9 +3,17 @@ import { COLLEAGUE_MESSAGE_CONSTANTS } from '../../constants.js';
 const sync = {
   isStarted: jest.fn(),
   getDevices: jest.fn(),
-  sendMessage: jest.fn(),
+  sendToPeerQueueId: jest.fn(),
   on: jest.fn(),
 };
+const cloudClient = { getToken: jest.fn(() => 'tok'), getCloudUrl: jest.fn(() => 'https://cloud.test') };
+jest.mock('../cloud/cloud-client.service.js', () => ({ CloudClientService: { getInstance: () => cloudClient } }));
+const fetchMock = jest.fn();
+(globalThis as { fetch: unknown }).fetch = fetchMock;
+/** Cloud's machine list answer */
+function instancesAnswer(rows: Array<{ instanceId: string; relayQueueId: string }>): void {
+  fetchMock.mockResolvedValue({ ok: true, json: async () => ({ success: true, data: rows }) });
+}
 jest.mock('../cloud/cloud-sync.service.js', () => ({ CloudSyncService: { getInstance: () => sync } }));
 jest.mock('../cloud/device-identity.service.js', () => ({
   DeviceIdentityService: { getInstance: () => ({ getOrCreateIdentity: async () => ({ deviceId: 'dev-air', deviceName: 'iriss-air.lan' }) }) },
@@ -13,30 +21,47 @@ jest.mock('../cloud/device-identity.service.js', () => ({
 const dirList = jest.fn();
 jest.mock('../slack/slack-directory.service.js', () => ({ getSlackDirectoryService: () => ({ list: dirList }) }));
 
-import { buildColleagueDeps, lookupColleagueHint, startColleagueMessaging, getColleagueMessageService, setColleagueMessageService } from './colleague.wiring.js';
+import { buildColleagueDeps, resetAccountInstancesCache, lookupColleagueHint, startColleagueMessaging, getColleagueMessageService, setColleagueMessageService } from './colleague.wiring.js';
 import type { ColleagueWireMessage } from './colleague-message.types.js';
 
 const wire = { v: 1, id: 'm1' } as ColleagueWireMessage;
 
 describe('colleague wiring', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetAccountInstancesCache();
+    instancesAnswer([]);
+  });
 
   describe('sendRemote (the relay path)', () => {
-    it('sends a colleague_message to the machine, by its entry in the account device list', async () => {
+    it('sends to the queue the machine polls now, from the account machine list', async () => {
       sync.isStarted.mockReturnValue(true);
-      sync.getDevices.mockReturnValue([{ deviceId: 'dev-mac', sessionId: 'q-mac', status: 'online' }]);
-      sync.sendMessage.mockResolvedValue(undefined);
+      // The device list still points the instance id at an old queue (Fern → Pia, 11-10).
+      sync.getDevices.mockReturnValue([{ deviceId: 'dev-mac', sessionId: 'dev-mac', status: 'online' }]);
+      instancesAnswer([{ instanceId: 'dev-mac', relayQueueId: 'q-live' }]);
+      sync.sendToPeerQueueId.mockResolvedValue(undefined);
       const out = await buildColleagueDeps().sendRemote('dev-mac', wire);
       expect(out).toEqual({ ok: true });
-      expect(sync.sendMessage).toHaveBeenCalledWith('dev-mac', COLLEAGUE_MESSAGE_CONSTANTS.MESSAGE_TYPE, wire);
+      expect(sync.sendToPeerQueueId).toHaveBeenCalledWith('q-live', COLLEAGUE_MESSAGE_CONSTANTS.MESSAGE_TYPE, wire);
+      expect(fetchMock).toHaveBeenCalledWith('https://cloud.test/api/cloud/slack/instances', expect.objectContaining({ headers: { Authorization: 'Bearer tok' } }));
     });
 
-    it('never addresses a machine that is not in this account\'s device list', async () => {
+    it('falls back to the device list when Cloud does not list the machine', async () => {
       sync.isStarted.mockReturnValue(true);
       sync.getDevices.mockReturnValue([{ deviceId: 'dev-mac', sessionId: 'q-mac', status: 'online' }]);
+      fetchMock.mockRejectedValue(new Error('down'));
+      sync.sendToPeerQueueId.mockResolvedValue(undefined);
+      expect(await buildColleagueDeps().sendRemote('dev-mac', wire)).toEqual({ ok: true });
+      expect(sync.sendToPeerQueueId).toHaveBeenCalledWith('q-mac', COLLEAGUE_MESSAGE_CONSTANTS.MESSAGE_TYPE, wire);
+    });
+
+    it('never addresses a machine that is not one of this account\'s machines', async () => {
+      sync.isStarted.mockReturnValue(true);
+      sync.getDevices.mockReturnValue([{ deviceId: 'dev-mac', sessionId: 'q-mac', status: 'online' }]);
+      instancesAnswer([{ instanceId: 'dev-mac', relayQueueId: 'q-live' }]);
       const out = await buildColleagueDeps().sendRemote('dev-stranger', wire);
       expect(out).toMatchObject({ ok: false, code: 'machine_unknown' });
-      expect(sync.sendMessage).not.toHaveBeenCalled();
+      expect(sync.sendToPeerQueueId).not.toHaveBeenCalled();
     });
 
     it('reports Cloud as unavailable when sync is not running', async () => {
@@ -46,9 +71,21 @@ describe('colleague wiring', () => {
 
     it('turns a relay error into send_failed with its message', async () => {
       sync.isStarted.mockReturnValue(true);
-      sync.getDevices.mockReturnValue([{ deviceId: 'dev-mac', sessionId: 'q-mac', status: 'offline' }]);
-      sync.sendMessage.mockRejectedValue(new Error('Peer queue not found'));
+      sync.getDevices.mockReturnValue([]);
+      instancesAnswer([{ instanceId: 'dev-mac', relayQueueId: 'q-live' }]);
+      sync.sendToPeerQueueId.mockRejectedValue(new Error('Peer queue not found'));
       expect(await buildColleagueDeps().sendRemote('dev-mac', wire)).toEqual({ ok: false, code: 'send_failed', error: 'Peer queue not found' });
+    });
+  });
+
+  describe('isAccountMachine', () => {
+    it('knows a sender listed only in the account machine list', async () => {
+      sync.getDevices.mockReturnValue([]);
+      instancesAnswer([{ instanceId: 'dev-air', relayQueueId: 'q-air' }]);
+      const { accountInstances } = await import('./colleague.wiring.js');
+      await accountInstances();
+      expect(buildColleagueDeps().isAccountMachine('dev-air')).toBe(true);
+      expect(buildColleagueDeps().isAccountMachine('dev-stranger')).toBe(false);
     });
   });
 
@@ -81,6 +118,8 @@ describe('colleague wiring', () => {
       handler({ type: 'agent_message', payload: {} });
       expect(receive).not.toHaveBeenCalled();
       handler({ type: 'colleague_message', payload: { x: 1 } });
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
       expect(receive).toHaveBeenCalledWith({ x: 1 });
     });
   });
