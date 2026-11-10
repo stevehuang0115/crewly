@@ -8938,6 +8938,12 @@ export const PEOPLE_CONSTANTS = {
 	PRIVATE_SOURCE_WINDOW_MS: 20 * 60 * 1000,
 	/** Most agent sessions the private-source tracker remembers */
 	PRIVATE_SOURCE_SESSIONS_MAX: 500,
+	/**
+	 * chat-v2 message metadata key: people (ids) whose connector grants the
+	 * writing agent read inside the private-source window. Marks the message as
+	 * private-sourced (support access withholds it, crewly#1558).
+	 */
+	PRIVATE_SOURCE_METADATA_KEY: 'privateSourcePeople',
 	/** Error code when Crewly Cloud is too old for per-person access (sharing endpoint missing) */
 	CLOUD_UPDATE_REQUIRED_CODE: 'cloud_update_required',
 	/** What the dashboard shows for that */
@@ -10492,4 +10498,78 @@ export const COLLEAGUE_MESSAGE_CONSTANTS = {
 	CHAT_METADATA_KEY: 'colleagueMessage',
 	/** Most candidates named in a not-found or ambiguous answer */
 	MAX_SUGGESTIONS: 5,
+} as const;
+
+/**
+ * Support access on the instance (crewly#1558 slice 2,
+ * `specs/2026-11-10-support-access-instance.md`).
+ *
+ * A Crewly account the owner granted support access (viewer / admin) calls
+ * this instance through the Cloud relay. The relay adds a trusted
+ * `supportGrant` envelope to the request; the instance serves only
+ * `/api/support/*`, in process, to that caller.
+ */
+export const SUPPORT_ACCESS_CONSTANTS = {
+	/** Wrapper key of the envelope the relay adds (and strips from every sender payload) */
+	ENVELOPE_KEY: 'supportGrant',
+	/** `api_request` paths a grantee may use, relative to `/api` */
+	PATH_PREFIX: '/support/',
+	/** Longest request path accepted (matches the relay) */
+	MAX_PATH_LENGTH: 2048,
+	/** Longest attempted path written to the activity log */
+	MAX_AUDIT_PATH_CHARS: 200,
+	/** Grant roles */
+	ROLES: ['viewer', 'admin'] as readonly string[],
+	/** Methods each role may use (the relay enforces the same) */
+	ROLE_METHODS: { viewer: ['GET'], admin: ['GET', 'POST'] } as Readonly<Record<string, readonly string[]>>,
+	/** Relay message type of a request and its answer */
+	REQUEST_TYPE: 'api_request',
+	RESPONSE_TYPE: 'api_response',
+	/** What withheld private content is replaced with */
+	WITHHELD_PLACEHOLDER: '[withheld: private content]',
+	/** Conversations a list returns by default / at most */
+	DEFAULT_CONVERSATIONS: 50,
+	MAX_CONVERSATIONS: 200,
+	/** Messages a page returns by default / at most */
+	DEFAULT_MESSAGES: 50,
+	MAX_MESSAGES: 200,
+	/** Error lines returned by default / at most */
+	DEFAULT_ERROR_LINES: 100,
+	MAX_ERROR_LINES: 500,
+	/** Bytes read from the end of the service log for recent errors */
+	ERROR_TAIL_BYTES: 512 * 1024,
+	/** Longest error line returned (characters) */
+	MAX_ERROR_LINE_CHARS: 600,
+	/** Longest message text returned (characters) */
+	MAX_MESSAGE_CHARS: 8000,
+	/** Service log file under `<CREWLY_HOME>/logs` (the backend's stdout / stderr) */
+	SERVICE_LOG_DIR: 'logs',
+	SERVICE_LOG_FILE: 'service.log',
+	/** A log line counts as an error line when it carries one of these levels */
+	ERROR_LINE_PATTERN: /\b(?:WARN|ERROR|FATAL)\b/,
+	/** An identical successful read by the same grant is logged once per this window */
+	AUDIT_COLLAPSE_WINDOW_MS: 15 * 60 * 1000,
+	/** Most grant/method/path keys the audit remembers */
+	AUDIT_KEYS_MAX: 2000,
+	/** Activity-log actions */
+	ACTIONS: {
+		READ: 'support.read',
+		ACTION: 'support.action',
+		REFUSED: 'support.refused',
+	},
+	/** Activity-log actor `via` for a grantee */
+	ACTOR_VIA: 'support-grant',
+	/** Activity-log target type */
+	TARGET_TYPE: 'support-path',
+	/** Refusal codes the instance answers with */
+	CODES: {
+		DISABLED: 'support_disabled',
+		PATH: 'support_path_refused',
+		METHOD: 'support_method_refused',
+		ENCRYPTED: 'support_encrypted_refused',
+		NOT_FOUND: 'support_not_found',
+		BAD_REQUEST: 'support_bad_request',
+		AGENT_STOPPED_BY_OWNER: 'support_agent_owner_stopped',
+		UNAVAILABLE: 'support_unavailable',
+	},
 } as const;

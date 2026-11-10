@@ -1314,6 +1314,41 @@ describe('CloudSyncService', () => {
       }
     });
 
+    describe('support-grant envelope (crewly#1558)', () => {
+      const ENVELOPE = { grantId: 'g1', role: 'viewer', includePrivate: false, granteeEmail: 'help@crewlyai.com', granteeAccountId: 'acct-b', replyQueueId: 'q-b' };
+
+      /** Poll once with the given relay payloads and return the emitted messages. */
+      async function pollWith(payloads: unknown[]): Promise<Array<Record<string, unknown>>> {
+        service.start(testConfig);
+        await flushPromises();
+        (service as unknown as { queueId: string }).queueId = 'q-abc';
+        const got: Array<Record<string, unknown>> = [];
+        service.on('message', (m) => got.push(m as Record<string, unknown>));
+        mockFetch.mockClear();
+        mockFetch.mockResolvedValue(
+          mockResponse({ success: true, messages: payloads.map((payload, i) => ({ id: `msg-${i}-${Math.random()}`, fromDeviceId: '', payload, createdAt: '2026-11-10T00:00:00Z' })) }),
+        );
+        await service.pollMessages();
+        return got;
+      }
+
+      it('carries a top-level supportGrant through, validated', async () => {
+        const [msg] = await pollWith([JSON.stringify({ type: 'api_request', data: { id: 'r1', method: 'GET', path: '/support/agents' }, encrypted: false, fromDeviceName: 'q-b', supportGrant: { ...ENVELOPE, extra: 'dropped' } })]);
+        expect(msg.supportGrant).toEqual(ENVELOPE);
+        expect(msg.payload).toEqual({ id: 'r1', method: 'GET', path: '/support/agents' });
+      });
+
+      it('marks a malformed envelope as null, so no handler can treat it as an owner call', async () => {
+        const [msg] = await pollWith([JSON.stringify({ type: 'api_request', data: { id: 'r1' }, fromDeviceName: 'q-b', supportGrant: { ...ENVELOPE, role: 'owner' } })]);
+        expect(msg).toHaveProperty('supportGrant', null);
+      });
+
+      it('never reads a grant from inside data, and adds nothing when there is none', async () => {
+        const [msg] = await pollWith([JSON.stringify({ type: 'api_request', data: { id: 'r1', supportGrant: ENVELOPE }, fromDeviceName: 'phone' })]);
+        expect(msg).not.toHaveProperty('supportGrant');
+      });
+    });
+
     it('long-polls with ?wait= once a queueId is registered', async () => {
       service.start(testConfig);
       await flushPromises();

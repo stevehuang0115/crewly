@@ -24,7 +24,8 @@ import { randomUUID } from 'crypto';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { NetworkStatusService, warnUnlessOfflineRepeat } from '../core/network-status.service.js';
 import { StorageService } from '../core/storage.service.js';
-import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
+import { CLOUD_SYNC_CONSTANTS, SUPPORT_ACCESS_CONSTANTS } from '../../constants.js';
+import { parseSupportGrantEnvelope, type SupportGrantEnvelope } from '../support/support.types.js';
 import type {
   CloudSyncConfig,
   CloudSyncHealth,
@@ -1225,6 +1226,9 @@ export class CloudSyncService extends EventEmitter {
         let msgPayload: unknown = raw.payload;
         let msgEncrypted = false;
         let msgFromDeviceName = '';
+        // crewly#1558: the relay's support-grant envelope, read ONLY from the
+        // top level of the wrapper (never from `data`). undefined = none.
+        let msgSupportGrant: SupportGrantEnvelope | null | undefined;
 
         // Try to unwrap our wrapped payload format
         try {
@@ -1234,6 +1238,9 @@ export class CloudSyncService extends EventEmitter {
             msgPayload = parsed.data;
             msgEncrypted = parsed.encrypted ?? false;
             msgFromDeviceName = parsed.fromDeviceName || '';
+            if (Object.prototype.hasOwnProperty.call(parsed, SUPPORT_ACCESS_CONSTANTS.ENVELOPE_KEY)) {
+              msgSupportGrant = parseSupportGrantEnvelope(parsed[SUPPORT_ACCESS_CONSTANTS.ENVELOPE_KEY]);
+            }
           }
         } catch {
           // Not JSON or not our format — use raw payload as-is
@@ -1256,6 +1263,7 @@ export class CloudSyncService extends EventEmitter {
           payload: msgPayload,
           encrypted: msgEncrypted,
           sentAt: raw.createdAt || raw.sentAt || new Date().toISOString(),
+          ...(msgSupportGrant !== undefined ? { supportGrant: msgSupportGrant } : {}),
         };
         this.emit('message', msg);
         messageIds.push(msg.id);
