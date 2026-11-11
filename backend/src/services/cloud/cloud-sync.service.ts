@@ -698,8 +698,17 @@ export class CloudSyncService extends EventEmitter {
    *    switches queues (each switch left the old queue behind and used up
    *    the relay's per-user quota: f68e1995 → a8eeab1d → d5c4ebc2 in one
    *    day, all on one MacBook, when something rewrote the id file);
-   * 2. the id remembered in `<crewlyHome>/cloud/relay-queue.json`;
-   * 3. the device id.
+   * 2. on boot, the device id — it is the id Cloud, the portal and other
+   *    machines address this machine by, so a queue under any other id is
+   *    only reached by peers that learned it from this machine;
+   * 3. the id remembered in `<crewlyHome>/cloud/relay-queue.json`, used only
+   *    when the relay refuses the device id (another account holds it).
+   *
+   * Trying the device id first also brings a machine home after a 403 that
+   * was misread as "another account": on 2026-11-06 an expired JWT moved the
+   * owner's MacBook from f4b6f0db to 072d309a, and for days the portal's
+   * browser page and the Air's colleague messages kept landing in f4b6f0db,
+   * which nothing polled.
    *
    * @param gen - Generation of the calling cycle
    * @throws Error when registration fails (the caller retries)
@@ -723,17 +732,21 @@ export class CloudSyncService extends EventEmitter {
     // replacement never orphans a queue of ours.
     const deviceId = this.config.deviceId;
     const remembered = await this.readFallbackQueueId();
-    const first = this.queueId ?? remembered ?? deviceId;
-    try {
-      await this.registerQueueAs(first, pairingCode, gen);
-      await this.syncFallbackFile(first, remembered, deviceId, gen);
-      return;
-    } catch (err) {
-      if (!(err instanceof QueueForbiddenError)) throw err;
-      this.logger.warn('Relay refused our queue (it belongs to another account) — taking a fresh one', {
-        queueId: first,
-        deviceId,
-      });
+    const candidates = this.queueId
+      ? [this.queueId]
+      : [...new Set([deviceId, remembered].filter((id): id is string => !!id))];
+    for (const candidate of candidates) {
+      try {
+        await this.registerQueueAs(candidate, pairingCode, gen);
+        await this.syncFallbackFile(candidate, remembered, deviceId, gen);
+        return;
+      } catch (err) {
+        if (!(err instanceof QueueForbiddenError)) throw err;
+        this.logger.warn('Relay refused our queue (it belongs to another account)', {
+          queueId: candidate,
+          deviceId,
+        });
+      }
     }
     const fresh = randomUUID();
     await this.registerQueueAs(fresh, pairingCode, gen);
