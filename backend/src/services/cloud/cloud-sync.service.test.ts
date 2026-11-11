@@ -760,6 +760,21 @@ describe('CloudSyncService', () => {
     };
     const claimedId = (i: number) =>
       JSON.parse(String((registerCalls()[i]?.[1] as { body: string }).body)).deviceId as string;
+    /**
+     * Answer registrations like the relay: 403 (another account) for the
+     * refused ids, the claimed id for any other.
+     *
+     * @param refused - Queue ids held by another account
+     */
+    const relayRefusing = (...refused: string[]) => mockFetch.mockImplementation(async (url, init) => {
+      if (typeof url === 'string' && url.includes('/queue/register')) {
+        const id = JSON.parse(String((init as { body: string }).body)).deviceId as string;
+        return refused.includes(id)
+          ? mockResponse({ success: false, error: 'Not authorized to access this queue' }, 403)
+          : mockResponse({ success: true, queueId: id, peerQueueId: null });
+      }
+      return mockResponse({ success: true });
+    });
 
     it('takes a fresh queue id after a 403 and remembers it', async () => {
       const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
@@ -794,32 +809,49 @@ describe('CloudSyncService', () => {
       await fsp.mkdir(path.dirname(queueFile), { recursive: true });
       await fsp.writeFile(queueFile, JSON.stringify({ queueId: 'q-remembered' }), 'utf-8');
       const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
-      mockFetch.mockImplementation(async (url) =>
-        typeof url === 'string' && url.includes('/queue/register')
-          ? mockResponse({ success: true, queueId: 'q-remembered', peerQueueId: null })
-          : mockResponse({ success: true }),
-      );
+      relayRefusing(DEVICE_ID);
+
+      service.start(configWithJwt);
+      await untilRegisterCalls(2);
+      for (let i = 0; i < 10; i++) await flushPromises();
+
+      expect(registerCalls()).toHaveLength(2);
+      expect(claimedId(0)).toBe(DEVICE_ID);
+      expect(claimedId(1)).toBe('q-remembered');
+      expect(service.getQueueId()).toBe('q-remembered');
+    });
+
+    // An expired JWT once read as "another account" and moved the owner's
+    // MacBook off its device-id queue (f4b6f0db → 072d309a, 2026-11-06).
+    // Cloud, the portal and the Air kept addressing f4b6f0db, so their
+    // messages sat there unread until the machine came back to it.
+    it('returns to its device-id queue on boot once the relay accepts it, and drops the id file', async () => {
+      await fsp.mkdir(path.dirname(queueFile), { recursive: true });
+      await fsp.writeFile(queueFile, JSON.stringify({ queueId: 'q-remembered' }), 'utf-8');
+      const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
+      relayRefusing();
 
       service.start(configWithJwt);
       await untilRegisterCalls(1);
-      await flushPromises();
+      for (let i = 0; i < 50; i++) {
+        if (!(await fsp.stat(queueFile).then(() => true, () => false))) break;
+        await flushPromises();
+      }
 
       expect(registerCalls()).toHaveLength(1);
-      expect(claimedId(0)).toBe('q-remembered');
+      expect(claimedId(0)).toBe(DEVICE_ID);
+      expect(service.getQueueId()).toBe(DEVICE_ID);
+      expect(await fsp.stat(queueFile).then(() => true, () => false)).toBe(false);
     });
 
     it('heartbeats under the queue it polls, so the portal does not pick the dead one', async () => {
       await fsp.mkdir(path.dirname(queueFile), { recursive: true });
       await fsp.writeFile(queueFile, JSON.stringify({ queueId: 'q-remembered' }), 'utf-8');
       const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
-      mockFetch.mockImplementation(async (url) =>
-        typeof url === 'string' && url.includes('/queue/register')
-          ? mockResponse({ success: true, queueId: 'q-remembered', peerQueueId: null })
-          : mockResponse({ success: true }),
-      );
+      relayRefusing(DEVICE_ID);
 
       service.start(configWithJwt);
-      await untilRegisterCalls(1);
+      await untilRegisterCalls(2);
       for (let i = 0; i < 10; i++) await flushPromises();
       mockFetch.mockClear();
 
@@ -865,8 +897,9 @@ describe('CloudSyncService', () => {
       await untilRegisterCalls(1);
       for (let i = 0; i < 10; i++) await flushPromises();
 
+      // The 403 is about the token, not the queue: no fallback, no fresh id.
       expect(registerCalls()).toHaveLength(1);
-      expect(claimedId(0)).toBe('q-remembered');
+      expect(claimedId(0)).toBe(DEVICE_ID);
       expect(service.getQueueError()).toContain('jwt expired');
       expect(JSON.parse(await fsp.readFile(queueFile, 'utf-8')).queueId).toBe('q-remembered');
     });
@@ -875,27 +908,20 @@ describe('CloudSyncService', () => {
       await fsp.mkdir(path.dirname(queueFile), { recursive: true });
       await fsp.writeFile(queueFile, JSON.stringify({ queueId: 'q-old-account' }), 'utf-8');
       const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
-      mockFetch.mockImplementation(async (url, init) => {
-        if (typeof url === 'string' && url.includes('/queue/register')) {
-          const id = JSON.parse(String((init as { body: string }).body)).deviceId as string;
-          return id === 'q-old-account'
-            ? mockResponse({ success: false, error: 'Not authorized to access this queue' }, 403)
-            : mockResponse({ success: true, queueId: id, peerQueueId: null });
-        }
-        return mockResponse({ success: true });
-      });
+      relayRefusing(DEVICE_ID, 'q-old-account');
 
       service.start(configWithJwt);
-      await untilRegisterCalls(2);
+      await untilRegisterCalls(3);
       for (let i = 0; i < 50; i++) {
         const raw = await fsp.readFile(queueFile, 'utf-8').catch(() => '');
         if (raw && !raw.includes('q-old-account')) break;
         await flushPromises();
       }
 
-      expect(claimedId(0)).toBe('q-old-account');
-      expect(service.getQueueId()).toBe(claimedId(1));
-      expect(JSON.parse(await fsp.readFile(queueFile, 'utf-8')).queueId).toBe(claimedId(1));
+      expect(claimedId(0)).toBe(DEVICE_ID);
+      expect(claimedId(1)).toBe('q-old-account');
+      expect(service.getQueueId()).toBe(claimedId(2));
+      expect(JSON.parse(await fsp.readFile(queueFile, 'utf-8')).queueId).toBe(claimedId(2));
     });
   });
 
@@ -911,9 +937,10 @@ describe('CloudSyncService', () => {
     );
     const claimedIds = () => registerCalls().map(([, init]) =>
       JSON.parse(String((init as { body: string }).body)).deviceId as string);
-    const echoRegister = () => mockFetch.mockImplementation(async (url, init) => {
+    const echoRegister = (...refused: string[]) => mockFetch.mockImplementation(async (url, init) => {
       if (typeof url === 'string' && url.includes('/queue/register')) {
         const id = JSON.parse(String((init as { body: string }).body)).deviceId as string;
+        if (refused.includes(id)) return mockResponse({ success: false, error: 'Not authorized to access this queue' }, 403);
         return mockResponse({ success: true, queueId: id, peerQueueId: null });
       }
       return mockResponse({ success: true });
@@ -947,7 +974,7 @@ describe('CloudSyncService', () => {
 
     it('keeps re-registering the queue it holds when the id file is rewritten, and restores the file', async () => {
       await writeQueueFile('q-held');
-      echoRegister();
+      echoRegister(DEVICE_ID);
 
       service.start(configWithJwt);
       await settle();
@@ -958,7 +985,7 @@ describe('CloudSyncService', () => {
       await settle();
       const raw = await untilFile((r) => !!r && r.includes('q-held'));
 
-      expect(claimedIds()).toEqual(['q-held', 'q-held']);
+      expect(claimedIds()).toEqual([DEVICE_ID, 'q-held', 'q-held']);
       expect(service.getQueueId()).toBe('q-held');
       expect(JSON.parse(raw ?? '{}').queueId).toBe('q-held');
     });
