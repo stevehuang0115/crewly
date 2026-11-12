@@ -24,8 +24,7 @@ import { randomUUID } from 'crypto';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { NetworkStatusService, warnUnlessOfflineRepeat } from '../core/network-status.service.js';
 import { StorageService } from '../core/storage.service.js';
-import { CLOUD_SYNC_CONSTANTS, SUPPORT_ACCESS_CONSTANTS } from '../../constants.js';
-import { parseSupportGrantEnvelope, type SupportGrantEnvelope } from '../support/support.types.js';
+import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
 import type {
   CloudSyncConfig,
   CloudSyncHealth,
@@ -1239,9 +1238,10 @@ export class CloudSyncService extends EventEmitter {
         let msgPayload: unknown = raw.payload;
         let msgEncrypted = false;
         let msgFromDeviceName = '';
-        // crewly#1558: the relay's support-grant envelope, read ONLY from the
-        // top level of the wrapper (never from `data`). undefined = none.
-        let msgSupportGrant: SupportGrantEnvelope | null | undefined;
+        // A wrapper the relay marked as sent by ANOTHER account (see
+        // FOREIGN_ACCOUNT_ENVELOPE_KEY). Read only from the top level of the
+        // wrapper, never from `data`.
+        let fromAnotherAccount = false;
 
         // Try to unwrap our wrapped payload format
         try {
@@ -1251,9 +1251,7 @@ export class CloudSyncService extends EventEmitter {
             msgPayload = parsed.data;
             msgEncrypted = parsed.encrypted ?? false;
             msgFromDeviceName = parsed.fromDeviceName || '';
-            if (Object.prototype.hasOwnProperty.call(parsed, SUPPORT_ACCESS_CONSTANTS.ENVELOPE_KEY)) {
-              msgSupportGrant = parseSupportGrantEnvelope(parsed[SUPPORT_ACCESS_CONSTANTS.ENVELOPE_KEY]);
-            }
+            fromAnotherAccount = Object.prototype.hasOwnProperty.call(parsed, CLOUD_SYNC_CONSTANTS.FOREIGN_ACCOUNT_ENVELOPE_KEY);
           }
         } catch {
           // Not JSON or not our format — use raw payload as-is
@@ -1268,6 +1266,15 @@ export class CloudSyncService extends EventEmitter {
           continue;
         }
 
+        // Every handler of 'message' treats the sender as this account's
+        // owner, so a message from another account is acked and dropped.
+        if (fromAnotherAccount) {
+          this.logger.warn('Dropped a relay message sent by another account', { messageId: msgId, type: msgType });
+          messageIds.push(msgId);
+          this.processedMessageIds.add(msgId);
+          continue;
+        }
+
         const msg: IncomingMessage = {
           id: msgId,
           from: raw.fromDeviceId || raw.from || '',
@@ -1276,7 +1283,6 @@ export class CloudSyncService extends EventEmitter {
           payload: msgPayload,
           encrypted: msgEncrypted,
           sentAt: raw.createdAt || raw.sentAt || new Date().toISOString(),
-          ...(msgSupportGrant !== undefined ? { supportGrant: msgSupportGrant } : {}),
         };
         this.emit('message', msg);
         messageIds.push(msg.id);

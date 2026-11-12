@@ -25,7 +25,7 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getCallerIdentity, type CallerIdentity, type IdentifiableRequest } from '../../middleware/caller-identity.middleware.js';
 
-/** Who acted: the owner, an agent, Crewly itself, or a support grantee (crewly#1558). */
+/** Who acted: the owner, an agent, Crewly itself, or Crewly support reading through the ops sidecar. */
 export type ActivityActorType = 'owner' | 'agent' | 'system' | 'support';
 
 /** The actor of an entry. */

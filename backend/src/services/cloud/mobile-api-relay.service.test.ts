@@ -138,26 +138,6 @@ describe('isAllowedMobileApiCall', () => {
   });
 });
 
-describe('support grantee requests (crewly#1558)', () => {
-  it('never allows /support/* as an owner call', () => {
-    expect(isAllowedMobileApiCall('GET', '/support/agents')).toBe(false);
-    expect(isAllowedMobileApiCall('POST', '/support/agents/a/restart')).toBe(false);
-  });
-
-  it('ignores a request carrying a support grant (valid or malformed): it is never proxied as the owner', async () => {
-    const { sync, sent, emit } = makeSync();
-    const fetchImpl = jest.fn();
-    const svc = new MobileApiRelayService({ cloudSync: sync, webPort: 8787, logger: SILENT, fetchImpl: fetchImpl as unknown as typeof fetch });
-    svc.start();
-    emit({ type: 'api_request', fromDeviceName: 'q-b', payload: { id: 'g1', method: 'GET', path: '/teams' }, supportGrant: { grantId: 'g', role: 'viewer' } });
-    emit({ type: 'api_request', fromDeviceName: 'q-b', payload: { id: 'g2', method: 'GET', path: '/teams' }, supportGrant: null });
-    await flush();
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(sent).toHaveLength(0);
-    svc.stop();
-  });
-});
-
 describe('MobileApiRelayService', () => {
   it('proxies an allowed GET to the local API and replies api_response', async () => {
     const { sync, sent, emit } = makeSync();

@@ -186,18 +186,6 @@ export interface SkillsSettings {
   skillExecutionTimeoutMs: number;
 }
 
-/**
- * Support access settings (crewly#1558): the owner's local switch over
- * accounts granted support access through Crewly Cloud.
- */
-export interface SupportSettings {
-  /**
-   * Whether granted support accounts may call this instance at all. Off
-   * refuses every support call, whatever grants exist in Cloud.
-   */
-  allowGrantees: boolean;
-}
-
 // ============================================================================
 // API Key Management Types
 // ============================================================================
@@ -305,8 +293,6 @@ export interface CrewlySettings {
   /** API key management settings */
   apiKeys?: ApiKeysSettings;
 
-  /** Support access (crewly#1558); absent = defaults */
-  support?: SupportSettings;
 }
 
 /**
@@ -325,8 +311,6 @@ export interface UpdateSettingsInput {
   /** Partial API keys settings */
   apiKeys?: Partial<ApiKeysSettings>;
 
-  /** Partial support access settings */
-  support?: Partial<SupportSettings>;
 }
 
 /**
@@ -450,9 +434,6 @@ export function getDefaultSettings(): CrewlySettings {
       runtimeOverrides: {},
       skillOverrides: {},
     },
-    support: {
-      allowGrantees: true,
-    },
   };
 }
 
@@ -472,10 +453,6 @@ export function getDefaultSettings(): CrewlySettings {
  */
 export function validateSettings(settings: CrewlySettings): SettingsValidationResult {
   const errors: string[] = [];
-
-  if (settings.support !== undefined && typeof settings.support.allowGrantees !== 'boolean') {
-    errors.push('support.allowGrantees must be a boolean');
-  }
 
   // Validate general settings
   if (!isValidAIRuntime(settings.general.defaultRuntime)) {
@@ -612,7 +589,6 @@ export function mergeSettings(
     general: { ...existing.general, ...updates.general, runtimeCommands: mergedRuntimeCommands },
     chat: { ...existing.chat, ...updates.chat },
     skills: { ...existing.skills, ...updates.skills },
-    support: { ...getDefaultSettings().support!, ...existing.support, ...updates.support },
     apiKeys: updatedApiKeys
       ? {
           global: { ...existingApiKeys.global, ...updatedApiKeys.global },
@@ -640,9 +616,6 @@ export function hasSettingsUpdates(settings: UpdateSettingsInput): boolean {
     return true;
   }
   if (settings.apiKeys && Object.keys(settings.apiKeys).length > 0) {
-    return true;
-  }
-  if (settings.support && Object.keys(settings.support).length > 0) {
     return true;
   }
   return false;

@@ -11,10 +11,6 @@
  *     → allowlist check → local HTTP `http://127.0.0.1:<webPort>/api<path>`
  *     → `api_response {id, status, body}` →(relay queue)→ phone
  *
- * Support grantees (crewly#1558) are another account: their requests carry
- * the relay's `supportGrant` envelope and are skipped here (the support relay
- * serves them, `/api/support/*` only, which is not on this allowlist).
- *
  * Security model: the relay only pairs devices under the SAME cloud account
  * (sha256 pairing code derived from the JWT sub — see RelayContext/PWA), so the
  * caller is the account owner. The allowlist below still constrains the surface
@@ -70,12 +66,6 @@ export interface MobileRelayIncomingMessage {
   payload: unknown;
   from?: string;
   fromDeviceName?: string;
-  /**
-   * The relay's support-grant envelope (crewly#1558). Any value here (even
-   * null = malformed) marks a support grantee's request: this relay never
-   * serves it as the owner; the support relay does.
-   */
-  supportGrant?: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -336,8 +326,6 @@ export class MobileApiRelayService {
     }
     this.handler = (msg: MobileRelayIncomingMessage): void => {
       if (msg.type !== 'api_request') return;
-      // A support grantee's request is never an owner call (crewly#1558).
-      if (msg.supportGrant !== undefined) return;
       void this.handleRequest(msg);
     };
     this.cloudSync.on('message', this.handler);
