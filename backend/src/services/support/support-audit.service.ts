@@ -3,10 +3,13 @@
  *
  * Every call a support grantee makes is written to the instance's Activity
  * log (#881): who (grantee email, account id, grant, role), what (method and
- * path) and the outcome. The owner reads it on Settings › Activity.
+ * path) and the outcome. The owner reads it on Settings › Activity. A call an
+ * agent of the grantee account made says so, with the agent's name when the
+ * relay passed one.
  *
  * - Refusals and actions (POST) are written every time.
- * - A successful read repeated by the same grant on the same method and path
+ * - A successful read repeated by the same grant (and the same sender: the
+ *   person, or one agent) on the same method and path
  *   is written once per window (`AUDIT_COLLAPSE_WINDOW_MS`); the entry says
  *   so. Paging through one conversation (`?cursor=`) is the same path, so a
  *   scroll is one entry, while reading another conversation is a new one.
@@ -16,7 +19,7 @@
 
 import { SUPPORT_ACCESS_CONSTANTS } from '../../constants.js';
 import { recordActivity, type ActivityActor, type ActivityEntryInput } from '../activity/activity-log.service.js';
-import type { SupportCaller } from './support.types.js';
+import { isSupportAgentCaller, type SupportCaller } from './support.types.js';
 
 /** How a support call ended. */
 export type SupportOutcome = 'ok' | 'refused' | 'error';
@@ -47,11 +50,26 @@ export interface SupportAuditDeps {
  * The activity-log actor of a grantee.
  *
  * @param caller - Grantee (null = unknown)
- * @returns Actor `{type: 'support', id: <email or account id>, via: 'support-grant'}`
+ * @returns Actor `{type: 'support', id: <email or account id>, via: 'support-grant'}`;
+ *   for an agent of the grantee account `via` is `support-grant-agent`
  */
 export function supportActor(caller: SupportCaller | null): ActivityActor {
   const id = caller ? caller.granteeEmail || caller.granteeAccountId : 'unknown';
-  return { type: 'support', id, via: SUPPORT_ACCESS_CONSTANTS.ACTOR_VIA };
+  return { type: 'support', id, via: isSupportAgentCaller(caller) ? SUPPORT_ACCESS_CONSTANTS.ACTOR_VIA_AGENT : SUPPORT_ACCESS_CONSTANTS.ACTOR_VIA };
+}
+
+/**
+ * How the note names the sender: the grantee for a person, "agent <name> of
+ * <grantee>" for an agent of the grantee account.
+ *
+ * @param caller - Grantee (null = unknown)
+ * @returns Readable sender
+ */
+function senderText(caller: SupportCaller | null): string {
+  if (!caller) return 'an unidentified support caller';
+  const who = caller.granteeEmail || caller.granteeAccountId;
+  if (!isSupportAgentCaller(caller)) return who;
+  return caller.agentName ? `agent ${caller.agentName} of ${who}` : `an agent of ${who}`;
 }
 
 /**
@@ -62,7 +80,7 @@ export class SupportAuditService {
   private readonly now: () => number;
   private readonly windowMs: number;
   private readonly maxKeys: number;
-  /** Last time a successful read was written, by `grant|method|pathname` */
+  /** Last time a successful read was written, by `grant|sender|method|pathname` */
   private readonly lastRead = new Map<string, number>();
 
   /**
@@ -87,7 +105,8 @@ export class SupportAuditService {
     const collapsible = isRead && input.outcome === 'ok' && input.caller !== null;
     const minutes = Math.round(this.windowMs / 60_000);
     if (collapsible) {
-      const key = `${input.caller!.grantId}|${input.method}|${pathname}`;
+      const sender = isSupportAgentCaller(input.caller) ? `agent:${input.caller!.agentName ?? ''}` : 'person';
+      const key = `${input.caller!.grantId}|${sender}|${input.method}|${pathname}`;
       const now = this.now();
       const last = this.lastRead.get(key);
       if (last !== undefined && now - last < this.windowMs) return false;
@@ -100,7 +119,8 @@ export class SupportAuditService {
         : isRead
           ? SUPPORT_ACCESS_CONSTANTS.ACTIONS.READ
           : SUPPORT_ACCESS_CONSTANTS.ACTIONS.ACTION;
-    const who = caller ? caller.granteeEmail || caller.granteeAccountId : 'an unidentified support caller';
+    const who = senderText(caller);
+    const byAgent = isSupportAgentCaller(caller);
     const verb = input.outcome === 'ok' ? (isRead ? 'read' : 'ran') : input.outcome === 'refused' ? 'was refused' : 'failed on';
     this.record({
       actor: supportActor(caller),
@@ -119,6 +139,7 @@ export class SupportAuditService {
               grantId: caller.grantId,
               role: caller.role,
               includePrivate: caller.includePrivate,
+              ...(byAgent ? { sentBy: SUPPORT_ACCESS_CONSTANTS.ACTOR_AGENT, ...(caller.agentName ? { agentName: caller.agentName } : {}) } : {}),
             }
           : {}),
       },

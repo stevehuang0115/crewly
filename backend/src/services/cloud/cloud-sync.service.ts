@@ -24,7 +24,7 @@ import { randomUUID } from 'crypto';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { NetworkStatusService, warnUnlessOfflineRepeat } from '../core/network-status.service.js';
 import { StorageService } from '../core/storage.service.js';
-import { CLOUD_SYNC_CONSTANTS, SUPPORT_ACCESS_CONSTANTS } from '../../constants.js';
+import { CLOUD_SYNC_CONSTANTS, SUPPORT_ACCESS_CONSTANTS, SUPPORT_VIEW_CONSTANTS } from '../../constants.js';
 import { parseSupportGrantEnvelope, type SupportGrantEnvelope } from '../support/support.types.js';
 import type {
   CloudSyncConfig,
@@ -143,6 +143,24 @@ export class RelayRateLimitedError extends Error {
   constructor(message: string, readonly retryAfterMs: number) {
     super(message);
     this.name = 'RelayRateLimitedError';
+  }
+}
+
+/**
+ * The relay refused a support request an agent of this account sent
+ * ({@link CloudSyncService.sendSupportAgentRequest}). Carries the HTTP status
+ * and the `code` of the relay's JSON error body so the caller can tell an
+ * ended grant from a read-only refusal or a rate limit.
+ */
+export class RelaySendRefusedError extends Error {
+  /**
+   * @param message - English description (status and a short body excerpt)
+   * @param status - HTTP status of the relay's answer
+   * @param code - `code` of the JSON error body, or null when it had none
+   */
+  constructor(message: string, readonly status: number, readonly code: string | null) {
+    super(message);
+    this.name = 'RelaySendRefusedError';
   }
 }
 
@@ -585,6 +603,70 @@ export class CloudSyncService extends EventEmitter {
       throw await relayFailure(response, 'Failed to send message (queueId path)');
     }
     this.logger.info('Message sent via Cloud Sync (queueId path)', { peerQueueId, type });
+  }
+
+  /**
+   * Send one support read an agent of this account makes to a machine of an
+   * account that granted this one support access (crewly#1558,
+   * `specs/2026-11-12-support-access-agent-read.md`).
+   *
+   * Differs from {@link sendToPeerQueueId} in two ways the relay relies on:
+   * `fromDeviceName` carries THIS machine's relay queue id (the relay checks
+   * it belongs to the sending account and tells the granted machine to answer
+   * there), and the wrapper names the asking agent in `supportAgent`. The
+   * relay decides whether the grant allows it; the answer arrives later as an
+   * `api_response` on the `'message'` stream.
+   *
+   * @param peerQueueId - Relay queue of the granted machine
+   * @param data - Request id, method (`GET`) and path under `/api`
+   * @param agentName - Name of the asking agent
+   * @throws RelaySendRefusedError when the relay answers non-2xx (status + body `code`)
+   * @throws Error when not started, not registered yet, or the request itself fails
+   */
+  async sendSupportAgentRequest(
+    peerQueueId: string,
+    data: { id: string; method: string; path: string },
+    agentName: string,
+  ): Promise<void> {
+    if (!this.config) {
+      throw new Error('CloudSyncService not started. Call start() first.');
+    }
+    if (!this.queueId) {
+      throw new Error('This machine has no relay queue yet');
+    }
+    if (!peerQueueId) {
+      throw new Error('sendSupportAgentRequest requires a non-empty peerQueueId');
+    }
+    const url = `${this.config.cloudUrl}${CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES}`;
+    const wrappedPayload = JSON.stringify({
+      type: SUPPORT_ACCESS_CONSTANTS.REQUEST_TYPE,
+      data,
+      encrypted: false,
+      fromDeviceName: this.queueId,
+      [SUPPORT_VIEW_CONSTANTS.AGENT_KEY]: agentName,
+    });
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.authHeaders(),
+      body: JSON.stringify({ peerQueueId, payload: wrappedPayload }),
+      signal: AbortSignal.timeout(CLOUD_SYNC_CONSTANTS.REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      let code: string | null = null;
+      try {
+        const parsed = JSON.parse(text) as { code?: unknown };
+        code = typeof parsed?.code === 'string' ? parsed.code : null;
+      } catch {
+        code = null;
+      }
+      throw new RelaySendRefusedError(
+        `Support request refused by the relay: ${response.status}${code ? ` ${code}` : ''}`,
+        response.status,
+        code,
+      );
+    }
+    this.logger.info('Support agent request sent', { peerQueueId, path: data.path.split('?')[0] });
   }
 
   // -------------------------------------------------------------------------

@@ -187,8 +187,8 @@ export interface SkillsSettings {
 }
 
 /**
- * Support access settings (crewly#1558): the owner's local switch over
- * accounts granted support access through Crewly Cloud.
+ * Support access settings (crewly#1558): the owner's local switches over
+ * support access through Crewly Cloud, in both directions.
  */
 export interface SupportSettings {
   /**
@@ -196,6 +196,12 @@ export interface SupportSettings {
    * refuses every support call, whatever grants exist in Cloud.
    */
   allowGrantees: boolean;
+  /**
+   * Whether the agents of THIS machine may use support access other accounts
+   * gave this account (the `support-view-instance` skill). Off refuses every
+   * such read, whatever grants exist in Cloud.
+   */
+  allowAgentViews: boolean;
 }
 
 // ============================================================================
@@ -452,6 +458,7 @@ export function getDefaultSettings(): CrewlySettings {
     },
     support: {
       allowGrantees: true,
+      allowAgentViews: true,
     },
   };
 }
@@ -475,6 +482,10 @@ export function validateSettings(settings: CrewlySettings): SettingsValidationRe
 
   if (settings.support !== undefined && typeof settings.support.allowGrantees !== 'boolean') {
     errors.push('support.allowGrantees must be a boolean');
+  }
+  // A settings file written before this switch existed has none: that is "on", not an error.
+  if (settings.support?.allowAgentViews !== undefined && typeof settings.support.allowAgentViews !== 'boolean') {
+    errors.push('support.allowAgentViews must be a boolean');
   }
 
   // Validate general settings

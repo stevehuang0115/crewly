@@ -2,7 +2,8 @@
 
 Status: implemented (branch `feat/1558-support-api`). Slice 1 is the Cloud
 side: grants in crewly-auth and the relay's grant check. Settings › Access (grant /
-revoke UI) and the `support-view-instance` skill are later slices.
+revoke UI) is a later slice; the `support-view-instance` skill is
+`specs/2026-11-12-support-access-agent-read.md`.
 
 Owner decisions (2026-11-10): private-sourced content is withheld unless the
 instance owner turns on "include private content" for the grant; admin
@@ -111,6 +112,14 @@ always written. The activity API and Settings › Activity accept the new
 call before anything is read. Set with `PUT /api/settings {"support":
 {"allowGrantees": false}}` (owner only); the toggle UI comes with Settings ›
 Access.
+
+## Agent callers
+
+`specs/2026-11-12-support-access-agent-read.md`: the envelope also carries
+`actor` (`person`, the default, or `agent`) and an agent's `agentName`. An
+agent caller is refused anything but a `GET` of conversations, agents or
+errors (`support_agent_read_only`, `support_agent_path_refused`), and its
+calls are audited as the grantee account's agent.
 
 ## Not in this slice
 

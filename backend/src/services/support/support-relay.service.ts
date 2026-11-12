@@ -11,8 +11,11 @@
  * 2. the owner's kill switch `support.allowGrantees` off → 403;
  * 3. an encrypted payload → 403 (the relay never vouches for one);
  * 4. a path outside clean `/support/*` → 403;
- * 5. a method the role may not use → 403 (viewer: GET; admin: GET, POST);
- * 6. otherwise the in-process {@link SupportApiService} answers.
+ * 5. from an agent of the grantee account (`actor: 'agent'`): anything but
+ *    `GET` → 403, and a path outside conversations / agents / errors → 403
+ *    (the relay enforces the same; this is the instance's own check);
+ * 6. a method the role may not use → 403 (viewer: GET; admin: GET, POST);
+ * 7. otherwise the in-process {@link SupportApiService} answers.
  *
  * The answer goes back as `api_response` to the envelope's `replyQueueId`
  * (relay-validated as the grantee's queue). Every call is audited.
@@ -30,6 +33,8 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SupportAuditService, type SupportOutcome } from './support-audit.service.js';
 import { supportError } from './support-api.service.js';
 import {
+  isSupportAgentCaller,
+  isSupportAgentPath,
   isSupportApiPath,
   roleAllowsMethod,
   supportCallerFromEnvelope,
@@ -156,6 +161,11 @@ export class SupportRelayService {
     if (!allowed) return refuse(403, C.CODES.DISABLED, 'The owner of this instance has turned support access off');
     if (msg.encrypted === true) return refuse(403, C.CODES.ENCRYPTED, 'Support requests must not be encrypted');
     if (!isSupportApiPath(reqPath)) return refuse(403, C.CODES.PATH, 'A support grant reaches only /api/support/ paths');
+    if (isSupportAgentCaller(caller)) {
+      // An agent of the grantee account reads; it never acts, whatever the grant's role.
+      if (method !== C.AGENT_METHOD) return refuse(403, C.CODES.AGENT_READ_ONLY, 'An agent of the granted account can only read; a person restarts agents in the portal');
+      if (!isSupportAgentPath(reqPath)) return refuse(403, C.CODES.AGENT_PATH, 'An agent of the granted account can read conversations, agents and errors only');
+    }
     if (!roleAllowsMethod(caller.role, method)) return refuse(403, C.CODES.METHOD, `A ${caller.role} grant cannot send ${method || '(no method)'}`);
 
     const response = await this.api.handle(caller, { method, path: reqPath, ...(payload.body !== undefined ? { body: payload.body } : {}) });

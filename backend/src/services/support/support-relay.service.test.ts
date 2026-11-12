@@ -126,6 +126,55 @@ describe('SupportRelayService.handleRequest', () => {
     expect(sent[1].payload.status).toBe(403);
   });
 
+  it('serves an agent of the granted account a GET of agents, conversations and errors', async () => {
+    const { relay, api, sent, audits } = make();
+    const agent = { ...ENVELOPE, actor: 'agent' as const, agentName: 'Nova' };
+    for (const path of ['/support/agents', '/support/conversations?limit=30', '/support/conversations/c1/messages?limit=30&direction=backward', '/support/errors?limit=50']) {
+      await relay.handleRequest(req({ supportGrant: agent }, { path }));
+    }
+    expect(api.handle).toHaveBeenCalledTimes(4);
+    expect(api.handle.mock.calls[0][0]).toMatchObject({ kind: 'support', actor: 'agent', agentName: 'Nova' });
+    expect(sent.every((s) => s.payload.status === 200)).toBe(true);
+    expect(audits.every((a) => a.outcome === 'ok' && a.caller?.actor === 'agent')).toBe(true);
+  });
+
+  it('refuses anything but GET from an agent, whatever the role, and audits it', async () => {
+    const { relay, api, sent, audits } = make();
+    const agent = { ...ENVELOPE, role: 'admin' as const, actor: 'agent' as const, agentName: 'Nova' };
+    await relay.handleRequest(req({ supportGrant: agent }, { method: 'POST', path: '/support/agents/a-dev/restart' }));
+    await relay.handleRequest(req({ supportGrant: agent }, { method: 'DELETE', path: '/support/agents' }));
+    expect(api.handle).not.toHaveBeenCalled();
+    expect(sent.map((s) => [s.payload.status, (s.payload.body as { code: string }).code])).toEqual([
+      [403, CODES.AGENT_READ_ONLY],
+      [403, CODES.AGENT_READ_ONLY],
+    ]);
+    expect((sent[0].payload.body as { error: string }).error).toMatch(/only read/);
+    expect(audits).toEqual([
+      expect.objectContaining({ outcome: 'refused', status: 403, code: CODES.AGENT_READ_ONLY, caller: expect.objectContaining({ actor: 'agent', agentName: 'Nova' }) }),
+      expect.objectContaining({ outcome: 'refused', status: 403, code: CODES.AGENT_READ_ONLY }),
+    ]);
+  });
+
+  it('refuses settings and every other area to an agent, and audits it', async () => {
+    const { relay, api, sent, audits } = make();
+    const agent = { ...ENVELOPE, actor: 'agent' as const };
+    for (const path of ['/support/settings', '/support/whoami', '/support/settings/agents']) {
+      await relay.handleRequest(req({ supportGrant: agent }, { path }));
+    }
+    expect(api.handle).not.toHaveBeenCalled();
+    expect(sent.every((s) => s.payload.status === 403 && (s.payload.body as { code: string }).code === CODES.AGENT_PATH)).toBe(true);
+    expect(audits).toHaveLength(3);
+    expect(audits.every((a) => a.outcome === 'refused' && a.code === CODES.AGENT_PATH)).toBe(true);
+  });
+
+  it('still lets a person read settings, with or without an actor in the envelope', async () => {
+    const { relay, api, audits } = make();
+    await relay.handleRequest(req({}, { path: '/support/settings' }));
+    await relay.handleRequest(req({ supportGrant: { ...ENVELOPE, actor: 'person' } }, { path: '/support/settings' }));
+    expect(api.handle).toHaveBeenCalledTimes(2);
+    expect(audits.every((a) => a.outcome === 'ok')).toBe(true);
+  });
+
   it('refuses an encrypted payload', async () => {
     const { relay, api, sent } = make();
     await relay.handleRequest(req({ encrypted: true }));

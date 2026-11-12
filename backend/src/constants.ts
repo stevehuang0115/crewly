@@ -10522,6 +10522,16 @@ export const SUPPORT_ACCESS_CONSTANTS = {
 	ROLES: ['viewer', 'admin'] as readonly string[],
 	/** Methods each role may use (the relay enforces the same) */
 	ROLE_METHODS: { viewer: ['GET'], admin: ['GET', 'POST'] } as Readonly<Record<string, readonly string[]>>,
+	/** Who sent a granted request: a person in the portal, or an agent of the grantee account */
+	ACTOR_PERSON: 'person',
+	ACTOR_AGENT: 'agent',
+	/** The name an agent request carries: 1..64 of these characters (the relay's rule) */
+	AGENT_NAME_PATTERN: /^[A-Za-z0-9 ._-]{1,64}$/,
+	AGENT_NAME_MAX_CHARS: 64,
+	/** The only method an agent caller may use, whatever the grant's role */
+	AGENT_METHOD: 'GET',
+	/** First path segments after `/support/` an agent caller may read (never `settings`, never `whoami`) */
+	AGENT_AREAS: ['conversations', 'agents', 'errors'] as readonly string[],
 	/** Relay message type of a request and its answer */
 	REQUEST_TYPE: 'api_request',
 	RESPONSE_TYPE: 'api_response',
@@ -10559,6 +10569,8 @@ export const SUPPORT_ACCESS_CONSTANTS = {
 	},
 	/** Activity-log actor `via` for a grantee */
 	ACTOR_VIA: 'support-grant',
+	/** Activity-log actor `via` for an agent of the grantee account */
+	ACTOR_VIA_AGENT: 'support-grant-agent',
 	/** Activity-log target type */
 	TARGET_TYPE: 'support-path',
 	/** Refusal codes the instance answers with */
@@ -10571,5 +10583,108 @@ export const SUPPORT_ACCESS_CONSTANTS = {
 		BAD_REQUEST: 'support_bad_request',
 		AGENT_STOPPED_BY_OWNER: 'support_agent_owner_stopped',
 		UNAVAILABLE: 'support_unavailable',
+		/** An agent caller sent something other than GET (same code as the relay's) */
+		AGENT_READ_ONLY: 'support_agent_read_only',
+		/** An agent caller asked for a path outside its areas (same code as the relay's) */
+		AGENT_PATH: 'support_agent_path_refused',
 	},
+} as const;
+
+/**
+ * Support access, the grantee's side: agents of an account that RECEIVED a
+ * grant read the granting account's machine (crewly#1558,
+ * `specs/2026-11-12-support-access-agent-read.md`).
+ *
+ * The agent asks this machine's backend (`/api/support-view/*`, the
+ * `support-view-instance` skill); the backend sends one `GET` over the Cloud
+ * relay to the granted machine and waits for its `api_response`.
+ */
+export const SUPPORT_VIEW_CONSTANTS = {
+	/** Cloud API of grants, relative to the Cloud base URL */
+	GRANTS_PATH: '/api/cloud/support-grants',
+	/**
+	 * Suffix of the grants this account RECEIVED and may use now. A machine's
+	 * Cloud login may call it; the plain list is for a portal sign-in only.
+	 */
+	RECEIVED_SUFFIX: '/received',
+	/** Suffix of one grant's granted machines */
+	INSTANCES_SUFFIX: '/instances',
+	/** Grant status that may be used */
+	ACTIVE_STATUS: 'active',
+	/** Timeout of a Cloud grant lookup */
+	CLOUD_TIMEOUT_MS: 15_000,
+	/** How long to wait for the granted machine's answer */
+	RESPONSE_TIMEOUT_MS: 20_000,
+	/** Largest answer body accepted, as serialised JSON characters */
+	MAX_RESPONSE_CHARS: 1_000_000,
+	/** Most requests waiting for an answer at once */
+	MAX_PENDING: 20,
+	/** Wrapper key naming the asking agent on an agent request */
+	AGENT_KEY: 'supportAgent',
+	/** A conversation id that may be put in a path (one clean segment) */
+	CONVERSATION_ID_PATTERN: /^[A-Za-z0-9._~:@,+=-]{1,200}$/,
+	/** A message cursor (base64url) */
+	CURSOR_PATTERN: /^[A-Za-z0-9_-]{1,512}$/,
+	/** A grant or machine selector an agent may pass */
+	SELECTOR_MAX_CHARS: 200,
+	/** Page sizes an agent read asks for (default / most) */
+	DEFAULT_CONVERSATIONS: 30,
+	MAX_CONVERSATIONS: 100,
+	DEFAULT_MESSAGES: 30,
+	MAX_MESSAGES: 100,
+	DEFAULT_ERROR_LINES: 50,
+	MAX_ERROR_LINES: 200,
+	/** Areas an agent may read on the granted machine */
+	AREAS: {
+		AGENTS: 'agents',
+		CONVERSATIONS: 'conversations',
+		MESSAGES: 'messages',
+		ERRORS: 'errors',
+	},
+	/** Refusal codes of the relay's send endpoint (JSON error body `code`) */
+	RELAY_CODES: {
+		AGENT_ACCESS_OFF: 'support_agent_access_off',
+		AGENT_READ_ONLY: 'support_agent_read_only',
+		AGENT_PATH: 'support_agent_path_refused',
+		AGENT_RATE_LIMITED: 'support_agent_rate_limited',
+		PATH: 'support_path_refused',
+		METHOD: 'support_method_refused',
+		REPLY_QUEUE: 'support_reply_queue_required',
+	},
+	/** Why a read failed, as the local API and the skill name it */
+	FAILURES: {
+		ACCESS_ENDED: 'access_ended',
+		AGENT_ACCESS_OFF: 'agent_access_off',
+		READ_ONLY: 'read_only',
+		NOT_ALLOWED: 'not_allowed',
+		RATE_LIMITED: 'rate_limited',
+		OFFLINE: 'offline',
+		DISABLED: 'disabled',
+		NOT_FOUND: 'not_found',
+		/** This machine is not signed in to Cloud or has no relay queue yet */
+		NOT_CONNECTED: 'not_connected',
+		/** The owner of THIS machine turned agent use of grants off */
+		TURNED_OFF_HERE: 'turned_off_here',
+		/** More than one grant / machine matches and none was named */
+		CHOOSE: 'choose',
+		/** The asking agent works for someone other than the owner right now */
+		OWNER_ONLY: 'owner_only',
+		/** This Crewly Cloud has no received-grants list for machines yet */
+		CLOUD_UNSUPPORTED: 'cloud_unsupported',
+		/** A value the agent passed was refused before anything was sent */
+		INVALID: 'invalid',
+		FAILED: 'failed',
+	},
+	/** Private-source tracker: person id prefix and connector id of a support read */
+	PRIVATE_SOURCE_PERSON_PREFIX: 'support:',
+	PRIVATE_SOURCE_CONNECTOR: 'support-access',
+	/** Activity-log actions on the reading machine */
+	ACTIONS: {
+		READ: 'support-view.read',
+		REFUSED: 'support-view.refused',
+	},
+	/** Activity-log target type (the grant) */
+	TARGET_TYPE: 'support-grant',
+	/** Activity-log actor `via` of the reading agent */
+	ACTOR_VIA: 'support-view',
 } as const;

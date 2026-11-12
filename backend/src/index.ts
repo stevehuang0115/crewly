@@ -3968,6 +3968,18 @@ void (async () => {
 								error: supportErr instanceof Error ? supportErr.message : String(supportErr),
 							});
 						}
+
+						// Support view (crewly#1558): this machine's agents read the
+						// machines of accounts that gave THIS account support access
+						// (support-view-instance skill). Read only. Non-fatal.
+						try {
+							const { startSupportView } = await import('./services/support/support.wiring.js');
+							startSupportView({ cloudSync: sync });
+						} catch (supportViewErr) {
+							this.logger.warn('SupportViewService wiring skipped', {
+								error: supportViewErr instanceof Error ? supportViewErr.message : String(supportViewErr),
+							});
+						}
 					}
 				} catch (err) {
 					// Adapter wiring failure is non-fatal — local OSS UI still works.

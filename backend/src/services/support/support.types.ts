@@ -7,7 +7,13 @@
  * envelope's shape here and turns it into a {@link SupportCaller}: the only
  * identity the support API accepts. A caller is never the owner.
  *
- * `specs/2026-11-10-support-access-instance.md`
+ * The envelope also says who sent the request: a person in the portal
+ * (`actor: 'person'`, also what a relay that sends no `actor` means) or an
+ * agent of the grantee account (`actor: 'agent'`, with its `agentName`). An
+ * agent only reads, and only conversations, agents and errors.
+ *
+ * `specs/2026-11-10-support-access-instance.md`,
+ * `specs/2026-11-12-support-access-agent-read.md`
  *
  * @module services/support/support.types
  */
@@ -16,6 +22,9 @@ import { SUPPORT_ACCESS_CONSTANTS } from '../../constants.js';
 
 /** Grant roles: viewer reads; admin reads and restarts agents. */
 export type SupportRole = 'viewer' | 'admin';
+
+/** Who sent a granted request: a person in the portal, or an agent of the grantee account. */
+export type SupportActorKind = 'person' | 'agent';
 
 /** The envelope the relay adds to a granted request (crewly-services `relay/src/support-grants.ts`). */
 export interface SupportGrantEnvelope {
@@ -26,6 +35,10 @@ export interface SupportGrantEnvelope {
   granteeAccountId: string;
   /** The grantee's relay queue the instance answers to (relay-validated) */
   replyQueueId: string;
+  /** Who sent it; absent (an older relay) means a person */
+  actor?: SupportActorKind;
+  /** The asking agent's name, only on an agent request and only when well formed */
+  agentName?: string;
 }
 
 /**
@@ -81,8 +94,22 @@ export function isSupportGrantEnvelope(value: unknown): value is SupportGrantEnv
     typeof v['granteeEmail'] === 'string' &&
     v['granteeEmail'].length <= MAX_FIELD &&
     isField(v['granteeAccountId']) &&
-    isField(v['replyQueueId'])
+    isField(v['replyQueueId']) &&
+    // An older relay sends no actor; a value that is neither kind is refused, not guessed.
+    (v['actor'] === undefined || v['actor'] === SUPPORT_ACCESS_CONSTANTS.ACTOR_PERSON || v['actor'] === SUPPORT_ACCESS_CONSTANTS.ACTOR_AGENT)
   );
+}
+
+/**
+ * The agent name of an envelope, when it is well formed.
+ *
+ * @param value - Raw `agentName`
+ * @returns The trimmed name (1..64 of `[A-Za-z0-9 ._-]`), or undefined
+ */
+export function sanitizeSupportAgentName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const name = value.trim();
+  return SUPPORT_ACCESS_CONSTANTS.AGENT_NAME_PATTERN.test(name) ? name : undefined;
 }
 
 /**
@@ -93,6 +120,8 @@ export function isSupportGrantEnvelope(value: unknown): value is SupportGrantEnv
  */
 export function parseSupportGrantEnvelope(value: unknown): SupportGrantEnvelope | null {
   if (!isSupportGrantEnvelope(value)) return null;
+  const actor: SupportActorKind = value.actor === SUPPORT_ACCESS_CONSTANTS.ACTOR_AGENT ? 'agent' : 'person';
+  const agentName = actor === 'agent' ? sanitizeSupportAgentName((value as { agentName?: unknown }).agentName) : undefined;
   return {
     grantId: value.grantId,
     role: value.role,
@@ -100,7 +129,19 @@ export function parseSupportGrantEnvelope(value: unknown): SupportGrantEnvelope 
     granteeEmail: value.granteeEmail,
     granteeAccountId: value.granteeAccountId,
     replyQueueId: value.replyQueueId,
+    actor,
+    ...(agentName ? { agentName } : {}),
   };
+}
+
+/**
+ * Whether a caller is an agent of the grantee account (not a person).
+ *
+ * @param caller - Caller or envelope
+ * @returns True only for `actor: 'agent'`
+ */
+export function isSupportAgentCaller(caller: Pick<SupportGrantEnvelope, 'actor'> | null | undefined): boolean {
+  return caller?.actor === SUPPORT_ACCESS_CONSTANTS.ACTOR_AGENT;
 }
 
 /**
@@ -133,6 +174,20 @@ export function isSupportApiPath(path: unknown): path is string {
   const segments = pathname.slice(1).split('/');
   if (segments.length < 2) return false;
   return segments.every((s) => SEGMENT.test(s) && s !== '.' && s !== '..');
+}
+
+/**
+ * Whether an agent caller may read a path: its first segment after
+ * `/support/` is one of the agent areas (conversations, agents, errors).
+ * Settings and everything else stay with people.
+ *
+ * @param path - A path accepted by {@link isSupportApiPath}
+ * @returns True when an agent may read it
+ */
+export function isSupportAgentPath(path: string): boolean {
+  if (!isSupportApiPath(path)) return false;
+  const first = splitSupportPath(path).segments[0] ?? '';
+  return SUPPORT_ACCESS_CONSTANTS.AGENT_AREAS.includes(first);
 }
 
 /**

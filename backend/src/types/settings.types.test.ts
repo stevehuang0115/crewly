@@ -1124,21 +1124,33 @@ describe('API Key Management Types', () => {
 });
 
 describe('Support settings (crewly#1558)', () => {
-  it('defaults support.allowGrantees to on', () => {
-    expect(getDefaultSettings().support).toEqual({ allowGrantees: true });
+  it('defaults support.allowGrantees and support.allowAgentViews to on', () => {
+    expect(getDefaultSettings().support).toEqual({ allowGrantees: true, allowAgentViews: true });
   });
 
   it('merges a partial update and fills the section for settings files that predate it', () => {
     const defaults = getDefaultSettings();
     const old: CrewlySettings = { ...defaults, support: undefined };
-    expect(mergeSettings(old, {}).support).toEqual({ allowGrantees: true });
-    expect(mergeSettings(defaults, { support: { allowGrantees: false } }).support).toEqual({ allowGrantees: false });
+    expect(mergeSettings(old, {}).support).toEqual({ allowGrantees: true, allowAgentViews: true });
+    expect(mergeSettings(defaults, { support: { allowGrantees: false } }).support).toEqual({ allowGrantees: false, allowAgentViews: true });
+    expect(mergeSettings(defaults, { support: { allowAgentViews: false } }).support).toEqual({ allowGrantees: true, allowAgentViews: false });
+    // A file saved before the agent switch existed keeps its own value and gains the default.
+    const before = { ...defaults, support: { allowGrantees: false } as CrewlySettings['support'] };
+    expect(mergeSettings(before, {}).support).toEqual({ allowGrantees: false, allowAgentViews: true });
   });
 
   it('counts a support update as an update and validates the type', () => {
     expect(hasSettingsUpdates({ support: { allowGrantees: false } })).toBe(true);
-    const bad = { ...getDefaultSettings(), support: { allowGrantees: 'no' as unknown as boolean } };
+    const bad = { ...getDefaultSettings(), support: { allowGrantees: 'no' as unknown as boolean, allowAgentViews: true } };
     expect(validateSettings(bad).errors).toContain('support.allowGrantees must be a boolean');
     expect(validateSettings(getDefaultSettings()).valid).toBe(true);
+  });
+
+  it('validates support.allowAgentViews and accepts a file that predates it', () => {
+    expect(hasSettingsUpdates({ support: { allowAgentViews: false } })).toBe(true);
+    const bad = { ...getDefaultSettings(), support: { allowGrantees: true, allowAgentViews: 'no' as unknown as boolean } };
+    expect(validateSettings(bad).errors).toContain('support.allowAgentViews must be a boolean');
+    const old = { ...getDefaultSettings(), support: { allowGrantees: true } as CrewlySettings['support'] };
+    expect(validateSettings(old).valid).toBe(true);
   });
 });

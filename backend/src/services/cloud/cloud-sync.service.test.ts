@@ -7,7 +7,7 @@
  * @module services/cloud/cloud-sync.service.test
  */
 
-import { CloudSyncService, registerRetryDelay } from './cloud-sync.service.js';
+import { CloudSyncService, RelaySendRefusedError, registerRetryDelay } from './cloud-sync.service.js';
 import { NetworkStatusService } from '../core/network-status.service.js';
 import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
 import type { CloudSyncConfig, SyncDevice } from './cloud-sync.types.js';
@@ -1284,6 +1284,61 @@ describe('CloudSyncService', () => {
     });
   });
 
+  // ----- sendSupportAgentRequest (crewly#1558) ------------------------------
+
+  describe('sendSupportAgentRequest', () => {
+    const DATA = { id: 'r1', method: 'GET', path: '/support/agents' };
+
+    /** Start the service with a registered queue and a clean fetch mock. */
+    async function startWithQueue(): Promise<void> {
+      service.start(testConfig);
+      await flushPromises();
+      (service as unknown as { queueId: string }).queueId = 'q-mine';
+      mockFetch.mockClear();
+    }
+
+    it("sends this machine's queue id as fromDeviceName and names the agent", async () => {
+      await startWithQueue();
+      mockFetch.mockResolvedValue(mockResponse({ success: true }));
+
+      await service.sendSupportAgentRequest('q-theirs', DATA, 'Nova');
+
+      const sendCall = mockFetch.mock.calls.find(([url]) => typeof url === 'string' && url.endsWith(CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES));
+      expect(sendCall).toBeDefined();
+      const body = JSON.parse(sendCall![1]!.body as string);
+      expect(body.peerQueueId).toBe('q-theirs');
+      expect(JSON.parse(body.payload)).toEqual({ type: 'api_request', data: DATA, encrypted: false, fromDeviceName: 'q-mine', supportAgent: 'Nova' });
+    });
+
+    it('throws the relay status and code of a refusal, without the token', async () => {
+      await startWithQueue();
+      mockFetch.mockResolvedValue(mockResponse({ error: 'Agent access is off', code: 'support_agent_access_off' }, 403));
+
+      const error = await service.sendSupportAgentRequest('q-theirs', DATA, 'Nova').catch((e) => e);
+
+      expect(error).toBeInstanceOf(RelaySendRefusedError);
+      expect(error).toMatchObject({ status: 403, code: 'support_agent_access_off' });
+      expect(String(error.message)).not.toContain(TOKEN);
+    });
+
+    it('keeps the status when the refusal has no JSON code', async () => {
+      await startWithQueue();
+      mockFetch.mockResolvedValue({ ok: false, status: 404, text: jest.fn().mockResolvedValue('Peer queue not found') } as unknown as Response);
+
+      await expect(service.sendSupportAgentRequest('q-theirs', DATA, 'Nova')).rejects.toMatchObject({ status: 404, code: null });
+    });
+
+    it('refuses before sending when the machine has no queue yet or is not started', async () => {
+      await expect(service.sendSupportAgentRequest('q-theirs', DATA, 'Nova')).rejects.toThrow(/not started/);
+      service.start(testConfig);
+      await flushPromises();
+      (service as unknown as { queueId: string | null }).queueId = null;
+      mockFetch.mockClear();
+      await expect(service.sendSupportAgentRequest('q-theirs', DATA, 'Nova')).rejects.toThrow(/no relay queue/);
+      expect(mockFetch.mock.calls.some(([url]) => typeof url === 'string' && url.endsWith(CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES))).toBe(false);
+    });
+  });
+
   // ----- pollMessages (queueId null skip) -----------------------------------
 
   describe('pollMessages', () => {
@@ -1361,13 +1416,30 @@ describe('CloudSyncService', () => {
 
       it('carries a top-level supportGrant through, validated', async () => {
         const [msg] = await pollWith([JSON.stringify({ type: 'api_request', data: { id: 'r1', method: 'GET', path: '/support/agents' }, encrypted: false, fromDeviceName: 'q-b', supportGrant: { ...ENVELOPE, extra: 'dropped' } })]);
-        expect(msg.supportGrant).toEqual(ENVELOPE);
+        expect(msg.supportGrant).toEqual({ ...ENVELOPE, actor: 'person' });
         expect(msg.payload).toEqual({ id: 'r1', method: 'GET', path: '/support/agents' });
       });
 
       it('marks a malformed envelope as null, so no handler can treat it as an owner call', async () => {
         const [msg] = await pollWith([JSON.stringify({ type: 'api_request', data: { id: 'r1' }, fromDeviceName: 'q-b', supportGrant: { ...ENVELOPE, role: 'owner' } })]);
         expect(msg).toHaveProperty('supportGrant', null);
+      });
+
+      it('marks an envelope whose actor is neither a person nor an agent as null', async () => {
+        const [msg] = await pollWith([JSON.stringify({ type: 'api_request', data: { id: 'r1' }, fromDeviceName: 'q-b', supportGrant: { ...ENVELOPE, actor: 'owner' } })]);
+        expect(msg).toHaveProperty('supportGrant', null);
+      });
+
+      it('carries the agent actor and its name of an agent request', async () => {
+        const [msg] = await pollWith([JSON.stringify({ type: 'api_request', data: { id: 'r1', method: 'GET', path: '/support/agents' }, encrypted: false, fromDeviceName: 'q-b', supportGrant: { ...ENVELOPE, actor: 'agent', agentName: 'Nova' } })]);
+        expect(msg.supportGrant).toEqual({ ...ENVELOPE, actor: 'agent', agentName: 'Nova' });
+      });
+
+      it('emits an api_response as it came, for the support client to match by id', async () => {
+        const [msg] = await pollWith([JSON.stringify({ type: 'api_response', data: { id: 'r1', status: 200, body: { success: true } }, encrypted: false, fromDeviceName: 'Their Mac' })]);
+        expect(msg.type).toBe('api_response');
+        expect(msg.payload).toEqual({ id: 'r1', status: 200, body: { success: true } });
+        expect(msg).not.toHaveProperty('supportGrant');
       });
 
       it('never reads a grant from inside data, and adds nothing when there is none', async () => {
