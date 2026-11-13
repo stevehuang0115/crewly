@@ -638,7 +638,7 @@ export function formatOwnerSuccessDm(harnessId: HarnessId, result: { resumed: st
 export function formatAccountSuccessDm(account: string, machine: string): string {
 	return (
 		`Done: Claude Code account \`${account}\` is signed in on ${machine}. ` +
-		`It is in the fallback order now, and agents waiting on an exhausted runtime are moving to it now.`
+		`It is not used for fallback yet. To use it when another runtime runs out, add it to the order in Settings → Runtimes → More Claude Code accounts.`
 	);
 }
 

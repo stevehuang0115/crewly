@@ -384,19 +384,51 @@ export function testableRuntimes(runtimes: RuntimeAvailability[]): RuntimeAvaila
   return runtimes.filter((r) => !r.runtime.includes('@') && (r.selectable || r.exhausted || r.termsBlocked));
 }
 
+/**
+ * The chain entry of a Claude Code account.
+ *
+ * @param account - Account row from the server
+ * @returns `claude-code@<name>`
+ */
+function accountTarget(account: { name: string; target?: string }): string {
+  return account.target ?? `claude-code@${account.name}`;
+}
+
+/**
+ * Add an account to an order right after the last Claude Code entry (first when
+ * there is none), or take it out. Never adds it twice.
+ *
+ * @param chain - Current order
+ * @param target - `claude-code@<name>`
+ * @param on - True to add, false to remove
+ * @returns New order
+ */
+export function withAccountFallback(chain: string[], target: string, on: boolean): string[] {
+  if (!on) return chain.filter((r) => r !== target);
+  if (chain.includes(target)) return chain;
+  let at = -1;
+  chain.forEach((r, i) => {
+    if (r === 'claude-code' || r.startsWith('claude-code@')) at = i;
+  });
+  const next = [...chain];
+  next.splice(at + 1, 0, target);
+  return next;
+}
+
 /** Account names the backend accepts. */
 const ACCOUNT_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 /**
  * The owner's other Claude Code accounts (issue #942): add one (its sign-in
- * link goes to the owner's Slack DM), sign it in again, remove it. An added
- * account appears in the fallback order's "Add a runtime" list as
- * "Claude Code (name)".
+ * link goes to the owner's Slack DM), sign it in again, remove it. Signing an
+ * account in does not use it for fallback: the owner turns it on per account
+ * (off by default), which adds it to the global order after Claude Code.
  *
  * @param props - Hook result
  * @returns Section body
  */
 export const ClaudeAccountsSection: React.FC<FallbackPieceProps> = ({ fb }) => {
+  const { draft, setDraft } = fb;
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -417,8 +449,8 @@ export const ClaudeAccountsSection: React.FC<FallbackPieceProps> = ({ fb }) => {
       <div>
         <p className="text-[15px] font-semibold text-text">More Claude Code accounts</p>
         <p className="text-[13px] text-text-2">
-          Your own other Claude Code accounts on this machine, each with its own login. Add one to the order above (e.g. right after Claude Code) and agents move to
-          it when Claude Code runs out. Add only Claude Code accounts that you own.
+          Your own other Claude Code accounts on this machine, each with its own login. Signing one in does not use it for fallback. Turn it on below, then Save.
+          Add only Claude Code accounts that you own.
         </p>
       </div>
       {accounts.length > 0 && (
@@ -427,6 +459,20 @@ export const ClaudeAccountsSection: React.FC<FallbackPieceProps> = ({ fb }) => {
             <li key={a.name} className="flex items-center gap-3 border-b border-border-soft py-2 last:border-b-0" data-testid={`claude-account-${a.name}`}>
               <span className="min-w-0 flex-1 truncate text-sm font-semibold text-text">{a.name}</span>
               <span className={`text-[13px] ${a.signedIn ? TONE_CLASS.ok : TONE_CLASS.warn}`}>{a.signedIn ? 'Signed in' : 'Not signed in'}</span>
+              {draft && (
+                <label className="flex items-center gap-2 text-[13px] text-text-2">
+                  <span data-testid={`claude-account-fallback-label-${a.name}`}>
+                    Use this account when another runs out: {draft.chain.includes(accountTarget(a)) ? 'on' : 'off'}
+                  </span>
+                  <Toggle
+                    aria-label={`Use ${a.name} when another runs out`}
+                    checked={draft.chain.includes(accountTarget(a))}
+                    disabled={busy || (!a.signedIn && !draft.chain.includes(accountTarget(a)))}
+                    onChange={(e) => setDraft({ ...draft, chain: withAccountFallback(draft.chain, accountTarget(a), e.target.checked) })}
+                    data-testid={`claude-account-fallback-${a.name}`}
+                  />
+                </label>
+              )}
               <button
                 type="button"
                 className="rounded p-1.5 text-text-2 hover:bg-surface-2 hover:text-text disabled:opacity-30"
@@ -474,6 +520,7 @@ export const ClaudeAccountsSection: React.FC<FallbackPieceProps> = ({ fb }) => {
           Add and sign in
         </Button>
       </form>
+      <FallbackSaveBar fb={fb} onlyWhenDirty testId="claude-accounts-save" />
       {notice && (
         <p className="text-[13px] text-text-2" role="status" data-testid="claude-account-notice">
           {notice}
