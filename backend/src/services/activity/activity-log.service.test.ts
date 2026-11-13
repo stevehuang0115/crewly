@@ -113,7 +113,7 @@ describe('ActivityLogService', () => {
 });
 
 describe('helpers', () => {
-	it('isActivityActorType knows the support grantee actor (crewly#1558)', () => {
+	it('isActivityActorType knows the support actor (ops sidecar reads)', () => {
 		expect(isActivityActorType('support')).toBe(true);
 		expect(isActivityActorType('robot')).toBe(false);
 	});

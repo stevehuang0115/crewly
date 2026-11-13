@@ -1,12 +1,12 @@
 /**
- * Tests for GET /api/activity (crewly#881).
+ * Tests for GET /api/activity (crewly#881) and POST /api/activity/external.
  */
 import express from 'express';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { parseActivityQuery, registerActivityRoutes } from './activity.controller.js';
+import { parseActivityQuery, parseExternalActivity, registerActivityRoutes } from './activity.controller.js';
 import { ActivityLogService } from '../../services/activity/activity-log.service.js';
 import type { ComponentLogger } from '../../services/core/logger.service.js';
 
@@ -21,6 +21,7 @@ const quiet = (): ComponentLogger => ({ debug: jest.fn(), info: jest.fn(), warn:
 
 function app(log: ActivityLogService): express.Express {
 	const a = express();
+	a.use(express.json());
 	const router = express.Router();
 	registerActivityRoutes(router, () => log);
 	a.use('/api', router);
@@ -99,3 +100,83 @@ async function a_get(a: express.Express, url: string): Promise<Array<{ action: s
 	expect(res.status).toBe(200);
 	return res.body.data.entries;
 }
+
+describe('parseExternalActivity', () => {
+	const ok = { actor: { type: 'support', id: 'ops@crewlyai.com', via: 'ops-sidecar' }, action: 'ops.read', target: { type: 'ops-read', id: '/conversations' }, note: 'Read the conversation list.', after: { agent: 'support-ella', status: 200 } };
+
+	it('accepts a sidecar read and fixes the actor and target types itself', () => {
+		expect(parseExternalActivity(ok)).toEqual({
+			actor: { type: 'support', id: 'ops@crewlyai.com', via: 'ops-sidecar' },
+			action: 'ops.read',
+			target: { type: 'ops-read', id: '/conversations' },
+			after: { agent: 'support-ella', status: 200 },
+			note: 'Read the conversation list.',
+		});
+		expect(parseExternalActivity({ actor: { id: ' ops@crewlyai.com ' }, action: 'ops.refused', target: { id: '/settings' } })).toEqual({
+			actor: { type: 'support', id: 'ops@crewlyai.com', via: 'ops-sidecar' },
+			action: 'ops.refused',
+			target: { type: 'ops-read', id: '/settings' },
+		});
+	});
+
+	it('refuses any other actor, via, action or target type', () => {
+		expect(parseExternalActivity({ ...ok, actor: { ...ok.actor, type: 'owner' } })).toEqual({ error: 'actor.type must be support' });
+		expect(parseExternalActivity({ ...ok, actor: { ...ok.actor, via: 'owner-session' } })).toEqual({ error: 'actor.via must be ops-sidecar' });
+		expect(parseExternalActivity({ ...ok, action: 'team.member.updated' })).toEqual({ error: 'action must be one of ops.read, ops.refused' });
+		expect(parseExternalActivity({ ...ok, target: { type: 'team', id: 't1' } })).toEqual({ error: 'target.type must be ops-read' });
+	});
+
+	it('refuses a missing or overlong asker and path, and a note that is not text', () => {
+		expect(parseExternalActivity({ ...ok, actor: { type: 'support' } })).toHaveProperty('error');
+		expect(parseExternalActivity({ ...ok, actor: { id: 'a'.repeat(255) } })).toHaveProperty('error');
+		expect(parseExternalActivity({ ...ok, target: { id: '' } })).toHaveProperty('error');
+		expect(parseExternalActivity({ ...ok, target: { id: '/'.padEnd(257, 'x') } })).toHaveProperty('error');
+		expect(parseExternalActivity({ ...ok, note: 5 })).toEqual({ error: 'note must be a string' });
+		for (const body of [null, undefined, 'x', [], 7]) expect(parseExternalActivity(body)).toHaveProperty('error');
+	});
+
+	it('keeps only the agent name and status of `after`, and cuts a long note', () => {
+		const got = parseExternalActivity({ ...ok, note: 'n'.repeat(500), after: { agent: 7, status: 'ok', before: 'x', token: 'secret' } });
+		expect(got).not.toHaveProperty('after');
+		expect((got as { note: string }).note).toHaveLength(300);
+		expect(parseExternalActivity({ ...ok, after: { status: 404, extra: true } })).toMatchObject({ after: { status: 404 } });
+		expect(parseExternalActivity({ ...ok, after: { status: 99 } })).not.toHaveProperty('after');
+	});
+});
+
+describe('POST /api/activity/external', () => {
+	let dir: string;
+	let log: ActivityLogService;
+	beforeEach(() => {
+		dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-ext-'));
+		log = new ActivityLogService({ dir, now: () => new Date('2026-11-12T09:00:00Z'), logger: quiet() });
+	});
+	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+	it('records a sidecar read that GET /api/activity then returns', async () => {
+		const a = app(log);
+		const res = await request(a)
+			.post('/api/activity/external')
+			.send({ actor: { type: 'support', id: 'ops@crewlyai.com', via: 'ops-sidecar' }, action: 'ops.read', target: { type: 'ops-read', id: '/agents' }, note: 'Read the agent list.', after: { agent: null, status: 200 } });
+		expect(res.status).toBe(201);
+		expect(res.body).toEqual({ success: true, data: { id: expect.any(String) } });
+		const listed = await request(a).get('/api/activity?actorType=support');
+		expect(listed.body.data.entries).toEqual([
+			expect.objectContaining({ id: res.body.data.id, actor: { type: 'support', id: 'ops@crewlyai.com', via: 'ops-sidecar' }, action: 'ops.read', target: { type: 'ops-read', id: '/agents' }, after: { status: 200 }, note: 'Read the agent list.' }),
+		]);
+	});
+
+	it('answers 400 for a body that is not a sidecar read and writes nothing', async () => {
+		const a = app(log);
+		const res = await request(a).post('/api/activity/external').send({ actor: { type: 'owner', id: 'me' }, action: 'decision.resolved', target: { type: 'decision', id: 'd1' } });
+		expect(res.status).toBe(400);
+		expect(res.body.success).toBe(false);
+		expect((await request(a).get('/api/activity')).body.data.count).toBe(0);
+	});
+
+	it('is owner only', async () => {
+		const res = await request(app(log)).post('/api/activity/external').set('x-test-agent', '1').send({ actor: { id: 'ops@crewlyai.com' }, action: 'ops.read', target: { id: '/agents' } });
+		expect(res.status).toBe(403);
+		expect(await log.list()).toEqual([]);
+	});
+});

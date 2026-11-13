@@ -6160,6 +6160,13 @@ export const CLOUD_SYNC_CONSTANTS = {
 	 * from sleep and stranded messages sent to the old one (2026-11-06).
 	 */
 	RELAY_FOREIGN_QUEUE_ERROR: 'Not authorized to access this queue',
+	/**
+	 * Top-level key of a relay wrapper that marks a message as sent by ANOTHER
+	 * account. Older Cloud relays added it for "support access by invitation"
+	 * (crewly#1558, removed in 1.30.0); the relay refuses such sends again.
+	 * A message that still carries it is dropped, never handled as the owner's.
+	 */
+	FOREIGN_ACCOUNT_ENVELOPE_KEY: 'supportGrant',
 	/** Interval between heartbeat uploads (ms) */
 	HEARTBEAT_INTERVAL_MS: 30_000,
 	/**
@@ -8941,7 +8948,8 @@ export const PEOPLE_CONSTANTS = {
 	/**
 	 * chat-v2 message metadata key: people (ids) whose connector grants the
 	 * writing agent read inside the private-source window. Marks the message as
-	 * private-sourced (support access withholds it, crewly#1558).
+	 * private-sourced, so a reader that is not one of those people (the ops
+	 * sidecar, for one) withholds it.
 	 */
 	PRIVATE_SOURCE_METADATA_KEY: 'privateSourcePeople',
 	/** Error code when Crewly Cloud is too old for per-person access (sharing endpoint missing) */
@@ -10501,75 +10509,28 @@ export const COLLEAGUE_MESSAGE_CONSTANTS = {
 } as const;
 
 /**
- * Support access on the instance (crewly#1558 slice 2,
- * `specs/2026-11-10-support-access-instance.md`).
+ * Reads by the Crewly ops sidecar, as far as this instance knows them.
  *
- * A Crewly account the owner granted support access (viewer / admin) calls
- * this instance through the Cloud relay. The relay adds a trusted
- * `supportGrant` envelope to the request; the instance serves only
- * `/api/support/*`, in process, to that caller.
+ * The sidecar is a separate program the Crewly team installs on machines it
+ * runs for a customer (it is not part of this repo). It reads the local API
+ * for Crewly admins and reports each read here, so the machine's owner sees
+ * it in Settings › Activity. `specs/2026-11-12-ops-sidecar-activity.md`.
  */
-export const SUPPORT_ACCESS_CONSTANTS = {
-	/** Wrapper key of the envelope the relay adds (and strips from every sender payload) */
-	ENVELOPE_KEY: 'supportGrant',
-	/** `api_request` paths a grantee may use, relative to `/api` */
-	PATH_PREFIX: '/support/',
-	/** Longest request path accepted (matches the relay) */
-	MAX_PATH_LENGTH: 2048,
-	/** Longest attempted path written to the activity log */
-	MAX_AUDIT_PATH_CHARS: 200,
-	/** Grant roles */
-	ROLES: ['viewer', 'admin'] as readonly string[],
-	/** Methods each role may use (the relay enforces the same) */
-	ROLE_METHODS: { viewer: ['GET'], admin: ['GET', 'POST'] } as Readonly<Record<string, readonly string[]>>,
-	/** Relay message type of a request and its answer */
-	REQUEST_TYPE: 'api_request',
-	RESPONSE_TYPE: 'api_response',
-	/** What withheld private content is replaced with */
-	WITHHELD_PLACEHOLDER: '[withheld: private content]',
-	/** Conversations a list returns by default / at most */
-	DEFAULT_CONVERSATIONS: 50,
-	MAX_CONVERSATIONS: 200,
-	/** Messages a page returns by default / at most */
-	DEFAULT_MESSAGES: 50,
-	MAX_MESSAGES: 200,
-	/** Error lines returned by default / at most */
-	DEFAULT_ERROR_LINES: 100,
-	MAX_ERROR_LINES: 500,
-	/** Bytes read from the end of the service log for recent errors */
-	ERROR_TAIL_BYTES: 512 * 1024,
-	/** Longest error line returned (characters) */
-	MAX_ERROR_LINE_CHARS: 600,
-	/** Longest message text returned (characters) */
-	MAX_MESSAGE_CHARS: 8000,
-	/** Service log file under `<CREWLY_HOME>/logs` (the backend's stdout / stderr) */
-	SERVICE_LOG_DIR: 'logs',
-	SERVICE_LOG_FILE: 'service.log',
-	/** A log line counts as an error line when it carries one of these levels */
-	ERROR_LINE_PATTERN: /\b(?:WARN|ERROR|FATAL)\b/,
-	/** An identical successful read by the same grant is logged once per this window */
-	AUDIT_COLLAPSE_WINDOW_MS: 15 * 60 * 1000,
-	/** Most grant/method/path keys the audit remembers */
-	AUDIT_KEYS_MAX: 2000,
-	/** Activity-log actions */
-	ACTIONS: {
-		READ: 'support.read',
-		ACTION: 'support.action',
-		REFUSED: 'support.refused',
-	},
-	/** Activity-log actor `via` for a grantee */
-	ACTOR_VIA: 'support-grant',
+export const OPS_SIDECAR_CONSTANTS = {
+	/** Route under `/api` the sidecar reports a read to */
+	ACTIVITY_ROUTE: '/activity/external',
+	/** Activity-log actions the route accepts */
+	ACTIONS: ['ops.read', 'ops.refused'] as readonly string[],
+	/** Activity-log actor `via` of a sidecar read */
+	ACTOR_VIA: 'ops-sidecar',
 	/** Activity-log target type */
-	TARGET_TYPE: 'support-path',
-	/** Refusal codes the instance answers with */
-	CODES: {
-		DISABLED: 'support_disabled',
-		PATH: 'support_path_refused',
-		METHOD: 'support_method_refused',
-		ENCRYPTED: 'support_encrypted_refused',
-		NOT_FOUND: 'support_not_found',
-		BAD_REQUEST: 'support_bad_request',
-		AGENT_STOPPED_BY_OWNER: 'support_agent_owner_stopped',
-		UNAVAILABLE: 'support_unavailable',
-	},
+	TARGET_TYPE: 'ops-read',
+	/** Longest asker (email) accepted */
+	MAX_ACTOR_ID_CHARS: 254,
+	/** Longest read path accepted */
+	MAX_TARGET_ID_CHARS: 256,
+	/** Longest note accepted */
+	MAX_NOTE_CHARS: 300,
+	/** Longest asking-agent name accepted */
+	MAX_AGENT_CHARS: 120,
 } as const;

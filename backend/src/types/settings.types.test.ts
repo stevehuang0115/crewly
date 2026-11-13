@@ -1122,23 +1122,3 @@ describe('API Key Management Types', () => {
     });
   });
 });
-
-describe('Support settings (crewly#1558)', () => {
-  it('defaults support.allowGrantees to on', () => {
-    expect(getDefaultSettings().support).toEqual({ allowGrantees: true });
-  });
-
-  it('merges a partial update and fills the section for settings files that predate it', () => {
-    const defaults = getDefaultSettings();
-    const old: CrewlySettings = { ...defaults, support: undefined };
-    expect(mergeSettings(old, {}).support).toEqual({ allowGrantees: true });
-    expect(mergeSettings(defaults, { support: { allowGrantees: false } }).support).toEqual({ allowGrantees: false });
-  });
-
-  it('counts a support update as an update and validates the type', () => {
-    expect(hasSettingsUpdates({ support: { allowGrantees: false } })).toBe(true);
-    const bad = { ...getDefaultSettings(), support: { allowGrantees: 'no' as unknown as boolean } };
-    expect(validateSettings(bad).errors).toContain('support.allowGrantees must be a boolean');
-    expect(validateSettings(getDefaultSettings()).valid).toBe(true);
-  });
-});

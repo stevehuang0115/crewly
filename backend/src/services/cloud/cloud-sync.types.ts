@@ -9,7 +9,6 @@
  * @module services/cloud/cloud-sync.types
  */
 
-import type { SupportGrantEnvelope } from '../support/support.types.js';
 
 // ---------------------------------------------------------------------------
 // Cloud Sync State
@@ -261,14 +260,6 @@ export interface IncomingMessage {
   encrypted: boolean;
   /** ISO timestamp when the message was sent */
   sentAt: string;
-  /**
-   * The relay's support-grant envelope (crewly#1558), copied from the TOP
-   * level of the relay wrapper — never from `payload`. The relay strips that
-   * key from every sender-supplied payload, so it is present only when the
-   * relay vouched for a support grantee's request. `null` = the wrapper had
-   * the key but its shape was not a valid envelope; `undefined` = no key.
-   */
-  supportGrant?: SupportGrantEnvelope | null;
 }
 
 /**

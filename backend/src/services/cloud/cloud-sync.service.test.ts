@@ -1341,9 +1341,7 @@ describe('CloudSyncService', () => {
       }
     });
 
-    describe('support-grant envelope (crewly#1558)', () => {
-      const ENVELOPE = { grantId: 'g1', role: 'viewer', includePrivate: false, granteeEmail: 'help@crewlyai.com', granteeAccountId: 'acct-b', replyQueueId: 'q-b' };
-
+    describe('a message the relay marked as sent by another account', () => {
       /** Poll once with the given relay payloads and return the emitted messages. */
       async function pollWith(payloads: unknown[]): Promise<Array<Record<string, unknown>>> {
         service.start(testConfig);
@@ -1359,19 +1357,22 @@ describe('CloudSyncService', () => {
         return got;
       }
 
-      it('carries a top-level supportGrant through, validated', async () => {
-        const [msg] = await pollWith([JSON.stringify({ type: 'api_request', data: { id: 'r1', method: 'GET', path: '/support/agents' }, encrypted: false, fromDeviceName: 'q-b', supportGrant: { ...ENVELOPE, extra: 'dropped' } })]);
-        expect(msg.supportGrant).toEqual(ENVELOPE);
-        expect(msg.payload).toEqual({ id: 'r1', method: 'GET', path: '/support/agents' });
+      it('is acked and dropped: no handler ever sees it (valid, malformed or null envelope)', async () => {
+        const request = { type: 'api_request', data: { id: 'r1', method: 'GET', path: '/teams' }, encrypted: false, fromDeviceName: 'q-b' };
+        const got = await pollWith([
+          JSON.stringify({ ...request, supportGrant: { grantId: 'g1', role: 'admin' } }),
+          JSON.stringify({ ...request, supportGrant: 'nonsense' }),
+          JSON.stringify({ ...request, supportGrant: null }),
+        ]);
+        expect(got).toEqual([]);
+        const ack = mockFetch.mock.calls.find(([url]) => String(url).includes('/ack'));
+        expect(ack).toBeDefined();
+        expect(JSON.parse((ack![1] as { body: string }).body).messageIds).toHaveLength(3);
       });
 
-      it('marks a malformed envelope as null, so no handler can treat it as an owner call', async () => {
-        const [msg] = await pollWith([JSON.stringify({ type: 'api_request', data: { id: 'r1' }, fromDeviceName: 'q-b', supportGrant: { ...ENVELOPE, role: 'owner' } })]);
-        expect(msg).toHaveProperty('supportGrant', null);
-      });
-
-      it('never reads a grant from inside data, and adds nothing when there is none', async () => {
-        const [msg] = await pollWith([JSON.stringify({ type: 'api_request', data: { id: 'r1', supportGrant: ENVELOPE }, fromDeviceName: 'phone' })]);
+      it('reads the mark from the top of the wrapper only: a key inside data changes nothing', async () => {
+        const [msg] = await pollWith([JSON.stringify({ type: 'api_request', data: { id: 'r1', supportGrant: { grantId: 'g1' } }, fromDeviceName: 'phone' })]);
+        expect(msg.payload).toEqual({ id: 'r1', supportGrant: { grantId: 'g1' } });
         expect(msg).not.toHaveProperty('supportGrant');
       });
     });

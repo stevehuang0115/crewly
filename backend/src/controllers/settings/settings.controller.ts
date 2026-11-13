@@ -144,7 +144,7 @@ const DEEPSEEK_MODELS_URL = 'https://api.deepseek.com/v1/models';
 /**
  * Valid section names for reset endpoints
  */
-const VALID_SECTIONS: (keyof CrewlySettings)[] = ['general', 'chat', 'skills', 'apiKeys', 'support'];
+const VALID_SECTIONS: (keyof CrewlySettings)[] = ['general', 'chat', 'skills', 'apiKeys'];
 
 /**
  * GET /api/settings

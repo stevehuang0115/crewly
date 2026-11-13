@@ -92,7 +92,7 @@ describe('deliverReply', () => {
     expect(r2.ok && r2.destination).toEqual(expect.objectContaining({ conversationId: 'room-ce' }));
   });
 
-  it('marks a reply written after a connector read as private-sourced, wherever it lands (crewly#1558)', async () => {
+  it('marks a reply written after a connector read as private-sourced, wherever it lands', async () => {
     const audience = { recentPeople: (s: string) => (s === 'owen' ? ['owner'] : []), conversationKind: () => 'dm' as const, ownerDm: async () => 'dm-owen', record: jest.fn() };
     const d = deps({ audience });
     await deliverReply({ session: 'owen', content: 'Your inbox has 3 new invoices', hints: { conversationId: 'dm-owen' }, privateSourcePeople: ['forged'] }, d);

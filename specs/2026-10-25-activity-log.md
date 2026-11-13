@@ -73,6 +73,7 @@ Implementation: `backend/src/services/activity/activity-log.service.ts`
 | `send.gmail` | `GmailSendApprovalService.onSettled` (card) and `POST /api/google/gmail/held/:id` (page) | owner (Slack user + how, or request) | to, messageId, threadId, draftedBy, decisionId |
 | `send.gmail.declined` / `send.gmail.discarded` | same | owner, or system on a deadline | to, status |
 | `budget.exceeded` | `TeamBudgetGateService.notify` (#853) | system `budget-gate` | level, tokensToday, usdThisMonth, caps; `note` = detail |
+| `ops.read` / `ops.refused` | `POST /api/activity/external`, called by the Crewly ops sidecar on a machine the Crewly team runs (`specs/2026-11-12-ops-sidecar-activity.md`) | support (`id` = the Crewly admin's email, `via: ops-sidecar`) | asking agent, status; target = the read path |
 | `browser.action.approved` / `.rejected` / `.timed_out` / `.expired` / `.dropped` | `BrowserApprovalService.apply` | owner for approve / reject, else system | agentSession, live |
 | `settings.updated` / `settings.reset` / `settings.imported` | `settings.controller` (`PUT /`, `/reset`, `/reset/:section`, `/import`) | request | per section, the changed fields; `target.id` = `all` or the section; API keys never appear — `note` names the changed providers (`API keys changed: global.openai`) |
 | `connector.access.updated` | `PUT /api/connectors/access/:id`, `POST /api/connectors/remote-mcp/:id/access` | request | allowedRoles |

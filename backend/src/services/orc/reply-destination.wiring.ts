@@ -168,8 +168,8 @@ export interface DeliverReplyInput {
   /**
    * Set by the delivery itself, never by the caller: people whose connector
    * grants the agent read inside the private-source window. Stored on the
-   * chat row as `privateSourcePeople` so support access withholds it
-   * (crewly#1558).
+   * chat row as `privateSourcePeople`, so a reader that is not one of those
+   * people (the ops sidecar, for one) withholds it.
    */
   privateSourcePeople?: string[];
 }
@@ -327,7 +327,7 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
   let heldFrom: string | undefined;
   let held: HeldReply | undefined;
   if (d.audience) {
-    // crewly#1558: mark what draws on a connector, wherever it lands.
+    // Mark what draws on a connector, wherever it lands (readers such as the ops sidecar withhold it).
     const people = (() => {
       try {
         return d.audience!.recentPeople(input.session);

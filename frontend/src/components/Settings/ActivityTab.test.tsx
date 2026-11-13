@@ -45,8 +45,8 @@ describe('ActivityTab helpers', () => {
     expect(describeTarget({ type: 'settings', id: 'all' })).toBe('settings · all');
   });
 
-  it('names a support grantee (crewly#1558)', () => {
-    expect(describeActor({ type: 'support', id: 'help@crewlyai.com', via: 'support-grant' })).toBe('Support · help@crewlyai.com (support-grant)');
+  it('names Crewly support reading through the ops sidecar', () => {
+    expect(describeActor({ type: 'support', id: 'ops@crewlyai.com', via: 'ops-sidecar' })).toBe('Support · ops@crewlyai.com (ops-sidecar)');
   });
 
   it('renders changed fields as before → after lines', () => {
