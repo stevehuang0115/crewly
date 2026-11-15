@@ -6249,10 +6249,13 @@ void (async () => {
 			// state machine errors, Slack platform errors such as invalid_auth)
 			// are logged but must not trigger a full shutdown — the integration
 			// goes degraded, the backend stays up. The pattern list lives in
-			// NON_FATAL_UNHANDLED_REJECTION_PATTERNS (constants.ts).
+			// NON_FATAL_UNHANDLED_REJECTION_PATTERNS (constants.ts). An AbortError
+			// from a cancelled request is non-fatal too: the caller went away,
+			// nothing in the process is broken.
 			if (isNonFatalUnhandledRejection(reason)) {
 				this.logger.warn('Non-fatal unhandled rejection (suppressed shutdown)', {
 					reason: message,
+					stack: reason instanceof Error ? reason.stack : undefined,
 				});
 				return;
 			}

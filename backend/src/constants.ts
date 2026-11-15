@@ -5100,6 +5100,12 @@ export const NON_FATAL_UNHANDLED_REJECTION_PATTERNS = [
 	SLACK_PLATFORM_ERROR_PREFIX,
 ] as const;
 
+/** `name` of the error an AbortController raises when a request is cancelled */
+export const ABORT_ERROR_NAME = 'AbortError';
+
+/** Node's `code` on the same abort error (`node:stream`, `node:events`, …) */
+export const ABORT_ERROR_CODE = 'ABORT_ERR';
+
 /**
  * Slack Socket Mode reconnection constants.
  * Controls automatic reconnection when network drops cause the WebSocket
