@@ -15,6 +15,7 @@ import {
   PerAgentOrderSection,
   RuntimeSmokeTest,
   formatResetTime,
+  withAccountFallback,
   testableRuntimes,
 } from './RuntimeFallbackPanel';
 import { useRuntimeFallback } from '../../hooks/useRuntimeFallback';
@@ -245,6 +246,38 @@ describe('formatResetTime', () => {
       const section = screen.getByTestId('claude-accounts');
       expect(section).toHaveTextContent('Add only Claude Code accounts that you own.');
       expect(section).not.toHaveTextContent(/terms/i);
+    });
+
+    it('shows a signed-in account as off for fallback, and turning it on adds it after Claude Code once saved', async () => {
+      svc.getState.mockResolvedValue(withB());
+      svc.updateSettings.mockImplementation(async (settings: RuntimeFallbackState['settings']) => withB({ settings }));
+      render(<RuntimeFallbackPanel />);
+      const label = await screen.findByTestId('claude-account-fallback-label-b');
+      expect(label).toHaveTextContent('Use this account when another runs out: off');
+      expect(screen.getByTestId('claude-accounts')).not.toHaveTextContent(/keep going|limit/i);
+      const toggle = screen.getByLabelText('Use b when another runs out');
+      expect(toggle).not.toBeChecked();
+      fireEvent.click(toggle);
+      expect(screen.getByTestId('claude-account-fallback-label-b')).toHaveTextContent(': on');
+      fireEvent.click(screen.getByTestId('claude-accounts-save'));
+      await waitFor(() => expect(svc.updateSettings).toHaveBeenCalled());
+      const saved = svc.updateSettings.mock.calls[0][0] as RuntimeFallbackState['settings'];
+      expect(saved.chain.indexOf('claude-code@b')).toBe(saved.chain.indexOf('claude-code') + 1);
+    });
+
+    it('shows an account already in the order as on', async () => {
+      const base = makeState();
+      svc.getState.mockResolvedValue(withB({ settings: { ...base.settings, chain: ['claude-code', 'claude-code@b', ...base.settings.chain.filter((r) => r !== 'claude-code')] } }));
+      render(<RuntimeFallbackPanel />);
+      expect(await screen.findByTestId('claude-account-fallback-label-b')).toHaveTextContent(': on');
+    });
+
+    it('withAccountFallback adds after the last Claude entry, never twice, and removes', () => {
+      expect(withAccountFallback(['claude-code', 'codex-cli'], 'claude-code@b', true)).toEqual(['claude-code', 'claude-code@b', 'codex-cli']);
+      expect(withAccountFallback(['claude-code', 'claude-code@a', 'x'], 'claude-code@b', true)).toEqual(['claude-code', 'claude-code@a', 'claude-code@b', 'x']);
+      expect(withAccountFallback(['codex-cli'], 'claude-code@b', true)).toEqual(['claude-code@b', 'codex-cli']);
+      expect(withAccountFallback(['claude-code', 'claude-code@b'], 'claude-code@b', true)).toEqual(['claude-code', 'claude-code@b']);
+      expect(withAccountFallback(['claude-code', 'claude-code@b'], 'claude-code@b', false)).toEqual(['claude-code']);
     });
 
     it('adds an account and shows where the sign-in link went', async () => {

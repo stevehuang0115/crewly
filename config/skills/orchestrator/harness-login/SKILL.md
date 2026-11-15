@@ -42,9 +42,11 @@ bash config/skills/orchestrator/harness-login/execute.sh --harness claude --acco
 ```
 
 `--account <name>` signs in another of the owner's **own** Claude Code accounts
-("login claude work"): it gets its own config dir and login, and agents move to
-it when an earlier runtime in their fallback order runs out (chain entry
-`claude-code@work`). Nothing is restarted. Add only Claude Code accounts that
+("login claude work"): it gets its own config dir and login. Signing it in does
+not put it in any fallback order; the owner turns it on in Settings → Runtimes
+→ More Claude Code accounts (chain entry `claude-code@work`), and only then do
+agents move to it when an earlier runtime in their order runs out. Nothing is
+restarted. Add only Claude Code accounts that
 the owner owns; never use it for another person's account.
 
 ## What happens

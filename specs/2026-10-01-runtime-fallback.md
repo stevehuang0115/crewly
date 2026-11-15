@@ -198,6 +198,17 @@ extra account is a fallback target of its own: `claude-code@<name>`.
   `CLAUDE_CONFIG_DIR` and none of the default credentials; the code the owner
   pastes back is typed in; Claude Code stores the login in that account's dir. No
   agent is restarted; the fallback is told (`onAccountLogin`).
+- **Opt-in, off by default.** Signing an account in does **not** add it to any
+  order and does not move agents to it (`onAccountLogin` only clears a
+  signed-out mark and re-probes; the earlier auto-insert, #1205, is gone). The
+  owner turns an account on per account in Settings → Runtimes → "More Claude
+  Code accounts" ("Use this account when another runs out: off / on"), which
+  adds `claude-code@<name>` to the global order right after the last Claude Code
+  entry once saved; turning it off removes it. An order that already holds the
+  entry keeps it untouched, and for such an account a sign-in still lets agents
+  waiting on an exhausted runtime move to it (`reevaluateExhausted`). No owner
+  notice is sent for existing setups. The Slack confirmation after a sign-in
+  says the account is not used for fallback yet and where to turn it on.
 - **API.** The snapshot carries `claudeAccounts: [{ name, target, signedIn }]`;
   `POST /api/system/runtime-fallback/claude-accounts { name }` adds one and
   starts its sign-in (`…/:name/login` sends a fresh link);
