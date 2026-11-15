@@ -29,7 +29,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import chalk from 'chalk';
-import { CREWLY_CONSTANTS, SAFE_RESTART_CONSTANTS } from '../../../config/index.js';
+import { CREWLY_CONSTANTS, SAFE_RESTART_CONSTANTS, SERVER_CONSTANTS } from '../../../config/index.js';
 import { resolvePackageRoot } from '../utils/package-root.js';
 import {
 	SKIP_DRAIN_SIGNAL_GAP_MS,
@@ -217,18 +217,20 @@ const NATIVE_MODULE_CHECK = `# Fix native modules if node arch doesn't match a f
 PTY_DIR="node_modules/node-pty"
 PTY_NODE="$PTY_DIR/build/Release/pty.node"
 if [ -f "$PTY_NODE" ]; then
-  NODE_PLATFORM_ARCH=$("\${NODE_BIN:-node}" -p "process.platform + '-' + process.arch")
+  # Each lookup may fail (no \`file\`, node cannot start, file table full);
+  # a failed lookup skips the check, it never stops the script.
+  NODE_PLATFORM_ARCH=$("\${NODE_BIN:-node}" -p "process.platform + '-' + process.arch" 2>/dev/null) || NODE_PLATFORM_ARCH=""
   NODE_ARCH="\${NODE_PLATFORM_ARCH##*-}"
-  PTY_ARCH=$(file "$PTY_NODE" | grep -o 'arm64\\|x86_64' | head -1)
+  PTY_ARCH=$(file "$PTY_NODE" 2>/dev/null | grep -o 'arm64\\|x86_64' | head -1) || PTY_ARCH=""
   # Normalize: node uses "x64", file uses "x86_64"
   if [ "$NODE_ARCH" = "x64" ]; then NODE_ARCH="x86_64"; fi
   if [ -n "$PTY_ARCH" ] && [ "$NODE_ARCH" != "$PTY_ARCH" ] && { [ "$NODE_ARCH" = "arm64" ] || [ "$NODE_ARCH" = "x86_64" ]; }; then
     if [ -f "$PTY_DIR/prebuilds/$NODE_PLATFORM_ARCH/pty.node" ]; then
-      echo "$(date): Architecture mismatch (node=$NODE_ARCH, pty.node=$PTY_ARCH). Removing the stale build; using the $NODE_PLATFORM_ARCH prebuild." | tee -a "$LOG_DIR/service.log" 2>/dev/null
-      rm -rf "$PTY_DIR/build"
+      echo "$(date): Architecture mismatch (node=$NODE_ARCH, pty.node=$PTY_ARCH). Removing the stale build; using the $NODE_PLATFORM_ARCH prebuild." | tee -a "$LOG_DIR/service.log" 2>/dev/null || true
+      rm -rf "$PTY_DIR/build" || true
     else
-      echo "$(date): Architecture mismatch (node=$NODE_ARCH, pty.node=$PTY_ARCH). Rebuilding..." | tee -a "$LOG_DIR/service.log" 2>/dev/null
-      npm rebuild node-pty 2>&1 | tee -a "$LOG_DIR/service.log" 2>/dev/null
+      echo "$(date): Architecture mismatch (node=$NODE_ARCH, pty.node=$PTY_ARCH). Rebuilding..." | tee -a "$LOG_DIR/service.log" 2>/dev/null || true
+      npm rebuild node-pty 2>&1 | tee -a "$LOG_DIR/service.log" 2>/dev/null || true
     fi
   fi
 fi`;
@@ -916,6 +918,13 @@ export async function getSystemdState(): Promise<string | null> {
  * `~/.crewly/service.env`, prevents duplicate instances via a PID file, and
  * auto-restarts on crash.
  *
+ * Setup runs under `set -euo pipefail`; the restart loop does not. Inside
+ * the loop every command is guarded and every failure is logged to
+ * service.log, so the supervisor only ends on its two deliberate exits
+ * (port already in use, shutdown requested). Relaunches back off from
+ * SUPERVISOR_RESTART_DELAY_MIN_S to SUPERVISOR_RESTART_DELAY_MAX_S and reset
+ * after a run of SUPERVISOR_STABLE_RUN_S. Written for macOS bash 3.2.
+ *
  * @param projectRoot - Absolute path to the Crewly project directory
  * @param env - Environment captured at install time (defaults to the current process)
  * @returns The shell script content
@@ -924,6 +933,7 @@ export function generateCommandFile(
 	projectRoot: string,
 	env: ServiceEnvironment = captureServiceEnvironment(),
 ): string {
+	const S = SERVER_CONSTANTS;
 	return `#!/bin/bash
 # Crewly Backend Service — runs inside Terminal.app for FDA inheritance
 # Registered as a macOS Login Item for auto-start on boot.
@@ -968,39 +978,80 @@ fi
 
 echo "$(date): Starting Crewly backend ($NODE_BIN $("$NODE_BIN" --version))..." | tee -a "$LOG_DIR/service.log"
 
+# Append one timestamped line to service.log (and show it in the Terminal
+# tab). Never fails: when the log cannot be written the line still goes to
+# the tab, and when even that fails the supervisor carries on.
+log_line() {
+  echo "$(date 2>/dev/null): $*" | tee -a "$LOG_DIR/service.log" 2>/dev/null || echo "$*" 2>/dev/null || true
+}
+
+check_native_modules() {
+  ${NATIVE_MODULE_CHECK}
+}
+
+# Relaunch backoff: the wait doubles after each relaunch up to the cap and
+# goes back to the minimum after a run that stayed up for a while.
+RESTART_DELAY_MIN=\${${S.SUPERVISOR_RESTART_DELAY_MIN_ENV}:-${S.SUPERVISOR_RESTART_DELAY_MIN_S}}
+RESTART_DELAY_MAX=\${${S.SUPERVISOR_RESTART_DELAY_MAX_ENV}:-${S.SUPERVISOR_RESTART_DELAY_MAX_S}}
+STABLE_RUN_S=\${${S.SUPERVISOR_STABLE_RUN_ENV}:-${S.SUPERVISOR_STABLE_RUN_S}}
+RESTART_DELAY=$RESTART_DELAY_MIN
+
+# Wait before the next relaunch, then lengthen the wait for the one after.
+backoff_sleep() {
+  sleep "$RESTART_DELAY" 2>/dev/null || log_line "sleep failed (status $?); continuing."
+  RESTART_DELAY=$((RESTART_DELAY * 2))
+  if [ "$RESTART_DELAY" -gt "$RESTART_DELAY_MAX" ]; then RESTART_DELAY=$RESTART_DELAY_MAX; fi
+}
+
+# From here on nothing may end this script except the two deliberate exits
+# below (port already in use, shutdown requested). Under \`set -e\` /
+# \`pipefail\` any failing helper inside the loop (node, file, tee, a
+# redirect) ended the supervisor for good: on 2026-11-13 the machine ran out
+# of file handles, one such command failed, and Crewly stayed down for 5
+# hours. Every failure is now logged and the loop retries forever.
+set +e +u +o pipefail
+
 # Run in foreground so Terminal keeps the tab open; restart on crash
 while true; do
   # cd inside the loop so the cwd is refreshed after npm install -g replaces
   # the directory (new inode). Without this, the stale cwd causes ENOENT on
   # every process.cwd() call in Node. (#244)
-  cd "$CREWLY_DIR" || { echo "Cannot cd to $CREWLY_DIR"; exit 1; }
+  if ! cd "$CREWLY_DIR" 2>/dev/null; then
+    log_line "Cannot cd to $CREWLY_DIR, retrying in \${RESTART_DELAY}s..."
+    backoff_sleep
+    continue
+  fi
 
-  ${NATIVE_MODULE_CHECK}
+  check_native_modules || log_line "Native module check failed (status $?); starting anyway."
 
   # Check if port is already in use before starting (prevents restart loop
   # when another instance grabbed the port after a graceful shutdown)
   WEB_PORT=\${CREWLY_WEB_PORT:-8787}
   if lsof -iTCP:"\$WEB_PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
-    echo "$(date): Port \$WEB_PORT already in use — another instance is running. Exiting wrapper." | tee -a "$LOG_DIR/service.log"
-    rm -f "$PIDFILE"
+    log_line "Port \$WEB_PORT already in use — another instance is running. Exiting wrapper."
+    rm -f "$PIDFILE" || true
     exit 0
   fi
 
+  STARTED_AT=$(date +%s 2>/dev/null) || STARTED_AT=0
   "$NODE_BIN" dist/cli/cli/src/index.js start >> "$LOG_DIR/service.log" 2>&1 &
   NODE_PID=$!
-  echo "$NODE_PID" > "$PIDFILE"
+  echo "$NODE_PID" 2>/dev/null > "$PIDFILE" || log_line "Could not write $PIDFILE (status $?)."
   # Capture the real exit status. \`wait ... || true; EXIT_CODE=$?\` recorded
   # the status of \`true\`, so every exit — a crash included — was logged as
   # "code 0" and service.log could not tell a crash from a requested stop.
   EXIT_CODE=0
   wait "$NODE_PID" || EXIT_CODE=$?
   if [ -f "$SHUTDOWN_MARKER" ]; then
-    echo "$(date): Crewly exited with code $EXIT_CODE after a shutdown request — not restarting." | tee -a "$LOG_DIR/service.log"
-    rm -f "$PIDFILE"
+    log_line "Crewly exited with code $EXIT_CODE after a shutdown request — not restarting."
+    rm -f "$PIDFILE" || true
     exit 0
   fi
-  echo "$(date): Crewly exited with code $EXIT_CODE, restarting in 5s..." | tee -a "$LOG_DIR/service.log"
-  sleep 5
+  ENDED_AT=$(date +%s 2>/dev/null) || ENDED_AT=0
+  RAN_FOR=$((\${ENDED_AT:-0} - \${STARTED_AT:-0}))
+  if [ "$RAN_FOR" -ge "$STABLE_RUN_S" ]; then RESTART_DELAY=$RESTART_DELAY_MIN; fi
+  log_line "Crewly exited with code $EXIT_CODE, restarting in \${RESTART_DELAY}s..."
+  backoff_sleep
 done
 `;
 }

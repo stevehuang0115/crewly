@@ -1237,6 +1237,21 @@ export const SERVER_CONSTANTS = {
 	STARTUP_PROBE_TIMEOUT_MS: 1000,
 	/** After SIGTERM, how long a backend that never became healthy gets before SIGKILL (ms) */
 	STARTUP_ABORT_KILL_GRACE_MS: 5000,
+	/**
+	 * macOS supervisor loop (`crewly-start.command`): first wait before a
+	 * relaunch (s). Doubles after each relaunch up to the cap below.
+	 */
+	SUPERVISOR_RESTART_DELAY_MIN_S: 5,
+	/** Longest wait between relaunches in the supervisor loop (s) */
+	SUPERVISOR_RESTART_DELAY_MAX_S: 60,
+	/** A run that stayed up at least this long resets the wait to the minimum (s) */
+	SUPERVISOR_STABLE_RUN_S: 300,
+	/** Env var overriding SUPERVISOR_RESTART_DELAY_MIN_S (tests, tuning) */
+	SUPERVISOR_RESTART_DELAY_MIN_ENV: 'CREWLY_SUPERVISOR_RESTART_MIN_S',
+	/** Env var overriding SUPERVISOR_RESTART_DELAY_MAX_S */
+	SUPERVISOR_RESTART_DELAY_MAX_ENV: 'CREWLY_SUPERVISOR_RESTART_MAX_S',
+	/** Env var overriding SUPERVISOR_STABLE_RUN_S */
+	SUPERVISOR_STABLE_RUN_ENV: 'CREWLY_SUPERVISOR_STABLE_RUN_S',
 } as const;
 
 // ========================= AUDITOR SYSTEM =========================
