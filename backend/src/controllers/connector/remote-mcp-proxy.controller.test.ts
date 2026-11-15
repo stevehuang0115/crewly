@@ -291,3 +291,119 @@ describe('CREW-400: agents may not send mail through the Zoho connector', () => 
     expect(res.body.result).toEqual({ ok: true });
   });
 });
+
+describe('client disconnect mid-request (incident 2026-11-13: the abort shut the server down)', () => {
+  let proxy: http.Server;
+  let proxyPort: number;
+  let rejections: unknown[];
+  const onRejection = (reason: unknown): void => {
+    rejections.push(reason);
+  };
+  /** Let the close event, the abort and any rejection it causes run. */
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 100));
+
+  beforeEach(async () => {
+    rejections = [];
+    process.on('unhandledRejection', onRejection);
+    auth.getAccessToken.mockResolvedValue('AT-1');
+    proxy = http.createServer(app);
+    await new Promise<void>((r) => proxy.listen(0, '127.0.0.1', () => r()));
+    proxyPort = (proxy.address() as AddressInfo).port;
+  });
+
+  afterEach(async () => {
+    process.off('unhandledRejection', onRejection);
+    proxy.closeAllConnections();
+    await new Promise<void>((r) => proxy.close(() => r()));
+  });
+
+  /**
+   * POST a JSON-RPC body as an agent and hang up once the upstream server
+   * has started (but not finished) its answer.
+   *
+   * @param body - JSON-RPC request
+   * @param upstreamStarted - Resolves when the upstream double has sent its first bytes
+   */
+  async function postAndHangUp(body: unknown, upstreamStarted: Promise<void>): Promise<void> {
+    const payload = JSON.stringify(body);
+    const client = http.request({
+      host: '127.0.0.1',
+      port: proxyPort,
+      method: 'POST',
+      path: '/api/connectors/remote-mcp/zoho/mcp',
+      headers: { 'X-Agent-Session': 'dev-1', 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'Content-Length': Buffer.byteLength(payload) },
+    });
+    client.on('error', () => undefined);
+    client.on('response', (r) => r.on('error', () => undefined).resume());
+    client.end(payload);
+    await upstreamStarted;
+    await new Promise<void>((r) => setTimeout(r, 30));
+    client.destroy();
+    await settle();
+  }
+
+  it('a filtered tools/list whose agent hangs up while the upstream body is still arriving rejects nothing', async () => {
+    let started!: () => void;
+    const upstreamStarted = new Promise<void>((r) => (started = r));
+    let upstreamClosed = false;
+    respond = (_req, res) => {
+      res.on('close', () => (upstreamClosed = true));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.write('{"jsonrpc":"2.0","id":4,"result":{"tools":[');
+      started();
+      // Never ends: the agent goes away first.
+    };
+    await postAndHangUp({ jsonrpc: '2.0', id: 4, method: 'tools/list' }, upstreamStarted);
+    expect(rejections).toEqual([]);
+    // The upstream request was cancelled, not left running.
+    expect(upstreamClosed).toBe(true);
+  });
+
+  it('a streamed answer whose agent hangs up mid-stream rejects nothing and cancels upstream', async () => {
+    let started!: () => void;
+    const upstreamStarted = new Promise<void>((r) => (started = r));
+    let upstreamClosed = false;
+    respond = (_req, res) => {
+      res.on('close', () => (upstreamClosed = true));
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write('event: message\ndata: {"jsonrpc":"2.0","method":"notifications/progress"}\n\n');
+      started();
+    };
+    await postAndHangUp({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'ZohoMail_listEmails', arguments: {} } }, upstreamStarted);
+    expect(rejections).toEqual([]);
+    expect(upstreamClosed).toBe(true);
+  });
+
+  it('an agent that hangs up before the upstream answers rejects nothing', async () => {
+    let started!: () => void;
+    const upstreamStarted = new Promise<void>((r) => (started = r));
+    respond = () => started();
+    await postAndHangUp({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'ZohoMail_listEmails', arguments: {} } }, upstreamStarted);
+    expect(rejections).toEqual([]);
+  });
+
+  it('a failure that is not a disconnect still answers the agent instead of rejecting', async () => {
+    setRemoteMcpProxyDeps({
+      fetchImpl: async () => ({
+        status: 200,
+        headers: { get: (n: string) => (n === 'content-type' ? 'application/json' : null) },
+        body: null,
+        text: async () => {
+          throw new Error('upstream body broke');
+        },
+      }),
+    });
+    const res = await rpc({ jsonrpc: '2.0', id: 7, method: 'tools/list' });
+    await settle();
+    expect(res.body).toEqual({ jsonrpc: '2.0', id: 7, error: { code: -32000, message: 'Zoho is unreachable right now.' } });
+    expect(rejections).toEqual([]);
+  });
+
+  it('a collaborator that throws answers 502 instead of rejecting', async () => {
+    auth.usesOAuth.mockRejectedValue(new Error('token store unreadable'));
+    const res = await rpc({ jsonrpc: '2.0', id: 8, method: 'tools/list' });
+    await settle();
+    expect(res.body).toEqual({ jsonrpc: '2.0', id: 8, error: { code: -32000, message: 'The remote MCP proxy could not complete this request. Try again.' } });
+    expect(rejections).toEqual([]);
+  });
+});

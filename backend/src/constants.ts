@@ -9244,6 +9244,8 @@ export const REMOTE_MCP_CONSTANTS = {
 	ZOHO_DRAFT_TIMEOUT_MS: 30_000,
 	/** Message an agent gets when it calls a denied tool. */
 	DENIED_TOOL_MESSAGE: 'sending mail is not allowed for agents; save a draft instead',
+	/** Message an agent gets when the proxy itself failed while handling its request. */
+	PROXY_FAILED_MESSAGE: 'The remote MCP proxy could not complete this request. Try again.',
 	/**
 	 * OAuth state (clients, tokens, pending sign-ins) under CREWLY_HOME:
 	 * AES-256-GCM with the install's master key, mode 0600.
