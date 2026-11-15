@@ -6,7 +6,7 @@
  * @module utils/unhandled-rejection.test
  */
 
-import { isNonFatalUnhandledRejection, unhandledRejectionMessage } from './unhandled-rejection.utils.js';
+import { isAbortError, isNonFatalUnhandledRejection, unhandledRejectionMessage } from './unhandled-rejection.utils.js';
 import { NON_FATAL_UNHANDLED_REJECTION_PATTERNS, SLACK_PLATFORM_ERROR_PREFIX } from '../constants.js';
 
 describe('unhandledRejectionMessage', () => {
@@ -56,5 +56,40 @@ describe('isNonFatalUnhandledRejection', () => {
     // A bare "invalid_auth" thrown by app code is not a Slack SDK rejection;
     // only the SDK's "An API error occurred:" prefix is recognised.
     expect(isNonFatalUnhandledRejection(new Error('invalid_auth'))).toBe(false);
+  });
+});
+
+describe('isAbortError', () => {
+  it('recognises the reason an AbortController puts on its signal', () => {
+    const controller = new AbortController();
+    controller.abort();
+    expect(isAbortError(controller.signal.reason)).toBe(true);
+  });
+
+  it('recognises an error by name or by Node code', () => {
+    expect(isAbortError(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }))).toBe(true);
+    expect(isAbortError(Object.assign(new Error('The operation was aborted'), { code: 'ABORT_ERR' }))).toBe(true);
+  });
+
+  it('is false for other errors and non-objects', () => {
+    expect(isAbortError(new Error('This operation was aborted'))).toBe(false);
+    expect(isAbortError(new TypeError('fetch failed'))).toBe(false);
+    expect(isAbortError('AbortError')).toBe(false);
+    expect(isAbortError(null)).toBe(false);
+    expect(isAbortError(undefined)).toBe(false);
+  });
+});
+
+describe('isNonFatalUnhandledRejection — cancelled requests (incident 2026-11-13)', () => {
+  it('an AbortError from a cancelled request does not shut the backend down', () => {
+    const controller = new AbortController();
+    controller.abort();
+    expect(isNonFatalUnhandledRejection(controller.signal.reason)).toBe(true);
+    expect(isNonFatalUnhandledRejection(Object.assign(new Error('aborted'), { code: 'ABORT_ERR' }))).toBe(true);
+  });
+
+  it('a timeout or any other unknown rejection is still fatal', () => {
+    expect(isNonFatalUnhandledRejection(Object.assign(new Error('The operation timed out'), { name: 'TimeoutError' }))).toBe(false);
+    expect(isNonFatalUnhandledRejection(new Error('This operation was aborted'))).toBe(false);
   });
 });

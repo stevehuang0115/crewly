@@ -69,6 +69,14 @@ jest.mock('../../../config/index.js', () => ({
 		SHUTDOWN_MARKER_DIR: 'run',
 		SHUTDOWN_MARKER_FILE: 'shutdown-requested',
 	},
+	SERVER_CONSTANTS: {
+		SUPERVISOR_RESTART_DELAY_MIN_S: 5,
+		SUPERVISOR_RESTART_DELAY_MAX_S: 60,
+		SUPERVISOR_STABLE_RUN_S: 300,
+		SUPERVISOR_RESTART_DELAY_MIN_ENV: 'CREWLY_SUPERVISOR_RESTART_MIN_S',
+		SUPERVISOR_RESTART_DELAY_MAX_ENV: 'CREWLY_SUPERVISOR_RESTART_MAX_S',
+		SUPERVISOR_STABLE_RUN_ENV: 'CREWLY_SUPERVISOR_STABLE_RUN_S',
+	},
 }));
 
 // Safe-shutdown helpers: no network, no real waits.
@@ -888,7 +896,7 @@ describe('generateCommandFile', () => {
 	it('includes crash restart loop', () => {
 		const content = generateCommandFile('/any/path');
 		expect(content).toContain('while true');
-		expect(content).toContain('restarting in 5s');
+		expect(content).toContain('restarting in ${RESTART_DELAY}s');
 	});
 
 	it('includes native module arch check', () => {
@@ -915,7 +923,7 @@ describe('generateCommandFile', () => {
 
 	it('#244: cd has error handling', () => {
 		const content = generateCommandFile('/any/path');
-		expect(content).toContain('cd "$CREWLY_DIR" || {');
+		expect(content).toContain('if ! cd "$CREWLY_DIR" 2>/dev/null; then');
 	});
 
 	it.each([0, 1, 143])(
@@ -929,7 +937,7 @@ describe('generateCommandFile', () => {
 			const path = jest.requireActual<typeof import('path')>('path');
 			const content = generateCommandFile('/any/path');
 			const start = content.indexOf('  NODE_PID=$!');
-			const end = content.indexOf('  sleep 5', start);
+			const end = content.indexOf('  backoff_sleep', start);
 			expect(start).toBeGreaterThan(-1);
 			expect(end).toBeGreaterThan(start);
 			const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crewly-wrapper-'));
@@ -939,6 +947,8 @@ describe('generateCommandFile', () => {
 					`LOG_DIR="${logDir}"`,
 					`PIDFILE="${logDir}/crewly.pid"`,
 					`SHUTDOWN_MARKER="${logDir}/no-such-marker"`,
+					content.slice(content.indexOf('log_line() {'), content.indexOf('check_native_modules() {')),
+					'RESTART_DELAY=5; RESTART_DELAY_MIN=5; STABLE_RUN_S=300',
 					`( exit ${code} ) &`,
 					content.slice(start, end),
 				].join('\n');

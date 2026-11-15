@@ -38,6 +38,7 @@ import { actorFromRequest } from '../../services/activity/activity-log.service.j
 import { RemoteMcpService, remoteMcpConnectorId, type RemoteMcpServer } from '../../services/connector/remote-mcp.service.js';
 import { RemoteMcpAuthService } from '../../services/connector/remote-mcp-auth.service.js';
 import { REMOTE_MCP_CONSTANTS } from '../../constants.js';
+import { isAbortError } from '../../utils/unhandled-rejection.utils.js';
 import { deniedToolsFor, parseRpc, isDeniedCall, isToolsList, isToolCall, filterToolsBody } from './remote-mcp-tool-policy.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('RemoteMcpProxy');
@@ -117,10 +118,45 @@ function refuse(res: Response, body: string | undefined, message: string, httpSt
 /**
  * ALL /api/connectors/remote-mcp/:id/mcp
  *
+ * Never rejects. Express 4 does not catch a rejected async handler, so a
+ * rejection here would reach the process-level `unhandledRejection` handler
+ * and shut the backend down. That happened on 2026-11-13: an agent hung up
+ * while a filtered `tools/list` body was still arriving, the abort rejected
+ * the body read, and nothing caught it. An agent that went away is logged at
+ * debug and dropped; any other failure answers the agent with a 502.
+ *
  * @param req - Agent request (JSON-RPC over streamable HTTP)
  * @param res - The server's answer, streamed
  */
 export async function proxyRemoteMcp(req: Request, res: Response): Promise<void> {
+  try {
+    await forwardRemoteMcp(req, res);
+  } catch (err) {
+    const id = String(req.params.id ?? '');
+    const error = err instanceof Error ? err.name : 'unknown';
+    if (isAbortError(err) || res.destroyed) {
+      logger.debug('Remote MCP proxy: agent went away mid-request', { id, error });
+      return;
+    }
+    logger.warn('Remote MCP proxy: request failed', { id, error });
+    if (res.headersSent) {
+      if (!res.writableEnded) res.end();
+      return;
+    }
+    const raw = (req as Request & { rawBody?: string }).rawBody;
+    refuse(res, req.method === 'POST' ? raw : undefined, C.PROXY_FAILED_MESSAGE, 502);
+  }
+}
+
+/**
+ * Check, authorise and forward one agent request, streaming the answer back.
+ * May reject (an aborted body read, a collaborator that throws);
+ * {@link proxyRemoteMcp} is the only caller and catches everything.
+ *
+ * @param req - Agent request (JSON-RPC over streamable HTTP)
+ * @param res - The server's answer, streamed
+ */
+async function forwardRemoteMcp(req: Request, res: Response): Promise<void> {
   const id = String(req.params.id ?? '');
   const raw = (req as Request & { rawBody?: string }).rawBody;
   let body = req.method === 'POST' ? (raw ?? (req.body && Object.keys(req.body as object).length ? JSON.stringify(req.body) : undefined)) : undefined;
@@ -250,7 +286,17 @@ export async function proxyRemoteMcp(req: Request, res: Response): Promise<void>
 
   if (filterList && upstream.status === 200) {
     const type = upstream.headers.get('content-type') ?? '';
-    const text = filterToolsBody(await upstream.text(), type, denied);
+    let listBody: string;
+    try {
+      listBody = await upstream.text();
+    } catch (err) {
+      // The agent hung up while the list was still arriving: nothing to answer.
+      if (controller.signal.aborted) return;
+      logger.warn('Remote MCP proxy: upstream body unreadable', { id, error: err instanceof Error ? err.name : 'unknown' });
+      refuse(res, body, `${server.label} is unreachable right now.`, 502);
+      return;
+    }
+    const text = filterToolsBody(listBody, type, denied);
     for (const name of FORWARD_RESPONSE) {
       const v = upstream.headers.get(name);
       if (v) res.setHeader(name, v);

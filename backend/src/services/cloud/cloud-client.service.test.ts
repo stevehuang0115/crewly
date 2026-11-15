@@ -7,6 +7,7 @@
 import {
   CloudClientService,
   decodeJwtExp,
+  isTransientRefreshStatus,
   refreshTokenExpiresWithin,
   type PersistedCloudConfig,
 } from './cloud-client.service.js';
@@ -774,18 +775,158 @@ describe('CloudClientService', () => {
       expect(result).toBe(false);
     });
 
-    it('should prevent concurrent refresh attempts', async () => {
+    it('concurrent callers share one attempt and all get its result', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ tier: 'pro' }));
       await service.connect(CLOUD_URL, TOKEN, 'my-refresh-token');
+      mockFetch.mockClear();
+      mockFetch.mockResolvedValueOnce(mockResponse({ success: true, accessToken: 'new-access' }));
 
-      // Fire two concurrent refreshes
-      const [r1, r2] = await Promise.all([
+      const [r1, r2, r3] = await Promise.all([
+        service.tryRefreshToken(),
         service.tryRefreshToken(),
         service.tryRefreshToken(),
       ]);
 
-      // At least one should be blocked by the guard
-      expect(r1 === false || r2 === false).toBe(true);
+      expect([r1, r2, r3]).toEqual([true, true, true]);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(service.getToken()).toBe('new-access');
+    });
+  });
+
+  // ----- refresh resilience (incident 2026-11-13) ---------------------------
+
+  describe('refresh resilience: deadline, retry with backoff, transient vs rejected', () => {
+    const R = CLOUD_CONSTANTS.REFRESH;
+    const refreshJwt = (expMs: number): string =>
+      `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ type: 'refresh', exp: Math.floor(expMs / 1000) })).toString('base64url')}.s`;
+    /** Calls made to Cloud's refresh endpoint. */
+    const refreshCalls = (): number => mockFetch.mock.calls.filter((c) => String(c[0]).endsWith('/api/cloud/refresh')).length;
+
+    beforeEach(async () => {
+      jest.useFakeTimers();
+      mockFetch.mockReset();
+      mockFetch.mockResolvedValueOnce(mockResponse({ tier: 'pro' }));
+      await service.connect(CLOUD_URL, TOKEN);
+      // 25 days left: valid, and outside the rotate window.
+      service.setRefreshToken(refreshJwt(Date.now() + 25 * 86_400_000));
+      await jest.advanceTimersByTimeAsync(0);
+      mockFetch.mockReset();
+    });
+
+    afterEach(() => {
+      CloudClientService.resetInstance();
+      jest.useRealTimers();
+    });
+
+    it('an attempt that never settles is abandoned at the deadline, and the next call starts a fresh one', async () => {
+      mockFetch.mockImplementationOnce(() => new Promise<Response>(() => undefined));
+
+      const stuck = service.tryRefreshToken();
+      const sharer = service.tryRefreshToken();
+      await jest.advanceTimersByTimeAsync(R.ATTEMPT_DEADLINE_MS);
+      expect(await stuck).toBe(false);
+      expect(await sharer).toBe(false);
+      expect(service.wasLastRefreshFailureTransient()).toBe(true);
+
+      // Before the fix every later call returned false without trying.
+      mockFetch.mockResolvedValueOnce(mockResponse({ success: true, accessToken: 'after-stuck' }));
+      expect(await service.tryRefreshToken()).toBe(true);
+      expect(refreshCalls()).toBe(2);
+      expect(service.getToken()).toBe('after-stuck');
+      expect(service.wasLastRefreshFailureTransient()).toBe(false);
+    });
+
+    it('a network failure schedules retries with backoff until one succeeds', async () => {
+      mockFetch.mockRejectedValue(new TypeError('fetch failed'));
+
+      expect(await service.tryRefreshToken()).toBe(false);
+      expect(service.wasLastRefreshFailureTransient()).toBe(true);
+      expect(refreshCalls()).toBe(1);
+
+      // 30 s, 60 s, 120 s, 240 s, then capped at 300 s.
+      const waits = [R.RETRY_INITIAL_DELAY_MS, 60_000, 120_000, 240_000, R.RETRY_MAX_DELAY_MS, R.RETRY_MAX_DELAY_MS];
+      let calls = 1;
+      for (const wait of waits) {
+        await jest.advanceTimersByTimeAsync(wait - 1);
+        expect(refreshCalls()).toBe(calls);
+        await jest.advanceTimersByTimeAsync(1);
+        calls += 1;
+        expect(refreshCalls()).toBe(calls);
+      }
+
+      // The network is back: the next retry succeeds and the retries stop.
+      mockFetch.mockReset();
+      mockFetch.mockResolvedValue(mockResponse({ success: true, accessToken: 'after-outage' }));
+      await jest.advanceTimersByTimeAsync(R.RETRY_MAX_DELAY_MS);
+      expect(service.getToken()).toBe('after-outage');
+      expect(service.wasLastRefreshFailureTransient()).toBe(false);
+      const settled = refreshCalls();
+      await jest.advanceTimersByTimeAsync(4 * R.RETRY_MAX_DELAY_MS);
+      expect(refreshCalls()).toBe(settled);
+    });
+
+    it.each([500, 502, 503, 408, 429])('a %i from Cloud is transient and retried', async (status) => {
+      mockFetch.mockResolvedValue(mockResponse({}, status));
+      expect(await service.tryRefreshToken()).toBe(false);
+      expect(service.wasLastRefreshFailureTransient()).toBe(true);
+      await jest.advanceTimersByTimeAsync(R.RETRY_INITIAL_DELAY_MS);
+      expect(refreshCalls()).toBe(2);
+    });
+
+    it.each([401, 403])('a %i from Cloud is definitive: no retry, not transient', async (status) => {
+      mockFetch.mockResolvedValue(mockResponse({ success: false }, status));
+      expect(await service.tryRefreshToken()).toBe(false);
+      expect(service.wasLastRefreshFailureTransient()).toBe(false);
+      await jest.advanceTimersByTimeAsync(4 * R.RETRY_MAX_DELAY_MS);
+      expect(refreshCalls()).toBe(1);
+    });
+
+    it('a refusal after transient failures stops the pending retry', async () => {
+      mockFetch.mockRejectedValueOnce(new TypeError('fetch failed'));
+      expect(await service.tryRefreshToken()).toBe(false);
+      mockFetch.mockResolvedValue(mockResponse({ success: false }, 401));
+      expect(await service.tryRefreshToken()).toBe(false);
+      expect(service.wasLastRefreshFailureTransient()).toBe(false);
+      await jest.advanceTimersByTimeAsync(4 * R.RETRY_MAX_DELAY_MS);
+      expect(refreshCalls()).toBe(2);
+    });
+
+    it('does not retry once the refresh token itself has expired', async () => {
+      service.setRefreshToken(refreshJwt(Date.now() - 1000));
+      mockFetch.mockRejectedValue(new TypeError('fetch failed'));
+      expect(await service.tryRefreshToken()).toBe(false);
+      expect(service.wasLastRefreshFailureTransient()).toBe(false);
+      await jest.advanceTimersByTimeAsync(4 * R.RETRY_MAX_DELAY_MS);
+      expect(refreshCalls()).toBe(1);
+    });
+
+    it('disconnect cancels the pending retry', async () => {
+      mockFetch.mockRejectedValue(new TypeError('fetch failed'));
+      expect(await service.tryRefreshToken()).toBe(false);
+      service.disconnect();
+      await jest.advanceTimersByTimeAsync(4 * R.RETRY_MAX_DELAY_MS);
+      expect(refreshCalls()).toBe(1);
+      expect(service.wasLastRefreshFailureTransient()).toBe(false);
+    });
+
+    it('the local-signing fallback still issues a token when Cloud is unreachable and the refresh token is locally signed', async () => {
+      const { signJwt, verifyJwt } = await import('../../controllers/cloud/cloud-google-auth.controller.js');
+      const now = Math.floor(Date.now() / 1000);
+      service.setRefreshToken(signJwt({ sub: 'user-1', email: 'a@example.com', plan: 'pro', type: 'refresh', iat: now, exp: now + 25 * 86_400 }));
+      mockFetch.mockRejectedValue(new TypeError('fetch failed'));
+
+      expect(await service.tryRefreshToken()).toBe(true);
+      expect(verifyJwt(service.getToken()!)).toMatchObject({ sub: 'user-1', type: 'access', plan: 'pro' });
+      expect(service.wasLastRefreshFailureTransient()).toBe(false);
+      // A success: no retry is left behind.
+      const calls = refreshCalls();
+      await jest.advanceTimersByTimeAsync(R.RETRY_MAX_DELAY_MS);
+      expect(refreshCalls()).toBe(calls);
+    });
+
+    it('isTransientRefreshStatus separates "try later" from "refused"', () => {
+      expect([500, 503, 599, 408, 429].map(isTransientRefreshStatus)).toEqual([true, true, true, true, true]);
+      expect([400, 401, 403, 404].map(isTransientRefreshStatus)).toEqual([false, false, false, false]);
     });
   });
 
@@ -969,8 +1110,8 @@ describe('CloudClientService', () => {
 
     it('schedules a proactive relay-token refresh before the JWT exp', async () => {
       jest.useFakeTimers();
+      const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
       try {
-        const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
         // Relay token expiring in 1 hour → refresh should be scheduled ~55 min
         // out (exp - 300s skew), NOT a wall-clock heuristic.
         const exp = Math.floor(Date.now() / 1000) + 3600;
@@ -988,6 +1129,9 @@ describe('CloudClientService', () => {
         expect(relayDelay).toBeDefined();
         expect(relayDelay!).toBeGreaterThan(3000_000); // ~> 50 min
       } finally {
+        // Restore before leaving fake timers, or `setTimeout` stays undefined
+        // for every later test in this file.
+        setTimeoutSpy.mockRestore();
         jest.useRealTimers();
       }
     });

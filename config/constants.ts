@@ -1224,6 +1224,34 @@ export const SERVER_CONSTANTS = {
 	MAX_HEAP_SIZE_MB: 2048,
 	/** Fraction of total system RAM to allocate to Node.js heap */
 	HEAP_MEMORY_RATIO: 0.4,
+	/**
+	 * `crewly start` waits for the backend's /health while the backend child
+	 * is alive, up to this cap (ms). The old fixed 30 s gave up on a loaded
+	 * machine where the backend needed ~25 s just to begin starting
+	 * (2026-11-13), and each give-up left the half-started backend behind.
+	 */
+	STARTUP_MAX_WAIT_MS: 10 * 60 * 1000,
+	/** Pause between /health probes while waiting for the backend (ms) */
+	STARTUP_POLL_INTERVAL_MS: 1000,
+	/** Timeout of one /health probe (ms) */
+	STARTUP_PROBE_TIMEOUT_MS: 1000,
+	/** After SIGTERM, how long a backend that never became healthy gets before SIGKILL (ms) */
+	STARTUP_ABORT_KILL_GRACE_MS: 5000,
+	/**
+	 * macOS supervisor loop (`crewly-start.command`): first wait before a
+	 * relaunch (s). Doubles after each relaunch up to the cap below.
+	 */
+	SUPERVISOR_RESTART_DELAY_MIN_S: 5,
+	/** Longest wait between relaunches in the supervisor loop (s) */
+	SUPERVISOR_RESTART_DELAY_MAX_S: 60,
+	/** A run that stayed up at least this long resets the wait to the minimum (s) */
+	SUPERVISOR_STABLE_RUN_S: 300,
+	/** Env var overriding SUPERVISOR_RESTART_DELAY_MIN_S (tests, tuning) */
+	SUPERVISOR_RESTART_DELAY_MIN_ENV: 'CREWLY_SUPERVISOR_RESTART_MIN_S',
+	/** Env var overriding SUPERVISOR_RESTART_DELAY_MAX_S */
+	SUPERVISOR_RESTART_DELAY_MAX_ENV: 'CREWLY_SUPERVISOR_RESTART_MAX_S',
+	/** Env var overriding SUPERVISOR_STABLE_RUN_S */
+	SUPERVISOR_STABLE_RUN_ENV: 'CREWLY_SUPERVISOR_STABLE_RUN_S',
 } as const;
 
 // ========================= AUDITOR SYSTEM =========================

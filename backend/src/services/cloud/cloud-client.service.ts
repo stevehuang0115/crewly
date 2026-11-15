@@ -150,8 +150,14 @@ export class CloudClientService {
   private lastSyncAt: string | null = null;
   /** Timer for proactive token refresh (fires 5 min before expiry) */
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Guard to prevent concurrent refresh attempts */
-  private refreshInProgress = false;
+  /** The refresh attempt that is running now; concurrent callers share it */
+  private refreshInFlight: Promise<boolean> | null = null;
+  /** Timer for the next retry after a transient refresh failure */
+  private refreshRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Wait before the next retry; doubles up to a cap, reset on success */
+  private refreshRetryDelayMs: number = CLOUD_CONSTANTS.REFRESH.RETRY_INITIAL_DELAY_MS;
+  /** Why the most recent refresh attempt failed; null when it succeeded or none ran */
+  private lastRefreshFailure: RefreshFailureKind | null = null;
   /**
    * Refresh tokens Cloud has retired by rotating them for a successor. Kept in
    * memory only. A caller that still holds one (a stale copy read before the
@@ -192,9 +198,11 @@ export class CloudClientService {
   }
 
   /**
-   * Reset the singleton (for testing).
+   * Reset the singleton (for testing). Cancels the old instance's pending
+   * refresh retry so it cannot fire into a later test.
    */
   static resetInstance(): void {
+    CloudClientService.instance?.cancelRefreshRetry();
     CloudClientService.instance = null;
   }
 
@@ -363,6 +371,8 @@ export class CloudClientService {
     this.relayToken = null;
     this.relayTokenExp = null;
     if (this.refreshTimer) { clearTimeout(this.refreshTimer); this.refreshTimer = null; }
+    this.cancelRefreshRetry();
+    this.lastRefreshFailure = null;
     if (this.relayRefreshTimer) { clearTimeout(this.relayRefreshTimer); this.relayRefreshTimer = null; }
 
     // Remove persisted config
@@ -778,22 +788,146 @@ export class CloudClientService {
   /**
    * Attempt to refresh the access token using the stored refresh token.
    *
-   * Issues a new access token locally (since both access and refresh tokens
-   * are signed with the same HMAC secret on this OSS instance).
+   * Asks Cloud first; when Cloud cannot give a token, falls back to signing
+   * one locally (works only when this install shares Cloud's JWT secret).
+   *
+   * Concurrent callers share one attempt and all get its result. The attempt
+   * has an overall deadline, so a call that never settles cannot block later
+   * refreshes. A transient failure (network error, timeout, 5xx) schedules a
+   * retry with backoff; a refusal of the refresh token (401/403) does not.
+   * Never rejects.
    *
    * @returns true if refresh succeeded, false if no refresh token or refresh failed
+   *
+   * @example
+   * ```typescript
+   * if (await client.tryRefreshToken()) retryTheRequest();
+   * else if (client.wasLastRefreshFailureTransient()) waitForTheNetwork();
+   * ```
    */
   async tryRefreshToken(): Promise<boolean> {
-    if (this.refreshInProgress) {
-      this.logger.debug('Token refresh already in progress, skipping');
-      return false;
+    if (this.refreshInFlight) {
+      this.logger.debug('Token refresh already in progress, sharing its result');
+      return this.refreshInFlight;
     }
     if (!this.refreshToken) {
       this.logger.debug('No refresh token available for auto-refresh');
       return false;
     }
 
-    this.refreshInProgress = true;
+    const attempt = this.refreshWithDeadline();
+    this.refreshInFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      if (this.refreshInFlight === attempt) this.refreshInFlight = null;
+    }
+  }
+
+  /**
+   * Whether the most recent refresh attempt failed for a reason that says
+   * nothing about the refresh token: Cloud could not be reached, timed out
+   * or answered 5xx. Callers use it to keep waiting instead of declaring the
+   * login dead; a retry is already scheduled.
+   *
+   * @returns True when the last attempt failed transiently; false after a
+   *   success, a refusal by Cloud, or when no attempt has run
+   */
+  wasLastRefreshFailureTransient(): boolean {
+    return this.lastRefreshFailure === CLOUD_CONSTANTS.REFRESH.FAILURE_TRANSIENT;
+  }
+
+  /**
+   * Run one refresh attempt under an overall deadline.
+   *
+   * The HTTP call has its own timeout, but the steps around it (config
+   * write, dynamic imports, callbacks) do not. Past the deadline the attempt
+   * is abandoned as a transient failure. If it still completes later, its
+   * result is applied as usual (a late token is a valid token).
+   *
+   * @returns The attempt's result, or false when the deadline passed first
+   */
+  private async refreshWithDeadline(): Promise<boolean> {
+    const DEADLINE = Symbol('refresh-deadline');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<typeof DEADLINE>((resolve) => {
+      timer = setTimeout(() => resolve(DEADLINE), CLOUD_CONSTANTS.REFRESH.ATTEMPT_DEADLINE_MS);
+      if (timer.unref) timer.unref();
+    });
+    try {
+      const result = await Promise.race([this.performRefresh(), deadline]);
+      if (result === DEADLINE) {
+        this.logger.warn('Token refresh did not finish within its deadline; abandoning this attempt', {
+          deadlineMs: CLOUD_CONSTANTS.REFRESH.ATTEMPT_DEADLINE_MS,
+        });
+        this.onRefreshFailed(CLOUD_CONSTANTS.REFRESH.FAILURE_TRANSIENT);
+        return false;
+      }
+      return result;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Record why a refresh attempt failed and, when the cause is transient and
+   * the refresh token has not expired, schedule a retry.
+   *
+   * @param kind - Transient (Cloud unreachable) or rejected (token refused)
+   */
+  private onRefreshFailed(kind: RefreshFailureKind): void {
+    const expired = refreshTokenExpiresWithin(this.refreshToken, 0);
+    if (kind === CLOUD_CONSTANTS.REFRESH.FAILURE_REJECTED || !this.refreshToken || expired) {
+      this.lastRefreshFailure = CLOUD_CONSTANTS.REFRESH.FAILURE_REJECTED;
+      this.cancelRefreshRetry();
+      return;
+    }
+    this.lastRefreshFailure = CLOUD_CONSTANTS.REFRESH.FAILURE_TRANSIENT;
+    this.scheduleRefreshRetry();
+  }
+
+  /**
+   * Schedule the next refresh retry, unless one is already waiting. Each
+   * retry waits longer than the last, up to a cap.
+   */
+  private scheduleRefreshRetry(): void {
+    if (this.refreshRetryTimer) return;
+    const { RETRY_BACKOFF_FACTOR, RETRY_MAX_DELAY_MS } = CLOUD_CONSTANTS.REFRESH;
+    const delayMs = this.refreshRetryDelayMs;
+    this.refreshRetryDelayMs = Math.min(delayMs * RETRY_BACKOFF_FACTOR, RETRY_MAX_DELAY_MS);
+
+    this.logger.warn('Token refresh failed for a transient reason; the refresh token is still valid, will retry', {
+      retryInSeconds: Math.round(delayMs / 1000),
+    });
+    this.refreshRetryTimer = setTimeout(() => {
+      this.refreshRetryTimer = null;
+      this.logger.info('Retrying token refresh after a transient failure');
+      this.tryRefreshToken().catch(() => {});
+    }, delayMs);
+    // Unref so the timer doesn't keep the process alive
+    if (this.refreshRetryTimer.unref) this.refreshRetryTimer.unref();
+  }
+
+  /**
+   * Drop the pending refresh retry and start the backoff over.
+   */
+  private cancelRefreshRetry(): void {
+    if (this.refreshRetryTimer) {
+      clearTimeout(this.refreshRetryTimer);
+      this.refreshRetryTimer = null;
+    }
+    this.refreshRetryDelayMs = CLOUD_CONSTANTS.REFRESH.RETRY_INITIAL_DELAY_MS;
+  }
+
+  /**
+   * One refresh attempt: Cloud first, then the local-signing fallback, then
+   * store, persist and announce the new token. Never rejects; records the
+   * outcome through {@link onRefreshFailed} or by clearing the failure state.
+   *
+   * @returns true when a new access token is in place
+   */
+  private async performRefresh(): Promise<boolean> {
+    if (!this.refreshToken) return false;
     try {
       // Try Cloud-side refresh first (gets a token signed with the Cloud's secret,
       // which is accepted by all Cloud services without needing CREWLY_JWT_SECRET locally).
@@ -803,14 +937,19 @@ export class CloudClientService {
       let relayToken: string | null = null;
       const rotate = refreshTokenExpiresWithin(this.refreshToken, CLOUD_CONSTANTS.REFRESH_ROTATE_WITHIN_MS);
       let rotated = false;
+      // What Cloud said about the refresh token. Stays transient unless Cloud
+      // actually answered: a network error or timeout judges nothing.
+      let cloudFailure: RefreshFailureKind = CLOUD_CONSTANTS.REFRESH.FAILURE_TRANSIENT;
+      let cloudStatus: number | undefined;
 
       try {
         const response = await fetch(cloudRefreshUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refreshToken: this.refreshToken, ...(rotate ? { rotate: true } : {}) }),
-          signal: AbortSignal.timeout(10_000),
+          signal: AbortSignal.timeout(CLOUD_CONSTANTS.REFRESH.REQUEST_TIMEOUT_MS),
         });
+        cloudStatus = response.status;
 
         if (response.ok) {
           const data = await response.json() as { success?: boolean; accessToken?: string; relayToken?: string; refreshToken?: string };
@@ -826,10 +965,17 @@ export class CloudClientService {
               this.logger.info('Refresh token renewed via Cloud (was near expiry)');
             }
             this.logger.info('Token refreshed via Cloud auth service');
+          } else {
+            // Cloud answered but issued nothing: not something a retry fixes.
+            cloudFailure = CLOUD_CONSTANTS.REFRESH.FAILURE_REJECTED;
           }
+        } else if (!isTransientRefreshStatus(response.status)) {
+          cloudFailure = CLOUD_CONSTANTS.REFRESH.FAILURE_REJECTED;
         }
-      } catch {
-        this.logger.debug('Cloud refresh unavailable, falling back to local refresh');
+      } catch (err) {
+        this.logger.debug('Cloud refresh unavailable, falling back to local refresh', {
+          error: err instanceof Error ? err.name : 'unknown',
+        });
       }
 
       // Persist the successor at once. Cloud has already retired the old refresh
@@ -847,12 +993,21 @@ export class CloudClientService {
       // NOTE: locally-signed tokens may not be accepted by Cloud relay if the
       // JWT secret doesn't match. If Cloud refresh failed, warn the user.
       if (!newAccessToken) {
-        this.logger.warn('Cloud token refresh failed — locally-signed token may not work with Cloud relay. Re-login with `crewly cloud login` to get a Cloud-signed refresh token.');
+        this.logger.warn('Cloud token refresh failed — locally-signed token may not work with Cloud relay. Re-login with `crewly cloud login` to get a Cloud-signed refresh token.', {
+          cloud: cloudFailure,
+          ...(cloudStatus !== undefined ? { status: cloudStatus } : {}),
+        });
 
         const { verifyJwt, signJwt } = await import('../../controllers/cloud/cloud-google-auth.controller.js');
         const payload = verifyJwt(this.refreshToken);
         if (!payload || payload.type !== 'refresh') {
-          this.logger.warn('Refresh token verification failed — cannot auto-refresh. Please re-login with `crewly cloud login`.');
+          // The fallback only works when this install shares Cloud's secret.
+          // Whether the user must log in again depends on what Cloud said:
+          // a refusal is final, an outage is not.
+          if (cloudFailure === CLOUD_CONSTANTS.REFRESH.FAILURE_REJECTED) {
+            this.logger.warn('Refresh token verification failed — cannot auto-refresh. Please re-login with `crewly cloud login`.');
+          }
+          this.onRefreshFailed(cloudFailure);
           return false;
         }
 
@@ -926,14 +1081,17 @@ export class CloudClientService {
 
       this.logger.info('Access token auto-refreshed successfully', { hasRelayToken: !!relayToken });
 
+      this.lastRefreshFailure = null;
+      this.cancelRefreshRetry();
       return true;
     } catch (error) {
       this.logger.warn('Token auto-refresh failed', {
         error: error instanceof Error ? error.message : String(error),
       });
+      // Something on this machine failed (config write, a callback); the
+      // refresh token itself was not refused, so try again later.
+      this.onRefreshFailed(CLOUD_CONSTANTS.REFRESH.FAILURE_TRANSIENT);
       return false;
-    } finally {
-      this.refreshInProgress = false;
     }
   }
 
@@ -962,8 +1120,8 @@ export class CloudClientService {
       if (!exp) return;
 
       const now = Math.floor(Date.now() / 1000);
-      // Refresh 5 minutes (300s) before expiry
-      const refreshAt = exp - 300;
+      // Refresh a few minutes before expiry
+      const refreshAt = exp - CLOUD_CONSTANTS.REFRESH.SKEW_S;
       const delayMs = Math.max(0, (refreshAt - now) * 1000);
 
       if (delayMs <= 0) {
@@ -1121,6 +1279,27 @@ export class CloudClientService {
       }).catch(() => {});
     }
   }
+}
+
+/** Why a refresh attempt failed: Cloud could not be asked, or Cloud refused the token. */
+export type RefreshFailureKind = typeof CLOUD_CONSTANTS.REFRESH.FAILURE_TRANSIENT | typeof CLOUD_CONSTANTS.REFRESH.FAILURE_REJECTED;
+
+/**
+ * Whether a non-2xx status from Cloud's refresh endpoint means "try again
+ * later" (5xx, 408, 429) and not "this refresh token is refused".
+ *
+ * @param status - HTTP status of the refresh response
+ * @returns True when a retry may succeed with the same refresh token
+ *
+ * @example
+ * ```typescript
+ * isTransientRefreshStatus(503); // true
+ * isTransientRefreshStatus(401); // false
+ * ```
+ */
+export function isTransientRefreshStatus(status: number): boolean {
+  const { SERVER_ERROR_MIN_STATUS, TRANSIENT_CLIENT_STATUSES } = CLOUD_CONSTANTS.REFRESH;
+  return status >= SERVER_ERROR_MIN_STATUS || (TRANSIENT_CLIENT_STATUSES as readonly number[]).includes(status);
 }
 
 /**

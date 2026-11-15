@@ -1547,6 +1547,11 @@ export class CloudSyncService extends EventEmitter {
           if (refreshed) {
             this.logger.info('Token refreshed during recovery — will retry next cycle');
             this.errorRecoveryAttempts--;
+          } else if (this.refreshFailedTransiently) {
+            this.logger.warn('Token refresh could not reach Cloud during recovery — not counted, will retry next cycle', {
+              status: response.status,
+            });
+            this.errorRecoveryAttempts--;
           } else if (this.errorRecoveryAttempts >= maxAttempts) {
             this.enterAuthExpiredState();
           } else {
@@ -1601,6 +1606,13 @@ export class CloudSyncService extends EventEmitter {
 
   /** Guard to prevent concurrent token refresh attempts */
   private tokenRefreshInProgress = false;
+  /**
+   * True when the latest handleAuthError() failed only because Cloud could
+   * not be reached for the refresh. Such a failure must not count toward
+   * the "user must re-login" limit (incident 2026-11-13: a network outage
+   * ended in auth_expired with a refresh token valid for 29 more days).
+   */
+  private refreshFailedTransiently = false;
 
   /**
    * Check if an HTTP status code indicates an authentication failure (401/403).
@@ -1615,6 +1627,7 @@ export class CloudSyncService extends EventEmitter {
     if (this.tokenRefreshInProgress) return false;
 
     this.tokenRefreshInProgress = true;
+    this.refreshFailedTransiently = false;
     try {
       const { CloudClientService } = await import('./cloud-client.service.js');
       const client = CloudClientService.getInstance();
@@ -1627,6 +1640,15 @@ export class CloudSyncService extends EventEmitter {
           this.logger.info('CloudSyncService token refreshed after auth error');
         }
         return true;
+      }
+
+      // Cloud could not be asked (network down, timeout, 5xx): the login is
+      // not judged, and the client is already retrying with backoff. Only a
+      // refresh Cloud refused marks the login as rejected.
+      if (typeof client.wasLastRefreshFailureTransient === 'function' && client.wasLastRefreshFailureTransient()) {
+        this.refreshFailedTransiently = true;
+        this.logger.warn('CloudSyncService token refresh could not reach Cloud — will retry, login not affected', { status });
+        return false;
       }
 
       this.logger.warn('CloudSyncService token refresh failed — API returned auth error', { status });

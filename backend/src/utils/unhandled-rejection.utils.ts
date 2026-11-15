@@ -12,7 +12,7 @@
  * @module utils/unhandled-rejection
  */
 
-import { NON_FATAL_UNHANDLED_REJECTION_PATTERNS } from '../constants.js';
+import { ABORT_ERROR_CODE, ABORT_ERROR_NAME, NON_FATAL_UNHANDLED_REJECTION_PATTERNS } from '../constants.js';
 
 /**
  * Render an unhandled-rejection reason as a message string.
@@ -25,13 +25,41 @@ export function unhandledRejectionMessage(reason: unknown): string {
 }
 
 /**
+ * Whether a rejection reason is an abort: the error an `AbortController`
+ * raises on every promise tied to its signal when a request is cancelled
+ * (for example, the HTTP client hung up). Node reports it either as a
+ * `DOMException` named `AbortError` or as an error with code `ABORT_ERR`.
+ *
+ * A cancelled request is not a fault in the process, so the backend logs it
+ * and stays up (incident 2026-11-13: an agent closed a remote MCP request
+ * mid-flight and the abort shut the whole server down).
+ *
+ * @param reason - The rejection reason (anything can be thrown)
+ * @returns True when the reason is an abort error
+ *
+ * @example
+ * ```typescript
+ * const controller = new AbortController();
+ * controller.abort();
+ * isAbortError(controller.signal.reason); // true
+ * isAbortError(new Error('boom')); // false
+ * ```
+ */
+export function isAbortError(reason: unknown): boolean {
+  if (typeof reason !== 'object' || reason === null) return false;
+  const { name, code } = reason as { name?: unknown; code?: unknown };
+  return name === ABORT_ERROR_NAME || code === ABORT_ERROR_CODE;
+}
+
+/**
  * Whether an unhandled rejection is one the backend logs and survives
  * rather than shutting down for.
  *
  * Matches the reason's message against {@link NON_FATAL_UNHANDLED_REJECTION_PATTERNS}
  * with a plain substring test, so a Slack platform error such as
  * "An API error occurred: invalid_auth" is non-fatal regardless of which
- * Slack error code follows the prefix.
+ * Slack error code follows the prefix. An abort error ({@link isAbortError})
+ * is non-fatal whatever its message says.
  *
  * @param reason - The rejection reason handed to `process.on('unhandledRejection')`
  * @returns True when the rejection must be logged and suppressed; false when
@@ -44,6 +72,7 @@ export function unhandledRejectionMessage(reason: unknown): string {
  * ```
  */
 export function isNonFatalUnhandledRejection(reason: unknown): boolean {
+  if (isAbortError(reason)) return true;
   const message = unhandledRejectionMessage(reason);
   return NON_FATAL_UNHANDLED_REJECTION_PATTERNS.some((pattern) => message.includes(pattern));
 }
