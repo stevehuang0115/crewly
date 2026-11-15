@@ -278,8 +278,12 @@ async function coordinateWithFreshConversation(sessionName: string): Promise<() 
 interface WorkItemHandOver {
 	/** Text to write (fresh-conversation note + WorkItem id added when cleared) */
 	message: string;
-	/** Call after a successful write */
-	delivered: () => void;
+	/**
+	 * Call after a write that did not fail. `reached` is true when the text
+	 * was written into the agent's running session, false when it was only
+	 * queued for it (HTTP 202: agent busy, capped, restart drain).
+	 */
+	delivered: (reached: boolean) => void;
 	/** Call after a failed write: the dispatcher may then deliver it */
 	failed: () => void;
 	/**
@@ -289,6 +293,9 @@ interface WorkItemHandOver {
 	 */
 	alreadyDispatched: boolean;
 }
+
+/** HTTP status of a write that was queued for the agent instead of written into its session. */
+const HTTP_STATUS_QUEUED = 202;
 
 /** Fresh-conversation notes not yet delivered, by `${workItemId}::${session}` (a retry reuses it). */
 const pendingFreshNotes = new Map<string, string>();
@@ -351,8 +358,9 @@ export async function prepareWorkItemHandOver(
 		return {
 			message: text,
 			alreadyDispatched: !tookKey,
-			delivered: () => {
+			delivered: (reached) => {
 				pendingFreshNotes.delete(key);
+				if (reached) dispatcher.confirmDirectDelivery(id, sessionName);
 			},
 			failed: () => {
 				if (tookKey) dispatcher.releaseDirectDelivery(id, sessionName);
@@ -869,7 +877,7 @@ export async function writeToSession(this: unknown, req: Request, res: Response)
 	} finally {
 		endDelivery();
 		if (handOver) {
-			if (res.statusCode < 400) handOver.delivered();
+			if (res.statusCode < 400) handOver.delivered(res.statusCode !== HTTP_STATUS_QUEUED);
 			else handOver.failed();
 		}
 	}
@@ -1322,6 +1330,12 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 						deviceName: routeResult.deviceName,
 						messageLength: message.length,
 					});
+					// A WorkItem handed to a colleague on another machine: the relay
+					// took the brief, which is as far as this machine can see it.
+					if (typeof workItemId === 'string' && workItemId.trim()) {
+						const { WorkItemDispatchSubscriber } = await import('../../services/v3/workitem-dispatch.subscriber.js');
+						WorkItemDispatchSubscriber.getInstance().confirmDirectDelivery(workItemId.trim(), sessionName);
+					}
 					res.json({
 						success: true,
 						remote: true,
@@ -1614,7 +1628,7 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 	} finally {
 		endDelivery();
 		if (handOver) {
-			if (res.statusCode < 400) handOver.delivered();
+			if (res.statusCode < 400) handOver.delivered(res.statusCode !== HTTP_STATUS_QUEUED);
 			else handOver.failed();
 		}
 	}

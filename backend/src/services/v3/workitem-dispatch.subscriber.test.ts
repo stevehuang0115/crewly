@@ -8,7 +8,7 @@
  */
 
 import axios from 'axios';
-import { WorkItemDispatchSubscriber, isSpendCappedReply, isScheduledWorkItem } from './workitem-dispatch.subscriber.js';
+import { WorkItemDispatchSubscriber, isSpendCappedReply, isScheduledWorkItem, directBriefWorkItemId } from './workitem-dispatch.subscriber.js';
 import { setSlackAutoWorkingService, type SlackAutoWorkingService } from '../slack/slack-auto-working.service.js';
 import { setSpendCapGate, type SpendStop } from '../spend/spend-cap.gate.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
@@ -738,7 +738,7 @@ describe('WorkItemDispatchSubscriber', () => {
 
       const handOver = await prepareWorkItemHandOver(TARGET, 'wi-tl', 'WorkItem wi-tl — build it');
       expect(handOver.message).toContain('/h/ella.md');
-      handOver.delivered();
+      handOver.delivered(true);
 
       await jest.advanceTimersByTimeAsync(DIRECT_DELIVERY_CONSTANTS.GRACE_MS + 1_000);
       await settle();
@@ -923,6 +923,91 @@ describe('WorkItemDispatchSubscriber', () => {
       svc.setWorktreeHintResolver(null);
       await svc.dispatchTo(makeWorkItem({ id: 'wi-5' }));
       expect((mockedAxios.post.mock.calls[0][1] as { data: string }).data).not.toContain('git worktree');
+    });
+  });
+
+  describe('a WorkItem counts as delivered only once its brief reached the running session (2026-11-14)', () => {
+    const TARGET = 'steamfun-juno';
+    const flushAsync = async (): Promise<void> => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+
+    /** A pool double holding one WorkItem; returns the merge spy. */
+    const pool = (wi: WorkItem): jest.Mock => {
+      const merge = jest.fn(async (_id: string, patch: Record<string, unknown>) => {
+        wi.metadata = { ...(wi.metadata ?? {}), ...patch };
+        return wi;
+      });
+      jest.spyOn(TaskPoolService, 'getInstance').mockReturnValue({
+        findWorkItem: jest.fn(async (id: string) => (id === wi.id ? wi : null)),
+        mergeItemMetadata: merge,
+      } as unknown as TaskPoolService);
+      return merge;
+    };
+
+    afterEach(() => jest.restoreAllMocks());
+
+    it('taking the key for a hand-over is not a delivery: the target may not be running', async () => {
+      const wi = makeWorkItem({ id: 'wi-q', target: TARGET, metadata: { [DIRECT_DELIVERY_CONSTANTS.METADATA_FLAG]: true } });
+      const merge = pool(wi);
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      expect(svc.claimDirectDelivery('wi-q', TARGET)).toBe(true);
+      await flushAsync();
+      expect(svc.isDelivered('wi-q', TARGET)).toBe(false);
+      expect(merge).not.toHaveBeenCalled();
+      expect(wi.metadata?.[DIRECT_DELIVERY_CONSTANTS.DELIVERED_AT_KEY]).toBeUndefined();
+    });
+
+    it('confirmDirectDelivery marks it delivered and records deliveredAt / deliveredTo on the WorkItem, once', async () => {
+      const wi = makeWorkItem({ id: 'wi-ok', target: TARGET });
+      const merge = pool(wi);
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      svc.claimDirectDelivery('wi-ok', TARGET);
+      svc.confirmDirectDelivery('wi-ok', TARGET);
+      await flushAsync();
+      expect(svc.isDelivered('wi-ok', TARGET)).toBe(true);
+      expect(wi.metadata?.[DIRECT_DELIVERY_CONSTANTS.DELIVERED_TO_KEY]).toBe(TARGET);
+      expect(typeof wi.metadata?.[DIRECT_DELIVERY_CONSTANTS.DELIVERED_AT_KEY]).toBe('string');
+      svc.confirmDirectDelivery('wi-ok', TARGET);
+      await flushAsync();
+      expect(merge).toHaveBeenCalledTimes(1);
+    });
+
+    it('a brief delivered from the agent queue (it was started meanwhile) records the delivery', async () => {
+      const wi = makeWorkItem({ id: 'wi-late', target: TARGET });
+      pool(wi);
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      svc.claimDirectDelivery('wi-late', TARGET);
+      svc.noteDeliveredFromQueue('wi-late', TARGET);
+      await flushAsync();
+      expect(svc.isDelivered('wi-late', TARGET)).toBe(true);
+      expect(wi.metadata?.[DIRECT_DELIVERY_CONSTANTS.DELIVERED_TO_KEY]).toBe(TARGET);
+    });
+
+    it('the dispatcher writing its notice into the agent records the delivery; a queued notice does not', async () => {
+      const wi = makeWorkItem({ id: 'wi-d', target: TARGET });
+      const merge = pool(wi);
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      mockedAxios.post.mockResolvedValueOnce({ status: 202, data: { success: true, queued: true } });
+      expect((await svc.dispatchOutcome(wi)).status).toBe('queued');
+      await flushAsync();
+      expect(merge).not.toHaveBeenCalled();
+      expect((await svc.redispatchOutcome(wi)).status).toBe('delivered');
+      await flushAsync();
+      expect(wi.metadata?.[DIRECT_DELIVERY_CONSTANTS.DELIVERED_TO_KEY]).toBe(TARGET);
+    });
+
+    it('a WorkItem that names another target is left alone', async () => {
+      const wi = makeWorkItem({ id: 'wi-other', target: 'someone-else' });
+      const merge = pool(wi);
+      WorkItemDispatchSubscriber.getInstance().confirmDirectDelivery('wi-other', TARGET);
+      await flushAsync();
+      expect(merge).not.toHaveBeenCalled();
+    });
+
+    it('directBriefWorkItemId reads the id a delegate-task brief opens with', () => {
+      expect(directBriefWorkItemId('WorkItem 3f2a-99 — New task from Team Leader (priority: high):\n\nbuild it')).toBe('3f2a-99');
+      expect(directBriefWorkItemId('[From Fern]\nWorkItem abc123 — New task from Team Leader')).toBe('abc123');
+      expect(directBriefWorkItemId('please look at WorkItem abc123 when you can')).toBeNull();
+      expect(directBriefWorkItemId('[CREWLY-DISPATCH] WorkItem abc123 queued for you')).toBeNull();
     });
   });
 });

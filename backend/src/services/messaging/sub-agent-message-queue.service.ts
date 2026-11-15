@@ -148,8 +148,8 @@ export type QueuePruneReason = 'answered-in-thread' | 'answered-after-surfacing'
 export interface QueuedHandOver {
 	/** Text to write */
 	message: string;
-	/** Call after a successful write */
-	delivered: () => void;
+	/** Call after a successful write; `reached` is true when the text was written into the running session */
+	delivered: (reached: boolean) => void;
 	/** Call after a failed write */
 	failed: () => void;
 	/** The WorkItem was already delivered to this session by the dispatcher: drop the brief */
@@ -810,7 +810,7 @@ export class SubAgentMessageQueue {
 				if (handOver) {
 					// Held again or failed: not delivered (the hand-over runs again next time).
 					if (result && (result.queued || result.success === false)) handOver.failed();
-					else handOver.delivered();
+					else handOver.delivered(true);
 				}
 				if (result && result.success === false && !result.queued) {
 					noteFailure(queued, result.error ?? 'delivery failed');

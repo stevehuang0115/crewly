@@ -208,7 +208,16 @@ This requires `--team` to be provided. Without team context, offline workers can
 
 ## Output
 
-JSON confirmation of task delivery, same format as orchestrator delegate-task.
+JSON lines. The **last line** says what happened to the brief:
+
+- `{"delivery":"delivered", ...}`: the brief was written into the worker's running session.
+- `{"delivery":"queued", ...}`: the worker is not running (it is being started) or cannot take a
+  message right now. The task only waits for it. Do not tell anyone it was handed over or that the
+  worker is on it. Say "queued for <worker>, not yet picked up".
+
+The WorkItem carries `metadata.deliveredAt` once the brief has reached the worker's running session.
+If a delegation is still undelivered after 5 minutes you get one review WorkItem naming the item and
+the worker.
 
 ## Related Skills
 

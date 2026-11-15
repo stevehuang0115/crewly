@@ -1966,6 +1966,63 @@ describe('ReconcilerService', () => {
     });
   });
 
+  describe('an undelivered delegation is reported to its delegator once (2026-11-14)', () => {
+    const MIN = 60_000;
+    const LEAD = 'steamfun-fern';
+    const MEMBER = 'steamfun-juno';
+    const stopped = (): Map<string, AgentHealth> =>
+      new Map([[MEMBER, { sessionName: MEMBER, status: 'inactive', teamId: 't1', memberId: 'm1', activeWorkItemCount: 0 } as AgentHealth]]);
+    const delegated = (ageMin: number, metadata: Record<string, unknown> = {}) =>
+      makeWorkItem({
+        id: 'wi-handoff',
+        status: 'queued',
+        type: 'delegate',
+        owner: 'team_lead',
+        target: MEMBER,
+        title: 'Add a Google Drive option',
+        createdAt: new Date(Date.now() - ageMin * MIN).toISOString(),
+        metadata: { directDelivery: true, delegatedBy: LEAD, ...metadata },
+      });
+    const wire = (wi: WorkItem) => {
+      const executeWakeAction = jest.fn().mockResolvedValue({ outcome: 'skipped', reason: 'stopped for memory; held while pressure lasts' });
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(stopped()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      const addToPool = jest.fn().mockResolvedValue(undefined);
+      const stamp = jest.fn().mockResolvedValue(undefined);
+      service.setIdleHolderReporting({ loadTeams: async () => [], addToPool, stamp });
+      return { addToPool, stamp, executeWakeAction };
+    };
+
+    beforeEach(() => jest.setSystemTime(new Date('2026-11-14T20:15:00Z')));
+
+    it('tells the delegator, naming the item and the target, and keeps trying to start the target', async () => {
+      const { addToPool, stamp, executeWakeAction } = wire(delegated(6));
+      await service.runFast();
+      await service.runFast();
+      expect(addToPool).toHaveBeenCalledTimes(1);
+      const review = addToPool.mock.calls[0][0] as WorkItem;
+      expect(review.target).toBe(LEAD);
+      expect(review.description).toContain('wi-handoff');
+      expect(review.description).toContain(MEMBER);
+      expect(review.description).toContain('is not running');
+      expect(stamp).toHaveBeenCalledWith('wi-handoff', expect.objectContaining({ undeliveredNoticeAt: expect.any(String) }));
+      expect(executeWakeAction).toHaveBeenCalledWith(expect.objectContaining({ agentSessionName: MEMBER, strategy: 'start' }));
+    });
+
+    it('says nothing before the threshold, or once the brief reached the running session', async () => {
+      const early = wire(delegated(2));
+      await service.runFast();
+      expect(early.addToPool).not.toHaveBeenCalled();
+      const landed = wire(delegated(30, { deliveredAt: new Date().toISOString(), deliveredTo: MEMBER }));
+      await service.runFast();
+      expect(landed.addToPool).not.toHaveBeenCalled();
+    });
+  });
+
   describe('wake pacing (CREW-304)', () => {
     const MIN = 60_000;
     const stoppedAgent = (session = 'ce-vera'): Map<string, AgentHealth> =>
