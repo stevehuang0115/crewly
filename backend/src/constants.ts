@@ -6867,6 +6867,14 @@ export const TICKET_CONSTANTS = {
 	 * tickets out of done for good (TKT-017: two `rejected` WorkItems).
 	 */
 	DEAD_WORK_ITEM_STATUSES: ['rejected', 'failed'] as readonly string[],
+	/**
+	 * WorkItem types that are work somebody opened for a ticket. Linking a
+	 * live one to a ticket that is in review (待验收) puts the ticket back in
+	 * progress: the earlier answer no longer covers what is being done
+	 * (2026-11-14). Harness-made items (owner `system`: rework, follow-through,
+	 * SLA trackers) never reopen a ticket.
+	 */
+	REOPENING_WORK_ITEM_TYPES: ['delegate', 'project_task'] as readonly string[],
 	/** Metadata key the dispatcher reads the delivered-message marker from */
 	MESSAGE_MARKER_METADATA_KEY: 'ticketMarker',
 	/** Metadata key on a chat-v2 receipt row */

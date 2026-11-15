@@ -203,6 +203,26 @@ describe('submit — idle and settle', () => {
     expect((await requests.getById(t.id))?.status).toBe('running');
   });
 
+  it('an acknowledgement while a delegation is open is progress, not the answer; the result submits once the work is done (2026-11-14)', async () => {
+    const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1' });
+    // The lead delegated, then told the owner it will report back.
+    openWork.set(t.id, 1);
+    await review.onChatMessage(agentMsg('ch1', 'fern', 'Received. Juno has the Drive option; the recording follows.', 'm1'));
+    expect(await review.onAgentIdle('fern')).toHaveLength(0);
+    clock += TICKET_CONSTANTS.REVIEW.SUBMIT_SETTLE_MS + 60_000;
+    expect((await review.sweep()).submitted).toBe(0);
+    const held = await requests.getById(t.id);
+    expect(held).toMatchObject({ status: 'running' });
+    expect(held?.reply?.by).toBe('fern');
+    expect(held?.submittedAt).toBeUndefined();
+
+    // The work finished and the lead reports the result.
+    openWork.set(t.id, 0);
+    await review.onChatMessage(agentMsg('ch1', 'fern', 'done: the Drive option is live, recording attached', 'm1'));
+    const [submitted] = await review.onAgentIdle('fern');
+    expect(submitted).toMatchObject({ id: t.id, status: 'waiting_confirmation', submitCount: 1 });
+  });
+
   it('the sweep submits only answers older than the settle time', async () => {
     const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1' });
     await review.onChatMessage(agentMsg('ch1', 'atlas', 'answer', 'm1'));

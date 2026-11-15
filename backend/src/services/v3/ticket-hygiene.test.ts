@@ -150,9 +150,17 @@ describe('runTicketCleanup — against a real RequestService', () => {
       ...(n > 0 ? { ticketNumber: n, requiresConfirmation: true, origin: { channel: 'slack-channel' as const, ref: `r${n}`, author: 'U' } } : {}),
     });
     items.forEach((s, i) => workItems.set(`${r.id}-wi-${i}`, { id: `${r.id}-wi-${i}`, status: s }));
-    for (let i = 0; i < items.length; i++) await requests.linkWorkItem(r.id, `${r.id}-wi-${i}`);
+    // A ticket is not submitted while a WorkItem of it is live, so one in
+    // review gets its WorkItems afterwards (harness items linked later).
+    const link = async (): Promise<void> => {
+      for (let i = 0; i < items.length; i++) await requests.linkWorkItem(r.id, `${r.id}-wi-${i}`);
+    };
+    if (status !== 'waiting_confirmation') await link();
     if (status === 'running' || status === 'waiting_confirmation' || status === 'done') await requests.update(r.id, { status: 'running' });
-    if (status === 'waiting_confirmation') await requests.update(r.id, { status: 'done' }); // the gate turns it into 待验收
+    if (status === 'waiting_confirmation') {
+      await requests.update(r.id, { status: 'done' }); // the gate turns it into 待验收
+      await link();
+    }
     if (status === 'done') await requests.update(r.id, { status: 'done', accepted: true });
     return r.id;
   }
