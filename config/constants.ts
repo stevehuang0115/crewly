@@ -1224,6 +1224,19 @@ export const SERVER_CONSTANTS = {
 	MAX_HEAP_SIZE_MB: 2048,
 	/** Fraction of total system RAM to allocate to Node.js heap */
 	HEAP_MEMORY_RATIO: 0.4,
+	/**
+	 * `crewly start` waits for the backend's /health while the backend child
+	 * is alive, up to this cap (ms). The old fixed 30 s gave up on a loaded
+	 * machine where the backend needed ~25 s just to begin starting
+	 * (2026-11-13), and each give-up left the half-started backend behind.
+	 */
+	STARTUP_MAX_WAIT_MS: 10 * 60 * 1000,
+	/** Pause between /health probes while waiting for the backend (ms) */
+	STARTUP_POLL_INTERVAL_MS: 1000,
+	/** Timeout of one /health probe (ms) */
+	STARTUP_PROBE_TIMEOUT_MS: 1000,
+	/** After SIGTERM, how long a backend that never became healthy gets before SIGKILL (ms) */
+	STARTUP_ABORT_KILL_GRACE_MS: 5000,
 } as const;
 
 // ========================= AUDITOR SYSTEM =========================

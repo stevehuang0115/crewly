@@ -21,6 +21,7 @@ import { killZombieProcesses } from '../utils/process-cleanup.js';
 import { createChildShutdownHandler, resolveShutdownBudgetMs } from '../utils/safe-shutdown.js';
 import { shouldOpenDashboard, dashboardHint } from '../utils/open-dashboard.js';
 import { shouldRespawnBackend } from '../utils/backend-respawn.js';
+import { hasExited, terminateBackendChild, waitForBackendReady } from '../utils/backend-startup.js';
 import { clearShutdownMarker, hasShutdownMarker, stopLegacySupervisor } from '../utils/shutdown-marker.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -120,7 +121,7 @@ export async function startCommand(options: StartOptions) {
 
 		// 4. Wait for servers to be ready
 		console.log(chalk.blue('⏳ Waiting for servers to initialize...'));
-		await waitForServer(webPort);
+		await waitForServer(webPort, backendProcess);
 
 		// 5. Setup orchestrator session (non-blocking)
 		setupOrchestratorSessionAsync(webPort);
@@ -214,7 +215,7 @@ export async function startCommand(options: StartOptions) {
 				activeProcesses[0] = currentBackend;
 
 				console.log(chalk.blue('⏳ Waiting for server to come back up...'));
-				await waitForServer(webPort);
+				await waitForServer(webPort, currentBackend);
 				console.log(chalk.green('✅ Backend restarted successfully'));
 				continue;
 			}
@@ -403,17 +404,33 @@ function waitForExit(proc: ChildProcess): Promise<number | null> {
 	});
 }
 
-async function waitForServer(port: number, maxAttempts: number = 30): Promise<void> {
-	for (let i = 0; i < maxAttempts; i++) {
-		try {
-			await axios.get(`http://localhost:${port}/health`, { timeout: 1000 });
-			return;
-		} catch (error) {
-			if (i === maxAttempts - 1) {
-				throw new Error('Server failed to start within timeout');
-			}
-			await new Promise((resolve) => setTimeout(resolve, 1000));
+/**
+ * Wait for the backend child to answer /health.
+ *
+ * Waits as long as the child is alive (up to SERVER_CONSTANTS.STARTUP_MAX_WAIT_MS),
+ * so a slow start on a loaded machine is not mistaken for a failure. When
+ * the wait does fail (the child exited, or the cap was reached) the child is
+ * stopped before the error is rethrown, so the caller's exit leaves no
+ * half-started backend behind.
+ *
+ * @param port - Web port the backend listens on
+ * @param backend - The backend child process
+ * @throws Error when the backend exits first or never becomes healthy
+ */
+async function waitForServer(port: number, backend: ChildProcess): Promise<void> {
+	try {
+		await waitForBackendReady(backend, {
+			probe: async () => {
+				await axios.get(`http://localhost:${port}/health`, { timeout: SERVER_CONSTANTS.STARTUP_PROBE_TIMEOUT_MS });
+				return true;
+			},
+		});
+	} catch (error) {
+		if (!hasExited(backend)) {
+			console.log(chalk.yellow('Stopping the backend process that did not become ready...'));
 		}
+		await terminateBackendChild(backend);
+		throw error;
 	}
 }
 
