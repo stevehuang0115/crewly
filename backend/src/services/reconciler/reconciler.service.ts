@@ -55,6 +55,7 @@ import type { AgentHealth, DecisionHoldLink } from './reconcile-rules.js';
 import { surfaceIdleHolders, type IdleHolderSurfacerDeps } from './idle-holder-surfacer.js';
 import { surfaceRedeliveryMiss } from './redelivery-escalation.js';
 import { surfaceOfflineQueue } from './offline-queue-notice.js';
+import { findUndeliveredDelegations, surfaceUndeliveredDelegation } from './undelivered-delegation-notice.js';
 import { WORK_ITEM_BLOCK_SOURCES } from '../../types/v2/work-item.types.js';
 import { getSettingsService } from '../settings/index.js';
 import { LoggerService } from '../core/logger.service.js';
@@ -261,6 +262,8 @@ export class ReconcilerService {
   private readonly escalatedRedeliveries = new Set<string>();
   /** Oldest queued WorkItems whose offline-machine wait was already reported (once per item, CREW-862) */
   private readonly noticedOfflineQueues = new Set<string>();
+  /** Delegated WorkItems whose delegator was already told they are undelivered (once per item) */
+  private readonly noticedUndeliveredDelegations = new Set<string>();
   /**
    * Successful wakes per `session + WorkItem`: the next wake of the same pair waits a doubling
    * backoff while the item stays queued (the wake "worked" but the agent did not take the item).
@@ -1096,6 +1099,9 @@ export class ReconcilerService {
       ? await this.dataProvider.getAvailablePoolItems()
       : workItems.filter(wi => wi.status === 'queued');
 
+    // A delegation whose brief has not reached its target tells the delegator once.
+    await this.noticeUndeliveredDelegations(poolItems, agentHealthMap);
+
     const { wakeActions } = detectUnclaimedTasks(poolItems, agentHealthMap);
 
     // A WorkItem that left the queue drops its failure backoff.
@@ -1326,6 +1332,59 @@ export class ReconcilerService {
     } catch (err) {
       this.escalatedRedeliveries.delete(workItemId);
       log.warn('Reporting a failing redelivery failed (non-fatal)', { workItemId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
+   * Tell each delegator, once per item, that work it delegated is still
+   * queued and its brief has not reached the target's running session
+   * (see `undelivered-delegation-notice.ts`). The wake rules keep trying to
+   * start the target; this only says so to the agent that believes the work
+   * was handed over. Best-effort: never throws, and does nothing when
+   * idle-holder reporting is not wired.
+   *
+   * @param poolItems - The pass's pool items
+   * @param agentHealthMap - Agent health by session (to name the target's state)
+   */
+  private async noticeUndeliveredDelegations(poolItems: WorkItem[], agentHealthMap: Map<string, AgentHealth>): Promise<void> {
+    if (!this.idleHolderDeps) return;
+    const log = LoggerService.getInstance().createComponentLogger('ReconcilerService');
+    try {
+      const now = this.idleHolderDeps.now?.().getTime() ?? Date.now();
+      for (const d of findUndeliveredDelegations(poolItems, now)) {
+        const id = d.workItem.id;
+        if (this.noticedUndeliveredDelegations.has(id)) continue;
+        this.noticedUndeliveredDelegations.add(id);
+        if (this.noticedUndeliveredDelegations.size > RECONCILER_WAKE_CONSTANTS.UNDELIVERED_DELEGATION_NOTICED_KEPT) {
+          const oldest = this.noticedUndeliveredDelegations.values().next().value;
+          if (oldest !== undefined && oldest !== id) this.noticedUndeliveredDelegations.delete(oldest);
+        }
+        const health = agentHealthMap.get(d.target);
+        const targetState = !health ? undefined : health.status === 'active' ? 'running' : 'not running';
+        try {
+          const review = await surfaceUndeliveredDelegation(d, targetState, this.idleHolderDeps);
+          traceHarness('harness.recover', {
+            workItemId: id,
+            session: d.target,
+            summary: `Delegation to ${d.target} not delivered after ${Math.round(d.waitedMs / 60_000)} min; ${d.delegator} was told`,
+            outcome: 'queued',
+            data: { kind: 'undelivered_delegation', delegator: d.delegator, ...(targetState ? { targetState } : {}) },
+          });
+          log.warn('Delegation not delivered to its target — reported to the delegator', {
+            workItemId: id,
+            target: d.target,
+            delegator: d.delegator,
+            waitedMinutes: Math.round(d.waitedMs / 60_000),
+            targetState,
+            reviewWorkItemId: review.id,
+          });
+        } catch (err) {
+          this.noticedUndeliveredDelegations.delete(id);
+          log.warn('Reporting an undelivered delegation failed (non-fatal)', { workItemId: id, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+    } catch (err) {
+      log.warn('Undelivered-delegation pass failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     }
   }
 

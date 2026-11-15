@@ -455,6 +455,21 @@ export class RequestService {
       submitted = request.status !== 'waiting_confirmation';
     }
 
+    // Submit gate (2026-11-14): a ticket is not "answered, waiting for the
+    // owner" while work opened for it is still live. An acknowledgement
+    // ("got it, I have handed it to Juno, I'll report when it is done") must
+    // not put the ticket in 待验收 with its delegation still running; the
+    // reply stays on the ticket as progress and the ticket stays in progress.
+    // Dead WorkItems (rejected / failed) do not hold it, as for an accept.
+    if (
+      updates.status === 'waiting_confirmation' &&
+      request.status !== 'waiting_confirmation' &&
+      typeof request.ticketNumber === 'number' &&
+      request.workItemIds.length > 0
+    ) {
+      await this.assertAllChildrenTerminal(request, true);
+    }
+
     // Open items (specs/2026-10-01-reply-open-items.md): the agent promised
     // the owner something or asked a question in its reply. Every close path
     // lands in `awaiting_followup` until each one is delivered or answered.
@@ -619,7 +634,7 @@ export class RequestService {
     }
 
     if (openChildIds.length > 0) {
-      this.logger.info('Request → done refused: open child WorkItems', {
+      this.logger.info('Request close / submit refused: open child WorkItems', {
         requestId: request.id,
         openChildCount: openChildIds.length,
         openChildIds,
@@ -684,11 +699,37 @@ export class RequestService {
     if (!request.workItemIds.includes(workItemId)) {
       request.workItemIds.push(workItemId);
       request.updatedAt = new Date().toISOString();
+      // New work opened on a ticket that is in review: it is in progress
+      // again (see TICKET_CONSTANTS.REOPENING_WORK_ITEM_TYPES).
+      const previousStatus = request.status;
+      const reopened = request.status === 'waiting_confirmation' && (await this.isNewWorkOnTicket(request, workItemId));
+      if (reopened) request.status = 'running';
       await this.save(request);
+      if (reopened) {
+        traceRequestStatus(request, previousStatus);
+        this.logger.info('Ticket in review went back to in progress: new work was opened for it', { requestId, workItemId });
+      }
       this.logger.debug('WorkItem linked to Request', { requestId, workItemId });
     }
 
     return request;
+  }
+
+  /**
+   * Whether a WorkItem just linked to a ticket is live work somebody opened
+   * for it (a delegation or a project task, not a harness-made item).
+   *
+   * @param request - The Request the WorkItem was linked to
+   * @param workItemId - The linked WorkItem
+   * @returns True when it is; false for non-tickets, unknown, finished, dead
+   *   or harness-made items, and when no pool is wired
+   */
+  private async isNewWorkOnTicket(request: Request, workItemId: string): Promise<boolean> {
+    if (typeof request.ticketNumber !== 'number' || !this.taskPoolService) return false;
+    const wi = await this.taskPoolService.findWorkItem(workItemId).catch(() => null);
+    if (!wi || wi.owner === 'system') return false;
+    if (!TICKET_CONSTANTS.REOPENING_WORK_ITEM_TYPES.includes(wi.type)) return false;
+    return !TERMINAL_WORK_ITEM_STATUSES.has(wi.status) && !TICKET_CONSTANTS.DEAD_WORK_ITEM_STATUSES.includes(wi.status);
   }
 
   /**

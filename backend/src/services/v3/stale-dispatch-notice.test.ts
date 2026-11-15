@@ -213,7 +213,7 @@ describe('queued dispatch notices and held briefs (crewly#1015 follow-up)', () =
 		});
 		queue.setHandOverPreparer(async (session, id, data) => {
 			const took = d.claimDirectDelivery(id, session);
-			return { message: data, delivered: () => undefined, failed: () => (took ? d.releaseDirectDelivery(id, session) : undefined), alreadyDispatched: !took };
+			return { message: data, delivered: (reached: boolean) => (reached ? d.confirmDirectDelivery(id, session) : undefined), failed: () => (took ? d.releaseDirectDelivery(id, session) : undefined), alreadyDispatched: !took };
 		});
 	}
 

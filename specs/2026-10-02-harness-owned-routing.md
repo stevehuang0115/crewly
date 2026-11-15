@@ -145,7 +145,7 @@ of an unrelated newest-running trigger item.
   |---|---|
   | approval-like (好 / 可以 / OK / approve / ship it / 👍 + the ACK / VERIFY aliases) | accepted, as before |
   | explicit send-back (打回 + the REJECT aliases) | reopened, as before |
-  | anything else (a question, "where is it / send it again", "can you also…", "发了 请持续关注") | **neither**: stays 待验收, the message is kept in the ticket's discussion and delivered to the agent as an ordinary owner message it owes an answer to; the reminder / auto-accept clock (`submittedAt`) keeps running |
+  | anything else (a question, "where is it / send it again", "can you also…", "发了 请持续关注") | **not accepted, back in progress** (changed 2026-11-14; was "neither, stays 待验收"): the message is kept in the ticket's discussion and delivered to the agent as an ordinary owner message it owes an answer to; the ticket leaves 待验收, so auto-accept does not run until the agent answers again. A file with no words (a voice note) counts as such a message; a bare acknowledgement that is not an approval word changes nothing |
 
   An approval that cannot be taken yet (live work) still puts the agent back
   on the ticket, as before.

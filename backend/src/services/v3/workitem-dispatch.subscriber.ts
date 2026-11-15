@@ -104,6 +104,27 @@ export function isSpendCappedReply(body: unknown): boolean {
   return typeof body === 'object' && body !== null && (body as { spendCapped?: unknown }).spendCapped === true;
 }
 
+/**
+ * The WorkItem id a direct hand-over brief opens with. team-leader
+ * `delegate-task` writes `WorkItem <id> — New task from …`; a sender header
+ * or a fresh-conversation note may stand in front of it.
+ */
+const DIRECT_BRIEF_ID_PATTERN = /(?:^|\n)WorkItem ([A-Za-z0-9][A-Za-z0-9:_-]*) — /;
+
+/**
+ * The WorkItem a direct hand-over brief (team-leader `delegate-task`) hands
+ * over, read from its text. Used when such a brief is delivered from an
+ * agent's message queue (the agent was not running when it was sent), so the
+ * WorkItem is then recorded as delivered.
+ *
+ * @param message - Text delivered to an agent
+ * @returns The WorkItem id, or null when the text is not such a brief
+ */
+export function directBriefWorkItemId(message: string): string | null {
+  if (message.includes(DISPATCH_TAG)) return null;
+  return message.match(DIRECT_BRIEF_ID_PATTERN)?.[1] ?? null;
+}
+
 /** Tag every dispatch notice starts with. */
 const DISPATCH_TAG = '[CREWLY-DISPATCH]';
 
@@ -648,6 +669,7 @@ export class WorkItemDispatchSubscriber {
       }
       this.confirmed.add(key);
       this.pendingQueued.delete(key);
+      this.recordDelivered(workItem.id, workItem.target);
       this.logger.info('Dispatched WorkItem to target session', {
         workItemId: workItem.id,
         target: workItem.target,
@@ -695,8 +717,55 @@ export class WorkItemDispatchSubscriber {
     // key back, the timer is what still delivers the task.
     if (this.dispatched.has(key)) return false;
     this.dispatched.add(key);
-    this.confirmed.add(key);
     return true;
+  }
+
+  /**
+   * A direct hand-over's brief was written into `target`'s running session.
+   * Only now does the (WI, target) pair count as delivered: taking the key
+   * ({@link claimDirectDelivery}) happens before the write, and a hand-over
+   * to an agent that is not running only queues the brief (2026-11-14: such
+   * a brief counted as delivered while its target was stopped).
+   *
+   * @param workItemId - WorkItem handed over
+   * @param target - Session it was written to
+   */
+  confirmDirectDelivery(workItemId: string, target: string): void {
+    const key = this.dispatchKey(workItemId, target);
+    this.dispatched.add(key);
+    this.confirmed.add(key);
+    this.pendingQueued.delete(key);
+    this.recordDelivered(workItemId, target);
+  }
+
+  /**
+   * Record on the WorkItem that its brief reached `target`'s running session
+   * ({@link DIRECT_DELIVERY_CONSTANTS.DELIVERED_AT_KEY}), so the pool shows a
+   * delivered item apart from one that only waits. The first delivery to a
+   * target is kept; a WorkItem that names another target is left alone.
+   * Best-effort, never throws.
+   *
+   * @param workItemId - WorkItem id
+   * @param target - Session the brief reached
+   */
+  private recordDelivered(workItemId: string, target: string): void {
+    void (async () => {
+      const pool = TaskPoolService.getInstance();
+      const wi = await pool.findWorkItem(workItemId);
+      if (!wi || wi.target !== target) return;
+      const C = DIRECT_DELIVERY_CONSTANTS;
+      if (wi.metadata?.[C.DELIVERED_AT_KEY] && wi.metadata?.[C.DELIVERED_TO_KEY] === target) return;
+      await pool.mergeItemMetadata(workItemId, {
+        [C.DELIVERED_AT_KEY]: new Date().toISOString(),
+        [C.DELIVERED_TO_KEY]: target,
+      });
+    })().catch((err: unknown) => {
+      this.logger.debug('Could not record the delivery on the WorkItem (non-fatal)', {
+        workItemId,
+        target,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
 
   /**
@@ -713,6 +782,7 @@ export class WorkItemDispatchSubscriber {
     this.dispatched.add(key);
     this.confirmed.add(key);
     this.pendingQueued.delete(key);
+    this.recordDelivered(workItemId, target);
   }
 
   /**
@@ -943,6 +1013,7 @@ export class WorkItemDispatchSubscriber {
         else {
           this.confirmed.add(key);
           this.pendingQueued.delete(key);
+          this.recordDelivered(wi.id, target);
         }
       }
       if (batch.some(isScheduledWorkItem)) noteScheduledTurn(target);

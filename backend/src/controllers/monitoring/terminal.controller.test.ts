@@ -237,10 +237,12 @@ jest.mock('../../services/task-pool/task-pool.service.js', () => ({
 }));
 const mockClaimDirectDelivery = jest.fn<(id: string, target: string) => boolean>();
 const mockReleaseDirectDelivery = jest.fn();
+const mockConfirmDirectDelivery = jest.fn();
 jest.mock('../../services/v3/workitem-dispatch.subscriber.js', () => ({
 	WorkItemDispatchSubscriber: {
 		getInstance: () => ({
 			claimDirectDelivery: (id: string, target: string) => mockClaimDirectDelivery(id, target),
+			confirmDirectDelivery: (...args: unknown[]) => mockConfirmDirectDelivery(...args),
 			releaseDirectDelivery: (...args: unknown[]) => mockReleaseDirectDelivery(...args),
 		}),
 	},
@@ -1575,6 +1577,23 @@ describe('TerminalController', () => {
 			mockFreshPrepareForTask.mockResolvedValue({ cleared: false });
 			await deliver({ message: 'do the thing', workItemId: 'wi-new' });
 			expect(sentText()).toBe('do the thing');
+		});
+
+		// 2026-11-14: a hand-over that was only queued counted as delivered.
+		it('a hand-over written into the running session is confirmed as delivered', async () => {
+			mockConfirmDirectDelivery.mockClear();
+			await deliver({ message: 'WorkItem wi-new — do the thing', workItemId: 'wi-new' });
+			expect(mockRes.statusCode).toBe(200);
+			expect(mockConfirmDirectDelivery).toHaveBeenCalledWith('wi-new', 'test-session');
+		});
+
+		it('a hand-over the agent could only queue (202) is NOT confirmed as delivered', async () => {
+			mockConfirmDirectDelivery.mockClear();
+			mockApiContext.agentRegistrationService.sendMessageToAgent.mockResolvedValue({ success: true, queued: true, message: '[AGENT_BUSY] queued' });
+			await deliver({ message: 'WorkItem wi-new — do the thing', workItemId: 'wi-new' });
+			expect(mockRes.statusCode).toBe(202);
+			expect(mockConfirmDirectDelivery).not.toHaveBeenCalled();
+			expect(mockReleaseDirectDelivery).not.toHaveBeenCalled();
 		});
 
 		it('without a workItemId nothing is prepared or claimed', async () => {

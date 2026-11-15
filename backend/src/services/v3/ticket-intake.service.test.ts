@@ -17,6 +17,7 @@ import {
   setTicketIntakeService,
   getTicketIntakeService,
   isAcceptanceReply,
+  isSubstantiveFollowUp,
   type IntakeMessage,
   type TicketReceiptSink,
   type TicketRequestStore,
@@ -350,25 +351,48 @@ describe('intake — review replies (Phase 2)', () => {
     expect(review.calls).toEqual([`verify:${t!.id}`, `reject:${t2!.id}:少了表头:thread`]);
   });
 
-  it('three outcomes in a 待验收 thread: approval accepts; anything else (not 打回) neither accepts nor reopens (2026-10-02)', async () => {
+  it('three outcomes in a 待验收 thread: approval accepts; anything else (not 打回) does not accept and puts it back in progress (2026-11-14)', async () => {
     const review = fakeReview();
     svc.setReviewHandler(review);
     const t = await svc.intake(msg());
-    const submittedAt = '2026-10-01T10:00:00.000Z';
+    const submittedAt = new Date().toISOString();
     await store.update(t!.id, { status: 'waiting_confirmation', submittedAt });
+    expect((await svc.toListItem((await store.getById(t!.id))!)).autoAcceptAt).toEqual(expect.any(String));
     const o = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: 'can you also add it to the mobile app' }));
     expect(o.action).toBe('appended');
-    // Not accepted, not reopened: still in review, the review clock untouched.
-    expect(review.calls).toEqual([]);
-    let after = await store.getById(t!.id);
-    expect(after?.status).toBe('waiting_confirmation');
-    expect(after?.submittedAt).toBe(submittedAt);
+    // Not accepted; the owner wrote again before accepting, so it is in progress again.
+    expect(review.calls).toEqual([`reopen:${t!.id}`]);
+    const after = await store.getById(t!.id);
+    expect(after?.status).toBe('running');
     expect(after?.discussion?.map((d) => d.text)).toEqual(['can you also add it to the mobile app']);
+    // No auto-accept deadline while it is in progress.
+    expect((await svc.toListItem(after!)).autoAcceptAt).toBeNull();
 
-    const ok = await svc.intakeWithOutcome(msg({ ts: '100.3', thread: '100.1', text: 'ship it' }));
+    // The approval outcome is unchanged.
+    const t2 = await svc.intake(msg({ ts: '300.1', text: 'please export the weekly report as csv' }));
+    await store.update(t2!.id, { status: 'waiting_confirmation', submittedAt });
+    const ok = await svc.intakeWithOutcome(msg({ ts: '300.2', thread: '300.1', text: 'ship it' }));
     expect(ok.action).toBe('verified');
-    after = await store.getById(t!.id);
-    expect(after?.status).toBe('done');
+    expect((await store.getById(t2!.id))?.status).toBe('done');
+  });
+
+  it('a file with no words (a voice note) on a 待验收 ticket puts it back in progress', async () => {
+    const review = fakeReview();
+    svc.setReviewHandler(review);
+    const t = await svc.intake(msg());
+    await store.update(t!.id, { status: 'waiting_confirmation', submittedAt: new Date().toISOString() });
+    const o = await svc.intakeWithOutcome(msg({ ts: '100.3', thread: '100.1', text: '[Slack File: voice-note.m4a]' }));
+    expect(o.action).toBe('appended');
+    expect(review.calls).toEqual([`reopen:${t!.id}`]);
+    expect((await store.getById(t!.id))?.status).toBe('running');
+  });
+
+  it('isSubstantiveFollowUp', () => {
+    expect(isSubstantiveFollowUp('add a Google Drive option to the upload screen')).toBe(true);
+    expect(isSubstantiveFollowUp('[Slack File: voice-note.m4a]')).toBe(true);
+    expect(isSubstantiveFollowUp('', true)).toBe(true);
+    expect(isSubstantiveFollowUp('')).toBe(false);
+    expect(isSubstantiveFollowUp('sure')).toBe(false);
   });
 
   it('TKT-187: "where did you send it? send the link again" does not accept the ticket', async () => {
@@ -381,8 +405,9 @@ describe('intake — review replies (Phase 2)', () => {
     expect(review.calls).not.toContain(`verify:${t!.id}`);
     const o2 = await svc.intakeWithOutcome(msg({ ts: '100.3', thread: '100.1', text: 'where did you send it? send the link again' }));
     expect(o2.action).not.toBe('verified');
-    expect(review.calls).toEqual([]);
-    expect((await store.getById(t!.id))?.status).toBe('waiting_confirmation');
+    // Not accepted; the question put the ticket back in progress (2026-11-14).
+    expect(review.calls).toEqual([`reopen:${t!.id}`]);
+    expect((await store.getById(t!.id))?.status).toBe('running');
   });
 
   it('isAcceptanceReply', () => {
@@ -752,12 +777,12 @@ describe('intake — new asks in a ticket thread (#827)', () => {
     // previous message just split off, so an ordinary follow-up lands back
     // on the ticket the owner still owes an answer on, not on the newest
     // ticket in the thread. A change request is not his OK (2026-10-02) and
-    // not 打回 either: kept on the ticket, which stays in review.
+    // not 打回 either: kept on the ticket, which goes back in progress
+    // (2026-11-14; this handler double records the call and changes nothing).
     const followUp = await svc.intakeWithOutcome(msg({ ts: '100.3', thread: '100.1', text: '还有这个图片需要换一下，颜色不对' }));
     expect(followUp.action).toBe('appended');
     if (followUp.action === 'appended') expect(followUp.ticket.id).toBe(must(t).id);
-    expect(reopened).toEqual([]);
-    expect((await store.getById(must(t).id))?.status).toBe('waiting_confirmation');
+    expect(reopened).toEqual([must(t).id]);
   });
 
   it('a new ticket in a long-finished thread records the finished one as its parent', async () => {
@@ -1037,11 +1062,12 @@ describe('intake — follow-ups instead of new tickets (2026-09-28)', () => {
     await store.update(t.id, { status: 'waiting_confirmation' });
     const o = await svc.intakeWithOutcome(dm('10.1', '发了 请持续关注他们的回复吧'));
     expect(o.action).toBe('appended');
-    expect(calls).toEqual([]);
+    // Not his OK: the ticket is asked back into progress (this double only records the call).
+    expect(calls).toEqual([`reopen:${t.id}`]);
     expect((await store.getById(t.id))?.status).toBe('waiting_confirmation');
     const ok = await svc.intakeWithOutcome(dm('10.2', '可以 👍'));
     expect(ok.action).toBe('verified');
-    expect(calls).toEqual([`verify:${t.id}`]);
+    expect(calls).toEqual([`reopen:${t.id}`, `verify:${t.id}`]);
   });
 
   it('a channel is not a DM: a top-level channel message is judged on its own', async () => {

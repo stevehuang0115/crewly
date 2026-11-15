@@ -396,12 +396,35 @@ fi
 # constant that does not actually govern it.
 BODY=$(jq -n --arg message "$DELIVER_MESSAGE" --arg workItemId "$TASK_ID" '{message: $message, waitForReady: true, waitTimeout: 15000} + (if $workItemId != "" then {workItemId: $workItemId} else {} end)')
 
+# Whether the brief reached the worker's RUNNING session ("delivered") or only
+# waits for it ("queued": the worker is not running and is being started, or
+# it cannot take a message right now). The backend answers a hand-over to a
+# worker that is down with 2xx `{queued: true}` — that is not a delivery, and
+# a lead that reports "handed over" on it is wrong (2026-11-14: the worker was
+# stopped, the lead told the owner it was on it, and nobody noticed for 68
+# minutes). The last line of this script states which one happened.
+DELIVERY_STATE="queued"
+
+# deliver_brief <json body>: POST the brief, print the response as before, and
+# set DELIVERY_STATE from it. Returns non-zero when the request failed.
+deliver_brief() {
+  local result
+  result=$(api_call POST "/terminal/${TO}/deliver" "$1") || return 1
+  [ -n "$result" ] && printf '%s\n' "$result"
+  if [ "$(printf '%s' "$result" | jq -r '.queued // false' 2>/dev/null || echo false)" = "true" ]; then
+    DELIVERY_STATE="queued"
+  else
+    DELIVERY_STATE="delivered"
+  fi
+  return 0
+}
+
 DELIVER_OK=true
-api_call POST "/terminal/${TO}/deliver" "$BODY" || DELIVER_OK=false
+deliver_brief "$BODY" || DELIVER_OK=false
 
 if [ "$DELIVER_OK" = "false" ]; then
   FORCE_BODY=$(jq -n --arg message "$DELIVER_MESSAGE" --arg workItemId "$TASK_ID" '{message: $message, force: true} + (if $workItemId != "" then {workItemId: $workItemId} else {} end)')
-  api_call POST "/terminal/${TO}/deliver" "$FORCE_BODY" || {
+  deliver_brief "$FORCE_BODY" || {
     # Worker likely offline — attempt auto-start if we have team context
     STARTED=false
     # No --team given: find the team that owns this worker's session, so an
@@ -461,9 +484,9 @@ if [ "$DELIVER_OK" = "false" ]; then
           # of value is not evidence of relationship — eleven constants share
           # 30000. Not claimed as a mirror.
           RETRY_BODY=$(jq -n --arg message "$DELIVER_MESSAGE" --arg workItemId "$TASK_ID" '{message: $message, waitForReady: true, waitTimeout: 30000} + (if $workItemId != "" then {workItemId: $workItemId} else {} end)')
-          api_call POST "/terminal/${TO}/deliver" "$RETRY_BODY" && STARTED=true || {
+          deliver_brief "$RETRY_BODY" && STARTED=true || {
             # Final fallback: force deliver
-            api_call POST "/terminal/${TO}/deliver" "$FORCE_BODY" && STARTED=true || true
+            deliver_brief "$FORCE_BODY" && STARTED=true || true
           }
         fi
       fi
@@ -554,3 +577,15 @@ fi
 # lifecycles are owned by `/cron/*` and `/subscriptions/*` respectively;
 # the WI itself carries no association beyond `target`. No-op here.
 :
+
+# Last line: what actually happened to the brief, in words the lead can repeat.
+# UNDELIVERED_NOTICE_MINUTES mirrors
+# RECONCILER_WAKE_CONSTANTS.UNDELIVERED_DELEGATION_NOTICE_AFTER_MS (backend/src/constants.ts).
+UNDELIVERED_NOTICE_MINUTES=5
+if [ "$DELIVERY_STATE" = "delivered" ]; then
+  jq -cn --arg to "$TO" --arg workItemId "$TASK_ID" \
+    '{success: true, delivery: "delivered", to: $to, info: ("Delivered into " + $to + "\u0027s running session.")} + (if $workItemId != "" then {workItemId: $workItemId} else {} end)'
+else
+  jq -cn --arg to "$TO" --arg workItemId "$TASK_ID" --arg minutes "$UNDELIVERED_NOTICE_MINUTES" \
+    '{success: true, delivery: "queued", to: $to, info: ("NOT DELIVERED YET. " + $to + " is not running or cannot take a message right now, so the task is only queued for it; Crewly is starting it and delivers the task when it is ready. Do not tell anyone the task was handed over or that " + $to + " is working on it. Say: \"queued for " + $to + ", not yet picked up\". You get a note if it is still undelivered after " + $minutes + " minutes.")} + (if $workItemId != "" then {workItemId: $workItemId} else {} end)'
+fi

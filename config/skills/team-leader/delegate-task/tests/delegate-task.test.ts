@@ -31,6 +31,8 @@ let baseUrl: string;
 let captured: Captured[];
 /** When true the stub fails every delivery attempt. */
 let failDelivery = false;
+/** When true the stub answers a delivery as the backend does for a worker that is not running. */
+let workerDown = false;
 /** When true the stub knows a team that owns worker-1. */
 let teamsKnown = false;
 /** Extra fields of the stub's /task-pool/add `data`. */
@@ -76,6 +78,11 @@ beforeAll((done) => {
           res.end(JSON.stringify({ success: false, error: 'worker offline' }));
           return;
         }
+        if (workerDown) {
+          res.writeHead(202, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, queued: true, waking: true, message: 'The agent is not running. The message is queued and the agent is being started; it is delivered when the agent is ready.' }));
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
         return;
@@ -103,7 +110,7 @@ beforeAll((done) => {
 
 afterAll((done) => { server.close(() => done()); });
 
-beforeEach(() => { captured = []; failDelivery = false; teamsKnown = false; addExtra = {}; });
+beforeEach(() => { captured = []; failDelivery = false; workerDown = false; teamsKnown = false; addExtra = {}; });
 
 /** Index of the first captured call whose path matches, or -1. */
 const indexOf = (needle: string): number =>
@@ -268,4 +275,30 @@ describe('delegate-task auto-start of an offline worker', () => {
     expect(start).toBeDefined();
     expect((start?.body as { workItemId?: string })?.workItemId).toBe('wi-created-1');
   }, 60_000);
+});
+
+describe('delegate-task says whether the brief was delivered or only queued (2026-11-14)', () => {
+  const args = ['--to', 'worker-1', '--task', 'Goal: x. Outcome: y. Eval: z.', '--from', 'lead-1'];
+  /** The last JSON line the skill printed. */
+  const lastLine = (stdout: string): Record<string, unknown> => JSON.parse(stdout.trim().split('\n').pop() ?? '{}');
+
+  it('a brief written into the running session ends with delivery: delivered', async () => {
+    const { code, stdout } = await runSkill(args);
+    expect(code).toBe(0);
+    expect(lastLine(stdout)).toMatchObject({ success: true, delivery: 'delivered', to: 'worker-1', workItemId: 'wi-created-1' });
+  });
+
+  it('a worker that is not running ends with delivery: queued and tells the lead what to say', async () => {
+    workerDown = true;
+    const { code, stdout } = await runSkill(args);
+    expect(code).toBe(0);
+    const last = lastLine(stdout);
+    expect(last).toMatchObject({ success: true, delivery: 'queued', to: 'worker-1', workItemId: 'wi-created-1' });
+    expect(last.info).toContain('NOT DELIVERED YET');
+    expect(last.info).toContain('queued for worker-1, not yet picked up');
+    expect(last.info).toContain('Do not tell anyone the task was handed over');
+    // The queued answer is not a failure: no force write, no [UNDELIVERED] note.
+    expect(captured.filter((c) => c.path.includes('/deliver'))).toHaveLength(1);
+    expect(captured.some((c) => c.path.includes('/notes'))).toBe(false);
+  });
 });

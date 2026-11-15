@@ -132,6 +132,82 @@ describe('RequestService — ticket review gate (ticket-loop Phase 2)', () => {
     service.setTaskPoolService(null);
   });
 
+  // 2026-11-14: "got it, handed to Juno, I'll report when done" put a ticket in 待验收.
+  describe('a ticket is not submitted while work opened for it is live', () => {
+    const wiOf = (status: WorkItem['status'], extra: Partial<WorkItem> = {}): WorkItem => ({
+      ...createWorkItem({ type: 'delegate', owner: 'team_lead', title: 'Add a Google Drive option' }),
+      status,
+      ...extra,
+    });
+
+    it('refuses the submit with a live delegation, leaves the ticket in progress, and submits once it is finished', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const t = await makeTicket();
+      const pool: Record<string, WorkItem> = { 'wi-juno': wiOf('queued', { id: 'wi-juno' }) };
+      service.setTaskPoolService({ findWorkItem: async (id: string) => pool[id] ?? null });
+      await service.update(t.id, { status: 'running' });
+      await service.linkWorkItem(t.id, 'wi-juno');
+
+      await expect(service.update(t.id, { status: 'done' })).rejects.toBeInstanceOf(RequestStillHasOpenChildrenError);
+      const held = await service.getById(t.id);
+      expect(held?.status).toBe('running');
+      expect(held?.submittedAt).toBeUndefined();
+      expect(held?.submitCount ?? 0).toBe(0);
+
+      pool['wi-juno'] = wiOf('verified', { id: 'wi-juno' });
+      const submitted = await service.update(t.id, { status: 'done' });
+      expect(submitted).toMatchObject({ status: 'waiting_confirmation', submitCount: 1 });
+      service.setTaskPoolService(null);
+    });
+
+    it('dead WorkItems (rejected / failed) do not hold the submit', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const t = await makeTicket();
+      service.setTaskPoolService({ findWorkItem: async (id: string) => wiOf(id === 'a' ? 'rejected' : 'failed', { id }) });
+      await service.linkWorkItem(t.id, 'a');
+      await service.linkWorkItem(t.id, 'b');
+      await service.update(t.id, { status: 'running' });
+      expect((await service.update(t.id, { status: 'done' })).status).toBe('waiting_confirmation');
+      service.setTaskPoolService(null);
+    });
+
+    it('a plain question with no work is submitted as before (unchanged one-shot Q&A)', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const t = await makeTicket();
+      service.setTaskPoolService({ findWorkItem: async () => null });
+      expect(await service.update(t.id, { status: 'done' })).toMatchObject({ status: 'waiting_confirmation', submitCount: 1 });
+      service.setTaskPoolService(null);
+    });
+
+    it('new work linked to a ticket in review puts it back in progress; harness items, finished items and plain Requests do not', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const pool: Record<string, WorkItem> = {
+        live: wiOf('queued', { id: 'live' }),
+        system: wiOf('queued', { id: 'system', owner: 'system' }),
+        finished: wiOf('done', { id: 'finished' }),
+        check: wiOf('queued', { id: 'check', type: 'check' }),
+      };
+      service.setTaskPoolService({ findWorkItem: async (id: string) => pool[id] ?? null });
+
+      const t = await makeTicket();
+      await service.update(t.id, { status: 'done' }); // answered → 待验收
+      for (const id of ['system', 'finished', 'check', 'unknown']) {
+        expect((await service.linkWorkItem(t.id, id))?.status).toBe('waiting_confirmation');
+      }
+      const reopened = await service.linkWorkItem(t.id, 'live');
+      expect(reopened?.status).toBe('running');
+      expect((await service.getById(t.id))?.status).toBe('running');
+      // Linking it again changes nothing.
+      expect((await service.linkWorkItem(t.id, 'live'))?.status).toBe('running');
+
+      const plain = await service.create({ sourceConversationItemId: 'plain', title: 'p', description: 'p', requiresConfirmation: true });
+      await service.update(plain.id, { status: 'running' });
+      await service.update(plain.id, { status: 'waiting_confirmation' });
+      expect((await service.linkWorkItem(plain.id, 'live'))?.status).toBe('waiting_confirmation');
+      service.setTaskPoolService(null);
+    });
+  });
+
   it('reopenStale brings a stale-closed ticket back to running; any other cancelled ticket stays closed', async () => {
     const service = RequestService.getInstance('/tmp/test-project');
     const stale = await makeTicket({ tags: ['ticket', 'stale'] });

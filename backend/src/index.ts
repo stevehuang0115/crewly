@@ -4606,9 +4606,13 @@ void (async () => {
 				// A dispatch notice delivered from the queue marks its WorkItems as
 				// delivered to that agent, so a held brief for the same WorkItem is
 				// dropped instead of briefing it twice (crewly#1015 follow-up).
-				const { dispatchNoticeWorkItemIds } = await import('./services/v3/workitem-dispatch.subscriber.js');
+				// So does a delegate-task brief that waited there because its target
+				// was not running: only now has the hand-over reached the agent.
+				const { dispatchNoticeWorkItemIds, directBriefWorkItemId } = await import('./services/v3/workitem-dispatch.subscriber.js');
 				agentMessageQueue.setDeliveredListener((sessionName, data) => {
 					for (const id of dispatchNoticeWorkItemIds(data) ?? []) dispatchSubscriber.noteDeliveredFromQueue(id, sessionName);
+					const handedOver = directBriefWorkItemId(data);
+					if (handedOver) dispatchSubscriber.noteDeliveredFromQueue(handedOver, sessionName);
 				});
 				void agentMessageQueue.pruneStale().catch((pruneErr: unknown) => {
 					this.logger.warn('Could not prune stale queued dispatch notices (non-critical)', {

@@ -1046,12 +1046,17 @@ export class TicketIntakeService {
    *  - an approval-like answer (好 / 可以 / OK / approve / ship it / 👍 and the
    *    review aliases) accepts it, as before (2026-09-28);
    *  - 打回 (handled before this) sends it back, as before;
-   *  - anything else — a question, "where is it / send it again", "can you
-   *    also…", "发了 请持续关注" — neither accepts nor reopens: the ticket stays
-   *    待验收, the message is kept in its discussion and reaches the agent as an
-   *    ordinary owner message it owes an answer to, and the reminder /
-   *    auto-accept clock (`submittedAt`) keeps running. "where did you send
-   *    it? send the link again" accepted TKT-187.
+   *  - anything else with content — a question, "where is it / send it
+   *    again", "can you also…", "发了 请持续关注" — does not accept ("where did
+   *    you send it? send the link again" accepted TKT-187) and puts the ticket
+   *    back in progress: the owner wrote again before accepting, so the answer
+   *    he has is not the end of it. The message is kept in the discussion and
+   *    reaches the agent as an ordinary owner message; the ticket leaves 待验收,
+   *    so no auto-accept runs until the agent answers again (2026-11-14: a
+   *    new instruction in the thread of an answered question left the ticket
+   *    "waiting for the owner" for 68 minutes while work was open on it).
+   *    A file with no words counts too (a voice note); a bare acknowledgement
+   *    that is not an approval word changes nothing.
    * When an approval cannot be taken yet (live work), the agent is back on it.
    *
    * @param ticket - The 待验收 ticket
@@ -1063,8 +1068,13 @@ export class TicketIntakeService {
     const review = this.review;
     if (!review) return this.appendToTicket(ticket, message, text);
     if (!isAcceptanceReply(text)) {
-      this.logger.info('Owner follow-up on a ticket in review is not an approval — kept in review, delivered to the agent', { ticket: ticket.id });
-      return this.appendToTicket(ticket, message, text);
+      if (!isSubstantiveFollowUp(text, (message.attachments?.length ?? 0) > 0)) return this.appendToTicket(ticket, message, text);
+      const reopened = (await review.reopenOnFollowUp(ticket.id)) ?? ticket;
+      this.logger.info('Owner follow-up on a ticket in review is not an approval — back in progress, delivered to the agent', {
+        ticket: ticket.id,
+        status: reopened.status,
+      });
+      return this.appendToTicket(reopened, message, text);
     }
     const result = await review.verify(ticket.id);
     if (!result.ok) {
@@ -1439,6 +1449,21 @@ export function setTicketIntakeService(service: TicketIntakeService | null): voi
  */
 export function getTicketIntakeService(): TicketIntakeService | null {
   return instance;
+}
+
+/**
+ * Whether an owner follow-up brings something new: words that are not a bare
+ * acknowledgement, or a file (a voice note or a screenshot with no words is
+ * still new input).
+ *
+ * @param text - The owner's message (trimmed)
+ * @param hasAttachments - Whether files came with it
+ * @returns True when the message brings something new
+ */
+export function isSubstantiveFollowUp(text: string, hasAttachments = false): boolean {
+  const t = (text ?? '').trim();
+  if (t.length === 0) return hasAttachments;
+  return !TRIVIAL_ACK_PATTERN.test(t);
 }
 
 /** Extra approval words beyond {@link isApproval} and the review aliases. */

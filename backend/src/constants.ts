@@ -3982,6 +3982,14 @@ export const DIRECT_DELIVERY_CONSTANTS = {
 	 * this, if nobody delivered it, the dispatcher pushes its brief.
 	 */
 	GRACE_MS: 90_000,
+	/**
+	 * WorkItem metadata key: when the brief reached the target's running
+	 * session (written into it, or delivered from its message queue). Absent
+	 * while the brief only waits on a queue or the target is not running.
+	 */
+	DELIVERED_AT_KEY: 'deliveredAt',
+	/** WorkItem metadata key: the session the brief was delivered to */
+	DELIVERED_TO_KEY: 'deliveredTo',
 } as const;
 
 /**
@@ -6893,6 +6901,14 @@ export const TICKET_CONSTANTS = {
 	 * tickets out of done for good (TKT-017: two `rejected` WorkItems).
 	 */
 	DEAD_WORK_ITEM_STATUSES: ['rejected', 'failed'] as readonly string[],
+	/**
+	 * WorkItem types that are work somebody opened for a ticket. Linking a
+	 * live one to a ticket that is in review (待验收) puts the ticket back in
+	 * progress: the earlier answer no longer covers what is being done
+	 * (2026-11-14). Harness-made items (owner `system`: rework, follow-through,
+	 * SLA trackers) never reopen a ticket.
+	 */
+	REOPENING_WORK_ITEM_TYPES: ['delegate', 'project_task'] as readonly string[],
 	/** Metadata key the dispatcher reads the delivered-message marker from */
 	MESSAGE_MARKER_METADATA_KEY: 'ticketMarker',
 	/** Metadata key on a chat-v2 receipt row */
@@ -9347,6 +9363,23 @@ export const RECONCILER_WAKE_CONSTANTS = {
 	OFFLINE_QUEUE_NOTICE_AFTER_MS: 60 * 60_000,
 	/** Offline-queue notices remembered per reconciler before the oldest are forgotten */
 	OFFLINE_QUEUE_NOTICED_KEPT: 200,
+	/**
+	 * A delegated WorkItem still queued this long without its brief having
+	 * reached the target's running session tells the delegator, once
+	 * (2026-11-14: a lead told the owner "handed to Juno" while Juno was not
+	 * running; nothing said the hand-over never landed for 68 minutes) (ms)
+	 */
+	UNDELIVERED_DELEGATION_NOTICE_AFTER_MS: 5 * 60_000,
+	/**
+	 * Delegations older than this are not reported as undelivered: stalled-agent
+	 * recovery and the stale rules own them, and an upgrade must not report every
+	 * old queued item at once (ms)
+	 */
+	UNDELIVERED_DELEGATION_NOTICE_MAX_AGE_MS: 24 * 60 * 60_000,
+	/** Undelivered-delegation notices remembered per reconciler before the oldest are forgotten */
+	UNDELIVERED_DELEGATION_NOTICED_KEPT: 500,
+	/** WorkItem metadata key: when the delegator was told the item is undelivered */
+	UNDELIVERED_DELEGATION_NOTICED_AT_KEY: 'undeliveredNoticeAt',
 	/**
 	 * How long a pass waits on a start before treating it as pending (ms). A
 	 * start queued behind the running-agent cap can wait minutes for a slot;
