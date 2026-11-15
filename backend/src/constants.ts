@@ -6106,6 +6106,34 @@ export const CLOUD_CONSTANTS = {
 	REFRESH_ROTATE_WITHIN_MS: 7 * 24 * 60 * 60 * 1000,
 	/** How many rotated-away refresh tokens the client remembers so a stale copy can never be put back */
 	RETIRED_REFRESH_TOKENS_KEPT: 5,
+	/**
+	 * Access-token refresh resilience. On 2026-11-13 a proactive refresh fired
+	 * while the network was down and never settled; the in-progress guard then
+	 * refused every later refresh until the access token expired and Cloud Sync
+	 * declared the login dead, although the refresh token had 29 days left.
+	 */
+	REFRESH: {
+		/** Timeout for the one HTTP call to Cloud's refresh endpoint (ms) */
+		REQUEST_TIMEOUT_MS: 10_000,
+		/** Overall deadline for a whole refresh attempt; past it the attempt is abandoned so the next one can run (ms) */
+		ATTEMPT_DEADLINE_MS: 30_000,
+		/** Delay before the first retry after a transient failure (ms) */
+		RETRY_INITIAL_DELAY_MS: 30_000,
+		/** Each further retry waits this many times longer */
+		RETRY_BACKOFF_FACTOR: 2,
+		/** Longest wait between retries (ms) */
+		RETRY_MAX_DELAY_MS: 5 * 60_000,
+		/** Refresh this long before the access token expires (s) */
+		SKEW_S: 300,
+		/** Statuses below 500 from the refresh endpoint that say "try later", not "token refused" */
+		TRANSIENT_CLIENT_STATUSES: [408, 429],
+		/** First status of the server-error range: Cloud is broken, the token was not judged */
+		SERVER_ERROR_MIN_STATUS: 500,
+		/** Why the last refresh failed: Cloud could not be asked (network, timeout, 5xx) */
+		FAILURE_TRANSIENT: 'transient',
+		/** Why the last refresh failed: Cloud refused the refresh token (401/403), or it has expired */
+		FAILURE_REJECTED: 'rejected',
+	},
 	/** Cloud API endpoints */
 	ENDPOINTS: {
 		/** Authentication and token verification (matches crewly-auth /api/cloud/validate) */

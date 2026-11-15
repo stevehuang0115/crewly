@@ -49,10 +49,14 @@ jest.mock('../core/storage.service.js', () => ({
   },
 }));
 
+/** Whether the mocked client reports its failed refresh as transient (Cloud unreachable). */
+const mockRefreshState = { transient: false };
+
 jest.mock('./cloud-client.service.js', () => ({
   CloudClientService: {
     getInstance: () => ({
       tryRefreshToken: jest.fn().mockResolvedValue(false),
+      wasLastRefreshFailureTransient: () => mockRefreshState.transient,
       getToken: jest.fn().mockReturnValue(null),
       loadPersistedConfig: jest.fn().mockResolvedValue(null),
       connectLocal: jest.fn(),
@@ -504,6 +508,36 @@ describe('CloudSyncService', () => {
       }
 
       expect(service.getState()).toBe('auth_expired');
+    });
+
+    it('does not latch authRejected or reach auth_expired while the refresh fails only because Cloud is unreachable (incident 2026-11-13)', async () => {
+      mockRefreshState.transient = true;
+      try {
+        mockFetch.mockRejectedValue(new Error('Network down'));
+        service.start(testConfig);
+        await flushPromises();
+        await driveIntoErrorState(service);
+
+        mockFetch.mockResolvedValue(mockResponse({}, 403));
+        for (let i = 0; i < maxAttempts * 3; i++) {
+          jest.advanceTimersByTime(recoveryInterval);
+          await flushPromises();
+        }
+
+        expect(service.getState()).toBe('error');
+        expect(service.getHealth().authRejected).toBe(false);
+
+        // Once Cloud refuses the refresh token itself, the old behaviour applies.
+        mockRefreshState.transient = false;
+        for (let i = 0; i < maxAttempts; i++) {
+          jest.advanceTimersByTime(recoveryInterval);
+          await flushPromises();
+        }
+        expect(service.getState()).toBe('auth_expired');
+        expect(service.getHealth().authRejected).toBe(true);
+      } finally {
+        mockRefreshState.transient = false;
+      }
     });
 
     it('should emit auth_expired event', async () => {
