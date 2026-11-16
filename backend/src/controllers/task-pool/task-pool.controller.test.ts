@@ -966,6 +966,25 @@ describe('TaskPoolController', () => {
   // succeed, and the broken-shape rejection messages must be specific
   // enough to point a human caller at the fix.
   // ---------------------------------------------------------------------
+  // CREW-731: complete on the PARENT of a review used to answer success and
+  // change nothing (and overwrite the parent's output on the way).
+  describe('completeItem on an item already waiting for review (CREW-731)', () => {
+    it('refuses with 409 naming the review item, and writes nothing', async () => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-p', type: 'delegate', status: 'done_by_worker', output: { summary: 'worker report' } });
+      mockService.setOutput.mockReset();
+      mockService.completeItem.mockReset();
+      const res = mockRes();
+      await completeItem(mockReq({ params: { workItemId: 'wi-p' }, body: { agentId: 'sam', result: { summary: 'verified', verdict: 'verified' } } }), res);
+
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, code: 'already_submitted_for_review', reviewItemId: 'wi-p:verify:wi-p', error: expect.stringContaining('wi-p:verify:wi-p') }),
+      );
+      expect(mockService.setOutput).not.toHaveBeenCalled();
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+  });
+
   describe('task timing', () => {
     beforeEach(() => {
       mockService.setOutput.mockResolvedValue(undefined);
