@@ -1,4 +1,5 @@
 import { handedOffSince, owedWorkReminder, releaseWorkDeps, restoreStoppedOwingWork, OWED_REMINDER_MARKER, type StoppedOwingDeps } from './follow-through.wiring.js';
+import { buildFollowUpWorkItem } from '../open-items/open-items.wiring.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { OwnerThreadSentinelService, setOwnerThreadSentinel } from '../messaging/owner-thread-sentinel.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
@@ -21,6 +22,17 @@ describe('handedOffSince', () => {
 		expect(handedOffSince([wi({ target: 'pia', metadata: { harnessCreated: 'stated-intent' } })], 'pia', SINCE)).toBe(false);
 		expect(handedOffSince([wi({ target: 'pia', metadata: { harnessCreated: 'ticket-follow-through' } })], 'pia', SINCE)).toBe(false);
 		expect(handedOffSince([wi({ target: 'pia', status: 'running', metadata: { harnessCreated: 'stated-intent' } })], 'pia', SINCE)).toBe(true);
+	});
+
+	it('the held follow-up of a promise made in the same reply is not the agent starting (Pia, 2026-11-16)', () => {
+		const followUp = buildFollowUpWorkItem({
+			request: { id: 'r1', ticketNumber: 927 } as never,
+			item: { id: 'c-1', type: 'commitment', text: '我现在做头型,出来后发你对比图。', agent: 'pia', sourceMessageId: 'm1', createdAt: new Date().toISOString(), status: 'open', due: new Date(Date.now() + 4 * 3600_000).toISOString() },
+			place: null,
+		});
+		expect(followUp.status).toBe('blocked');
+		expect(handedOffSince([followUp], 'pia', SINCE)).toBe(false);
+		expect(handedOffSince([{ ...followUp, status: 'running' }], 'pia', SINCE)).toBe(true);
 	});
 
 	it('older items, other agents\' work and unrelated items do not', () => {
