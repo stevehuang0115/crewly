@@ -1068,6 +1068,24 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
 
     const existing = await getService().findWorkItem(workItemId).catch(() => null);
 
+    // CREW-731: an item already submitted for review is not completed again.
+    // Before this, the call overwrote its output, ran the same-state no-op
+    // transition and answered success with no change, so a lead that passed
+    // the parent id instead of the review item's believed it had closed the
+    // review. Refuse, name the review item, and write nothing.
+    if (existing?.status === 'done_by_worker') {
+      res.status(409).json({
+        success: false,
+        error:
+          `WorkItem ${workItemId} is already done_by_worker and waiting for review; completing it again changes nothing. ` +
+          `Close the review item ${workItemId}:verify:${workItemId} instead (complete it with a verdict), ` +
+          `or render the verdict with POST /task-pool/items/${workItemId}/verdict.`,
+        code: 'already_submitted_for_review',
+        reviewItemId: `${workItemId}:verify:${workItemId}`,
+      });
+      return;
+    }
+
     // #873: evidence contract. Decided before anything is written, so a
     // rejected completion leaves the WorkItem exactly as it was.
     const evidenceMode = resolveEvidenceEnforcementMode();

@@ -1040,6 +1040,22 @@ describe('EventToWorkItemBridge — review routing (ticket-loop Phase 3)', () =>
     expect(escalateReviewToOwner).toHaveBeenCalledWith(expect.objectContaining({ id: orcWork.id }));
   });
 
+  // CREW-731: the orchestrator is not a member of the team whose work it did, so
+  // that team's lead is a separate reviewer and gets the review item. Only a
+  // worker with nobody else to review it goes to the owner.
+  it('work the orchestrator did for a team goes to that team\'s lead, who is not the worker', async () => {
+    const orcWork = buildWorkItem({ target: 'crewly-orc', metadata: { triggerSource: 'event', teamId: 'team-product' } });
+    const team = buildTeam({ id: 'team-product', members: [member('tl', 'tl-sam', { canDelegate: true, hierarchyLevel: 1 }), member('ann', 'dev-ann')] });
+    const { bridge, bus, taskPool, escalateReviewToOwner } = setup([team], orcWork);
+    bus.publish(buildEvent());
+    await bridge.flushPending();
+    expect(taskPool.addCalls).toHaveLength(1);
+    expect(taskPool.addCalls[0]).toMatchObject({ id: `${orcWork.id}:verify:${orcWork.id}`, type: 'review', target: 'tl-sam' });
+    expect(taskPool.addCalls[0].target).not.toBe(orcWork.target);
+    expect(taskPool.stampReviewEscalation).not.toHaveBeenCalled();
+    expect(escalateReviewToOwner).not.toHaveBeenCalled();
+  });
+
   it('a failed owner escalation is logged, not thrown; a failed stamp raises nothing', async () => {
     const orcWork = buildWorkItem({ target: 'crewly-orc', metadata: { triggerSource: 'event' } });
     const a = setup([], orcWork);
