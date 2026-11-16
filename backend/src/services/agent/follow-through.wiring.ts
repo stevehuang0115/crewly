@@ -7,7 +7,7 @@
  * @see specs/2026-10-10-agent-follow-through.md
  */
 
-import { PROJECT_TICKET_CONSTANTS } from '../../constants.js';
+import { OPEN_ITEMS_CONSTANTS, PROJECT_TICKET_CONSTANTS } from '../../constants.js';
 import { createWorkItem, TERMINAL_WORK_ITEM_STATUSES, type WorkItem } from '../../types/v2/work-item.types.js';
 import { LoggerService } from '../core/logger.service.js';
 import { RequestService } from '../v3/request.service.js';
@@ -46,7 +46,11 @@ export function handedOffSince(items: readonly WorkItem[], session: string, sinc
 			// An item the harness queued for the agent (the promise's own WorkItem,
 			// a ticket's) is not the agent starting: it waits until the agent does.
 			const waiting = wi.status === 'queued' || wi.status === 'proposed' || wi.status === 'scheduled' || wi.status === 'blocked';
-			if (!(waiting && typeof m['harnessCreated'] === 'string')) return true;
+			// The follow-up Crewly files for a promise in the same reply carries no
+			// `harnessCreated`: counting it made every "I'm doing X now" look
+			// started, so the guard never nudged (Pia, 2026-11-16: idle 79 minutes).
+			const harnessQueued = typeof m['harnessCreated'] === 'string' || m[OPEN_ITEMS_CONSTANTS.FOLLOW_UP_METADATA_KEY] !== undefined;
+			if (!(waiting && harnessQueued)) return true;
 		}
 		return m['delegatedBy'] === session || m['createdBy'] === session || m[PROJECT_TICKET_CONSTANTS.DELEGATION_CALLER_METADATA_KEY] === session;
 	});
