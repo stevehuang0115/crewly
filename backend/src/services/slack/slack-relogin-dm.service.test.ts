@@ -5,6 +5,7 @@
 import type { SlackIncomingMessage } from '../../types/slack.types.js';
 import {
 	SlackReloginDmService,
+	createConsentReplyInterceptor,
 	createReloginReplyInterceptor,
 	escapeSlackText,
 	resolveOrcTurnReplyTarget,
@@ -248,5 +249,27 @@ describe('resolveOrcTurnReplyTarget', () => {
 		expect(resolveOrcTurnReplyTarget({ conversationId: 'web-chat' }, links)).toBeNull();
 		expect(resolveOrcTurnReplyTarget(undefined, links)).toBeNull();
 		expect(resolveOrcTurnReplyTarget({ conversationId: 'a721f48d' }, null)).toBeNull();
+	});
+});
+
+describe('createConsentReplyInterceptor', () => {
+	it('offers owner DM text to the consent service and returns its verdict', () => {
+		const consent = { handleOwnerReply: jest.fn(() => true) };
+		const dm = new SlackReloginDmService(() => fakeSlack({ getOwnerUserId: null }));
+		const intercept = createConsentReplyInterceptor(dm, consent);
+		expect(intercept(inbound({ text: 'accept bypass' }))).toBe(true);
+		expect(consent.handleOwnerReply).toHaveBeenCalledWith('accept bypass', { channelId: 'DOWNER', threadTs: '1' });
+		consent.handleOwnerReply.mockReturnValue(false);
+		expect(intercept(inbound({ text: 'hello orc' }))).toBe(false);
+	});
+
+	it('never offers non-owner-DM messages or file uploads', () => {
+		const consent = { handleOwnerReply: jest.fn(() => true) };
+		const replyTargetOf = () => ({ channelId: 'DOWNER' });
+		const intercept = createConsentReplyInterceptor({ ownerDmScope: () => null, replyTargetOf }, consent);
+		expect(intercept(inbound({ text: 'accept bypass' }))).toBe(false);
+		const owner = createConsentReplyInterceptor({ ownerDmScope: () => 'orc', replyTargetOf }, consent);
+		expect(owner(inbound({ text: 'accept bypass', hasFiles: true }))).toBe(false);
+		expect(consent.handleOwnerReply).not.toHaveBeenCalled();
 	});
 });

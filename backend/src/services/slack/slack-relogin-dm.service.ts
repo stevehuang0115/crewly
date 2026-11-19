@@ -311,3 +311,30 @@ export function createReloginReplyInterceptor(
 		return coordinator.handleOwnerReply(message.text, dm.replyTargetOf(message), scope);
 	};
 }
+
+/**
+ * Build the inbound interceptor for the one-time runtime consent (Claude
+ * Code's Bypass Permissions mode): an owner's DM (text only) is offered to
+ * the consent service, which consumes it only while its question is open and
+ * the message answers it (`accept bypass` / `decline bypass`).
+ *
+ * @param dm - Owner-DM recogniser
+ * @param consent - Runtime consent service
+ * @returns Interceptor: true when the message was consumed
+ *
+ * @example
+ * ```ts
+ * const consent = createConsentReplyInterceptor(dm, getRuntimeConsentService());
+ * bridge.setInboundInterceptor((m) => consent(m) || relogin(m));
+ * ```
+ */
+export function createConsentReplyInterceptor(
+	dm: Pick<SlackReloginDmService, 'ownerDmScope' | 'replyTargetOf'>,
+	consent: { handleOwnerReply(text: string, target: ReloginReplyTarget | null): boolean },
+): (message: SlackIncomingMessage) => boolean {
+	return (message) => {
+		if (message.hasFiles || !message.text) return false;
+		if (!dm.ownerDmScope(message)) return false;
+		return consent.handleOwnerReply(message.text, dm.replyTargetOf(message));
+	};
+}

@@ -220,9 +220,10 @@ import { OrcReplyRouteService } from './services/orc/orc-reply-route.service.js'
 import { buildTriggerOrigin } from './services/orc/work-item-destination.js';
 import { ReloginAgentResumerService } from './services/agent/relogin-agent-resumer.service.js';
 import { getHarnessReloginService, harnessCommandWord } from './services/harness/harness-relogin.service.js';
+import { getRuntimeConsentService } from './services/harness/runtime-consent.service.js';
 import { getClaudeTokenMigrationService } from './services/harness/claude-token-migration.service.js';
 import { getHarnessService } from './services/harness/harness.service.js';
-import { SlackReloginDmService, createReloginReplyInterceptor } from './services/slack/slack-relogin-dm.service.js';
+import { SlackReloginDmService, createConsentReplyInterceptor, createReloginReplyInterceptor } from './services/slack/slack-relogin-dm.service.js';
 import { startBackendRuntimeFallback } from './services/runtime-fallback/runtime-fallback.wiring.js';
 import { getRuntimeFallbackService } from './services/runtime-fallback/runtime-fallback.service.js';
 import { getSlackAgentIdentityService } from './services/slack/slack-agent-identity.service.js';
@@ -2780,14 +2781,15 @@ void (async () => {
 					(agentSession) => getSlackAgentIdentityService()?.getInstalled(agentSession)?.botToken ?? null,
 				);
 				relogin.setNotifier(reloginDm);
-				relogin.setResumer(new ReloginAgentResumerService({
+				const agentResumer = new ReloginAgentResumerService({
 					getBackend: () => getSessionBackendSync(),
 					getPersistence: () => getSessionStatePersistence(),
 					getAgentRegistration: () => this.apiController.agentRegistrationService,
 					restartOrchestrator: () => OrchestratorRestartService.getInstance().attemptRestart(),
 					stopExitMonitoring: (sessionName) => RuntimeExitMonitorService.getInstance().stopMonitoring(sessionName),
 					clearActivity: (sessionName) => PtyActivityTrackerService.getInstance().clearSession(sessionName),
-				}));
+				});
+				relogin.setResumer(agentResumer);
 				OAuthReloginMonitorService.getInstance().setHarnessExpiryHandler((report) => relogin.reportExpiry(report));
 				// Agent-free re-login: every configured agent (running or not)
 				// counts, so a machine whose agents are all stopped or stuck is
@@ -2809,7 +2811,17 @@ void (async () => {
 					const { getOwnerMessageWatchdog } = await import('./services/messaging/owner-message-watchdog.service.js');
 					return (await getOwnerMessageWatchdog()?.resumeAfterLogin({ runtimeCmd: harnessCommandWord(harnessId), sessions: resumed })) ?? 0;
 				});
-				getSlackOrchestratorBridge().setInboundInterceptor(createReloginReplyInterceptor(reloginDm, relogin));
+				// One-time runtime consent (Claude Code's Bypass Permissions mode):
+				// asked in the same owner DM, answered there, taken before the
+				// re-login so `accept bypass` never reaches the orchestrator.
+				const consent = getRuntimeConsentService();
+				consent.setNotifier(reloginDm);
+				consent.setResumer((sessionNames) => agentResumer.resume(sessionNames));
+				const consentInterceptor = createConsentReplyInterceptor(reloginDm, consent);
+				const reloginInterceptor = createReloginReplyInterceptor(reloginDm, relogin);
+				getSlackOrchestratorBridge().setInboundInterceptor(
+					(message) => consentInterceptor(message) || reloginInterceptor(message),
+				);
 				relogin.start();
 				this.logger.info('Harness re-login over Slack wired');
 			} catch (error) {

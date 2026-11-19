@@ -1,0 +1,338 @@
+/**
+ * Asks the owner, over Slack, for the one-time consent an agent runtime needs.
+ *
+ * Claude Code asks once per computer to accept Bypass Permissions mode, which
+ * every Crewly agent runs in. On a new machine no agent can start until that
+ * screen is answered, and the owner is usually not at the machine
+ * (Windows host, 2026-11-19: the agents sat on it and Crewly kept restarting
+ * them). The choice stays the owner's: Crewly sends one DM that says what the
+ * mode means, and only an explicit reply makes it choose "Yes, I accept"
+ * (bypass-consent-acceptor.ts) and start the waiting agents.
+ *
+ * The reply must be the whole message and must name the consent
+ * (`accept bypass`, 「同意跳过权限」, or Claude Code's own "Yes, I accept"). A
+ * bare "yes" or 「同意」 is not taken: the owner answers many other questions
+ * in the same DM.
+ *
+ * @module services/harness/runtime-consent
+ */
+
+import * as os from 'os';
+import { RUNTIME_CONSENT_CONSTANTS } from '../../constants.js';
+import { LoggerService } from '../core/logger.service.js';
+import { acceptBypassConsent, type BypassConsentResult } from './bypass-consent-acceptor.js';
+import type { ReloginOwnerNotifier, ReloginReplyTarget } from './harness-relogin.service.js';
+
+/** Minimal logger surface. */
+type ConsentLogger = { info: (message: string, meta?: Record<string, unknown>) => void; warn: (message: string, meta?: Record<string, unknown>) => void };
+
+/** What the owner's reply means. */
+export type ConsentReply = 'accept' | 'decline';
+
+/** Injectable dependencies. */
+export interface RuntimeConsentDeps {
+	notifier?: ReloginOwnerNotifier | null;
+	/** Chooses "Yes, I accept" (default: {@link acceptBypassConsent}) */
+	accept?: () => Promise<BypassConsentResult>;
+	/** Starts the agents that waited on the consent */
+	resume?: ((sessionNames: readonly string[]) => Promise<{ resumed: string[]; failed: string[] }>) | null;
+	machineName?: () => string;
+	now?: () => number;
+	logger?: ConsentLogger;
+}
+
+/** A consent the owner has been asked for. */
+interface PendingConsent {
+	sessions: Set<string>;
+	askedAt: number;
+	phase: 'asked' | 'accepting';
+}
+
+/**
+ * Normalise a DM for matching: drop Slack mention markup, quotes and end
+ * punctuation, collapse whitespace, lower-case.
+ *
+ * @param text - Raw message text
+ * @returns Normalised text
+ */
+export function normaliseConsentText(text: string): string {
+	return text
+		.replace(/<@[A-Z0-9]+>/g, ' ')
+		.replace(/[「」“”"'`]/g, ' ')
+		.replace(/[.。!！~～]+\s*$/g, '')
+		.replace(/\s+/g, ' ')
+		.trim()
+		.toLowerCase();
+}
+
+/**
+ * Read an owner's DM as an answer to the consent question.
+ *
+ * @param text - Message text
+ * @returns `accept`, `decline`, or null when it is not an answer
+ *
+ * @example
+ * ```ts
+ * parseConsentReply('Accept bypass'); // 'accept'
+ * parseConsentReply('同意'); // null — does not name the consent
+ * ```
+ */
+export function parseConsentReply(text: string): ConsentReply | null {
+	if (typeof text !== 'string') return null;
+	const norm = normaliseConsentText(text);
+	// Decline first: 「不同意跳过权限」 contains the accept phrase.
+	if (RUNTIME_CONSENT_CONSTANTS.DECLINE_PATTERN.test(norm)) return 'decline';
+	if (RUNTIME_CONSENT_CONSTANTS.ACCEPT_PATTERN.test(norm)) return 'accept';
+	return null;
+}
+
+/**
+ * The DM that asks for the consent.
+ *
+ * @param machine - This machine's name
+ * @param waiting - How many agents wait on it
+ * @returns Slack mrkdwn text
+ */
+export function formatConsentAskDm(machine: string, waiting: number): string {
+	const who = waiting > 1 ? `${waiting} agents are` : 'An agent is';
+	return [
+		`*Claude Code on ${machine} needs your OK before agents can start.* ${who} waiting.`,
+		'Claude Code asks once per computer to accept Bypass Permissions mode. In that mode an agent runs commands and changes files on that computer without asking each time. Every Crewly agent runs this way.',
+		'Claude Code\'s own warning: it "will not ask for your approval before running potentially dangerous commands", and by proceeding you accept responsibility for what is done in this mode.',
+		'Reply `accept bypass` (or 「同意跳过权限」) and I will choose "Yes, I accept" there and start the agents.',
+		'Reply `decline bypass` (or 「不同意跳过权限」) to leave them stopped.',
+	].join('\n');
+}
+
+/**
+ * The DM after the consent was accepted and the agents were started.
+ *
+ * @param machine - This machine's name
+ * @param result - Which agents came back
+ * @returns Slack mrkdwn text
+ */
+export function formatConsentDoneDm(machine: string, result: { resumed: string[]; failed: string[] }): string {
+	const lines = [`Accepted Bypass Permissions mode on ${machine}.`];
+	if (result.resumed.length > 0) lines.push(`Started: ${result.resumed.join(', ')}.`);
+	if (result.failed.length > 0) lines.push(`Could not start: ${result.failed.join(', ')}. Start the team again from the dashboard.`);
+	if (result.resumed.length === 0 && result.failed.length === 0) lines.push('Start the team again from the dashboard.');
+	return lines.join('\n');
+}
+
+/**
+ * The DM when Crewly could not answer the consent screen.
+ *
+ * @param machine - This machine's name
+ * @returns Slack mrkdwn text
+ */
+export function formatConsentFailedDm(machine: string): string {
+	return `I could not accept Bypass Permissions mode on ${machine} for you. In a terminal on that computer run \`claude --dangerously-skip-permissions\` once, choose "Yes, I accept", exit, then start the team again.`;
+}
+
+/** Asks for, and applies, the owner's runtime consent. */
+export class RuntimeConsentService {
+	private notifier: ReloginOwnerNotifier | null;
+	private resume: RuntimeConsentDeps['resume'];
+	private readonly accept: () => Promise<BypassConsentResult>;
+	private readonly machineName: () => string;
+	private readonly now: () => number;
+	private readonly logger: ConsentLogger;
+	private pending: PendingConsent | null = null;
+	/** When Crewly last answered the consent screen (0 = never) */
+	private lastAcceptAt = 0;
+	/** The "did not hold" DM was sent for the last attempt */
+	private toldNotHeld = false;
+
+	/**
+	 * @param deps - Injectable dependencies
+	 */
+	constructor(deps: RuntimeConsentDeps = {}) {
+		this.notifier = deps.notifier ?? null;
+		this.resume = deps.resume ?? null;
+		this.accept = deps.accept ?? (() => acceptBypassConsent());
+		this.machineName = deps.machineName ?? (() => os.hostname());
+		this.now = deps.now ?? Date.now;
+		this.logger = deps.logger ?? LoggerService.getInstance().createComponentLogger('RuntimeConsent');
+	}
+
+	/**
+	 * Set how the owner is reached.
+	 *
+	 * @param notifier - Owner DM sender
+	 */
+	setNotifier(notifier: ReloginOwnerNotifier | null): void {
+		this.notifier = notifier;
+	}
+
+	/**
+	 * Set how waiting agents are started after the consent.
+	 *
+	 * @param resume - Starts the given sessions
+	 */
+	setResumer(resume: RuntimeConsentDeps['resume']): void {
+		this.resume = resume ?? null;
+	}
+
+	/**
+	 * Whether the owner has been asked and has not answered yet.
+	 *
+	 * @returns True while a question is open
+	 */
+	isPending(): boolean {
+		return this.currentPending() !== null;
+	}
+
+	/**
+	 * An agent could not start because Claude Code shows the consent screen.
+	 * Asks the owner once; further agents join the same question.
+	 *
+	 * @param sessionName - The agent session that is waiting
+	 * @returns True when the owner has been (or already was) asked
+	 */
+	async request(sessionName: string): Promise<boolean> {
+		const open = this.currentPending();
+		if (open) {
+			open.sessions.add(sessionName);
+			return true;
+		}
+		const machine = this.machineName();
+		// The screen came back right after Crewly answered it: asking again
+		// would loop. Say once that it has to be done at the machine.
+		if (this.lastAcceptAt > 0 && this.now() - this.lastAcceptAt < RUNTIME_CONSENT_CONSTANTS.REASK_GUARD_MS) {
+			if (!this.toldNotHeld) {
+				this.toldNotHeld = true;
+				this.logger.warn('Bypass consent shown again after it was answered; not asking again', { sessionName });
+				await this.send(formatConsentFailedDm(machine));
+			}
+			return false;
+		}
+		if (!this.notifier || this.notifier.isAvailable?.() === false) {
+			this.logger.info('Bypass consent needed but the owner cannot be reached over Slack', { sessionName });
+			return false;
+		}
+		// Claim the question before the DM goes out, so agents that fail in the
+		// same moment join it instead of sending a second DM.
+		const pending: PendingConsent = { sessions: new Set([sessionName]), askedAt: this.now(), phase: 'asked' };
+		this.pending = pending;
+		const delivered = await this.send(formatConsentAskDm(machine, pending.sessions.size));
+		if (!delivered) {
+			if (this.pending === pending) this.pending = null;
+			return false;
+		}
+		this.logger.info('Asked the owner to accept Bypass Permissions mode', { sessionName });
+		return true;
+	}
+
+	/**
+	 * Offer an owner DM to the consent question. Text that does not answer it
+	 * is left for the next handler.
+	 *
+	 * @param text - Message text
+	 * @param target - Conversation the owner wrote in (answers go there)
+	 * @returns True when consumed; the caller must then NOT pass it on as a chat message
+	 */
+	handleOwnerReply(text: string, target: ReloginReplyTarget | null = null): boolean {
+		const pending = this.currentPending();
+		if (!pending) return false;
+		const reply = parseConsentReply(text);
+		if (!reply) return false;
+		// A second answer while the first is being applied changes nothing.
+		if (pending.phase === 'accepting') return true;
+		if (reply === 'decline') {
+			this.pending = null;
+			this.logger.info('Owner declined Bypass Permissions mode');
+			void this.send(`OK. Bypass Permissions mode is not accepted on ${this.machineName()} and the agents there stay stopped. Start the team again when you want to be asked again.`, target);
+			return true;
+		}
+		pending.phase = 'accepting';
+		void this.applyAccept(pending, target);
+		return true;
+	}
+
+	/**
+	 * Answer the consent screen, start the waiting agents and tell the owner.
+	 *
+	 * @param pending - The open question
+	 * @param target - Conversation to answer in
+	 */
+	private async applyAccept(pending: PendingConsent, target: ReloginReplyTarget | null): Promise<void> {
+		const machine = this.machineName();
+		this.logger.info('Owner accepted Bypass Permissions mode over Slack', { waiting: pending.sessions.size });
+		let result: BypassConsentResult;
+		try {
+			result = await this.accept();
+		} catch (error) {
+			result = { outcome: 'failed', detail: error instanceof Error ? error.message : String(error) };
+		}
+		this.lastAcceptAt = this.now();
+		this.toldNotHeld = false;
+		const sessions = [...pending.sessions];
+		if (this.pending === pending) this.pending = null;
+		this.logger.info('Bypass consent attempt finished', { outcome: result.outcome, detail: result.detail });
+		if (result.outcome === 'failed') {
+			this.toldNotHeld = true;
+			await this.send(formatConsentFailedDm(machine), target);
+			return;
+		}
+		let started: { resumed: string[]; failed: string[] } = { resumed: [], failed: [] };
+		if (this.resume) {
+			try {
+				started = await this.resume(sessions);
+			} catch (error) {
+				this.logger.warn('Could not start agents after the consent', { error: error instanceof Error ? error.message : String(error) });
+				started = { resumed: [], failed: sessions };
+			}
+		}
+		await this.send(formatConsentDoneDm(machine, started), target);
+	}
+
+	/**
+	 * The open question, dropping one the owner never answered.
+	 *
+	 * @returns The pending consent, or null
+	 */
+	private currentPending(): PendingConsent | null {
+		if (this.pending && this.pending.phase === 'asked' && this.now() - this.pending.askedAt > RUNTIME_CONSENT_CONSTANTS.ASK_TTL_MS) {
+			this.pending = null;
+		}
+		return this.pending;
+	}
+
+	/**
+	 * DM the owner, never throwing.
+	 *
+	 * @param text - Message
+	 * @param target - Conversation to answer in
+	 * @returns True when delivered
+	 */
+	private async send(text: string, target: ReloginReplyTarget | null = null): Promise<boolean> {
+		if (!this.notifier) return false;
+		try {
+			return Boolean(await this.notifier.sendToOwner(text, target));
+		} catch (error) {
+			this.logger.warn('Could not DM the owner about the consent', { error: error instanceof Error ? error.message : String(error) });
+			return false;
+		}
+	}
+}
+
+let instance: RuntimeConsentService | null = null;
+
+/**
+ * The process-wide consent service.
+ *
+ * @returns The singleton
+ */
+export function getRuntimeConsentService(): RuntimeConsentService {
+	if (!instance) instance = new RuntimeConsentService();
+	return instance;
+}
+
+/**
+ * Replace the singleton (tests).
+ *
+ * @param service - Instance to use, or null to reset
+ */
+export function setRuntimeConsentServiceForTesting(service: RuntimeConsentService | null): void {
+	instance = service;
+}

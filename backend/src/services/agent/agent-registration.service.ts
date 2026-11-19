@@ -114,7 +114,8 @@ import {
 } from '../../utils/terminal-string-ops.js';
 import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
 import { synthesizeSlackConversationId } from '../chat-v2/legacy-dto.utils.js';
-import { isRuntimeStartupBlockedError } from './runtime-startup-blocked.error.js';
+import { isRuntimeStartupBlockedError, type RuntimeStartupBlockedReason } from './runtime-startup-blocked.error.js';
+import { getRuntimeConsentService } from '../harness/runtime-consent.service.js';
 import {
 	buildHandoverSummary,
 	claudeTranscriptPath,
@@ -1586,6 +1587,7 @@ export class AgentRegistrationService {
 					reason: error.reason,
 					error: error.message,
 				});
+				this.askOwnerForConsent(sessionName, error.reason);
 				return { success: false, error: error.message, errorCode: error.code };
 			}
 			this.logger.warn('Step 1 (cleanup + reinit) failed', {
@@ -1620,6 +1622,7 @@ export class AgentRegistrationService {
 						reason: error.reason,
 						error: error.message,
 					});
+					this.askOwnerForConsent(sessionName, error.reason);
 					return { success: false, error: error.message, errorCode: error.code };
 				}
 				this.logger.warn('Step 2 (full recreation) failed', {
@@ -2233,6 +2236,26 @@ export class AgentRegistrationService {
 			const resent = await this.sendPromptRobustly(sessionName, prompt, runtimeType, abortSignal);
 			this.logger.info('registration re-delivered', { sessionName, role, runtimeType, resent });
 		}
+	}
+
+	/**
+	 * When the start-up stopped on a consent only the owner may give, ask them
+	 * over Slack (runtime-consent.service.ts). Never throws: the start-up
+	 * result does not depend on the DM.
+	 *
+	 * @param sessionName - The agent session that could not start
+	 * @param reason - Why the start-up is blocked
+	 */
+	private askOwnerForConsent(sessionName: string, reason: RuntimeStartupBlockedReason | undefined): void {
+		if (reason !== 'consent_required') return;
+		void getRuntimeConsentService()
+			.request(sessionName)
+			.catch((error: unknown) => {
+				this.logger.warn('Could not ask the owner for the runtime consent', {
+					sessionName,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
 	}
 
 	/**
