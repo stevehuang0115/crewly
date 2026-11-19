@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { HARNESS_CONSTANTS } from '../../constants.js';
-import { buildHarnessPath, buildNpmPath, createRunCommand, getUserNpmBinDir, getUserNpmPrefix, resolveExecutable, runCommand, withHarnessPath } from './harness-exec.utils.js';
+import { buildHarnessPath, buildNpmPath, createRunCommand, getUserNpmBinDir, getUserNpmPrefix, resolveExecutable, runCommand, spawnTarget, withHarnessPath } from './harness-exec.utils.js';
 
 describe('harness PATH helpers', () => {
 	const originalHome = process.env.CREWLY_HOME;
@@ -20,7 +20,8 @@ describe('harness PATH helpers', () => {
 
 	it('puts the user npm prefix under the Crewly home', () => {
 		expect(getUserNpmPrefix()).toBe('/tmp/crewly-home-test/npm-global');
-		expect(getUserNpmBinDir()).toBe('/tmp/crewly-home-test/npm-global/bin');
+		expect(getUserNpmBinDir('darwin')).toBe('/tmp/crewly-home-test/npm-global/bin');
+		expect(getUserNpmBinDir('win32')).toBe('/tmp/crewly-home-test/npm-global');
 	});
 
 	it('prepends the npm prefix bin and appends ~/.local/bin', () => {
@@ -65,6 +66,20 @@ describe('resolveExecutable', () => {
 		expect(resolveExecutable('/opt/x/claude', '/a', (f) => f === '/opt/x/claude')).toBe('/opt/x/claude');
 	});
 
+	it('tries the PATHEXT extensions on Windows', () => {
+		// Windows file names are case-insensitive: `claude.EXE` names `claude.exe`.
+		const files = ['c:\\users\\me\\.local\\bin\\claude.exe', 'c:\\npm\\codex.cmd', 'c:\\npm\\codex'];
+		const exists = (f: string): boolean => files.includes(f.toLowerCase());
+		const win = { platform: 'win32' as const, pathExt: '.COM;.EXE;.BAT;.CMD' };
+		const searchPath = 'C:\\Windows;C:\\npm;C:\\Users\\me\\.local\\bin';
+		expect(resolveExecutable('claude', searchPath, exists, win)).toBe('C:\\Users\\me\\.local\\bin\\claude.EXE');
+		// The extensionless npm shell script next to the shim is not a Windows command.
+		expect(resolveExecutable('codex', searchPath, exists, win)).toBe('C:\\npm\\codex.CMD');
+		expect(resolveExecutable('claude.exe', searchPath, exists, win)).toBe('C:\\Users\\me\\.local\\bin\\claude.exe');
+		expect(resolveExecutable('C:\\npm\\codex', searchPath, exists, win)).toBe('C:\\npm\\codex.CMD');
+		expect(resolveExecutable('gemini', searchPath, exists, win)).toBeNull();
+	});
+
 	it('uses the real file system by default', () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-exec-'));
 		const bin = path.join(dir, 'fake-tool');
@@ -73,6 +88,21 @@ describe('resolveExecutable', () => {
 		expect(resolveExecutable('fake-tool', dir)).toBe(bin);
 		expect(resolveExecutable('not-exec', dir)).toBeNull();
 		fs.rmSync(dir, { recursive: true, force: true });
+	});
+});
+
+describe('spawnTarget', () => {
+	it('starts a binary directly', () => {
+		expect(spawnTarget('/usr/bin/claude', ['--version'], 'darwin')).toEqual({ file: '/usr/bin/claude', args: ['--version'], verbatim: false });
+		expect(spawnTarget('C:\\bin\\claude.exe', ['--version'], 'win32')).toEqual({ file: 'C:\\bin\\claude.exe', args: ['--version'], verbatim: false });
+	});
+
+	it('runs a Windows command shim through cmd.exe in one quoted line', () => {
+		expect(spawnTarget('C:\\Program Files\\nodejs\\npm.cmd', ['view', 'a b', 'version'], 'win32')).toEqual({
+			file: 'cmd.exe',
+			args: ['/d', '/s', '/c', '""C:\\Program Files\\nodejs\\npm.cmd" view "a b" version"'],
+			verbatim: true,
+		});
 	});
 });
 
