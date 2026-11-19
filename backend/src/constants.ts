@@ -10655,6 +10655,14 @@ export const RUNTIME_CONSENT_CONSTANTS = {
 	ASK_TTL_MS: 24 * 60 * 60 * 1000,
 	/** The consent showing again this soon after Crewly answered it is not asked again (ms) */
 	REASK_GUARD_MS: 60 * 60 * 1000,
+	/** Relay message type that carries an owner's answer between machines of one account */
+	RELAY_MESSAGE_TYPE: 'owner_consent_reply',
+	/** Wire format version of that message */
+	RELAY_WIRE_VERSION: 1,
+	/** How long the machine that passed an answer on waits for another machine to confirm it (ms) */
+	SIBLING_ACK_WAIT_MS: 90_000,
+	/** What the owner is told when no machine was waiting for the answer */
+	NOBODY_WAITING_TEXT: 'None of your computers is waiting for a Bypass Permissions OK right now. If one should be, start its team again and it will ask you.',
 	/** Whole-message replies that accept (normalised, lower-case) */
 	ACCEPT_PATTERN: /^(?:accept bypass(?: permissions?)?(?: mode)?|yes,? i accept|i accept|同意跳过权限(?:模式)?|接受跳过权限(?:模式)?)$/,
 	/** Whole-message replies that decline (normalised, lower-case) */

@@ -4662,6 +4662,17 @@ void (async () => {
 				});
 			}
 
+			// Runtime consent across machines: the owner's `accept bypass` lands on
+			// the account's primary machine; it is passed to the machine that asked.
+			try {
+				const { startRuntimeConsentRelay } = await import('./services/harness/runtime-consent.relay.js');
+				await startRuntimeConsentRelay(getRuntimeConsentService());
+			} catch (consentErr) {
+				this.logger.warn('Runtime consent relay not wired (non-critical)', {
+					error: consentErr instanceof Error ? consentErr.message : String(consentErr),
+				});
+			}
+
 			// Shared channels with other companies' Crewly accounts (crewly#1543): the
 			// receive side mirrors Cloud pushes into Team Chat.
 			try {
