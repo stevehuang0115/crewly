@@ -896,6 +896,11 @@ async function _startTeamMemberCore(
         memberId: currentMember.id,
         teamId: team.id,
         runtimeType: (currentMember.runtimeType as RuntimeType) || undefined,
+        // Only the owner's own Start counts as asked for. Every other start
+        // (queued-message wake, reconciler, a skill) is left alone while the
+        // member's last start was blocked on the user, instead of being run
+        // into the same menu again.
+        automatic: !options.ownerStart,
       });
 
       if (createResult.success) {

@@ -31,6 +31,7 @@ import * as os from 'os';
 import chalk from 'chalk';
 import { CREWLY_CONSTANTS, SAFE_RESTART_CONSTANTS, SERVER_CONSTANTS } from '../../../config/index.js';
 import { resolvePackageRoot } from '../utils/package-root.js';
+import { windowsServiceCommand } from './service-windows.js';
 import {
 	SKIP_DRAIN_SIGNAL_GAP_MS,
 	describeReadiness,
@@ -272,6 +273,11 @@ export async function serviceCommand(
 	action: string,
 	options: ServiceOptions,
 ): Promise<void> {
+	// Windows has its own supervisor (service-windows.ts): no Terminal.app, no systemd.
+	if (process.platform === 'win32') {
+		process.exitCode = await windowsServiceCommand(action);
+		return;
+	}
 	switch (action) {
 		case 'install':
 			await installService(options);
@@ -1843,7 +1849,7 @@ function assertSupportedPlatform(): void {
 	if (process.platform !== 'darwin' && process.platform !== 'linux') {
 		console.log(
 			chalk.red(
-				`Service management is not supported on ${process.platform}. Supported: macOS, Linux.`,
+				`Service management is not supported on ${process.platform}. Supported: macOS, Linux, Windows.`,
 			),
 		);
 		process.exit(1);

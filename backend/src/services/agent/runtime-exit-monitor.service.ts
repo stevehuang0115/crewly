@@ -1037,6 +1037,8 @@ export class RuntimeExitMonitorService {
 			role: monitored.role,
 			teamId: monitored.teamId,
 			memberId: monitored.memberId,
+			// Nobody asked for this start: leave a start-up blocked on the user alone.
+			automatic: true,
 		});
 
 		if (!result.success) {

@@ -206,7 +206,7 @@ program
 
 program
   .command('service <action>')
-  .description('Manage Crewly background service (install|uninstall|status|restart|stop|logs)')
+  .description('Manage Crewly background service (install|uninstall|status|start|restart|stop|logs); starts Crewly at sign-in and keeps it running (macOS, Linux, Windows)')
   .option('--force', 'Overwrite existing installation')
   .option('--session <name>', 'Tail a specific agent session log (logs action)')
   .option('--app', 'Tail today\'s app log (logs action)')
