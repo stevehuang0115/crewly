@@ -214,7 +214,12 @@ export type MessageType =
   // linked channel (`data` = `{v, linkId, messageId}`, no text; the body is
   // fetched from Cloud) or a link was revoked (`data` = `{v, linkId}`).
   | 'shared_channel_message'
-  | 'shared_channel_revoked';
+  | 'shared_channel_revoked'
+  // Runtime consent (services/harness/runtime-consent.relay.ts): the owner's
+  // `accept bypass` / `decline bypass` reached a machine that did not ask, and
+  // is passed to the account's other machines; or one of them confirms it took
+  // it. `data` is a ConsentWireMessage.
+  | 'owner_consent_reply';
 
 /** Valid message type values for runtime validation. */
 export const MESSAGE_TYPES: readonly MessageType[] = [
@@ -240,6 +245,7 @@ export const MESSAGE_TYPES: readonly MessageType[] = [
   'colleague_message',
   'shared_channel_message',
   'shared_channel_revoked',
+  'owner_consent_reply',
 ] as const;
 
 /**

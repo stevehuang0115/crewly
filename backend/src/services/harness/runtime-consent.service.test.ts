@@ -212,6 +212,113 @@ describe('RuntimeConsentService', () => {
 	});
 });
 
+describe('RuntimeConsentService across machines', () => {
+	beforeEach(() => jest.useFakeTimers());
+	afterEach(() => jest.useRealTimers());
+
+	/**
+	 * A sibling relay fake.
+	 *
+	 * @param sent - How many machines a forward reaches
+	 * @param has - Whether the account has other machines
+	 * @returns The fake
+	 */
+	const relay = (sent = 1, has = true) => ({ hasSiblings: jest.fn(() => has), forward: jest.fn(async () => sent) });
+
+	it('passes an answer on when it is not waiting itself, and consumes it', async () => {
+		const siblings = relay();
+		const { service, sent } = make({ siblings, newId: () => 'f1' });
+		const target = { channelId: 'DOWNER', threadTs: '9' };
+		expect(service.handleOwnerReply('accept bypass', target)).toBe(true);
+		await flush();
+		expect(siblings.forward).toHaveBeenCalledWith({ id: 'f1', reply: 'accept', target });
+		service.handleSiblingAck('f1');
+		jest.advanceTimersByTime(10 * 60 * 1000);
+		await flush();
+		expect(sent).toHaveLength(0);
+	});
+
+	it('tells the owner when no machine confirms', async () => {
+		const { service, sent } = make({ siblings: relay(), newId: () => 'f2' });
+		service.handleOwnerReply('同意跳过权限', { channelId: 'DOWNER' });
+		await flush();
+		expect(sent).toHaveLength(0);
+		jest.advanceTimersByTime(91_000);
+		await flush();
+		expect(sent).toEqual([{ text: expect.stringContaining('None of your computers is waiting'), target: { channelId: 'DOWNER' } }]);
+	});
+
+	it('tells the owner at once when the answer could be sent to nobody', async () => {
+		const { service, sent } = make({ siblings: relay(0) });
+		service.handleOwnerReply('accept bypass');
+		await flush();
+		expect(sent).toHaveLength(1);
+		jest.advanceTimersByTime(10 * 60 * 1000);
+		await flush();
+		expect(sent).toHaveLength(1);
+	});
+
+	it('leaves the message to the orchestrator on a single-machine account or for other text', () => {
+		const alone = relay(0, false);
+		expect(make({ siblings: alone }).service.handleOwnerReply('accept bypass')).toBe(false);
+		const siblings = relay();
+		expect(make({ siblings }).service.handleOwnerReply('同意')).toBe(false);
+		expect(siblings.forward).not.toHaveBeenCalled();
+	});
+
+	it('answers locally, without forwarding, when it is the one waiting', async () => {
+		const siblings = relay();
+		const { service, accept } = make({ siblings });
+		await service.request('crewly-orc');
+		service.handleOwnerReply('accept bypass');
+		await flush();
+		expect(accept).toHaveBeenCalledTimes(1);
+		expect(siblings.forward).not.toHaveBeenCalled();
+	});
+
+	it('takes a forwarded answer only while it is waiting', async () => {
+		const { service, accept, resume, sent } = make();
+		expect(service.handleSiblingReply('accept', { channelId: 'DOWNER', threadTs: '9' })).toBe(false);
+		await service.request('crewly-orc');
+		expect(service.handleSiblingReply('accept', { channelId: 'DOWNER', threadTs: '9' })).toBe(true);
+		await flush();
+		expect(accept).toHaveBeenCalledTimes(1);
+		expect(resume).toHaveBeenCalledWith(['crewly-orc']);
+		expect(sent[sent.length - 1].target).toEqual({ channelId: 'DOWNER', threadTs: '9' });
+	});
+
+	it('takes a forwarded decline', async () => {
+		const { service, accept } = make();
+		await service.request('crewly-orc');
+		expect(service.handleSiblingReply('decline')).toBe(true);
+		expect(accept).not.toHaveBeenCalled();
+		expect(service.isPending()).toBe(false);
+	});
+
+	it('survives a relay that throws', async () => {
+		const { service, sent } = make({
+			siblings: {
+				hasSiblings: () => true,
+				forward: async () => {
+					throw new Error('cloud down');
+				},
+			},
+		});
+		expect(service.handleOwnerReply('accept bypass')).toBe(true);
+		await flush();
+		expect(sent[0].text).toContain('None of your computers is waiting');
+		const broken = make({
+			siblings: {
+				hasSiblings: () => {
+					throw new Error('x');
+				},
+				forward: async () => 0,
+			},
+		});
+		expect(broken.service.handleOwnerReply('accept bypass')).toBe(false);
+	});
+});
+
 describe('getRuntimeConsentService', () => {
 	it('returns one instance, replaceable in tests', () => {
 		const mine = new RuntimeConsentService();

@@ -14,9 +14,18 @@
  * bare "yes" or 「同意」 is not taken: the owner answers many other questions
  * in the same DM.
  *
+ * Several machines of one account share the owner's DM with the Crewly bot,
+ * and Cloud sends a reply there to the account's primary machine only
+ * (2026-11-19: the Windows host asked, the MacBook got `accept bypass` and its
+ * orchestrator answered "what do you mean?"). So a machine that gets such a
+ * reply while it is not waiting itself passes it to the account's other
+ * machines ({@link ConsentSiblingRelay}); the one that asked applies it and
+ * confirms, and when none does the owner is told that nothing is waiting.
+ *
  * @module services/harness/runtime-consent
  */
 
+import { randomUUID } from 'crypto';
 import * as os from 'os';
 import { RUNTIME_CONSENT_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
@@ -29,8 +38,29 @@ type ConsentLogger = { info: (message: string, meta?: Record<string, unknown>) =
 /** What the owner's reply means. */
 export type ConsentReply = 'accept' | 'decline';
 
+/** Passes an owner's answer to the account's other machines (runtime-consent.relay.ts). */
+export interface ConsentSiblingRelay {
+	/**
+	 * Whether the account has another machine that could be the one waiting.
+	 *
+	 * @returns True when a forward could reach someone
+	 */
+	hasSiblings(): boolean;
+	/**
+	 * Send the answer to every other machine of the account.
+	 *
+	 * @param forward - The answer, where the owner wrote it, and an id for the confirmation
+	 * @returns How many machines it was sent to
+	 */
+	forward(forward: { id: string; reply: ConsentReply; target: ReloginReplyTarget | null }): Promise<number>;
+}
+
 /** Injectable dependencies. */
 export interface RuntimeConsentDeps {
+	/** Reaches the account's other machines; absent = answers are only taken locally */
+	siblings?: ConsentSiblingRelay | null;
+	/** Id for a forwarded answer (default: random UUID) */
+	newId?: () => string;
 	notifier?: ReloginOwnerNotifier | null;
 	/** Chooses "Yes, I accept" (default: {@link acceptBypassConsent}) */
 	accept?: () => Promise<BypassConsentResult>;
@@ -133,6 +163,10 @@ export function formatConsentFailedDm(machine: string): string {
 export class RuntimeConsentService {
 	private notifier: ReloginOwnerNotifier | null;
 	private resume: RuntimeConsentDeps['resume'];
+	private siblings: ConsentSiblingRelay | null;
+	private readonly newId: () => string;
+	/** Forwarded answers no machine has confirmed yet (id → timer) */
+	private readonly awaitingSibling = new Map<string, NodeJS.Timeout>();
 	private readonly accept: () => Promise<BypassConsentResult>;
 	private readonly machineName: () => string;
 	private readonly now: () => number;
@@ -149,6 +183,8 @@ export class RuntimeConsentService {
 	constructor(deps: RuntimeConsentDeps = {}) {
 		this.notifier = deps.notifier ?? null;
 		this.resume = deps.resume ?? null;
+		this.siblings = deps.siblings ?? null;
+		this.newId = deps.newId ?? randomUUID;
 		this.accept = deps.accept ?? (() => acceptBypassConsent());
 		this.machineName = deps.machineName ?? (() => os.hostname());
 		this.now = deps.now ?? Date.now;
@@ -171,6 +207,15 @@ export class RuntimeConsentService {
 	 */
 	setResumer(resume: RuntimeConsentDeps['resume']): void {
 		this.resume = resume ?? null;
+	}
+
+	/**
+	 * Set how the account's other machines are reached.
+	 *
+	 * @param siblings - Sibling relay, or null for local answers only
+	 */
+	setSiblings(siblings: ConsentSiblingRelay | null): void {
+		this.siblings = siblings;
 	}
 
 	/**
@@ -232,10 +277,52 @@ export class RuntimeConsentService {
 	 * @returns True when consumed; the caller must then NOT pass it on as a chat message
 	 */
 	handleOwnerReply(text: string, target: ReloginReplyTarget | null = null): boolean {
-		const pending = this.currentPending();
-		if (!pending) return false;
 		const reply = parseConsentReply(text);
 		if (!reply) return false;
+		const pending = this.currentPending();
+		if (pending) return this.applyReply(pending, reply, target);
+		// Not waiting here: another machine of the account may have asked in
+		// this shared DM.
+		if (!this.siblings || !this.safeHasSiblings()) return false;
+		void this.forwardToSiblings(reply, target);
+		return true;
+	}
+
+	/**
+	 * An owner's answer another machine of the account received and passed on.
+	 *
+	 * @param reply - The answer
+	 * @param target - Conversation the owner wrote in (answers go there)
+	 * @returns True when this machine was waiting and took it
+	 */
+	handleSiblingReply(reply: ConsentReply, target: ReloginReplyTarget | null = null): boolean {
+		const pending = this.currentPending();
+		if (!pending) return false;
+		this.logger.info('Owner answer for the Bypass Permissions consent arrived from another machine', { reply });
+		return this.applyReply(pending, reply, target);
+	}
+
+	/**
+	 * Another machine confirmed it took a forwarded answer.
+	 *
+	 * @param id - Id of the forward
+	 */
+	handleSiblingAck(id: string): void {
+		const timer = this.awaitingSibling.get(id);
+		if (!timer) return;
+		clearTimeout(timer);
+		this.awaitingSibling.delete(id);
+	}
+
+	/**
+	 * Apply an answer to the open question.
+	 *
+	 * @param pending - The open question
+	 * @param reply - The answer
+	 * @param target - Conversation to answer in
+	 * @returns True (the answer is consumed)
+	 */
+	private applyReply(pending: PendingConsent, reply: ConsentReply, target: ReloginReplyTarget | null): boolean {
 		// A second answer while the first is being applied changes nothing.
 		if (pending.phase === 'accepting') return true;
 		if (reply === 'decline') {
@@ -247,6 +334,47 @@ export class RuntimeConsentService {
 		pending.phase = 'accepting';
 		void this.applyAccept(pending, target);
 		return true;
+	}
+
+	/**
+	 * Pass an answer to the account's other machines, and tell the owner when
+	 * none of them was waiting for it.
+	 *
+	 * @param reply - The answer
+	 * @param target - Conversation the owner wrote in
+	 */
+	private async forwardToSiblings(reply: ConsentReply, target: ReloginReplyTarget | null): Promise<void> {
+		const id = this.newId();
+		const timer = setTimeout(() => {
+			this.awaitingSibling.delete(id);
+			void this.send(RUNTIME_CONSENT_CONSTANTS.NOBODY_WAITING_TEXT, target);
+		}, RUNTIME_CONSENT_CONSTANTS.SIBLING_ACK_WAIT_MS);
+		timer.unref?.();
+		this.awaitingSibling.set(id, timer);
+		let sent = 0;
+		try {
+			sent = (await this.siblings?.forward({ id, reply, target })) ?? 0;
+		} catch (error) {
+			this.logger.warn('Could not pass the consent answer to the other machines', { error: error instanceof Error ? error.message : String(error) });
+		}
+		this.logger.info('Consent answer passed to the account\'s other machines', { reply, sent });
+		if (sent === 0 && this.awaitingSibling.has(id)) {
+			this.handleSiblingAck(id);
+			await this.send(RUNTIME_CONSENT_CONSTANTS.NOBODY_WAITING_TEXT, target);
+		}
+	}
+
+	/**
+	 * {@link ConsentSiblingRelay.hasSiblings}, never throwing.
+	 *
+	 * @returns True when another machine may be waiting
+	 */
+	private safeHasSiblings(): boolean {
+		try {
+			return this.siblings?.hasSiblings() === true;
+		} catch {
+			return false;
+		}
 	}
 
 	/**
