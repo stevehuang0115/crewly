@@ -128,6 +128,42 @@ jq() {
   unlink "$carrier" 2>/dev/null || true
   return $rc
 }
+
+# For skills that run their own curl: one non-ASCII literal body
+# (`-d` / `--data` / `--data-raw` / `--data-binary`, not `@file`) is sent on
+# stdin instead. Anything else runs untouched.
+curl() {
+  local -a argv=("$@") out=()
+  local argc=$# i=0 a v body="" moved=0
+  while [ "$i" -lt "$argc" ]; do
+    a="${argv[$i]}"
+    case "$a" in
+      -d|--data|--data-raw|--data-binary)
+        v="${argv[$((i + 1))]:-}"
+        if [ "$a" != "--data-raw" ] && [ "${v:0:1}" = "@" ]; then
+          if [ "$v" = "@-" ]; then command curl "$@"; return $?; fi
+          out+=("$a" "$v")
+        elif _crewly_has_non_ascii "$v"; then
+          if [ "$moved" = "1" ]; then command curl "$@"; return $?; fi
+          moved=1; body="$v"
+          out+=(--data-binary @-)
+        else
+          out+=("$a" "$v")
+        fi
+        i=$((i + 2))
+        ;;
+      *)
+        out+=("$a")
+        i=$((i + 1))
+        ;;
+    esac
+  done
+  if [ "$moved" = "1" ]; then
+    printf '%s' "$body" | command curl "${out[@]}"
+    return $?
+  fi
+  command curl "$@"
+}
 fi
 
 # -----------------------------------------------------------------------------

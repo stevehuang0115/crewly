@@ -397,6 +397,30 @@ assert_eq "text shim: the body is not a curl argument" "0" "$(grep -c '好' "$AR
 CREWLY_NATIVE_TEXT_SHIM=0 CREWLY_SESSION_NAME=dev-1 bash "$TEMP_DIR/skills/fake-shim/execute.sh" >/dev/null 2>&1
 assert_contains "text shim off: the body stays a curl argument" '{"text":"好"}' "$(cat "$ARGS_OUT")"
 
+# ---- Test 34: Windows text shim — a skill's own curl with a non-ASCII literal body ----
+mkdir -p "$TEMP_DIR/skills/fake-shim-curl" "$TEMP_DIR/bin"
+cat > "$TEMP_DIR/bin/curl" << 'CURL_EOF'
+#!/bin/bash
+: > "$BODY_OUT"
+case " $* " in *" @- "*) cat > "$BODY_OUT" ;; esac
+printf '%s\n' "$@" > "$ARGS_OUT"
+CURL_EOF
+chmod +x "$TEMP_DIR/bin/curl"
+cat > "$TEMP_DIR/skills/fake-shim-curl/execute.sh" << 'SKILL_EOF'
+#!/bin/bash
+set -euo pipefail
+source "$LIB_PATH"
+curl -s -X POST -H "Content-Type: application/json" -d "$1" http://localhost:1/x
+SKILL_EOF
+chmod +x "$TEMP_DIR/skills/fake-shim-curl/execute.sh"
+PATH="$TEMP_DIR/bin:$PATH" CREWLY_NATIVE_TEXT_SHIM=1 bash "$TEMP_DIR/skills/fake-shim-curl/execute.sh" '{"t":"好"}' </dev/null
+assert_eq "text shim: own curl, non-ASCII body goes on stdin" '{"t":"好"}' "$(cat "$BODY_OUT")"
+assert_eq "text shim: own curl, body is not an argument" "0" "$(grep -c '好' "$ARGS_OUT" || true)"
+PATH="$TEMP_DIR/bin:$PATH" CREWLY_NATIVE_TEXT_SHIM=1 bash "$TEMP_DIR/skills/fake-shim-curl/execute.sh" '{"t":"ok"}' </dev/null
+assert_contains "text shim: own curl, ASCII body stays an argument" '{"t":"ok"}' "$(cat "$ARGS_OUT")"
+PATH="$TEMP_DIR/bin:$PATH" CREWLY_NATIVE_TEXT_SHIM=1 bash "$TEMP_DIR/skills/fake-shim-curl/execute.sh" '@/some/好.json' </dev/null
+assert_contains "text shim: own curl, @file is left alone" '@/some/好.json' "$(cat "$ARGS_OUT")"
+
 # ---- Test 31: unknown_arg_exit — the error is the LAST line, one JSON object, exit 2 ----
 UA_OUT=$(bash -c 'source "$1"; unknown_arg_exit app; ' _ "$SCRIPT_DIR/lib.sh" 2>&1 >/dev/null; echo "rc=$?")
 assert_contains "unknown_arg_exit: bare word → nothing sent + quoting hint" "nothing was sent" "$UA_OUT"

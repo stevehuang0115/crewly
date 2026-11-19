@@ -52,6 +52,9 @@ jobs:
           echo "with the shim:    env=$GOT_ENV arg=$GOT_ARG"
           GOT_SKILL="$(bash config/skills/orchestrator/reply-slack/execute.sh --channel C1 --thread 1.2 --text "$T" 2>/dev/null | jq -r .hex)"
           echo "reply-slack:      $GOT_SKILL"
+          GOT_CURL="$( ( source config/skills/_common/lib.sh; curl -s -X POST -d "{\"text\":\"$T\"}" http://localhost:8799/x | jq -r .hex ) )"
+          echo "own curl -d:      $GOT_CURL"
+          [ "$GOT_CURL" = "$WANT" ] || { echo "a skill's own curl -d changed the text"; exit 1; }
           [ "$GOT_ENV" = "$WANT" ] || { echo "text read through jq env was changed"; exit 1; }
           [ "$GOT_ARG" = "$WANT" ] || { echo "text passed as jq --arg was changed"; exit 1; }
           [ "$GOT_SKILL" = "$WANT" ] || { echo "reply-slack changed the text"; exit 1; }
