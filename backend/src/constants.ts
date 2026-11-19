@@ -3570,7 +3570,6 @@ export const CLAUDE_STARTUP_CONSTANTS = {
 	 * the owner said so (runtime-consent.service.ts).
 	 * Both markers must be on screen.
 	 */
-	BYPASS_CONSENT_MARKERS: ['Bypass Permissions mode', 'Yes, I accept'] as readonly string[],
 	/** A menu that waits for a choice: a `❯`-marked numbered option, or the confirm footer. */
 	UNANSWERED_MENU_PATTERN: /(?:❯|^\s*>)\s*\d+\.\s|Enter to confirm|Esc to (?:cancel|exit)/m,
 	/** Most characters of the stuck screen quoted in the blocked message */

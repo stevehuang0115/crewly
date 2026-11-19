@@ -52,7 +52,7 @@ export interface ConsentSiblingRelay {
 	 * @param forward - The answer, where the owner wrote it, and an id for the confirmation
 	 * @returns How many machines it was sent to
 	 */
-	forward(forward: { id: string; reply: ConsentReply; target: ReloginReplyTarget | null }): Promise<number>;
+	forward(forward: { id: string; reply: ConsentReply; target: ReloginReplyTarget | null; inThread: boolean }): Promise<number>;
 }
 
 /** Injectable dependencies. */
@@ -76,6 +76,8 @@ interface PendingConsent {
 	sessions: Set<string>;
 	askedAt: number;
 	phase: 'asked' | 'accepting';
+	/** Where the question was posted (null when unknown): replies in another thread are not for it */
+	ask: { channelId: string; messageTs: string } | null;
 }
 
 /**
@@ -114,6 +116,25 @@ export function parseConsentReply(text: string): ConsentReply | null {
 	if (RUNTIME_CONSENT_CONSTANTS.DECLINE_PATTERN.test(norm)) return 'decline';
 	if (RUNTIME_CONSENT_CONSTANTS.ACCEPT_PATTERN.test(norm)) return 'accept';
 	return null;
+}
+
+/**
+ * Whether an owner's reply can be an answer to a question this machine posted.
+ *
+ * Two machines of one account can be waiting at the same time, each with its
+ * own question in the owner's DMs. A reply written in the thread of one
+ * question is for that machine only (2026-11-19: the reply under the Windows
+ * host's question was applied on the MacBook). A reply outside any thread, or
+ * when the place of the question is not known, is taken.
+ *
+ * @param ask - Where this machine's question was posted, or null
+ * @param target - Where the owner wrote (its `threadTs` is the reply's own timestamp outside a thread)
+ * @param inThread - Whether the owner wrote inside a thread
+ * @returns False only when the reply is in a different thread
+ */
+export function isReplyToAsk(ask: { channelId: string; messageTs: string } | null, target: ReloginReplyTarget | null, inThread: boolean): boolean {
+	if (!ask || !inThread || !target?.threadTs) return true;
+	return target.channelId === ask.channelId && target.threadTs === ask.messageTs;
 }
 
 /**
@@ -257,9 +278,9 @@ export class RuntimeConsentService {
 		}
 		// Claim the question before the DM goes out, so agents that fail in the
 		// same moment join it instead of sending a second DM.
-		const pending: PendingConsent = { sessions: new Set([sessionName]), askedAt: this.now(), phase: 'asked' };
+		const pending: PendingConsent = { sessions: new Set([sessionName]), askedAt: this.now(), phase: 'asked', ask: null };
 		this.pending = pending;
-		const delivered = await this.send(formatConsentAskDm(machine, pending.sessions.size));
+		const delivered = await this.sendAsk(pending, formatConsentAskDm(machine, pending.sessions.size));
 		if (!delivered) {
 			if (this.pending === pending) this.pending = null;
 			return false;
@@ -274,17 +295,18 @@ export class RuntimeConsentService {
 	 *
 	 * @param text - Message text
 	 * @param target - Conversation the owner wrote in (answers go there)
+	 * @param inThread - Whether the owner wrote inside a thread (then only the machine whose question it is takes it)
 	 * @returns True when consumed; the caller must then NOT pass it on as a chat message
 	 */
-	handleOwnerReply(text: string, target: ReloginReplyTarget | null = null): boolean {
+	handleOwnerReply(text: string, target: ReloginReplyTarget | null = null, inThread: boolean = false): boolean {
 		const reply = parseConsentReply(text);
 		if (!reply) return false;
 		const pending = this.currentPending();
-		if (pending) return this.applyReply(pending, reply, target);
-		// Not waiting here: another machine of the account may have asked in
-		// this shared DM.
+		if (pending && isReplyToAsk(pending.ask, target, inThread)) return this.applyReply(pending, reply, target);
+		// Not waiting here, or the reply is in the thread of a question this
+		// machine did not post: another machine of the account asked it.
 		if (!this.siblings || !this.safeHasSiblings()) return false;
-		void this.forwardToSiblings(reply, target);
+		void this.forwardToSiblings(reply, target, inThread);
 		return true;
 	}
 
@@ -293,11 +315,12 @@ export class RuntimeConsentService {
 	 *
 	 * @param reply - The answer
 	 * @param target - Conversation the owner wrote in (answers go there)
+	 * @param inThread - Whether the owner wrote inside a thread
 	 * @returns True when this machine was waiting and took it
 	 */
-	handleSiblingReply(reply: ConsentReply, target: ReloginReplyTarget | null = null): boolean {
+	handleSiblingReply(reply: ConsentReply, target: ReloginReplyTarget | null = null, inThread: boolean = false): boolean {
 		const pending = this.currentPending();
-		if (!pending) return false;
+		if (!pending || !isReplyToAsk(pending.ask, target, inThread)) return false;
 		this.logger.info('Owner answer for the Bypass Permissions consent arrived from another machine', { reply });
 		return this.applyReply(pending, reply, target);
 	}
@@ -342,8 +365,9 @@ export class RuntimeConsentService {
 	 *
 	 * @param reply - The answer
 	 * @param target - Conversation the owner wrote in
+	 * @param inThread - Whether the owner wrote inside a thread
 	 */
-	private async forwardToSiblings(reply: ConsentReply, target: ReloginReplyTarget | null): Promise<void> {
+	private async forwardToSiblings(reply: ConsentReply, target: ReloginReplyTarget | null, inThread: boolean): Promise<void> {
 		const id = this.newId();
 		const timer = setTimeout(() => {
 			this.awaitingSibling.delete(id);
@@ -353,7 +377,7 @@ export class RuntimeConsentService {
 		this.awaitingSibling.set(id, timer);
 		let sent = 0;
 		try {
-			sent = (await this.siblings?.forward({ id, reply, target })) ?? 0;
+			sent = (await this.siblings?.forward({ id, reply, target, inThread })) ?? 0;
 		} catch (error) {
 			this.logger.warn('Could not pass the consent answer to the other machines', { error: error instanceof Error ? error.message : String(error) });
 		}
@@ -424,6 +448,25 @@ export class RuntimeConsentService {
 			this.pending = null;
 		}
 		return this.pending;
+	}
+
+	/**
+	 * Post the question and remember where it landed.
+	 *
+	 * @param pending - The question being asked
+	 * @param text - Message
+	 * @returns True when delivered
+	 */
+	private async sendAsk(pending: PendingConsent, text: string): Promise<boolean> {
+		if (!this.notifier?.sendToOwnerTracked) return this.send(text);
+		try {
+			const { delivery, messageTs } = await this.notifier.sendToOwnerTracked(text, null);
+			if (delivery && typeof delivery === 'object' && messageTs) pending.ask = { channelId: delivery.channelId, messageTs };
+			return Boolean(delivery);
+		} catch (error) {
+			this.logger.warn('Could not DM the owner about the consent', { error: error instanceof Error ? error.message : String(error) });
+			return false;
+		}
 	}
 
 	/**

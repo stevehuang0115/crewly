@@ -64,8 +64,9 @@ function deps(terminal: ConsentPty, onStart: () => void = () => undefined) {
 }
 
 describe('hasBypassConsent', () => {
-	it('needs both markers', () => {
-		expect(hasBypassConsent('Bypass Permissions mode … Yes, I accept')).toBe(true);
+	it('needs the menu itself, not just its words', () => {
+		expect(hasBypassConsent(CONSENT_SCREEN)).toBe(true);
+		expect(hasBypassConsent('Bypass Permissions mode … Yes, I accept')).toBe(false);
 		expect(hasBypassConsent('Bypass Permissions mode on')).toBe(false);
 	});
 });

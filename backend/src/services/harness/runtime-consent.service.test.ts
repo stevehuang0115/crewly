@@ -3,6 +3,7 @@ import {
 	formatConsentAskDm,
 	formatConsentDoneDm,
 	formatConsentFailedDm,
+	isReplyToAsk,
 	getRuntimeConsentService,
 	parseConsentReply,
 	setRuntimeConsentServiceForTesting,
@@ -231,7 +232,7 @@ describe('RuntimeConsentService across machines', () => {
 		const target = { channelId: 'DOWNER', threadTs: '9' };
 		expect(service.handleOwnerReply('accept bypass', target)).toBe(true);
 		await flush();
-		expect(siblings.forward).toHaveBeenCalledWith({ id: 'f1', reply: 'accept', target });
+		expect(siblings.forward).toHaveBeenCalledWith({ id: 'f1', reply: 'accept', target, inThread: false });
 		service.handleSiblingAck('f1');
 		jest.advanceTimersByTime(10 * 60 * 1000);
 		await flush();
@@ -316,6 +317,67 @@ describe('RuntimeConsentService across machines', () => {
 			},
 		});
 		expect(broken.service.handleOwnerReply('accept bypass')).toBe(false);
+	});
+});
+
+describe('two machines waiting at once', () => {
+	/**
+	 * A service whose question landed at a known place.
+	 *
+	 * @param channelId - DM channel of the question
+	 * @param messageTs - Timestamp of the question
+	 * @returns The service and its fakes
+	 */
+	async function asked(channelId: string, messageTs: string) {
+		const siblings = { hasSiblings: jest.fn(() => true), forward: jest.fn(async () => 1) };
+		const made = make({ siblings });
+		(made.notifier as unknown as Record<string, unknown>)['sendToOwnerTracked'] = jest.fn(async (text: string) => {
+			made.sent.push({ text, target: null });
+			return { delivery: { channelId }, messageTs };
+		});
+		await made.service.request('crewly-orc');
+		return { ...made, siblings };
+	}
+
+	it('isReplyToAsk: only a reply in another thread is refused', () => {
+		const ask = { channelId: 'DMAC', messageTs: '10' };
+		expect(isReplyToAsk(ask, { channelId: 'DMAC', threadTs: '10' }, true)).toBe(true);
+		expect(isReplyToAsk(ask, { channelId: 'DMASTER', threadTs: '20' }, true)).toBe(false);
+		expect(isReplyToAsk(ask, { channelId: 'DMAC', threadTs: '99' }, true)).toBe(false);
+		expect(isReplyToAsk(ask, { channelId: 'DMAC', threadTs: '99' }, false)).toBe(true);
+		expect(isReplyToAsk(null, { channelId: 'X', threadTs: '1' }, true)).toBe(true);
+		expect(isReplyToAsk(ask, null, true)).toBe(true);
+	});
+
+	it("a reply under another machine's question is passed on, not applied here", async () => {
+		const { service, accept, siblings } = await asked('DMAC', '10');
+		const windowsThread = { channelId: 'DMASTER', threadTs: '20' };
+		expect(service.handleOwnerReply('accept bypass', windowsThread, true)).toBe(true);
+		await flush();
+		expect(accept).not.toHaveBeenCalled();
+		expect(siblings.forward).toHaveBeenCalledWith(expect.objectContaining({ reply: 'accept', target: windowsThread, inThread: true }));
+		expect(service.isPending()).toBe(true);
+	});
+
+	it('a reply under its own question, or outside any thread, is applied here', async () => {
+		const own = await asked('DMAC', '10');
+		expect(own.service.handleOwnerReply('accept bypass', { channelId: 'DMAC', threadTs: '10' }, true)).toBe(true);
+		await flush();
+		expect(own.accept).toHaveBeenCalledTimes(1);
+		expect(own.siblings.forward).not.toHaveBeenCalled();
+
+		const top = await asked('DMAC', '10');
+		expect(top.service.handleOwnerReply('accept bypass', { channelId: 'DMAC', threadTs: '77' }, false)).toBe(true);
+		await flush();
+		expect(top.accept).toHaveBeenCalledTimes(1);
+	});
+
+	it("a forwarded reply from another machine's thread is not taken", async () => {
+		const { service, accept } = await asked('DMASTER', '20');
+		expect(service.handleSiblingReply('accept', { channelId: 'DMASTER', threadTs: '30' }, true)).toBe(false);
+		expect(service.handleSiblingReply('accept', { channelId: 'DMASTER', threadTs: '20' }, true)).toBe(true);
+		await flush();
+		expect(accept).toHaveBeenCalledTimes(1);
 	});
 });
 

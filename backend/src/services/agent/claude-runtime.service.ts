@@ -5,7 +5,7 @@ import { RuntimeAgentService, type McpConfigResult } from './runtime-agent.servi
 import { SessionCommandHelper } from '../session/index.js';
 import { RUNTIME_TYPES, CLAUDE_FATAL_PATTERNS, CLAUDE_STARTUP_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS, type RuntimeType } from '../../constants.js';
 import { RuntimeStartupBlockedError, detectRuntimeCliMissing } from './runtime-startup-blocked.error.js';
-import { findStartupErrorPattern } from './runtime-startup-screen.js';
+import { findStartupErrorPattern, showsBypassConsentMenu } from './runtime-startup-screen.js';
 import { delay } from '../../utils/async.utils.js';
 
 /**
@@ -105,7 +105,7 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 		if (CLAUDE_STARTUP_CONSTANTS.FIRST_RUN_MARKERS.some((m) => output.includes(m))) {
 			return new RuntimeStartupBlockedError('first_run_setup', CLAUDE_STARTUP_CONSTANTS.MESSAGES.FIRST_RUN);
 		}
-		if (CLAUDE_STARTUP_CONSTANTS.BYPASS_CONSENT_MARKERS.every((m) => output.includes(m))) {
+		if (showsBypassConsentMenu(output)) {
 			return new RuntimeStartupBlockedError('consent_required', CLAUDE_STARTUP_CONSTANTS.MESSAGES.BYPASS_CONSENT);
 		}
 		// `bash: claude: command not found` (B8 D1): the orchestrator defaulted to

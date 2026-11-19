@@ -19,7 +19,7 @@ import type { ConsentReply, ConsentSiblingRelay, RuntimeConsentService } from '.
 
 /** What travels on the relay. */
 export type ConsentWireMessage =
-	| { v: number; kind: 'reply'; id: string; reply: ConsentReply; target: ReloginReplyTarget | null; fromInstanceId: string }
+	| { v: number; kind: 'reply'; id: string; reply: ConsentReply; target: ReloginReplyTarget | null; inThread: boolean; fromInstanceId: string }
 	| { v: number; kind: 'ack'; id: string; fromInstanceId: string };
 
 /** What the relay needs from the rest of the backend (injectable). */
@@ -58,7 +58,8 @@ export function parseConsentWire(payload: unknown): ConsentWireMessage | null {
 	if (p['kind'] !== 'reply') return null;
 	const reply = p['reply'];
 	if (reply !== 'accept' && reply !== 'decline') return null;
-	return { v: RUNTIME_CONSENT_CONSTANTS.RELAY_WIRE_VERSION, kind: 'reply', id, reply, target: parseTarget(p['target']), fromInstanceId };
+	// `inThread` is absent from a 1.36.0 sender: treated as not in a thread, as before.
+	return { v: RUNTIME_CONSENT_CONSTANTS.RELAY_WIRE_VERSION, kind: 'reply', id, reply, target: parseTarget(p['target']), inThread: p['inThread'] === true, fromInstanceId };
 }
 
 /**
@@ -84,10 +85,10 @@ function parseTarget(value: unknown): ReloginReplyTarget | null {
 export function createConsentSiblingRelay(deps: ConsentRelayDeps): ConsentSiblingRelay {
 	return {
 		hasSiblings: () => deps.hasOtherMachines(),
-		forward: async ({ id, reply, target }) => {
+		forward: async ({ id, reply, target, inThread }) => {
 			const selfId = await deps.selfId();
 			const instances = await deps.accountInstances();
-			const message: ConsentWireMessage = { v: RUNTIME_CONSENT_CONSTANTS.RELAY_WIRE_VERSION, kind: 'reply', id, reply, target, fromInstanceId: selfId };
+			const message: ConsentWireMessage = { v: RUNTIME_CONSENT_CONSTANTS.RELAY_WIRE_VERSION, kind: 'reply', id, reply, target, inThread, fromInstanceId: selfId };
 			let sent = 0;
 			for (const [instanceId, queueId] of instances) {
 				if (instanceId === selfId) continue;
@@ -133,7 +134,7 @@ export async function receiveConsentWire(
 		consent.handleSiblingAck(message.id);
 		return 'ack';
 	}
-	if (!consent.handleSiblingReply(message.reply, message.target)) return 'not_waiting';
+	if (!consent.handleSiblingReply(message.reply, message.target, message.inThread)) return 'not_waiting';
 	try {
 		await deps.send(senderQueue, { v: RUNTIME_CONSENT_CONSTANTS.RELAY_WIRE_VERSION, kind: 'ack', id: message.id, fromInstanceId: selfId });
 	} catch (error) {

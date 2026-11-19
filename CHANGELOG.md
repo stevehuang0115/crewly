@@ -9,6 +9,8 @@ User-visible changes. Newest first.
 
 ### Fixed
 - **`accept bypass` now reaches the computer that asked.** With several computers on one account, the reply in the shared Crewly DM went to the account's primary machine, whose orchestrator answered "what do you mean?" while the machine that asked heard nothing. A machine that gets the reply and is not waiting itself now passes it to the account's other machines; the one that asked applies it and answers in the same thread. If none was waiting, you are told so. Every machine involved needs this version.
+- **An agent whose conversation mentions the Bypass Permissions consent starts again.** Crewly looked for the consent's words anywhere on the start-up screen. A resumed conversation re-renders its history, so an orchestrator that had talked about the consent with its owner was taken for the consent screen and refused to start, and the owner was asked for an OK that was not needed. Only the menu itself counts now.
+- **A reply under one computer's consent question is applied on that computer only.** With two computers waiting, the reply written in the thread of one question was applied on the other.
 - **Accepting the Bypass Permissions consent from Slack works on Windows.** A Windows console draws the menu highlight as `>` instead of `❯`, so Crewly never saw "Yes" highlighted and gave up at the folder-trust prompt of its own empty temp folder (`trust_not_answered`).
 
 ### Changed

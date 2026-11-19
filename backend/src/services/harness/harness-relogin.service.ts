@@ -124,6 +124,15 @@ export interface ReloginOwnerNotifier {
 	 */
 	sendToOwner(text: string, target?: ReloginReplyTarget | null): Promise<ReloginDelivery>;
 	/**
+	 * Like {@link sendToOwner}, also reporting the posted message (so a reply
+	 * in its thread can be recognised). Optional.
+	 *
+	 * @param text - Slack mrkdwn text (never contains a secret)
+	 * @param target - Conversation to answer in
+	 * @returns The delivery, and the message's Slack timestamp when known
+	 */
+	sendToOwnerTracked?(text: string, target?: ReloginReplyTarget | null): Promise<{ delivery: ReloginDelivery; messageTs: string | null }>;
+	/**
 	 * Whether a DM can be sent right now (Slack connected).
 	 *
 	 * @returns True when {@link sendToOwner} can deliver

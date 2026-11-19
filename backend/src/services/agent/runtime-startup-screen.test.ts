@@ -93,3 +93,36 @@ describe('isShellFailurePattern', () => {
 		expect(isShellFailurePattern('Invalid API key')).toBe(false);
 	});
 });
+
+describe('showsBypassConsentMenu', () => {
+	const { showsBypassConsentMenu } = jest.requireActual('./runtime-startup-screen.js') as typeof import('./runtime-startup-screen.js');
+	const WARNING =
+		'  WARNING: Claude Code running in Bypass Permissions mode\n\n  In Bypass Permissions mode, Claude Code will not ask for your approval before running potentially dangerous commands.\n  This mode should only be used in a sandboxed container/VM that has restricted internet access and can easily be restored if damaged.\n\n  By proceeding, you accept all responsibility for actions taken while running in Bypass Permissions mode.\n\n  https://code.claude.com/docs/en/security\n\n';
+
+	it('recognises the menu, with either highlight glyph and on either option', () => {
+		expect(showsBypassConsentMenu(`${WARNING}  ❯ No, exit\n    Yes, I accept\n\n  Enter to confirm · Esc to cancel`)).toBe(true);
+		expect(showsBypassConsentMenu(`${WARNING}  > No, exit\r\n    Yes, I accept\r\n\r\n  Enter to confirm · Esc to cancel`)).toBe(true);
+		expect(showsBypassConsentMenu(`${WARNING}    No, exit\n  ❯ Yes, I accept`)).toBe(true);
+	});
+
+	it('is not fooled by a resumed conversation that talks about the consent (orchestrator down 50 min, 2026-11-19)', () => {
+		const transcript = [
+			'⏺ 收到你的「同意」。这个确认属于 DESKTOP-RIG1SOO 那台电脑上的 Crewly，由它自己收你的回复并选「Yes, I accept」，我在这台 MacBook 上点不了。',
+			'⏺ 你是不是指某个终端里出现了“Bypass Permissions mode”的确认提示，需要选“接受”？',
+			'  Reply accept bypass and I will choose "Yes, I accept" there and start the agents.',
+			'────────────────────────────────────────',
+			'❯ ',
+			'────────────────────────────────────────',
+			'  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+		].join('\n');
+		expect(showsBypassConsentMenu(transcript)).toBe(false);
+	});
+
+	it('does not count a menu that is no longer the last thing on screen, or half a menu', () => {
+		expect(showsBypassConsentMenu(`${WARNING}  ❯ No, exit\n    Yes, I accept\n  Enter to confirm\n\n Claude Code v2\n ❯ \n ⏵⏵ bypass permissions on`)).toBe(false);
+		expect(showsBypassConsentMenu('  ❯ No, exit\n    Yes, I accept\n')).toBe(false);
+		expect(showsBypassConsentMenu(`${WARNING}    Yes, I accept\n`)).toBe(false);
+		expect(showsBypassConsentMenu(' ❯ No, exit\n   Yes, I trust this folder\n Enter to confirm · Esc to cancel')).toBe(false);
+		expect(showsBypassConsentMenu('')).toBe(false);
+	});
+});
