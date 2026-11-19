@@ -54,3 +54,35 @@ export function toShellPathEntry(dir: string, platform: NodeJS.Platform = proces
 	const drive = DRIVE_PATH.exec(dir);
 	return drive ? `/${drive[1].toLowerCase()}/${slashed.slice(3)}` : slashed;
 }
+
+/** A Windows absolute path inside running text: drive, `:\`, then everything up to whitespace or a quote. */
+const WINDOWS_PATH_IN_TEXT = /(?<![A-Za-z0-9])([A-Za-z]):\\([^\s"'`<>|*?]*)/g;
+
+/**
+ * Rewrite every Windows absolute path in a text to its bash-safe spelling.
+ *
+ * Crewly builds agent-facing text (prompts, skill catalogs, the lines it
+ * types into a session) in well over a hundred places with `path.join`,
+ * which yields backslashes on Windows. An agent that copies
+ * `bash C:\crewly\config\skills\x/execute.sh` into Git Bash runs
+ * `C:crewlyconfigskillsx/execute.sh`. Rather than convert at each of those
+ * places, the text is normalised where it leaves Crewly for an agent.
+ *
+ * Limit: a path with a space is only rewritten up to the space (the rest is
+ * not recognisably part of it). Unquoted, such a path does not work in a
+ * shell on any platform.
+ *
+ * @param text - Text bound for an agent's shell or prompt
+ * @param platform - Platform (default: this process's)
+ * @returns The text with `C:\a\b` written as `C:/a/b` on Windows; unchanged elsewhere
+ *
+ * @example
+ * ```typescript
+ * windowsPathsToShell('bash D:\\crewly\\config\\skills\\orchestrator/send-message/execute.sh', 'win32');
+ * // 'bash D:/crewly/config/skills/orchestrator/send-message/execute.sh'
+ * ```
+ */
+export function windowsPathsToShell(text: string, platform: NodeJS.Platform = process.platform): string {
+	if (platform !== 'win32' || !text.includes(':\\')) return text;
+	return text.replace(WINDOWS_PATH_IN_TEXT, (_m, drive: string, rest: string) => `${drive}:/${rest.replace(/\\/g, '/')}`);
+}

@@ -7,6 +7,7 @@
  * @module pty-session
  */
 
+import { windowsPathsToShell } from '../../../utils/shell-path.utils.js';
 import * as pty from 'node-pty';
 import { execSync } from 'child_process';
 import type { ISession, SessionOptions } from '../session-backend.interface.js';
@@ -477,7 +478,9 @@ export class PtySession implements ISession {
 		if (this.killed) {
 			throw new Error(`Cannot write to killed session ${this.name}`);
 		}
-		this.ptyProcess.write(data);
+		// On Windows the shell is Git Bash: a `C:\a\b` in a typed line or a
+		// delivered message would lose its backslashes there.
+		this.ptyProcess.write(windowsPathsToShell(data));
 	}
 
 	/**

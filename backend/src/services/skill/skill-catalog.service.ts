@@ -16,6 +16,7 @@
  * @module services/skill/skill-catalog.service
  */
 
+import { windowsPathsToShell } from '../../utils/shell-path.utils.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { existsSync, mkdirSync } from 'fs';
@@ -271,7 +272,7 @@ export class SkillCatalogService {
       const markdown = this.renderCatalog(grouped);
 
       // Write the catalog file
-      await fs.writeFile(catalogPath, markdown, 'utf-8');
+      await fs.writeFile(catalogPath, windowsPathsToShell(markdown), 'utf-8');
 
       const categoryCount = grouped.size;
       this.logger.info('Skills catalog generated successfully', {
@@ -386,7 +387,7 @@ export class SkillCatalogService {
         title: 'Agent Skills Catalog',
         skillsRelativePath: absoluteSkillsPath,
       });
-      await fs.writeFile(catalogPath, markdown, 'utf-8');
+      await fs.writeFile(catalogPath, windowsPathsToShell(markdown), 'utf-8');
 
       const categoryCount = grouped.size;
       this.logger.info('Agent skills catalog generated successfully', {

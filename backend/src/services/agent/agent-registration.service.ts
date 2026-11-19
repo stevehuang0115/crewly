@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { toShellPath } from '../../utils/shell-path.utils.js';
+import { toShellPath, windowsPathsToShell } from '../../utils/shell-path.utils.js';
 import { resolveAgentShell } from '../../utils/agent-shell.utils.js';
 import { getHarnessCredentialsStore, harnessEnvForAgents } from '../harness/harness-credentials.store.js';
 import * as path from 'path';
@@ -3121,7 +3121,7 @@ Loop until done, blocked, or explicitly reassigned:
 
 		try {
 			await mkdir(promptsDir, { recursive: true });
-			await writeFile(promptFilePath, fileContent, 'utf8');
+			await writeFile(promptFilePath, windowsPathsToShell(fileContent), 'utf8');
 			this.logger.debug('Wrote init prompt to file', {
 				sessionName,
 				promptFilePath,
