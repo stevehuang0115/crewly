@@ -7,6 +7,7 @@
  * @module pty-session
  */
 
+import { hasNonShellDescendant, readWindowsProcessesSync } from '../../../utils/windows-process.utils.js';
 import { windowsPathsToShell } from '../../../utils/shell-path.utils.js';
 import * as pty from 'node-pty';
 import { execSync } from 'child_process';
@@ -82,6 +83,8 @@ function syncSleepMs(ms: number): void {
  * diagnostic to tell the user if they're near macOS `kern.maxprocperuid`.
  */
 function readUserProcessCount(): number | null {
+	// A POSIX pipeline (`id`, `ps`, `wc`); the limit it informs is macOS-only.
+	if (process.platform === 'win32') return null;
 	try {
 		const out = execSync('ps -u "$(id -un)" 2>/dev/null | wc -l', {
 			encoding: 'utf8',
@@ -676,6 +679,9 @@ export class PtySession implements ISession {
 
 		try {
 			const pid = this.ptyProcess.pid;
+			// Windows: no pgrep, and the Git Bash launcher always has a child (the
+			// real bash) — look for a non-shell process anywhere under the session.
+			if (process.platform === 'win32') return hasNonShellDescendant(readWindowsProcessesSync(), pid);
 			// pgrep -P <pid> lists child PIDs; exits 0 if found, 1 if none
 			execSync(`pgrep -P ${pid}`, { stdio: 'pipe', timeout: 3000 });
 			return true;

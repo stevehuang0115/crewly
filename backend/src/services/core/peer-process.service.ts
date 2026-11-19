@@ -25,6 +25,7 @@
  * @module services/core/peer-process.service
  */
 
+import { parseNetstatPeer, parseWindowsProcessRows, queryNetstat, queryWindowsProcesses } from '../../utils/windows-process.utils.js';
 import { execFile } from 'child_process';
 import { promises as fsp } from 'fs';
 import * as os from 'os';
@@ -179,6 +180,8 @@ export function parseSsPeer(output: string, serverPort: number): number | null {
  * @returns pid or null
  */
 async function defaultFindPeerPid(clientPort: number, serverPort: number, timeoutMs: number): Promise<number | null> {
+  // Windows has neither ss nor lsof: netstat lists each TCP row with its pid.
+  if (process.platform === 'win32') return parseNetstatPeer(await queryNetstat(timeoutMs), clientPort, serverPort);
   if (process.platform === 'linux') {
     let output: string | null = null;
     try {
@@ -231,6 +234,20 @@ async function defaultReadEnv(pid: number): Promise<Record<string, string> | nul
   } catch {
     return null;
   }
+}
+
+/**
+ * The process table on Windows: pid → ppid. Windows has no controlling
+ * terminal to compare, so every entry reads `?` and the ancestry signal alone
+ * decides (every agent process descends from this backend's PTY shells).
+ *
+ * @param timeoutMs - Budget
+ * @returns pid → entry
+ */
+async function readWindowsPeerTable(timeoutMs: number): Promise<Map<number, PeerProcessEntry>> {
+  const table = new Map<number, PeerProcessEntry>();
+  for (const row of parseWindowsProcessRows(await queryWindowsProcesses(timeoutMs))) table.set(row.pid, { ppid: row.ppid, tty: '?' });
+  return table;
 }
 
 /** Terminal names that mean "no controlling terminal". */
@@ -324,10 +341,11 @@ export class PeerProcessService {
    * @param deps - Injectable collaborators
    */
   constructor(deps: PeerProcessDeps = {}) {
-    const timeoutMs = deps.timeoutMs ?? OWNER_AUTH_CONSTANTS.PEER_LOOKUP_TIMEOUT_MS;
+    // The Windows process table comes from PowerShell, which needs longer than `ps`.
+    const timeoutMs = deps.timeoutMs ?? (process.platform === 'win32' ? OWNER_AUTH_CONSTANTS.PEER_LOOKUP_TIMEOUT_WINDOWS_MS : OWNER_AUTH_CONSTANTS.PEER_LOOKUP_TIMEOUT_MS);
     this.deps = {
       findPeerPid: deps.findPeerPid ?? ((c, s) => defaultFindPeerPid(c, s, timeoutMs)),
-      readTable: deps.readTable ?? (async () => parsePsTable(await run('ps', ['-Ao', 'pid=,ppid=,tty='], timeoutMs))),
+      readTable: deps.readTable ?? (process.platform === 'win32' ? () => readWindowsPeerTable(timeoutMs) : async () => parsePsTable(await run('ps', ['-Ao', 'pid=,ppid=,tty='], timeoutMs))),
       readEnv: deps.readEnv ?? ((pid) => defaultReadEnv(pid)),
       listSessionPids: deps.listSessionPids ?? (() => new Map()),
       selfPid: deps.selfPid ?? process.pid,

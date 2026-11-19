@@ -6220,6 +6220,8 @@ void (async () => {
 		this.logger.info('Attempting to identify conflicting process...');
 
 		try {
+			// lsof does not exist on Windows; `crewly status` names the holder there.
+			if (process.platform === 'win32') throw new Error('no lsof on Windows');
 			const { execSync } = await import('child_process');
 			const result = execSync(`lsof -ti :${this.config.webPort}`, { encoding: 'utf8' }).trim();
 

@@ -21,9 +21,28 @@ jest.mock('chalk', () => ({
   }),
 }));
 
+// Tool lookups go through find-executable (no shell). One mock answers both:
+// `find <bin>` for the PATH lookup and `<bin> <flag>` for the version probe.
+// A lookup the test did not script reads as found.
 const mockExecSync = jest.fn();
-jest.mock('child_process', () => ({
-  execSync: (...args: unknown[]) => mockExecSync(...args),
+jest.mock('../../../backend/src/utils/find-executable.utils.js', () => ({
+  findExecutable: (bin: string): string | null => {
+    try {
+      return String(mockExecSync(`find ${bin}`) ?? `/usr/bin/${bin}`);
+    } catch {
+      return null;
+    }
+  },
+  probeVersion: (command: string, versionFlag = '--version'): string | null => {
+    try {
+      const output = String(mockExecSync(`${command} ${versionFlag}`) ?? '').trim();
+      if (!output) return null;
+      const match = output.match(/\d+\.\d+[\w.-]*/);
+      return match ? match[0] : output.split('\n')[0];
+    } catch {
+      return null;
+    }
+  },
 }));
 
 const mockCheckSkillsInstalled = jest.fn();
@@ -200,7 +219,7 @@ function mockJqNotFound(): void {
 /** Helper: make jq appear as found (consumes 2 mockExecSync calls) */
 function mockJqFound(): void {
   mockExecSync
-    .mockReturnValueOnce(Buffer.from('/usr/bin/jq'))   // which jq
+    .mockReturnValueOnce(Buffer.from('/usr/bin/jq'))   // find jq
     .mockReturnValueOnce(Buffer.from('jq-1.7.1'));        // jq --version
 }
 
@@ -352,13 +371,13 @@ describe('onboard command', () => {
   // -----------------------------------------------------------------------
 
   describe('checkToolInstalled', () => {
-    it('returns true when which succeeds', () => {
+    it('returns true when the tool is on PATH', () => {
       mockExecSync.mockReturnValue(Buffer.from('/usr/local/bin/claude'));
       expect(checkToolInstalled('claude')).toBe(true);
-      expect(mockExecSync).toHaveBeenCalledWith('which claude', { stdio: 'pipe' });
+      expect(mockExecSync).toHaveBeenCalledWith('find claude');
     });
 
-    it('returns false when which throws', () => {
+    it('returns false when the tool is not on PATH', () => {
       mockExecSync.mockImplementation(() => { throw new Error('not found'); });
       expect(checkToolInstalled('nonexistent')).toBe(false);
     });
@@ -404,13 +423,14 @@ describe('onboard command', () => {
       expect(output).toContain('jq not found');
       expect(output).toContain('brew install jq');
       expect(output).toContain('sudo apt-get install -y jq');
+      expect(output).toContain('winget install jqlang.jq');
       expect(exitSpy).toHaveBeenCalledWith(1);
     });
 
     it('does not require tmux: only jq is probed', () => {
       mockExecSync.mockImplementation((cmd: string) => {
         if (String(cmd).includes('tmux')) throw new Error('not found');
-        if (String(cmd) === 'which jq') return Buffer.from('/usr/bin/jq');
+        if (String(cmd) === 'find jq') return Buffer.from('/usr/bin/jq');
         if (String(cmd).startsWith('jq --version')) return Buffer.from('jq-1.7.1');
         throw new Error(`unexpected command: ${cmd}`);
       });
@@ -420,7 +440,7 @@ describe('onboard command', () => {
       expect(output).not.toMatch(/tmux/i);
       expect(output).toContain('1 system tool(s) checked');
       const probed = mockExecSync.mock.calls.map((c: unknown[]) => String(c[0]));
-      expect(probed).toEqual(['which jq', 'jq --version 2>/dev/null']);
+      expect(probed).toEqual(['find jq', 'jq --version']);
     });
   });
 

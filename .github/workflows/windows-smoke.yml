@@ -88,6 +88,28 @@ jobs:
           FOUND="$(grep -rIhoE '.{0,60}[A-Za-z]:\\\\?[^" ]*execute\.sh' . 2>/dev/null | head -8 | cut -c1-220 || true)"
           if [ -n "$FOUND" ]; then echo "$FOUND"; echo "a prompt or catalog still carries a backslash path"; exit 1; fi
           echo "none"
+      - name: Caller identity check has a working lookup
+        shell: pwsh
+        run: |
+          $log = "$env:RUNNER_TEMP\crewly-start.log"
+          $bad = Get-Content $log | Select-String -Pattern 'lookup tool unavailable|lookup timed out'
+          if ($bad) { $bad | Select-Object -First 5 | ForEach-Object { $_.Line.Substring(0, [Math]::Min(300, $_.Line.Length)) }; "the local-caller lookup did not run on Windows"; exit 1 }
+          "no failed caller lookups"
+      - name: crewly init finds jq without a POSIX shell on PATH
+        shell: pwsh
+        run: |
+          # cmd.exe has no `which`: drop Git's POSIX tool directories so a shell-out to it would fail.
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and $_ -notmatch 'Git\\(usr|mingw64)\\bin' }) -join ';'
+          if (Get-Command which -ErrorAction SilentlyContinue) { "note: a which is still on PATH: $((Get-Command which).Source)" }
+          $out = node dist\cli\cli\src\index.js init --yes 2>&1 | Out-String
+          $out.Substring(0, [Math]::Min(2500, $out.Length))
+          if ($out -match 'jq not found') { "init did not find jq"; exit 1 }
+          if ($out -notmatch 'jq detected \(\d') { "init did not report jq with its version"; exit 1 }
+      - name: Unit tests of the Windows-specific code
+        shell: pwsh
+        run: |
+          npx jest backend/src/utils/find-executable backend/src/utils/windows-process backend/src/utils/agent-shell backend/src/utils/shell-path backend/src/utils/main-module cli/src/utils/tail-file cli/src/utils/backend-status cli/src/utils/process-cleanup --maxWorkers=2 2>&1 | Select-String -Pattern 'PASS|FAIL|Tests:|●' | Select-Object -First 60
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: crewly status and crewly stop
         shell: pwsh
         run: |

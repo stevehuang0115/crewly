@@ -22,6 +22,7 @@
  * @module controllers/desktop/desktop.controller
  */
 
+import { resolveAgentShell } from '../../utils/agent-shell.utils.js';
 import { spawn } from 'child_process';
 import * as path from 'path';
 import type { Request, Response } from 'express';
@@ -80,7 +81,7 @@ export async function runDesktopAction(
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const script = skillPath();
   const raw = await new Promise<string>((resolve) => {
-    const child = spawn('bash', [script, JSON.stringify(input)], {
+    const child = spawn(resolveAgentShell(), [script, JSON.stringify(input)], {
       env: {
         ...process.env,
         ...(agentSession ? { CREWLY_SESSION_NAME: agentSession } : {}),

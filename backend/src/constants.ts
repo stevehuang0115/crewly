@@ -7220,6 +7220,7 @@ export const HARNESS_CONSTANTS = {
 			ID: 'jq',
 			INSTALL_HINT_MACOS: 'brew install jq',
 			INSTALL_HINT_LINUX: 'sudo apt-get install -y jq   (Fedora: sudo dnf install -y jq)',
+			INSTALL_HINT_WINDOWS: 'winget install jqlang.jq   (then open a new terminal)',
 		},
 	},
 	/** Orchestrator config under the Crewly home dir (same file StorageService uses) */

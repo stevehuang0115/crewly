@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { findExecutable, probeVersion } from '../../utils/find-executable.utils.js';
 import { spawn } from 'child_process';
 import { RuntimeAgentService, type McpConfigResult } from './runtime-agent.service.abstract.js';
 import { SessionCommandHelper } from '../session/index.js';
@@ -298,72 +299,19 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 		version?: string;
 		message: string;
 	}> {
-		try {
-			return new Promise((resolve) => {
-				const whichProcess = spawn('which', ['claude']);
-				let stdout = '';
-				let stderr = '';
-
-				whichProcess.stdout.on('data', (data) => {
-					stdout += data.toString();
-				});
-
-				whichProcess.stderr.on('data', (data) => {
-					stderr += data.toString();
-				});
-
-				whichProcess.on('close', (code) => {
-					if (code === 0 && stdout.trim()) {
-						// Claude CLI found, try to get version
-						const versionProcess = spawn('claude', ['--version']);
-						let versionOutput = '';
-
-						versionProcess.stdout.on('data', (data) => {
-							versionOutput += data.toString();
-						});
-
-						versionProcess.on('close', (versionCode) => {
-							resolve({
-								installed: true,
-								version: versionCode === 0 ? versionOutput.trim() : 'unknown',
-								message: 'Claude Code CLI is available',
-							});
-						});
-
-						// Timeout for version check
-						setTimeout(() => {
-							versionProcess.kill();
-							resolve({
-								installed: true,
-								message: 'Claude Code CLI found but version check timed out',
-							});
-						}, 5000);
-					} else {
-						resolve({
-							installed: false,
-							message:
-								'Claude Code CLI not found. Please install Claude Code to enable agent functionality.',
-						});
-					}
-				});
-
-				// Timeout for which command
-				setTimeout(() => {
-					whichProcess.kill();
-					resolve({
-						installed: false,
-						message: 'Claude Code installation check timed out',
-					});
-				}, 5000);
-			});
-		} catch (error) {
+		// PATH is walked directly: `which` does not exist under cmd.exe, and on
+		// Windows `claude` is an npm `.cmd` shim that cannot be spawned by name.
+		const found = findExecutable('claude');
+		if (!found) {
 			return {
 				installed: false,
-				message: `Failed to check Claude installation: ${
-					error instanceof Error ? error.message : 'Unknown error'
-				}`,
+				message: 'Claude Code CLI not found. Please install Claude Code to enable agent functionality.',
 			};
 		}
+		const version = probeVersion(found);
+		return version
+			? { installed: true, version, message: 'Claude Code CLI is available' }
+			: { installed: true, message: 'Claude Code CLI found but its version could not be read' };
 	}
 
 	/**

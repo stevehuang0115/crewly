@@ -1,4 +1,5 @@
 import * as fs from 'fs/promises';
+import { resolveAgentShell } from '../../utils/agent-shell.utils.js';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import { parse as parseYAML } from 'yaml';
@@ -361,7 +362,7 @@ export class ContextLoaderService {
         const scriptPath = path.resolve(__dirname, '../../../config/runtime_scripts/tmux_robosend.sh');
 
         await new Promise<void>((resolve, reject) => {
-          const process = spawn('bash', [scriptPath, sessionName, `echo 'Project context loaded at ${contextPath}'`]);
+          const process = spawn(resolveAgentShell(), [scriptPath, sessionName, `echo 'Project context loaded at ${contextPath}'`]);
           process.on('close', (code) => {
             if (code === 0) resolve();
             else reject(new Error(`tmux_robosend.sh exited with code ${code}`));
