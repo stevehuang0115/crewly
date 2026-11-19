@@ -419,6 +419,28 @@ describe('AgentRegistrationService', () => {
 			expect(mockRuntimeService.waitForRuntimeReady).toHaveBeenCalledTimes(1);
 		});
 
+		it('asks the owner over Slack when the start-up stops on the Bypass Permissions consent, and only then', async () => {
+			const { RuntimeStartupBlockedError } = await import('./runtime-startup-blocked.error.js');
+			const { RuntimeConsentService, setRuntimeConsentServiceForTesting } = await import('../harness/runtime-consent.service.js');
+			const consent = new RuntimeConsentService();
+			const request = jest.spyOn(consent, 'request').mockResolvedValue(true);
+			setRuntimeConsentServiceForTesting(consent);
+			mockReadFile.mockResolvedValue('Register with {{SESSION_ID}}');
+			try {
+				mockRuntimeService.waitForRuntimeReady.mockRejectedValue(new RuntimeStartupBlockedError('first_run_setup', 'Set Claude Code up first.'));
+				await service.initializeAgentWithRegistration('test-session', 'developer', '/test/path', 90000);
+				expect(request).not.toHaveBeenCalled();
+
+				mockRuntimeService.waitForRuntimeReady.mockRejectedValue(new RuntimeStartupBlockedError('consent_required', 'Accept Bypass Permissions mode.'));
+				const result = await service.initializeAgentWithRegistration('test-session', 'developer', '/test/path', 90000);
+				expect(result.success).toBe(false);
+				expect(request).toHaveBeenCalledTimes(1);
+				expect(request).toHaveBeenCalledWith('test-session');
+			} finally {
+				setRuntimeConsentServiceForTesting(null);
+			}
+		});
+
 		it('should attempt full recreation if cleanup and reinit fails', async () => {
 			// Mock Step 1 failure (reinit doesn't work)
 			mockRuntimeService.waitForRuntimeReady
