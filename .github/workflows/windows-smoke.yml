@@ -86,12 +86,13 @@ jobs:
           T="$(cat "$USERPROFILE/.crewly/api-token" 2>/dev/null || true)"
           A="Authorization: Bearer $T"
           B=http://localhost:8787/api/sessions
+          show() { curl -s -m 15 -H "$A" "$B/$1/output?lines=60" | jq -r .output | grep -v '^\s*$' | tail -${2:-12} | cut -c1-220; }
+          wr() { curl -s -m 15 -o /dev/null -w "write %{http_code}\n" -H "$A" -H 'Content-Type: application/json' -X POST "$B/$1/write" -d "$2"; }
+          echo "--- orchestrator session (what Crewly itself typed)"; show crewly-orc 25
           curl -s -m 15 -H "$A" -H 'Content-Type: application/json' -X POST "$B" \
             -d '{"name":"win-smoke","command":"C:\\Program Files\\Git\\bin\\bash.exe","cwd":"C:\\Users\\runneradmin"}' | cut -c1-200; echo
-          sleep 4
-          curl -s -m 15 -H "$A" -H 'Content-Type: application/json' -X POST "$B/win-smoke/write" \
-            -d '{"data":"echo PTY_OK_$((6*7)); uname -s; pwd; curl -s localhost:8787/api/health | jq -r .data.live; export CREWLY_X=1 && echo EXPORT_$CREWLY_X\r"}' | cut -c1-200; echo
-          sleep 6
-          curl -s -m 15 -H "$A" "$B/win-smoke/output?lines=40" | cut -c1-900; echo
-          curl -s -m 15 -H "$A" "$B" | cut -c1-400; echo
-          grep -aE "win-smoke|PtySession" "$RUNNER_TEMP/crewly-start.log" | tail -12 | cut -c1-400
+          sleep 5; echo "--- fresh"; show win-smoke
+          wr win-smoke '{"data":"echo CR_OK\r"}'; sleep 4; echo "--- after CR"; show win-smoke
+          wr win-smoke '{"data":"echo LF_OK\n"}'; sleep 4; echo "--- after LF"; show win-smoke
+          wr win-smoke '{"data":"echo PTY_OK_$((6*7)); uname -s; curl -s localhost:8787/api/health | jq -r .data.live\r"}'; sleep 6; echo "--- after combo"; show win-smoke 20
+          grep -aE "win-smoke" "$RUNNER_TEMP/crewly-start.log" | grep -avE "GET|POST" | tail -8 | cut -c1-300
