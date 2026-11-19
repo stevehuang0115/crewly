@@ -18,6 +18,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { HARNESS_CONSTANTS } from '../../constants.js';
+import { DEFAULT_WINDOWS_PATHEXT } from '../../utils/find-executable.utils.js';
 import { LoggerService } from '../core/logger.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import type { CommandResult, RunCommand, RunCommandOptions } from './harness.types.js';
@@ -32,12 +33,14 @@ export function getUserNpmPrefix(): string {
 }
 
 /**
- * The bin directory of the user-owned npm prefix.
+ * The bin directory of the user-owned npm prefix. On Windows npm puts the
+ * command shims in the prefix itself.
  *
+ * @param platform - Platform (injectable for tests)
  * @returns Absolute path, e.g. `~/.crewly/npm-global/bin`
  */
-export function getUserNpmBinDir(): string {
-	return path.join(getUserNpmPrefix(), 'bin');
+export function getUserNpmBinDir(platform: NodeJS.Platform = process.platform): string {
+	return platform === 'win32' ? getUserNpmPrefix() : path.join(getUserNpmPrefix(), 'bin');
 }
 
 /**
@@ -94,28 +97,81 @@ export function withHarnessPath(env: NodeJS.ProcessEnv = process.env): NodeJS.Pr
 	return { ...env, PATH: buildHarnessPath(env.PATH) };
 }
 
+/** What {@link resolveExecutable} reads besides the PATH; injected in tests. */
+export interface ResolveExecutableOptions {
+	platform?: NodeJS.Platform;
+	/** `PATHEXT` (Windows): the extensions a bare command name may have */
+	pathExt?: string;
+}
+
 /**
  * Find an executable on a PATH, like `which`.
+ *
+ * On Windows a command is a file with one of the `PATHEXT` extensions
+ * (`claude.exe`, `claude.cmd`), so a bare name is tried with each of them.
+ * Without that every harness read as "not installed" there (2026-11-19).
  *
  * @param command - Bare command name (or an absolute path, returned when executable)
  * @param envPath - PATH to search
  * @param isExecutable - Executable check (injectable for tests)
+ * @param options - Platform and PATHEXT (default: the process's)
  * @returns Absolute path, or null when not found
+ *
+ * @example
+ * ```ts
+ * resolveExecutable('claude', process.env.PATH); // 'C:\\Users\\me\\.local\\bin\\claude.exe'
+ * ```
  */
 export function resolveExecutable(
 	command: string,
 	envPath: string | undefined,
 	isExecutable: (file: string) => boolean = defaultIsExecutable,
+	options: ResolveExecutableOptions = {},
 ): string | null {
-	if (command.includes(path.sep)) {
-		return isExecutable(command) ? command : null;
+	const win = (options.platform ?? process.platform) === 'win32';
+	const p = win ? path.win32 : path.posix;
+	const suffixes =
+		win && !p.extname(command)
+			? (options.pathExt ?? process.env.PATHEXT ?? DEFAULT_WINDOWS_PATHEXT).split(';').filter((ext) => ext.length > 0)
+			: [''];
+	const firstRunnable = (base: string): string | null => {
+		for (const suffix of suffixes) {
+			if (isExecutable(base + suffix)) return base + suffix;
+		}
+		return null;
+	};
+	if (command.includes(p.sep) || (win && command.includes('/'))) {
+		return firstRunnable(command);
 	}
-	for (const dir of (envPath ?? '').split(path.delimiter)) {
+	for (const dir of (envPath ?? '').split(p.delimiter)) {
 		if (!dir) continue;
-		const candidate = path.join(dir, command);
-		if (isExecutable(candidate)) return candidate;
+		const found = firstRunnable(p.join(dir, command));
+		if (found) return found;
 	}
 	return null;
+}
+
+/**
+ * How to start a resolved executable. A `.cmd` / `.bat` shim (how npm installs
+ * CLIs on Windows) cannot be started directly: it runs through `cmd.exe`, with
+ * the whole command line in one pair of quotes so paths with spaces survive.
+ *
+ * @param file - Executable (absolute path, or a bare name)
+ * @param args - Arguments
+ * @param platform - Platform
+ * @returns What to pass to `spawn`
+ *
+ * @example
+ * ```ts
+ * spawnTarget('C:\\npm\\codex.cmd', ['--version'], 'win32');
+ * // { file: 'cmd.exe', args: ['/d', '/s', '/c', '""C:\\npm\\codex.cmd" --version"'], verbatim: true }
+ * ```
+ */
+export function spawnTarget(file: string, args: readonly string[], platform: NodeJS.Platform = process.platform): { file: string; args: string[]; verbatim: boolean } {
+	if (platform !== 'win32' || !/\.(?:cmd|bat)$/i.test(file)) return { file, args: [...args], verbatim: false };
+	const quote = (value: string): string => (/[\s"&|<>^()%!]/.test(value) || value === '' ? `"${value.replace(/"/g, '""')}"` : value);
+	const line = [`"${file}"`, ...args.map(quote)].join(' ');
+	return { file: 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], verbatim: true };
 }
 
 /**
@@ -254,11 +310,14 @@ export function createRunCommand(deps: RunCommandDeps = {}): RunCommand {
 
 			let child: ReturnType<typeof spawn>;
 			try {
-				child = spawnFn(command, [...args], {
+				// Windows starts `npm` / `codex` only by their real file name (`npm.cmd`).
+				const target = spawnTarget(process.platform === 'win32' ? key : command, args);
+				child = spawnFn(target.file, target.args, {
 					env: options.env ?? process.env,
 					...(options.cwd ? { cwd: options.cwd } : {}),
 					stdio: ['pipe', 'pipe', 'pipe'],
 					detached: process.platform !== 'win32',
+					...(target.verbatim ? { windowsVerbatimArguments: true, windowsHide: true } : {}),
 				});
 			} catch (error) {
 				resolve({ code: null, stdout: '', stderr: '', error: error instanceof Error ? error.message : String(error) });
