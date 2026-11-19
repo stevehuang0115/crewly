@@ -153,7 +153,7 @@ export async function acceptBypassConsent(deps: BypassConsentDeps = {}): Promise
 		await sleep(RUNTIME_CONSENT_CONSTANTS.KEY_DELAY_MS);
 		const movedAt = raw.length;
 		terminal.write(RUNTIME_CONSENT_CONSTANTS.DOWN_KEY);
-		const highlighted = new RegExp(`${RUNTIME_CONSENT_CONSTANTS.MENU_CURSOR}\\s*${label}`);
+		const highlighted = new RegExp(`${RUNTIME_CONSENT_CONSTANTS.MENU_CURSOR_PATTERN}\\s*${label}`);
 		const by = now() + RUNTIME_CONSENT_CONSTANTS.SETTLE_MS;
 		while (!highlighted.test(textSince(movedAt))) {
 			if (exited || now() >= by) return null;
