@@ -125,18 +125,40 @@ export class SlackReloginDmService implements ReloginOwnerNotifier {
 	 * @returns Where it was delivered, true when delivered somewhere unknown, false when not
 	 */
 	async sendToOwner(text: string, target?: ReloginReplyTarget | null, opts: { title?: string; raw?: boolean } = {}): Promise<ReloginDelivery> {
+		return (await this.sendToOwnerTracked(text, target, opts)).delivery;
+	}
+
+	/**
+	 * Send a DM to the owner and report the posted message's Slack timestamp
+	 * (null when it went into an existing thread or through the notification
+	 * path), so a reply in its thread can be told from a reply elsewhere.
+	 *
+	 * @param text - Slack mrkdwn text
+	 * @param target - Conversation to answer in; absent = this machine's own DM with the owner
+	 * @param opts - Notification title / skip escaping
+	 * @returns The delivery and the message timestamp
+	 */
+	async sendToOwnerTracked(
+		text: string,
+		target?: ReloginReplyTarget | null,
+		opts: { title?: string; raw?: boolean } = {},
+	): Promise<{ delivery: ReloginDelivery; messageTs: string | null }> {
+		const tracked = (delivery: ReloginDelivery, ts?: unknown): { delivery: ReloginDelivery; messageTs: string | null } => ({
+			delivery,
+			messageTs: typeof ts === 'string' && ts ? ts : null,
+		});
 		const slack = this.getSlack();
-		if (!slack.isConnected()) return false;
+		if (!slack.isConnected()) return tracked(false);
 		const escaped = opts.raw ? text : escapeSlackText(text);
-		if (target && (await this.sendToTarget(slack, escaped, target))) return target;
+		if (target && (await this.sendToTarget(slack, escaped, target))) return tracked(target);
 		const ownerId = slack.getOwnerUserId?.() ?? null;
 		if (ownerId) {
 			const orcToken = this.getAgentBotToken(ORCHESTRATOR_SESSION_NAME);
 			if (orcToken) {
 				try {
 					const channelId = await slack.openDirectMessage(ownerId, orcToken);
-					await slack.sendMessage({ channelId, text: escaped, botToken: orcToken, unfurlLinks: false, unfurlMedia: false, skipChatV2Mirror: true });
-					return { channelId, agentSession: ORCHESTRATOR_SESSION_NAME };
+					const ts = await slack.sendMessage({ channelId, text: escaped, botToken: orcToken, unfurlLinks: false, unfurlMedia: false, skipChatV2Mirror: true });
+					return tracked({ channelId, agentSession: ORCHESTRATOR_SESSION_NAME }, ts);
 				} catch (error) {
 					this.logger.warn("Could not DM the owner from this machine's orchestrator bot; using the master bot", {
 						error: error instanceof Error ? error.message : String(error),
@@ -145,9 +167,9 @@ export class SlackReloginDmService implements ReloginOwnerNotifier {
 			}
 			try {
 				const channelId = await slack.openDirectMessage(ownerId);
-				await slack.sendMessage({ channelId, text: escaped, unfurlLinks: false, unfurlMedia: false, skipChatV2Mirror: true });
+				const ts = await slack.sendMessage({ channelId, text: escaped, unfurlLinks: false, unfurlMedia: false, skipChatV2Mirror: true });
 				this.dmChannelId = channelId;
-				return { channelId };
+				return tracked({ channelId }, ts);
 			} catch (error) {
 				this.logger.warn('Could not DM the owner directly; using the owner-notification path', {
 					error: error instanceof Error ? error.message : String(error),
@@ -156,10 +178,10 @@ export class SlackReloginDmService implements ReloginOwnerNotifier {
 		}
 		try {
 			await slack.sendNotification({ type: 'agent_error', title: opts.title ?? 'Sign-in needed', message: escaped, urgency: 'high', timestamp: this.now().toISOString() });
-			return true;
+			return tracked(true);
 		} catch (error) {
 			this.logger.warn('Could not send the re-login message to the owner', { error: error instanceof Error ? error.message : String(error) });
-			return false;
+			return tracked(false);
 		}
 	}
 
@@ -330,11 +352,13 @@ export function createReloginReplyInterceptor(
  */
 export function createConsentReplyInterceptor(
 	dm: Pick<SlackReloginDmService, 'ownerDmScope' | 'replyTargetOf'>,
-	consent: { handleOwnerReply(text: string, target: ReloginReplyTarget | null): boolean },
+	consent: { handleOwnerReply(text: string, target: ReloginReplyTarget | null, inThread: boolean): boolean },
 ): (message: SlackIncomingMessage) => boolean {
 	return (message) => {
 		if (message.hasFiles || !message.text) return false;
 		if (!dm.ownerDmScope(message)) return false;
-		return consent.handleOwnerReply(message.text, dm.replyTargetOf(message));
+		// `replyTargetOf` gives a top-level message its own timestamp as the thread; say which it was.
+		const inThread = Boolean(message.threadTs) && message.threadTs !== message.ts;
+		return consent.handleOwnerReply(message.text, dm.replyTargetOf(message), inThread);
 	};
 }

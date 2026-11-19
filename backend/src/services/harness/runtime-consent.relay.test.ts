@@ -42,8 +42,10 @@ describe('parseConsentWire', () => {
 			id: 'a',
 			reply: 'accept',
 			target: { channelId: 'D1', threadTs: '5' },
+			inThread: false,
 			fromInstanceId: 'mbp',
 		});
+		expect(parseConsentWire({ v: 1, kind: 'reply', id: 'a', reply: 'accept', target: null, inThread: true, fromInstanceId: 'mbp' })).toMatchObject({ inThread: true });
 		expect(parseConsentWire({ v: 1, kind: 'ack', id: 'a', fromInstanceId: 'win' })).toEqual({ v: 1, kind: 'ack', id: 'a', fromInstanceId: 'win' });
 	});
 
@@ -70,10 +72,10 @@ describe('createConsentSiblingRelay', () => {
 		const { deps, sent } = make();
 		const relay = createConsentSiblingRelay(deps);
 		expect(relay.hasSiblings()).toBe(true);
-		const count = await relay.forward({ id: 'f1', reply: 'accept', target: { channelId: 'D1', threadTs: '5' } });
+		const count = await relay.forward({ id: 'f1', reply: 'accept', target: { channelId: 'D1', threadTs: '5' }, inThread: true });
 		expect(count).toBe(2);
 		expect(sent.map((s) => s.queueId)).toEqual(['q-air', 'q-win']);
-		expect(sent[0].message).toEqual({ v: 1, kind: 'reply', id: 'f1', reply: 'accept', target: { channelId: 'D1', threadTs: '5' }, fromInstanceId: 'mbp' });
+		expect(sent[0].message).toEqual({ v: 1, kind: 'reply', id: 'f1', reply: 'accept', target: { channelId: 'D1', threadTs: '5' }, inThread: true, fromInstanceId: 'mbp' });
 	});
 
 	it('counts only the machines it reached', async () => {
@@ -82,18 +84,18 @@ describe('createConsentSiblingRelay', () => {
 				if (queueId === 'q-air') throw new Error('offline');
 			}),
 		});
-		expect(await createConsentSiblingRelay(deps).forward({ id: 'f1', reply: 'accept', target: null })).toBe(1);
+		expect(await createConsentSiblingRelay(deps).forward({ id: 'f1', reply: 'accept', target: null, inThread: false })).toBe(1);
 	});
 });
 
 describe('receiveConsentWire', () => {
-	const reply = { v: 1, kind: 'reply', id: 'f1', reply: 'accept', target: { channelId: 'D1', threadTs: '5' }, fromInstanceId: 'win' };
+	const reply = { v: 1, kind: 'reply', id: 'f1', reply: 'accept', target: { channelId: 'D1', threadTs: '5' }, inThread: true, fromInstanceId: 'win' };
 
 	it('applies a reply while waiting and confirms to the sender', async () => {
 		const { deps, sent } = make();
 		const consent = { handleSiblingReply: jest.fn(() => true), handleSiblingAck: jest.fn() };
 		expect(await receiveConsentWire(reply, consent, deps)).toBe('taken');
-		expect(consent.handleSiblingReply).toHaveBeenCalledWith('accept', { channelId: 'D1', threadTs: '5' });
+		expect(consent.handleSiblingReply).toHaveBeenCalledWith('accept', { channelId: 'D1', threadTs: '5' }, true);
 		expect(sent).toEqual([{ queueId: 'q-win', message: { v: 1, kind: 'ack', id: 'f1', fromInstanceId: 'mbp' } }]);
 	});
 

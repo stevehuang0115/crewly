@@ -258,7 +258,9 @@ describe('createConsentReplyInterceptor', () => {
 		const dm = new SlackReloginDmService(() => fakeSlack({ getOwnerUserId: null }));
 		const intercept = createConsentReplyInterceptor(dm, consent);
 		expect(intercept(inbound({ text: 'accept bypass' }))).toBe(true);
-		expect(consent.handleOwnerReply).toHaveBeenCalledWith('accept bypass', { channelId: 'DOWNER', threadTs: '1' });
+		expect(consent.handleOwnerReply).toHaveBeenCalledWith('accept bypass', { channelId: 'DOWNER', threadTs: '1' }, false);
+		intercept(inbound({ text: 'accept bypass', ts: '9', threadTs: '5' }));
+		expect(consent.handleOwnerReply).toHaveBeenLastCalledWith('accept bypass', { channelId: 'DOWNER', threadTs: '5' }, true);
 		consent.handleOwnerReply.mockReturnValue(false);
 		expect(intercept(inbound({ text: 'hello orc' }))).toBe(false);
 	});
@@ -271,5 +273,16 @@ describe('createConsentReplyInterceptor', () => {
 		const owner = createConsentReplyInterceptor({ ownerDmScope: () => 'orc', replyTargetOf }, consent);
 		expect(owner(inbound({ text: 'accept bypass', hasFiles: true }))).toBe(false);
 		expect(consent.handleOwnerReply).not.toHaveBeenCalled();
+	});
+});
+
+describe('sendToOwnerTracked', () => {
+	it('reports the timestamp of a new DM, and none for a post into an existing thread', async () => {
+		const dm = new SlackReloginDmService(() => fakeSlack());
+		expect(await dm.sendToOwnerTracked('hello')).toEqual({ delivery: { channelId: 'DOWNER' }, messageTs: '123.456' });
+		const target = { channelId: 'DOWNER', threadTs: '5' };
+		expect(await dm.sendToOwnerTracked('hello', target)).toEqual({ delivery: target, messageTs: null });
+		const offline = new SlackReloginDmService(() => fakeSlack({ isConnected: jest.fn(() => false) }));
+		expect(await offline.sendToOwnerTracked('hello')).toEqual({ delivery: false, messageTs: null });
 	});
 });

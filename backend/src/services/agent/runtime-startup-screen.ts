@@ -94,3 +94,55 @@ export function findStartupErrorPattern(
 		return includes(shellText, p);
 	});
 }
+
+/** The consent's heading line. */
+const BYPASS_CONSENT_HEADING = /Bypass Permissions mode/;
+
+/** A menu option on a line of its own, with or without the highlight (`❯`, or `>` on Windows). */
+const menuOptionLine = (label: string): RegExp => new RegExp(`^\\s*(?:[❯>]\\s*)?${label}\\s*$`);
+
+const BYPASS_DECLINE_LINE = menuOptionLine('No, exit');
+const BYPASS_ACCEPT_LINE = menuOptionLine('Yes, I accept');
+
+/** Non-empty lines the consent screen may print below its last option (the key hint). */
+const BYPASS_MENU_MAX_LINES_BELOW = 2;
+
+/** How far above the options the heading may be (non-empty lines). */
+const BYPASS_MENU_MAX_HEADING_DISTANCE = 14;
+
+/**
+ * Whether the screen is showing Claude Code's Bypass Permissions consent
+ * menu right now.
+ *
+ * The words alone prove nothing: a resumed conversation re-renders its
+ * history, and an orchestrator that had discussed the consent with the owner
+ * ("…选「Yes, I accept」…") was taken for the consent screen itself and
+ * refused to start (2026-11-19, 50 minutes down). The menu counts only as
+ * the menu: "No, exit" and "Yes, I accept" each alone on a line, one right
+ * after the other, the heading a few lines above, and nothing below but the
+ * key hint.
+ *
+ * @param output - Terminal text (a captured pane, or output since a point)
+ * @returns True when the consent menu is the last thing on screen
+ *
+ * @example
+ * ```ts
+ * showsBypassConsentMenu('WARNING: … Bypass Permissions mode\n ❯ No, exit\n   Yes, I accept\n Enter to confirm'); // true
+ * showsBypassConsentMenu('⏺ Reply "Yes, I accept" on the Bypass Permissions mode prompt\n❯ '); // false
+ * ```
+ */
+export function showsBypassConsentMenu(output: string): boolean {
+	const lines = output.split('\n').map((line) => line.replace(/\r/g, '')).filter((line) => line.trim().length > 0);
+	let accept = -1;
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (BYPASS_ACCEPT_LINE.test(lines[i])) {
+			accept = i;
+			break;
+		}
+	}
+	if (accept < 1) return false;
+	if (lines.length - 1 - accept > BYPASS_MENU_MAX_LINES_BELOW) return false;
+	if (!BYPASS_DECLINE_LINE.test(lines[accept - 1])) return false;
+	const from = Math.max(0, accept - 1 - BYPASS_MENU_MAX_HEADING_DISTANCE);
+	return lines.slice(from, accept - 1).some((line) => BYPASS_CONSENT_HEADING.test(line));
+}

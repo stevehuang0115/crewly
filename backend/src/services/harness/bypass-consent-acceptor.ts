@@ -19,7 +19,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as pty from 'node-pty';
-import { CLAUDE_STARTUP_CONSTANTS, RUNTIME_CONSENT_CONSTANTS } from '../../constants.js';
+import { RUNTIME_CONSENT_CONSTANTS } from '../../constants.js';
+import { showsBypassConsentMenu } from '../agent/runtime-startup-screen.js';
 import { findExecutable } from '../../utils/find-executable.utils.js';
 import { killWindowsProcessTree } from '../../utils/windows-process.utils.js';
 import { stripNestedClaudeSessionEnv } from '../agent/runtime-session-recovery.js';
@@ -74,10 +75,10 @@ export interface BypassConsentDeps {
  * Whether the consent screen is in a piece of terminal output.
  *
  * @param text - Normalised terminal text
- * @returns True when both consent markers are present
+ * @returns True when the consent menu is the last thing printed
  */
 export function hasBypassConsent(text: string): boolean {
-	return CLAUDE_STARTUP_CONSTANTS.BYPASS_CONSENT_MARKERS.every((marker) => text.includes(marker));
+	return showsBypassConsentMenu(text);
 }
 
 /**
