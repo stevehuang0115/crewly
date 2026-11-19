@@ -1,4 +1,5 @@
 import { promises as fs, existsSync } from 'fs';
+import { toShellPathEntry } from '../../utils/shell-path.utils.js';
 import { readFile } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -1179,7 +1180,8 @@ export abstract class RuntimeAgentService {
  */
 export function runtimePathExport(nodeBinDir: string = path.dirname(process.execPath)): string {
 	const dirs = [nodeBinDir, getUserNpmBinDir()].filter((d, i, a) => d && a.indexOf(d) === i);
-	const quoted = dirs.map((d) => `'${d.replace(/'/g, `'\\''`)}'`).join(':');
+	// On Windows the session shell is Git Bash: PATH entries are `/c/...`.
+	const quoted = dirs.map((d) => `'${toShellPathEntry(d).replace(/'/g, `'\\''`)}'`).join(':');
 	return `export PATH=${quoted}:"$PATH"`;
 }
 

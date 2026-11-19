@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { toShellPath, windowsPathsToShell } from '../../utils/shell-path.utils.js';
 import { resolveAgentShell } from '../../utils/agent-shell.utils.js';
 import { getHarnessCredentialsStore, harnessEnvForAgents } from '../harness/harness-credentials.store.js';
 import * as path from 'path';
@@ -1966,7 +1967,7 @@ export class AgentRegistrationService {
 			// the RAW template; resolve into a per-project copy so skill-script and
 			// project paths in the provisioned config file point at real locations
 			// (mirrors the placeholder substitution done for the registration prompt).
-			const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
+			const agentSkillsPath = toShellPath(path.join(this.projectRoot, 'config', 'skills', 'agent'));
 			const orchestratorSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'orchestrator');
 			const marketplaceSkillsPath = path.join(os.homedir(), '.crewly', 'marketplace', 'skills');
 			const resolved = content
@@ -2712,7 +2713,7 @@ export class AgentRegistrationService {
 			prompt = prompt.replace(/\{\{PROJECT_PATH\}\}/g, projectPath);
 
 			// Replace agent skills path placeholder
-			const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
+			const agentSkillsPath = toShellPath(path.join(this.projectRoot, 'config', 'skills', 'agent'));
 			prompt = prompt.replace(/\{\{AGENT_SKILLS_PATH\}\}/g, agentSkillsPath);
 
 			// Replace orchestrator skills path placeholder — ensures skill scripts
@@ -2929,7 +2930,7 @@ export class AgentRegistrationService {
 			if (process.env.CREWLY_USE_MODULAR_PROMPTS !== 'false') {
 				this.logger.info('Using modular prompt assembly (Phase 5)', { sessionName, role });
 
-				const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
+				const agentSkillsPath = toShellPath(path.join(this.projectRoot, 'config', 'skills', 'agent'));
 				const tlSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'team-leader');
 
 				// Pre-compute the subordinate roster — used by both the helper
@@ -3120,7 +3121,7 @@ Loop until done, blocked, or explicitly reassigned:
 
 		try {
 			await mkdir(promptsDir, { recursive: true });
-			await writeFile(promptFilePath, fileContent, 'utf8');
+			await writeFile(promptFilePath, windowsPathsToShell(fileContent), 'utf8');
 			this.logger.debug('Wrote init prompt to file', {
 				sessionName,
 				promptFilePath,

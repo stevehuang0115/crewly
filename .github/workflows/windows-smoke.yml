@@ -73,3 +73,18 @@ jobs:
           echo "$OUT" | tail -8
           echo "$OUT" | grep -q '^PTY_OK_42' || { echo "the session did not run the command"; exit 1; }
           echo "$OUT" | grep -q '^true' || { echo "curl + jq inside the session failed"; exit 1; }
+      - name: Launch lines Crewly typed into the orchestrator session
+        shell: bash
+        run: |
+          T="$(cat "$USERPROFILE/.crewly/api-token")"
+          OUT="$(curl -s -m 15 -H "Authorization: Bearer $T" "http://localhost:8787/api/sessions/crewly-orc/output?lines=200" | jq -r .output | grep -v '^\s*$' | tr -d '\n')"
+          echo "$OUT" | fold -w 200 | tail -12
+          echo "$OUT" | grep -q "export PATH='/[a-z]/" || { echo "PATH entries are not in /c/... form"; exit 1; }
+          echo "$OUT" | grep -Eq -- '--settings "[A-Za-z]:/' || { echo "--settings path lost its separators"; exit 1; }
+      - name: No Windows-style skill path in generated agent files
+        shell: bash
+        run: |
+          cd "$USERPROFILE/.crewly"
+          FOUND="$(grep -rIhoE '.{0,60}[A-Za-z]:\\\\?[^" ]*execute\.sh' . 2>/dev/null | head -8 | cut -c1-220 || true)"
+          if [ -n "$FOUND" ]; then echo "$FOUND"; echo "a prompt or catalog still carries a backslash path"; exit 1; fi
+          echo "none"

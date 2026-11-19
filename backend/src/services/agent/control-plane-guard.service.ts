@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import { toShellPath } from '../../utils/shell-path.utils.js';
 import * as path from 'path';
 import { prepareLiveCheckoutGuard, type LiveCheckoutGuard } from './live-checkout-guard.service.js';
 import { prepareDestructiveGitGuard, type DestructiveGitGuard } from './destructive-git-guard.service.js';
@@ -373,5 +374,6 @@ export function applyControlPlaneSettingsFlag(cmd: string, settingsPath: string)
 	const flag = CONTROL_PLANE_GUARD_CONSTANTS.SETTINGS_FLAG;
 	if (!cmd.includes('--dangerously-skip-permissions')) return cmd;
 	if (new RegExp(`(^|\\s)${flag}(\\s|=|$)`).test(cmd)) return cmd;
-	return `${cmd} ${flag} "${settingsPath.replace(/["`$\\]/g, '')}"`;
+	// Forward slashes first: on Windows the path's own backslashes would be stripped with the rest.
+	return `${cmd} ${flag} "${toShellPath(settingsPath).replace(/["`$\\]/g, '')}"`;
 }

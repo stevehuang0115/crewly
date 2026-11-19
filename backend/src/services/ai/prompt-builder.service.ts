@@ -1,4 +1,5 @@
 import { readFile, access } from 'fs/promises';
+import { toShellPath } from '../../utils/shell-path.utils.js';
 import * as path from 'path';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { TeamMemberSessionConfig, SubordinateInfo, SOPRole, TeamMember, Team } from '../../types/index.js';
@@ -730,7 +731,7 @@ Recursion clause: every delegator hop carries this rule — ORC→TL, TL→Worke
 		config: TeamMemberSessionConfig,
 		_options: PromptOptions = {}
 	): Promise<string> {
-		const agentSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
+		const agentSkillsPath = toShellPath(path.join(this.projectRoot, 'config', 'skills', 'agent'));
 		const tlSkillsPath = path.join(this.projectRoot, 'config', 'skills', 'team-leader');
 
 		// WIRE-2 fallback (post-WIRE-1, post-WIRE-2): callers that provide a
