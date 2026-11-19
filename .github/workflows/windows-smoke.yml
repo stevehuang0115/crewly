@@ -105,10 +105,12 @@ jobs:
           $out.Substring(0, [Math]::Min(2500, $out.Length))
           if ($out -match 'jq not found') { "init did not find jq"; exit 1 }
           if ($out -notmatch 'jq detected \(\d') { "init did not report jq with its version"; exit 1 }
+      # The lsof/ps tests of backend-status and process-cleanup describe the POSIX
+      # path and are not run here; their Windows parsers are covered on Linux CI.
       - name: Unit tests of the Windows-specific code
         shell: pwsh
         run: |
-          npx jest backend/src/utils/find-executable backend/src/utils/windows-process backend/src/utils/agent-shell backend/src/utils/shell-path backend/src/utils/main-module cli/src/utils/tail-file cli/src/utils/backend-status cli/src/utils/process-cleanup --maxWorkers=2 2>&1 | Select-String -Pattern 'PASS|FAIL|Tests:|●' | Select-Object -First 60
+          npx jest backend/src/utils/find-executable backend/src/utils/windows-process backend/src/utils/agent-shell backend/src/utils/shell-path backend/src/utils/main-module cli/src/utils/tail-file --maxWorkers=2 2>&1 | Select-String -Pattern 'PASS|FAIL|Tests:|●' | Select-Object -First 60
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: crewly status and crewly stop
         shell: pwsh
