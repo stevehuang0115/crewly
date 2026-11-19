@@ -88,3 +88,13 @@ jobs:
           FOUND="$(grep -rIhoE '.{0,60}[A-Za-z]:\\\\?[^" ]*execute\.sh' . 2>/dev/null | head -8 | cut -c1-220 || true)"
           if [ -n "$FOUND" ]; then echo "$FOUND"; echo "a prompt or catalog still carries a backslash path"; exit 1; fi
           echo "none"
+      - name: crewly status and crewly stop
+        shell: pwsh
+        run: |
+          node dist\cli\cli\src\index.js status 2>&1 | Select-Object -First 30
+          node dist\cli\cli\src\index.js stop 2>&1 | Select-Object -First 30
+          Start-Sleep -Seconds 5
+          $left = netstat -ano -p tcp | Select-String -Pattern ':8787\s.*LISTENING'
+          if ($left) { "still listening on 8787:"; $left; exit 1 }
+          "port 8787 is free"
+

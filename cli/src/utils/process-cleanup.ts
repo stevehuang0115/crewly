@@ -11,7 +11,7 @@ import { execSync } from 'child_process';
  * the backend entrypoint: the compiled `dist/backend/backend/src/index.js`
  * (what `crewly start` spawns) or `backend/src/index.ts` (dev via tsx).
  */
-export const CREWLY_BACKEND_COMMAND_PATTERN = /backend\/src\/index\.(js|ts)\b/;
+export const CREWLY_BACKEND_COMMAND_PATTERN = /backend[\\/]src[\\/]index\.(js|ts)\b/;
 
 /**
  * Command that lists the pids LISTENING on a TCP port.
