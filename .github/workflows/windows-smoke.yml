@@ -1,0 +1,91 @@
+# Exploratory: does Crewly install and start natively on Windows (no WSL)?
+# Every step keeps going after a failure so one run lists all blockers.
+name: Windows native smoke
+
+on:
+  push:
+    branches: [windows-native-smoke]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  published-package:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tools on PATH
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          foreach ($t in 'bash','curl','jq','git','python','claude') { $c = Get-Command $t -ErrorAction SilentlyContinue; "{0,-8} {1}" -f $t, ($(if ($c) { $c.Source } else { 'MISSING' })) }
+          node -p "process.platform + ' ' + process.arch + ' node ' + process.version"
+      - name: npm install -g crewly
+        continue-on-error: true
+        shell: pwsh
+        run: npm install -g crewly@latest 2>&1 | Select-Object -Last 60
+      - name: crewly --version / doctor
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          crewly --version
+          crewly doctor 2>&1 | Select-Object -Last 60
+      - name: crewly start, wait for health
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $log = "$env:RUNNER_TEMP\crewly-start.log"
+          $p = Start-Process -FilePath "cmd.exe" -ArgumentList "/c crewly start --no-browser > `"$log`" 2>&1" -PassThru -WindowStyle Hidden
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Seconds 5
+            try { $r = Invoke-WebRequest -Uri http://localhost:8787/api/health -UseBasicParsing -TimeoutSec 4; "health: $($r.StatusCode) after $(($i+1)*5)s"; $ok = $true; break } catch { }
+          }
+          if (-not $ok) { "health: no answer in 300 s" }
+          "--- start log (last 120 lines) ---"
+          Get-Content $log -Tail 120 -ErrorAction SilentlyContinue
+          "--- service.log (last 80 lines) ---"
+          Get-Content "$env:USERPROFILE\.crewly\logs\service.log" -Tail 80 -ErrorAction SilentlyContinue
+          if (-not $ok) { exit 1 }
+      - name: Run one agent skill under Git Bash
+        continue-on-error: true
+        shell: bash
+        run: |
+          ROOT="$(npm root -g)/crewly"
+          ls "$ROOT/config/skills/agent/core" | head -5
+          CREWLY_SESSION_NAME=smoke-test bash "$ROOT/config/skills/agent/core/poll-tasks/execute.sh" 2>&1 | tail -20
+
+  from-source:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm ci
+        continue-on-error: true
+        shell: pwsh
+        run: npm ci 2>&1 | Select-Object -Last 60
+      - name: frontend npm ci
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          cd frontend
+          npm ci 2>&1 | Select-Object -Last 20
+      - name: build
+        continue-on-error: true
+        shell: pwsh
+        run: npm run build 2>&1 | Select-Object -Last 60
+      - name: typecheck
+        continue-on-error: true
+        shell: pwsh
+        run: npm run typecheck 2>&1 | Select-Object -Last 30
+      - name: unit tests (session + system + cli only)
+        continue-on-error: true
+        shell: pwsh
+        run: npx jest backend/src/services/session backend/src/services/system cli/src --maxWorkers=2 2>&1 | Select-Object -Last 150
