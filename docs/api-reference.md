@@ -924,6 +924,19 @@ POST /api/terminal/:sessionName/deliver
 POST /api/terminal/:sessionName/input
 ```
 
+**Request Body** (send one of the two):
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `input` | string | One of | Text to type; a carriage return is added. Text containing Esc or other control sequences is refused (400). |
+| `key` | string | One of | One named key, written as is: `escape`, `enter`, `tab`, `up`, `down`, `right`, `left` (case-insensitive). An unknown name is refused (400) with the list of valid names. |
+
+```bash
+# Press Esc in a session
+curl -X POST localhost:8787/api/terminal/my-session/input \
+  -H 'Content-Type: application/json' -d '{"key":"escape"}'
+```
+
 ### Send Terminal Key
 
 ```

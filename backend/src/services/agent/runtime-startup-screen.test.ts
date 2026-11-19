@@ -126,3 +126,49 @@ describe('showsBypassConsentMenu', () => {
 		expect(showsBypassConsentMenu('')).toBe(false);
 	});
 });
+
+describe('readFullscreenRendererMenu', () => {
+	const { readFullscreenRendererMenu } = jest.requireActual('./runtime-startup-screen.js') as typeof import('./runtime-startup-screen.js');
+	const TITLE = '  Try the new fullscreen renderer?';
+	const FOOTER = '  Enter to confirm · Esc to cancel';
+
+	it('reads the menu wherever "Not now" is listed, with either highlight glyph', () => {
+		expect(readFullscreenRendererMenu(`${TITLE}\n\n  ❯ Yes, try it\n    Not now\n\n${FOOTER}`)).toBe('other_selected');
+		expect(readFullscreenRendererMenu(`${TITLE}\n\n    Yes, try it\n  ❯ Not now\n\n${FOOTER}`)).toBe('decline_selected');
+		expect(readFullscreenRendererMenu(`${TITLE}\r\n> Not now\r\n  Yes, try it\r\n  Never ask again\r\n${FOOTER}`)).toBe('decline_selected');
+		expect(readFullscreenRendererMenu(`${TITLE}\n  Smoother scrolling and less flicker.\n  > Yes, try it\n    Not now\n    Never ask again\n${FOOTER}`)).toBe('other_selected');
+	});
+
+	it('reads a boxed menu', () => {
+		const boxed = ['╭──────────────────────────────────╮', '│ Try the new fullscreen renderer? │', '│                                  │', '│ ❯ Yes, try it                    │', '│   Not now                        │', '╰──────────────────────────────────╯', FOOTER].join('\n');
+		expect(readFullscreenRendererMenu(boxed)).toBe('other_selected');
+	});
+
+	it('never reports "Not now" as highlighted without a known marker on its line', () => {
+		expect(readFullscreenRendererMenu(`${TITLE}\n  ● Yes, try it\n  ○ Not now\n${FOOTER}`)).toBe('absent');
+		expect(readFullscreenRendererMenu(`${TITLE}\n    Yes, try it\n    Not now\n${FOOTER}`)).toBe('other_selected');
+	});
+
+	it('is not fooled by a resumed conversation that mentions the menu', () => {
+		const transcript = [
+			'⏺ Claude Code asked "Try the new fullscreen renderer?" and I chose Not now.',
+			'⏺ If it asks again: Try the new fullscreen renderer? → pick "Not now", then Enter to confirm.',
+			'  Not now',
+			'────────────────────────────────────────',
+			'❯ ',
+			'────────────────────────────────────────',
+			'  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+		].join('\n');
+		expect(readFullscreenRendererMenu(transcript)).toBe('absent');
+	});
+
+	it('does not count half a menu, or one that is no longer the end of the screen', () => {
+		expect(readFullscreenRendererMenu(`${TITLE}\n  ❯ Yes, try it\n    Not now\n`)).toBe('absent');
+		expect(readFullscreenRendererMenu(`${TITLE}\n  ❯ Yes, try it\n${FOOTER}`)).toBe('absent');
+		expect(readFullscreenRendererMenu(`  ❯ Yes, try it\n    Not now\n${FOOTER}`)).toBe('absent');
+		expect(readFullscreenRendererMenu(`    Not now\n${TITLE}\n  ❯ Yes, try it\n${FOOTER}`)).toBe('absent');
+		expect(readFullscreenRendererMenu(`${TITLE}\n  ❯ Yes, try it\n    Not now\n${FOOTER}\n\n Claude Code v2\n ❯ \n ⏵⏵ bypass permissions on`)).toBe('absent');
+		expect(readFullscreenRendererMenu(`${TITLE}\n  ❯ Yes, try it\n    Not now, maybe later\n${FOOTER}`)).toBe('absent');
+		expect(readFullscreenRendererMenu('')).toBe('absent');
+	});
+});

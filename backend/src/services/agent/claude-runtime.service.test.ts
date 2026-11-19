@@ -463,6 +463,70 @@ describe('ClaudeRuntimeService', () => {
 	// Fresh-install fail-fast (Mia's pre-validation, Claude Code 2.1.197)
 	// ---------------------------------------------------------------------
 
+	describe('"Try the new fullscreen renderer?" menu is answered with "Not now"', () => {
+		const TITLE = '  Try the new fullscreen renderer?';
+		const FOOTER = '  Enter to confirm · Esc to cancel';
+		const READY = 'Welcome to Claude Code!';
+		/** The menu with the highlight on the option at `selected`. */
+		const menu = (options: string[], selected: number): string =>
+			[TITLE, '', ...options.map((o, i) => `  ${i === selected ? '❯' : ' '} ${o}`), '', FOOTER].join('\n');
+
+		/**
+		 * A fake screen: Down moves the highlight, Enter and Esc close the menu.
+		 *
+		 * @param options - Option labels
+		 * @param moves - False for a menu whose highlight never moves
+		 * @returns The keys pressed, in order, with the option Enter was pressed on
+		 */
+		const fakeMenu = (options: string[], moves = true): string[] => {
+			let selected = 0;
+			let open = true;
+			const keys: string[] = [];
+			mockSessionHelper.capturePane.mockImplementation(() => (open ? menu(options, selected) : READY));
+			mockSessionHelper.sendKey.mockImplementation(async (_s: string, key: string) => {
+				keys.push(key);
+				if (key === 'Down' && moves) selected = Math.min(selected + 1, options.length - 1);
+			});
+			mockSessionHelper.sendEnter.mockImplementation(async () => {
+				keys.push(`Enter@${options[selected]}`);
+				open = false;
+			});
+			mockSessionHelper.sendEscape.mockImplementation(async () => {
+				keys.push('Escape');
+				open = false;
+			});
+			return keys;
+		};
+
+		it('presses Enter at once when "Not now" is already highlighted', async () => {
+			const keys = fakeMenu(['Not now', 'Yes, try it']);
+			await expect(service.waitForRuntimeReady('s1', 20000, 10)).resolves.toBe(true);
+			expect(keys).toEqual(['Enter@Not now']);
+		});
+
+		it('moves down to "Not now" wherever it is, then presses Enter there', async () => {
+			const keys = fakeMenu(['Yes, try it', 'Remind me later', 'Not now', 'Never ask again']);
+			await expect(service.waitForRuntimeReady('s1', 20000, 10)).resolves.toBe(true);
+			expect(keys).toEqual(['Down', 'Down', 'Enter@Not now']);
+		});
+
+		it('cancels with Esc, and never presses Enter, when the highlight cannot reach "Not now"', async () => {
+			const keys = fakeMenu(['Yes, try it', 'Not now'], false);
+			await expect(service.waitForRuntimeReady('s1', 20000, 10)).resolves.toBe(true);
+			const downs = CLAUDE_STARTUP_CONSTANTS.FULLSCREEN_RENDERER_MENU.MAX_DOWN_PRESSES;
+			expect(keys).toEqual([...Array(downs).fill('Down'), 'Escape']);
+		});
+
+		it('presses nothing for a conversation that only mentions the menu', async () => {
+			const keys = fakeMenu([]);
+			mockSessionHelper.capturePane.mockReturnValue(
+				`⏺ It asked "Try the new fullscreen renderer?" and I chose Not now, then Enter to confirm.\n${READY}`,
+			);
+			await expect(service.waitForRuntimeReady('s1', 20000, 10)).resolves.toBe(true);
+			expect(keys).toEqual([]);
+		});
+	});
+
 	describe('fresh install: fail fast instead of a 5-minute hang', () => {
 		const SANDBOX = CLAUDE_STARTUP_CONSTANTS.SANDBOX_ENV;
 		let savedSandbox: string | undefined;

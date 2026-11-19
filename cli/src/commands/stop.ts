@@ -10,6 +10,8 @@
  *    (`--force`: SIGKILLs it and its child processes at once);
  * 3. terminates agent processes that outlived the backend;
  * 4. kills legacy `crewly_*` tmux sessions from older versions, if any;
+ *    on Windows, ends agent process trees an earlier backend left behind
+ *    (found by their Crewly launch arguments, see `windows-agent-sweep.ts`);
  * 5. prints what it stopped — or that there was nothing to stop. It never
  *    reports success after finding nothing (#776).
  *
@@ -33,6 +35,7 @@ import {
 	resolveShutdownBudgetMs,
 	waitForPidExit,
 } from '../utils/safe-shutdown.js';
+import { sweepOrphanedWindowsAgents } from '../utils/windows-agent-sweep.js';
 import {
 	collectDescendants,
 	describeAgent,
@@ -115,7 +118,10 @@ export async function stopCommand(options: StopOptions = {}): Promise<void> {
 		// 3. Legacy tmux sessions from older versions (silent when none)
 		await killLegacyTmuxSessions(report);
 
-		// 4. Clean up orphaned test processes (vitest workers, etc.)
+		// 4. Windows: agent trees an earlier backend left behind (no-op elsewhere)
+		await sweepOrphanedAgentTrees(protectedPids, report);
+
+		// 5. Clean up orphaned test processes (vitest workers, etc.)
 		killOrphanedTestProcesses(process.pid, (msg) => console.log(chalk.gray(msg)));
 
 		printReport(report);
@@ -266,6 +272,31 @@ async function killLegacyTmuxSessions(report: StopReport): Promise<void> {
 		} catch {
 			// Ended between list and kill: nothing to report.
 		}
+	}
+}
+
+/**
+ * Windows only: end Crewly agent process trees whose backend is gone. A dead
+ * backend's agent shells keep running there with no parent, so neither the
+ * port nor the backend's process tree leads to them.
+ *
+ * @param protectedPids - This process and its ancestors, never ended
+ * @param report - Collects the outcome
+ */
+async function sweepOrphanedAgentTrees(protectedPids: Set<number>, report: StopReport): Promise<void> {
+	const { ended, failed } = await sweepOrphanedWindowsAgents(protectedPids, {
+		run,
+		kill: (pid) => signal(pid, 'KILL'),
+		isAlive: async (pid) => !(await waitForPidExit(pid, STRAGGLER_EXIT_WAIT_MS, { isAlive })),
+	});
+	if (ended.length > 0) {
+		const processes = ended.reduce((sum, tree) => sum + tree.processCount, 0);
+		report.stopped.push(
+			`${ended.length} orphaned agent process tree(s) left by an earlier backend (${processes} process(es)): PID ${ended.map((tree) => tree.root.pid).join(', ')}`,
+		);
+	}
+	for (const tree of failed) {
+		report.stillRunning.push(`orphaned agent process tree under PID ${tree.root.pid} (${excerpt(tree.root.command)}) could not be ended`);
 	}
 }
 

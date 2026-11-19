@@ -364,6 +364,56 @@ describe('stopCommand', () => {
 		});
 	});
 
+	describe('orphaned agent trees (Windows)', () => {
+		const AGENT =
+			'claude.exe --dangerously-skip-permissions --agent "crewly-orc" --settings "C:/Users/me/.crewly/runtime/control-plane/crewly-orc.settings.json"';
+		const TABLE = [
+			'10 4000 100 "C:\\Program Files\\Git\\bin\\bash.exe" --login -i',
+			`12 10 102 ${AGENT}`,
+			'20 4001 110 "C:\\Program Files\\Git\\bin\\bash.exe" --login -i',
+			`22 20 112 ${AGENT}`,
+			'30 4002 100 claude.exe remote-control',
+			'31 4003 100 claude.exe',
+		].join('\r\n');
+		const realPlatform = process.platform;
+		let killSpy: jest.SpyInstance;
+
+		afterEach(() => {
+			Object.defineProperty(process, 'platform', { value: realPlatform });
+			killSpy?.mockRestore();
+		});
+
+		it('never reads the Windows process table on this platform', async () => {
+			mockBackend({});
+			mockExec();
+			await stopCommand({});
+			expect(commands().some((c) => c.includes('powershell'))).toBe(false);
+		});
+
+		it("ends the trees an earlier backend left, says how many, and leaves the user's own Claude Code alone", async () => {
+			Object.defineProperty(process, 'platform', { value: 'win32' });
+			const dead = new Set<number>();
+			killSpy = jest.spyOn(process, 'kill').mockImplementation(((pid: number, sig?: string | number) => {
+				if (sig === 0) {
+					if (dead.has(pid)) throw new Error('ESRCH');
+					return true;
+				}
+				dead.add(pid);
+				return true;
+			}) as typeof process.kill);
+			mockBackend({});
+			mockExecAsync.mockImplementation((cmd: string) => (cmd.includes('CreationDate') ? TABLE : ''));
+
+			await stopCommand({});
+
+			expect([...dead].sort((a, b) => a - b)).toEqual([10, 12, 20, 22]);
+			const output = printed(logSpy);
+			expect(output).toContain('✓ 2 orphaned agent process tree(s) left by an earlier backend (4 process(es)): PID 10, 20');
+			expect(output).toContain('Crewly stopped');
+			expect(process.exitCode).toBe(0);
+		});
+	});
+
 	describe('error handling', () => {
 		it('exits 1 and suggests --force on an unexpected error', async () => {
 			mockBackend(HEALTHY);
