@@ -56,8 +56,22 @@ jobs:
             printf '%s -> ' "$p"; curl -s -m 10 -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $T" "http://localhost:8787$p"
           done
           ls "$USERPROFILE/.crewly" | head -30
+      - name: Terminal session under Git Bash (ConPTY)
+        continue-on-error: true
+        shell: bash
+        run: |
+          T="$(cat "$USERPROFILE/.crewly/api-token" 2>/dev/null || true)"
+          A="Authorization: Bearer $T"
+          B=http://localhost:8787/api/sessions
+          curl -s -m 15 -H "$A" -H 'Content-Type: application/json' -X POST "$B" \
+            -d '{"name":"win-smoke","command":"C:\\Program Files\\Git\\bin\\bash.exe","cwd":"C:\\Users\\runneradmin"}' | cut -c1-200; echo
+          sleep 4
+          curl -s -m 15 -H "$A" -H 'Content-Type: application/json' -X POST "$B/win-smoke/write" \
+            -d '{"data":"echo PTY_OK_$((6*7)); uname -s; pwd; curl -s localhost:8787/api/health | jq -r .data.live; export CREWLY_X=1 && echo EXPORT_$CREWLY_X\r"}' | cut -c1-200; echo
+          sleep 6
+          curl -s -m 15 -H "$A" "$B/win-smoke/output?lines=40" | jq -r '.output // .data.output // .' | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' | tail -25
       - name: unit tests (session, system, cli, utils)
         continue-on-error: true
         shell: pwsh
         run: |
-          npx jest backend/src/services/session backend/src/services/system backend/src/utils cli/src --maxWorkers=2 2>&1 | Select-String -Pattern '^(FAIL|Tests:|Test Suites:)' | Select-Object -First 120
+          npx jest backend/src/services/session backend/src/services/system backend/src/utils cli/src --maxWorkers=2 2>&1 | Select-String -Pattern 'FAIL |Tests:|Test Suites:|^\s+● |ENOENT|EPERM|Expected|Received' | Select-Object -First 260 | ForEach-Object { $_.Line.Substring(0, [Math]::Min(220, $_.Line.Length)) }
