@@ -11,81 +11,59 @@ permissions:
   contents: read
 
 jobs:
-  published-package:
-    runs-on: windows-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Tools on PATH
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          foreach ($t in 'bash','curl','jq','git','python','claude') { $c = Get-Command $t -ErrorAction SilentlyContinue; "{0,-8} {1}" -f $t, ($(if ($c) { $c.Source } else { 'MISSING' })) }
-          node -p "process.platform + ' ' + process.arch + ' node ' + process.version"
-      - name: npm install -g crewly
-        continue-on-error: true
-        shell: pwsh
-        run: npm install -g crewly@latest 2>&1 | Select-Object -Last 60
-      - name: crewly --version / doctor
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          crewly --version
-          crewly doctor 2>&1 | Select-Object -Last 60
-      - name: crewly start, wait for health
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $log = "$env:RUNNER_TEMP\crewly-start.log"
-          $p = Start-Process -FilePath "cmd.exe" -ArgumentList "/c crewly start --no-browser > `"$log`" 2>&1" -PassThru -WindowStyle Hidden
-          $ok = $false
-          for ($i = 0; $i -lt 60; $i++) {
-            Start-Sleep -Seconds 5
-            try { $r = Invoke-WebRequest -Uri http://localhost:8787/api/health -UseBasicParsing -TimeoutSec 4; "health: $($r.StatusCode) after $(($i+1)*5)s"; $ok = $true; break } catch { }
-          }
-          if (-not $ok) { "health: no answer in 300 s" }
-          "--- start log (last 120 lines) ---"
-          Get-Content $log -Tail 120 -ErrorAction SilentlyContinue
-          "--- service.log (last 80 lines) ---"
-          Get-Content "$env:USERPROFILE\.crewly\logs\service.log" -Tail 80 -ErrorAction SilentlyContinue
-          if (-not $ok) { exit 1 }
-      - name: Run one agent skill under Git Bash
-        continue-on-error: true
-        shell: bash
-        run: |
-          ROOT="$(npm root -g)/crewly"
-          ls "$ROOT/config/skills/agent/core" | head -5
-          CREWLY_SESSION_NAME=smoke-test bash "$ROOT/config/skills/agent/core/poll-tasks/execute.sh" 2>&1 | tail -20
-
   from-source:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: npm ci
-        continue-on-error: true
         shell: pwsh
-        run: npm ci 2>&1 | Select-Object -Last 60
+        run: |
+          npm ci 2>&1 | Select-Object -Last 25
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: frontend npm ci
-        continue-on-error: true
         shell: pwsh
         run: |
           cd frontend
-          npm ci 2>&1 | Select-Object -Last 20
+          npm ci 2>&1 | Select-Object -Last 10
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: build
+        shell: pwsh
+        run: |
+          npm run build 2>&1 | Select-Object -Last 40
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: crewly start, wait for health
         continue-on-error: true
         shell: pwsh
-        run: npm run build 2>&1 | Select-Object -Last 60
-      - name: typecheck
+        run: |
+          $log = "$env:RUNNER_TEMP\crewly-start.log"
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c node dist\cli\cli\src\index.js start --no-browser > `"$log`" 2>&1" -WindowStyle Hidden
+          $ok = $false
+          for ($i = 0; $i -lt 48; $i++) {
+            Start-Sleep -Seconds 5
+            try { $r = Invoke-WebRequest -Uri http://localhost:8787/api/health -UseBasicParsing -TimeoutSec 4; "health: $($r.StatusCode) after $(($i+1)*5)s"; $r.Content.Substring(0, [Math]::Min(300, $r.Content.Length)); $ok = $true; break } catch { }
+          }
+          if (-not $ok) { "health: no answer in 240 s" }
+          Start-Sleep -Seconds 45
+          "--- start log: errors and warnings ---"
+          Get-Content $log -ErrorAction SilentlyContinue | Select-String -Pattern 'ERROR|WARN|not recognized|ENOENT|EPERM|EINVAL|Failed|Unhandled|unknown option' | Select-Object -First 80 | ForEach-Object { $_.Line.Substring(0, [Math]::Min(300, $_.Line.Length)) }
+          "--- start log: last 40 lines ---"
+          Get-Content $log -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) }
+          if (-not $ok) { exit 1 }
+      - name: API after start
+        continue-on-error: true
+        shell: bash
+        run: |
+          T="$(cat "$USERPROFILE/.crewly/api-token" 2>/dev/null || true)"
+          for p in /api/teams /api/projects /api/system/status /api/cloud/status; do
+            printf '%s -> ' "$p"; curl -s -m 10 -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $T" "http://localhost:8787$p"
+          done
+          ls "$USERPROFILE/.crewly" | head -30
+      - name: unit tests (session, system, cli, utils)
         continue-on-error: true
         shell: pwsh
-        run: npm run typecheck 2>&1 | Select-Object -Last 30
-      - name: unit tests (session + system + cli only)
-        continue-on-error: true
-        shell: pwsh
-        run: npx jest backend/src/services/session backend/src/services/system cli/src --maxWorkers=2 2>&1 | Select-Object -Last 150
+        run: |
+          npx jest backend/src/services/session backend/src/services/system backend/src/utils cli/src --maxWorkers=2 2>&1 | Select-String -Pattern '^(FAIL|Tests:|Test Suites:)' | Select-Object -First 120

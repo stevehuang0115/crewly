@@ -289,6 +289,8 @@ export function parsePidLines(stdout: string, excludePid: number = process.pid):
  * @returns Listener pids (empty when none, or when lsof is unavailable)
  */
 export async function findListenerPids(port: number | string, run: RunCommand): Promise<number[]> {
+	// lsof does not exist on Windows.
+	if (process.platform === 'win32') return [];
 	try {
 		return parsePidLines(await run(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null || true`));
 	} catch {

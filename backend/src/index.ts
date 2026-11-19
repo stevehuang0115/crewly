@@ -235,6 +235,7 @@ import { isInterim } from './services/slack/slack-typing-placeholder.service.js'
 import { detectStatedIntent } from './services/agent/stated-intent.js';
 import { createAgentAskLedger, type AskTranscriptLocator } from './services/messaging/agent-ask-ledger.wiring.js';
 import { BackgroundWorkWatchdog } from './services/monitoring/background-work-watchdog.js';
+import { isBackendEntryScript } from './utils/main-module.utils.js';
 import { createFollowThrough, settleFollowThrough, idlePendingWorkCheck, releaseWorkForStop, restoreStoppedOwingWork, owedWorkReminder, OWED_REMINDER_MARKER } from './services/agent/follow-through.wiring.js';
 import { isSessionPaused } from './services/team/team-pause.registry.js';
 import { findPackageRoot } from './utils/package-root.js';
@@ -9030,9 +9031,7 @@ void (async () => {
 }
 
 // Start server if this file is run directly
-const isMainModule = process.argv[1] && (
-	process.argv[1].endsWith('/index.ts') || process.argv[1].endsWith('/index.js')
-);
+const isMainModule = isBackendEntryScript(process.argv[1]);
 if (isMainModule) {
 	const server = new CrewlyServer();
 	const logger = LoggerService.getInstance().createComponentLogger('CrewlyServer');
