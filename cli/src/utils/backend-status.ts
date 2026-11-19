@@ -289,13 +289,51 @@ export function parsePidLines(stdout: string, excludePid: number = process.pid):
  * @returns Listener pids (empty when none, or when lsof is unavailable)
  */
 export async function findListenerPids(port: number | string, run: RunCommand): Promise<number[]> {
-	// lsof does not exist on Windows.
-	if (process.platform === 'win32') return [];
 	try {
+		// Windows has no lsof: netstat lists the listeners with their pid.
+		if (process.platform === 'win32') return parseNetstatListeners(await run(WINDOWS_LISTENERS_COMMAND), port);
 		return parsePidLines(await run(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null || true`));
 	} catch {
 		return [];
 	}
+}
+
+/** Lists every TCP socket with its owning pid on Windows. */
+export const WINDOWS_LISTENERS_COMMAND = 'netstat -ano -p tcp';
+
+/**
+ * Lists `pid ppid command line` per process on Windows, in the shape of
+ * `ps -A -o pid=,ppid=,command=`. `-EncodedCommand` is avoided so the line
+ * stays readable in a process listing.
+ */
+export const WINDOWS_PROCESS_TABLE_COMMAND =
+	'powershell.exe -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | ForEach-Object { \'{0} {1} {2}\' -f $_.ProcessId, $_.ParentProcessId, $_.CommandLine }"';
+
+/**
+ * Pids LISTENING on a TCP port, from `netstat -ano -p tcp` output:
+ * `  TCP    0.0.0.0:8787    0.0.0.0:0    LISTENING    1234`.
+ *
+ * @param stdout - netstat output
+ * @param port - TCP port
+ * @param excludePid - A pid to leave out (this CLI process)
+ * @returns Unique positive pids
+ *
+ * @example
+ * ```typescript
+ * parseNetstatListeners('  TCP    0.0.0.0:8787   0.0.0.0:0   LISTENING   4242', 8787); // [4242]
+ * ```
+ */
+export function parseNetstatListeners(stdout: string, port: number | string, excludePid: number = process.pid): number[] {
+	const pids: number[] = [];
+	for (const line of stdout.split('\n')) {
+		const cols = line.trim().split(/\s+/);
+		// Proto, local address, foreign address, state, pid
+		if (cols.length < 5 || cols[0] !== 'TCP' || cols[3] !== 'LISTENING') continue;
+		if (!cols[1].endsWith(`:${port}`)) continue;
+		const pid = parseInt(cols[4], 10);
+		if (Number.isInteger(pid) && pid > 0 && pid !== excludePid && !pids.includes(pid)) pids.push(pid);
+	}
+	return pids;
 }
 
 /**
@@ -322,7 +360,7 @@ export function parseProcessTable(stdout: string): ProcessRow[] {
  */
 export async function readProcessTable(run: RunCommand): Promise<ProcessRow[]> {
 	try {
-		return parseProcessTable(await run('ps -A -o pid=,ppid=,command='));
+		return parseProcessTable(await run(process.platform === 'win32' ? WINDOWS_PROCESS_TABLE_COMMAND : 'ps -A -o pid=,ppid=,command='));
 	} catch {
 		return [];
 	}

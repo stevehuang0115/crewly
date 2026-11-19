@@ -186,3 +186,12 @@ describe('selectOrphanedTestPids', () => {
 		expect(selectOrphanedTestPids([[700, 699], [701, 700]], () => false)).toEqual([]);
 	});
 });
+
+describe('CREWLY_BACKEND_COMMAND_PATTERN on Windows command lines', () => {
+	it('recognises the backend with either separator', () => {
+		const { CREWLY_BACKEND_COMMAND_PATTERN: pattern } = jest.requireActual('./process-cleanup.js') as typeof import('./process-cleanup.js');
+		expect(pattern.test('"C:\\Program Files\\nodejs\\node.exe" C:\\npm\\crewly\\dist\\backend\\backend\\src\\index.js')).toBe(true);
+		expect(pattern.test('node /opt/crewly/dist/backend/backend/src/index.js')).toBe(true);
+		expect(pattern.test('node C:\\other\\src\\index.js')).toBe(false);
+	});
+});

@@ -251,6 +251,8 @@ async function forceStopBackend(pid: number, children: ProcessRow[], report: Sto
  */
 async function killLegacyTmuxSessions(report: StopReport): Promise<void> {
 	let sessions: string[] = [];
+	// tmux never existed on Windows.
+	if (process.platform === 'win32') return;
 	try {
 		const { stdout } = await execAsync('tmux list-sessions -F "#{session_name}" 2>/dev/null || echo ""');
 		sessions = stdout.split('\n').map((s) => s.trim()).filter((s) => s.startsWith('crewly_'));
@@ -297,28 +299,34 @@ function printReport(report: StopReport): void {
 }
 
 /**
- * Send a signal via the shell. A failure means the process is already gone.
+ * Send a signal. A failure means the process is already gone.
+ *
+ * Windows has no `kill` command, so `process.kill` is used there. Both
+ * signals end the process at once on Windows (there is no SIGTERM to catch);
+ * the drain the backend is asked for before this still runs.
  *
  * @param pid - Target
  * @param sig - Signal name without the SIG prefix
  */
 async function signal(pid: number, sig: 'TERM' | 'KILL'): Promise<void> {
 	try {
-		await execAsync(`kill -${sig} ${pid}`);
+		if (process.platform === 'win32') process.kill(pid, `SIG${sig}`);
+		else await execAsync(`kill -${sig} ${pid}`);
 	} catch {
 		// Already gone.
 	}
 }
 
 /**
- * Liveness via `kill -0`.
+ * Liveness via signal 0 (`kill -0`; `process.kill(pid, 0)` on Windows).
  *
  * @param pid - Process id
  * @returns True if it exists
  */
 async function isAlive(pid: number): Promise<boolean> {
 	try {
-		await execAsync(`kill -0 ${pid}`);
+		if (process.platform === 'win32') process.kill(pid, 0);
+		else await execAsync(`kill -0 ${pid}`);
 		return true;
 	} catch {
 		return false;

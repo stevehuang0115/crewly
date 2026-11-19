@@ -11,7 +11,7 @@ import { execSync } from 'child_process';
  * the backend entrypoint: the compiled `dist/backend/backend/src/index.js`
  * (what `crewly start` spawns) or `backend/src/index.ts` (dev via tsx).
  */
-export const CREWLY_BACKEND_COMMAND_PATTERN = /backend\/src\/index\.(js|ts)\b/;
+export const CREWLY_BACKEND_COMMAND_PATTERN = /backend[\\/]src[\\/]index\.(js|ts)\b/;
 
 /**
  * Command that lists the pids LISTENING on a TCP port.
@@ -178,6 +178,8 @@ export function killOrphanedTestProcesses(
 	myPid: number = process.pid,
 	logFn: (msg: string) => void = console.log,
 ): void {
+	// A developer-machine cleanup built on ps and grep: not available on Windows.
+	if (process.platform === 'win32') return;
 	try {
 		const result = execSync(
 			'ps -eo pid,ppid,command | grep -E "node.*vitest|npx vitest" | grep -v grep',

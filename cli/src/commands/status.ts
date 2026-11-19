@@ -154,6 +154,8 @@ function printAgents(snapshot: BackendSnapshot, verbose: boolean): void {
  * @param verbose - Also print per-session details
  */
 async function checkTmuxSessions(verbose: boolean = false): Promise<void> {
+	// tmux never existed on Windows.
+	if (process.platform === 'win32') return;
 	try {
 		const { stdout } = await execAsync('tmux list-sessions -F "#{session_name}:#{session_attached}:#{session_created}" 2>/dev/null || echo ""');
 

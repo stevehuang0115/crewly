@@ -1,3 +1,4 @@
+import * as backendStatus from './backend-status.js';
 /**
  * Tests for the backend/agents snapshot used by `crewly status` and `crewly stop`.
  */
@@ -187,5 +188,36 @@ describe('formatting', () => {
 	it('describeAgent adds member, team and runtime when known', () => {
 		expect(describeAgent({ sessionName: 's', inProcess: false, busy: false })).toBe('s');
 		expect(describeAgent({ sessionName: 's', inProcess: false, busy: false, memberName: 'A', teamName: 'T', runtimeType: 'codex-cli' })).toBe('s (A, T, codex-cli)');
+	});
+});
+
+describe('parseNetstatListeners (Windows)', () => {
+	const NETSTAT = [
+		'Active Connections',
+		'',
+		'  Proto  Local Address          Foreign Address        State           PID',
+		'  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1040',
+		'  TCP    0.0.0.0:8787           0.0.0.0:0              LISTENING       4242',
+		'  TCP    [::]:8787              [::]:0                 LISTENING       4242',
+		'  TCP    127.0.0.1:51000        127.0.0.1:8787         ESTABLISHED     7000',
+		'  TCP    0.0.0.0:18787          0.0.0.0:0              LISTENING       9999',
+	].join('\r\n');
+
+	it('returns the listener of the port once, never a client or another port', () => {
+		expect(backendStatus.parseNetstatListeners(NETSTAT, 8787, -1)).toEqual([4242]);
+	});
+
+	it('leaves out the excluded pid and survives empty output', () => {
+		expect(backendStatus.parseNetstatListeners(NETSTAT, 8787, 4242)).toEqual([]);
+		expect(backendStatus.parseNetstatListeners('', 8787)).toEqual([]);
+	});
+});
+
+describe('Windows process table command', () => {
+	it('prints rows parseProcessTable reads', () => {
+		expect(backendStatus.WINDOWS_PROCESS_TABLE_COMMAND).toContain('Win32_Process');
+		expect(backendStatus.parseProcessTable('4242 1040 "C:\\Program Files\\nodejs\\node.exe" dist\\backend\\backend\\src\\index.js\r\n')).toEqual([
+			{ pid: 4242, ppid: 1040, command: '"C:\\Program Files\\nodejs\\node.exe" dist\\backend\\backend\\src\\index.js' },
+		]);
 	});
 });
