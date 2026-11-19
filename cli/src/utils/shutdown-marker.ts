@@ -81,6 +81,8 @@ export function stopLegacySupervisor(
 	deps: { commandOf?: (pid: number) => string; kill?: (pid: number, signal: NodeJS.Signals) => void } = {},
 ): boolean {
 	if (!Number.isInteger(ppid) || ppid <= 1) return false;
+	// The `crewly-start` wrapper is a POSIX shell script: it does not exist on Windows (and neither does ps).
+	if (process.platform === 'win32' && !deps.commandOf) return false;
 	const commandOf =
 		deps.commandOf ?? ((pid: number): string => String(execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8', timeout: 3000 })));
 	try {

@@ -178,6 +178,8 @@ export function killOrphanedTestProcesses(
 	myPid: number = process.pid,
 	logFn: (msg: string) => void = console.log,
 ): void {
+	// A developer-machine cleanup built on ps and grep: not available on Windows.
+	if (process.platform === 'win32') return;
 	try {
 		const result = execSync(
 			'ps -eo pid,ppid,command | grep -E "node.*vitest|npx vitest" | grep -v grep',
