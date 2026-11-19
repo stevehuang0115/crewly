@@ -542,6 +542,39 @@ describe('ClaudeRuntimeService', () => {
 			expect(Date.now() - started).toBeLessThan(2000);
 		});
 
+		it('readiness: the Bypass Permissions consent fails fast and is never accepted for the user', async () => {
+			mockSessionHelper.capturePane.mockReturnValue(
+				'WARNING: Claude Code running in Bypass Permissions mode\n\nIn Bypass Permissions mode, Claude Code will not ask for your approval before running potentially dangerous commands.\n\n ❯ 1. No, exit\n   2. Yes, I accept\n\nEnter to confirm · Esc to cancel',
+			);
+			const started = Date.now();
+
+			const err = await service.waitForRuntimeReady('s1', 300000, 10).catch((e: unknown) => e);
+
+			expect((err as { reason?: string }).reason).toBe('consent_required');
+			expect((err as Error).message).toBe(CLAUDE_STARTUP_CONSTANTS.MESSAGES.BYPASS_CONSENT);
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
+			expect(Date.now() - started).toBeLessThan(2000);
+		});
+
+		it('readiness: a timeout on a menu Crewly does not know is blocked on the user, with the screen quoted (Windows, 2026-11-19)', async () => {
+			mockSessionHelper.capturePane.mockReturnValue('Some new question from the runtime?\n ❯ 1. First choice\n   2. Second choice\n\nEnter to confirm · Esc to cancel');
+
+			const err = await service.waitForRuntimeReady('s1', 60, 10).catch((e: unknown) => e);
+
+			expect((err as { reason?: string }).reason).toBe('unanswered_prompt');
+			expect((err as Error).message).toContain(CLAUDE_STARTUP_CONSTANTS.MESSAGES.UNANSWERED_PROMPT);
+			expect((err as Error).message).toContain('Some new question from the runtime?');
+			expect((err as Error).message).toContain('❯ 1. First choice');
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+		});
+
+		it('readiness: a plain timeout with no menu on screen still returns false', async () => {
+			mockSessionHelper.capturePane.mockReturnValue('user@host ~ $ claude --session-id x\nstarting…');
+
+			await expect(service.waitForRuntimeReady('s1', 60, 10)).resolves.toBe(false);
+		});
+
 		it('readiness: `bash: claude: command not found` fails fast as runtime_not_installed (B8 D1)', async () => {
 			mockSessionHelper.capturePane.mockReturnValue(
 				'node@b8-clean:~/myapp$ claude --session-id f220fb50 --dangerously-skip-permissions --agent "crewly-orc"\nbash: claude: command not found\nnode@b8-clean:~/myapp$ ',

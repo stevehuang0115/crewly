@@ -105,9 +105,36 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 		if (CLAUDE_STARTUP_CONSTANTS.FIRST_RUN_MARKERS.some((m) => output.includes(m))) {
 			return new RuntimeStartupBlockedError('first_run_setup', CLAUDE_STARTUP_CONSTANTS.MESSAGES.FIRST_RUN);
 		}
+		if (CLAUDE_STARTUP_CONSTANTS.BYPASS_CONSENT_MARKERS.every((m) => output.includes(m))) {
+			return new RuntimeStartupBlockedError('consent_required', CLAUDE_STARTUP_CONSTANTS.MESSAGES.BYPASS_CONSENT);
+		}
 		// `bash: claude: command not found` (B8 D1): the orchestrator defaulted to
 		// Claude on a machine that only has Gemini and waited out every timeout.
 		return detectRuntimeCliMissing(output, this.getRuntimeType());
+	}
+
+	/**
+	 * Whether the session is sitting on a selection menu after the start-up
+	 * wait ran out.
+	 *
+	 * @param sessionName - Session
+	 * @returns The blocking error (with the screen quoted), or null
+	 */
+	private unansweredPromptAt(sessionName: string): RuntimeStartupBlockedError | null {
+		let output = '';
+		try {
+			output = this.sessionHelper.capturePane(sessionName);
+		} catch {
+			return null;
+		}
+		if (!CLAUDE_STARTUP_CONSTANTS.UNANSWERED_MENU_PATTERN.test(output)) return null;
+		const screen = output
+			.split('\n')
+			.map((line) => line.trimEnd())
+			.filter((line) => line.trim())
+			.join('\n')
+			.slice(-CLAUDE_STARTUP_CONSTANTS.UNANSWERED_SCREEN_EXCERPT_CHARS);
+		return new RuntimeStartupBlockedError('unanswered_prompt', `${CLAUDE_STARTUP_CONSTANTS.MESSAGES.UNANSWERED_PROMPT}\n${screen}`);
 	}
 
 	/**
@@ -235,6 +262,13 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 		}
 
 		this.logger.warn('Timeout waiting for Claude Code', { sessionName, timeout });
+		// Timed out on a menu nobody answered: starting again shows the same menu,
+		// so this is blocked on the user, not a failure to retry.
+		const stuck = this.unansweredPromptAt(sessionName);
+		if (stuck) {
+			this.logger.error('Claude Code start-up is waiting on an unanswered prompt', { sessionName, reason: stuck.reason });
+			throw stuck;
+		}
 		return false;
 	}
 

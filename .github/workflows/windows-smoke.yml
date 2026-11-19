@@ -73,6 +73,26 @@ jobs:
           echo "$OUT" | tail -8
           echo "$OUT" | grep -q '^PTY_OK_42' || { echo "the session did not run the command"; exit 1; }
           echo "$OUT" | grep -q '^true' || { echo "curl + jq inside the session failed"; exit 1; }
+      - name: Killing a session ends the processes under it
+        shell: bash
+        run: |
+          T="$(cat "$USERPROFILE/.crewly/api-token")"
+          A="Authorization: Bearer $T"
+          B=http://localhost:8787/api/sessions
+          curl -s -m 15 -o /dev/null -H "$A" -H 'Content-Type: application/json' -X POST "$B" \
+            -d '{"name":"win-kill","command":"C:\\Program Files\\Git\\bin\\bash.exe","cwd":"C:\\Users\\runneradmin"}'
+          sleep 5
+          # A long-lived non-shell process under the session, the way an agent runtime is.
+          curl -s -m 15 -o /dev/null -H "$A" -H 'Content-Type: application/json' -X POST "$B/win-kill/write" \
+            -d '{"data":"node -e \"setTimeout(()=>{},600000)\" crewly-kill-marker\r"}'
+          sleep 6
+          count() { powershell.exe -NoProfile -Command "(Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -like '*crewly-kill-marker*' -and \$_.Name -eq 'node.exe' } | Measure-Object).Count" | tr -d '\r'; }
+          before="$(count)"; echo "marker processes before kill: $before"
+          [ "$before" = "1" ] || { echo "the marker process did not start"; exit 1; }
+          curl -s -m 30 -o /dev/null -w "delete %{http_code}\n" -H "$A" -X DELETE "$B/win-kill"
+          sleep 5
+          after="$(count)"; echo "marker processes after kill: $after"
+          [ "$after" = "0" ] || { echo "killing the session left its child running"; exit 1; }
       - name: Launch lines Crewly typed into the orchestrator session
         shell: bash
         run: |

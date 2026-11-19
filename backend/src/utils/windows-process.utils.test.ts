@@ -1,4 +1,4 @@
-import { hasNonShellDescendant, parseNetstatPeer, parseWindowsProcessRows, WINDOWS_PROCESS_QUERY_ARGS } from './windows-process.utils.js';
+import { killWindowsProcessTree, hasNonShellDescendant, parseNetstatPeer, parseWindowsProcessRows, WINDOWS_PROCESS_QUERY_ARGS } from './windows-process.utils.js';
 
 const TABLE = [
 	'4 0 System',
@@ -66,5 +66,33 @@ describe('WINDOWS_PROCESS_QUERY_ARGS', () => {
 	it('runs PowerShell without a profile and prints pid, ppid, command line', () => {
 		expect(WINDOWS_PROCESS_QUERY_ARGS.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command']);
 		expect(WINDOWS_PROCESS_QUERY_ARGS[3]).toContain('Win32_Process');
+	});
+});
+
+describe('killWindowsProcessTree', () => {
+	it('ends the whole tree by force, from the root pid', () => {
+		const calls: Array<[string, string[]]> = [];
+		const ok = killWindowsProcessTree(3412, (file, args) => {
+			calls.push([file, args]);
+			return { status: 0 };
+		});
+		expect(ok).toBe(true);
+		expect(calls).toEqual([['taskkill', ['/PID', '3412', '/T', '/F']]]);
+	});
+
+	it('does nothing for pid 0 (ConPTY has not started the shell yet) or a bad pid', () => {
+		const run = jest.fn(() => ({ status: 0 }));
+		expect(killWindowsProcessTree(0, run)).toBe(false);
+		expect(killWindowsProcessTree(-5, run)).toBe(false);
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('reports failure when taskkill fails or cannot be run', () => {
+		expect(killWindowsProcessTree(10, () => ({ status: 128 }))).toBe(false);
+		expect(
+			killWindowsProcessTree(10, () => {
+				throw new Error('ENOENT');
+			}),
+		).toBe(false);
 	});
 });

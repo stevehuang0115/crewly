@@ -10,7 +10,7 @@
  *
  * @module utils/windows-process
  */
-import { execFile, execFileSync } from 'child_process';
+import { execFile, execFileSync, spawnSync } from 'child_process';
 
 /** Tunables. */
 export const WINDOWS_PROCESS_CONSTANTS = {
@@ -189,4 +189,41 @@ export function queryNetstat(timeoutMs: number = WINDOWS_PROCESS_CONSTANTS.NETST
 			error ? reject(error) : resolve(stdout ?? ''),
 		);
 	});
+}
+
+/** `taskkill` budget (ms). */
+export const TASKKILL_TIMEOUT_MS = 10_000;
+
+/**
+ * End a process and everything under it on Windows (`taskkill /T /F`).
+ *
+ * Closing a ConPTY only disconnects the console: the shell and whatever it
+ * started (the agent runtime) keep running. Windows has no process groups to
+ * signal, so each killed session used to leave a `bash.exe` and a
+ * `claude.exe` behind — 20 runtimes and 42 shells after 25 minutes of
+ * restarts on the first real Windows machine (2026-11-19). The tree must be
+ * ended while its root is still alive: once the root is gone its children
+ * can no longer be found from it.
+ *
+ * @param pid - Root of the tree (a session's shell)
+ * @param run - Command runner (tests)
+ * @returns True when taskkill ran and reported success
+ *
+ * @example
+ * ```typescript
+ * killWindowsProcessTree(session.pid);
+ * ```
+ */
+export function killWindowsProcessTree(
+	pid: number,
+	run: (file: string, args: string[]) => { status: number | null } = (file, args) =>
+		spawnSync(file, args, { stdio: 'ignore', timeout: TASKKILL_TIMEOUT_MS, windowsHide: true }),
+): boolean {
+	// node-pty reports pid 0 until ConPTY has started the process: nothing to end yet.
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		return run('taskkill', ['/PID', String(pid), '/T', '/F']).status === 0;
+	} catch {
+		return false;
+	}
 }

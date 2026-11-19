@@ -3563,7 +3563,20 @@ export const CLAUDE_STARTUP_CONSTANTS = {
 	 * Crewly can complete it.
 	 */
 	FIRST_RUN_MARKERS: ['Choose the text style'] as readonly string[],
+	/**
+	 * The one-time consent Claude Code asks for the first time
+	 * `--dangerously-skip-permissions` is used on a machine ("No, exit" /
+	 * "Yes, I accept"). It is the user's to give: Crewly does not answer it.
+	 * Both markers must be on screen.
+	 */
+	BYPASS_CONSENT_MARKERS: ['Bypass Permissions mode', 'Yes, I accept'] as readonly string[],
+	/** A menu that waits for a choice: a `❯`-marked numbered option, or the confirm footer. */
+	UNANSWERED_MENU_PATTERN: /❯\s*\d+\.\s|Enter to confirm|Esc to (?:cancel|exit)/,
+	/** Most characters of the stuck screen quoted in the blocked message */
+	UNANSWERED_SCREEN_EXCERPT_CHARS: 600,
 	MESSAGES: {
+		BYPASS_CONSENT: 'Claude Code is asking you to accept Bypass Permissions mode, which Crewly agents run in. Crewly does not accept it for you. In a terminal on this machine run `claude --dangerously-skip-permissions` once, choose "Yes, I accept", exit, then start the team again.',
+		UNANSWERED_PROMPT: 'Claude Code is waiting on a prompt that Crewly does not answer for you, so the agent cannot start. In a terminal on this machine run `claude --dangerously-skip-permissions` once in the agent\'s folder, answer what it asks, exit, then start the team again. The screen it is showing:',
 		ROOT: 'Crewly agents cannot run as root: Claude Code refuses --dangerously-skip-permissions under root/sudo. Run Crewly as a normal (non-root) user, then start the team again.',
 		FIRST_RUN: 'Claude Code has not been set up on this machine yet. Run `claude` once in a terminal, choose a theme and log in, then start the team again.',
 	},
