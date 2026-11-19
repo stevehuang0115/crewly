@@ -544,7 +544,8 @@ describe('ClaudeRuntimeService', () => {
 
 		it('readiness: the Bypass Permissions consent fails fast and is never accepted for the user', async () => {
 			mockSessionHelper.capturePane.mockReturnValue(
-				'WARNING: Claude Code running in Bypass Permissions mode\n\nIn Bypass Permissions mode, Claude Code will not ask for your approval before running potentially dangerous commands.\n\n ❯ 1. No, exit\n   2. Yes, I accept\n\nEnter to confirm · Esc to cancel',
+				// The screen Claude Code 2.1.328 showed on the first Windows machine (2026-11-19).
+				'  WARNING: Claude Code running in Bypass Permissions mode\n\n  In Bypass Permissions mode, Claude Code will not ask for your approval before running potentially dangerous commands.\n  This mode should only be used in a sandboxed container/VM that has restricted internet access and can easily be restored if damaged.\n\n  By proceeding, you accept all responsibility for actions taken while running in Bypass Permissions mode.\n\n  https://code.claude.com/docs/en/security\n\n  ❯ No, exit\n    Yes, I accept\n\n  Enter to confirm · Esc to cancel',
 			);
 			const started = Date.now();
 
@@ -558,14 +559,14 @@ describe('ClaudeRuntimeService', () => {
 		});
 
 		it('readiness: a timeout on a menu Crewly does not know is blocked on the user, with the screen quoted (Windows, 2026-11-19)', async () => {
-			mockSessionHelper.capturePane.mockReturnValue('Some new question from the runtime?\n ❯ 1. First choice\n   2. Second choice\n\nEnter to confirm · Esc to cancel');
+			mockSessionHelper.capturePane.mockReturnValue('Some new question from the runtime?\n ❯ First choice\n   Second choice\n\nEnter to confirm · Esc to cancel');
 
 			const err = await service.waitForRuntimeReady('s1', 60, 10).catch((e: unknown) => e);
 
 			expect((err as { reason?: string }).reason).toBe('unanswered_prompt');
 			expect((err as Error).message).toContain(CLAUDE_STARTUP_CONSTANTS.MESSAGES.UNANSWERED_PROMPT);
 			expect((err as Error).message).toContain('Some new question from the runtime?');
-			expect((err as Error).message).toContain('❯ 1. First choice');
+			expect((err as Error).message).toContain('❯ First choice');
 			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
 		});
 
