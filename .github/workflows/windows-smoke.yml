@@ -1,10 +1,12 @@
-# Exploratory: does Crewly install and start natively on Windows (no WSL)?
-# Every step keeps going after a failure so one run lists all blockers.
+# Native Windows (no WSL): build from source, start the backend, and drive a
+# terminal session under Git for Windows' bash. Not a required check yet:
+# native Windows support is in progress. Run it by hand, or push a
+# `windows-*` branch.
 name: Windows native smoke
 
 on:
   push:
-    branches: [windows-native-smoke]
+    branches: ['windows-*']
   workflow_dispatch:
 
 permissions:
@@ -30,7 +32,6 @@ jobs:
           npm run build 2>&1 | Select-Object -Last 40
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: crewly start, wait for health
-        continue-on-error: true
         shell: pwsh
         run: |
           $log = "$env:RUNNER_TEMP\crewly-start.log"
@@ -48,51 +49,27 @@ jobs:
           Get-Content $log -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) }
           if (-not $ok) { exit 1 }
       - name: API after start
-        continue-on-error: true
         shell: bash
         run: |
           T="$(cat "$USERPROFILE/.crewly/api-token" 2>/dev/null || true)"
-          for p in /api/teams /api/projects /api/system/status /api/cloud/status; do
-            printf '%s -> ' "$p"; curl -s -m 10 -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $T" "http://localhost:8787$p"
+          for p in /api/teams /api/projects /api/cloud/status; do
+            code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $T" "http://localhost:8787$p")"
+            echo "$p -> $code"; [ "$code" = 200 ] || exit 1
           done
           ls "$USERPROFILE/.crewly" | head -30
-      - name: node-pty alone with Git Bash
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          @'
-          const pty = require('node-pty');
-          const run = (file, args, input) => new Promise((done) => {
-            let out = '';
-            const p = pty.spawn(file, args, { name: 'xterm-256color', cols: 160, rows: 50, cwd: process.env.USERPROFILE, env: process.env });
-            console.log('spawned', file, 'pid', p.pid);
-            p.onData((d) => { out += d; });
-            p.onExit((e) => { console.log('exit', JSON.stringify(e)); });
-            setTimeout(() => p.write(input), 3000);
-            setTimeout(() => { console.log('bytes', out.length); console.log(out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').slice(-600)); try { p.kill(); } catch {} done(); }, 9000);
-          });
-          (async () => {
-            await run('C:\\Program Files\\Git\\bin\\bash.exe', [], 'echo PTY_OK_$((6*7)); uname -s\r');
-            await run('C:\\Program Files\\Git\\bin\\bash.exe', ['--login', '-i'], 'echo LOGIN_OK_$((6*7))\r');
-            await run('powershell.exe', [], 'echo PS_OK\r');
-            process.exit(0);
-          })();
-          '@ | Set-Content -Path pty-probe.cjs
-          node pty-probe.cjs
       - name: Terminal session under Git Bash (ConPTY)
-        continue-on-error: true
         shell: bash
         run: |
-          T="$(cat "$USERPROFILE/.crewly/api-token" 2>/dev/null || true)"
+          T="$(cat "$USERPROFILE/.crewly/api-token")"
           A="Authorization: Bearer $T"
           B=http://localhost:8787/api/sessions
-          show() { curl -s -m 15 -H "$A" "$B/$1/output?lines=60" | jq -r .output | grep -v '^\s*$' | tail -${2:-12} | cut -c1-220; }
-          wr() { curl -s -m 15 -o /dev/null -w "write %{http_code}\n" -H "$A" -H 'Content-Type: application/json' -X POST "$B/$1/write" -d "$2"; }
-          echo "--- orchestrator session (what Crewly itself typed)"; show crewly-orc 25
           curl -s -m 15 -H "$A" -H 'Content-Type: application/json' -X POST "$B" \
             -d '{"name":"win-smoke","command":"C:\\Program Files\\Git\\bin\\bash.exe","cwd":"C:\\Users\\runneradmin"}' | cut -c1-200; echo
-          sleep 5; echo "--- fresh"; show win-smoke
-          wr win-smoke '{"data":"echo CR_OK\r"}'; sleep 4; echo "--- after CR"; show win-smoke
-          wr win-smoke '{"data":"echo LF_OK\n"}'; sleep 4; echo "--- after LF"; show win-smoke
-          wr win-smoke '{"data":"echo PTY_OK_$((6*7)); uname -s; curl -s localhost:8787/api/health | jq -r .data.live\r"}'; sleep 6; echo "--- after combo"; show win-smoke 20
-          grep -aE "win-smoke" "$RUNNER_TEMP/crewly-start.log" | grep -avE "GET|POST" | tail -8 | cut -c1-300
+          sleep 5
+          curl -s -m 15 -o /dev/null -H "$A" -H 'Content-Type: application/json' -X POST "$B/win-smoke/write" \
+            -d '{"data":"echo PTY_OK_$((6*7)); curl -s localhost:8787/api/health | jq -r .data.live\r"}'
+          sleep 6
+          OUT="$(curl -s -m 15 -H "$A" "$B/win-smoke/output?lines=60" | jq -r .output | grep -v '^\s*$')"
+          echo "$OUT" | tail -8
+          echo "$OUT" | grep -q '^PTY_OK_42' || { echo "the session did not run the command"; exit 1; }
+          echo "$OUT" | grep -q '^true' || { echo "curl + jq inside the session failed"; exit 1; }
