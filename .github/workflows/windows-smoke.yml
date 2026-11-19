@@ -81,12 +81,10 @@ jobs:
           echo "$OUT" | fold -w 200 | tail -12
           echo "$OUT" | grep -q "export PATH='/[a-z]/" || { echo "PATH entries are not in /c/... form"; exit 1; }
           echo "$OUT" | grep -Eq -- '--settings "[A-Za-z]:/' || { echo "--settings path lost its separators"; exit 1; }
-      - name: Windows-style paths left in generated agent files (report only)
-        continue-on-error: true
+      - name: No Windows-style skill path in generated agent files
         shell: bash
         run: |
           cd "$USERPROFILE/.crewly"
-          grep -rIlE '[A-Za-z]:\\\\[^"]*execute\.sh|bash [A-Za-z]:\\' . 2>/dev/null | head -20 || true
-          echo "--- sample"
-          grep -rIhoE '.{0,60}[A-Za-z]:\\\\?[^" ]*execute\.sh' . 2>/dev/null | head -8 | cut -c1-220 || true
-
+          FOUND="$(grep -rIhoE '.{0,60}[A-Za-z]:\\\\?[^" ]*execute\.sh' . 2>/dev/null | head -8 | cut -c1-220 || true)"
+          if [ -n "$FOUND" ]; then echo "$FOUND"; echo "a prompt or catalog still carries a backslash path"; exit 1; fi
+          echo "none"
