@@ -10,6 +10,127 @@
 CREWLY_API_URL="${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}"
 
 # -----------------------------------------------------------------------------
+# Non-ASCII text on Windows
+#
+# Under Git for Windows, bash holds text as UTF-8 but `jq` and `curl` are
+# native programs. Windows hands a native program its arguments and its
+# environment in the machine's legacy code page (Big5, GBK, 1252, ...), not
+# UTF-8, so a Chinese reply passed as `jq --arg`, read as `env.X`, or sent as
+# `curl -d` reached Slack as "?w???n?F?G" (2026-11-19, a Traditional Chinese
+# Windows PC). Pipes and files carry bytes untouched. So on Windows:
+#   - `jq` is wrapped: non-ASCII `--arg` / `--argjson` values and non-ASCII
+#     exported variables the filter reads through `env` / `$ENV` travel in a
+#     temporary UTF-8 file, and the filter is prefixed to bind them back to
+#     the same names. A call without such text runs untouched.
+#   - `api_call` sends the request body on stdin instead of as an argument.
+# CREWLY_NATIVE_TEXT_SHIM=1 forces this on (tests), =0 forces it off.
+# -----------------------------------------------------------------------------
+_crewly_native_text_shim() {
+  case "${CREWLY_NATIVE_TEXT_SHIM:-}" in
+    1) return 0 ;;
+    0) return 1 ;;
+  esac
+  case "${OSTYPE:-}" in
+    msys*|cygwin*) return 0 ;;
+  esac
+  return 1
+}
+
+_crewly_has_non_ascii() {
+  case "$1" in
+    *[![:ascii:]]*) return 0 ;;
+  esac
+  return 1
+}
+
+if _crewly_native_text_shim; then
+jq() {
+  local -a argv=("$@") out=() kinds=() names=() vals=()
+  local argc=$# i=0 fidx=-1 a n v
+  while [ "$i" -lt "$argc" ]; do
+    a="${argv[$i]}"
+    case "$a" in
+      --arg|--argjson)
+        n="${argv[$((i + 1))]:-}"
+        v="${argv[$((i + 2))]:-}"
+        if _crewly_has_non_ascii "$v"; then
+          kinds+=("${a#--}"); names+=("$n"); vals+=("$v")
+        else
+          out+=("$a" "$n" "$v")
+        fi
+        i=$((i + 3))
+        ;;
+      --slurpfile|--rawfile|--argfile)
+        out+=("$a" "${argv[$((i + 1))]:-}" "${argv[$((i + 2))]:-}")
+        i=$((i + 3))
+        ;;
+      -L|--indent)
+        out+=("$a" "${argv[$((i + 1))]:-}")
+        i=$((i + 2))
+        ;;
+      -f|--from-file|--|-[!-]*f*)
+        # The filter lives in a file (or the arguments are unusual): leave the call alone.
+        command jq "$@"
+        return $?
+        ;;
+      -*)
+        out+=("$a")
+        i=$((i + 1))
+        ;;
+      *)
+        if [ "$fidx" -lt 0 ]; then fidx=${#out[@]}; fi
+        out+=("$a")
+        i=$((i + 1))
+        ;;
+    esac
+  done
+  if [ "$fidx" -lt 0 ]; then
+    command jq "$@"
+    return $?
+  fi
+  case "${out[$fidx]}" in
+    *env*|*ENV*)
+      while IFS= read -r n; do
+        if _crewly_has_non_ascii "${!n-}"; then
+          kinds+=(env); names+=("$n"); vals+=("${!n}")
+        fi
+      done < <(compgen -e)
+      ;;
+  esac
+  if [ "${#kinds[@]}" -eq 0 ]; then
+    command jq "$@"
+    return $?
+  fi
+  local carrier k rc prefix
+  carrier="$(mktemp "${TMPDIR:-/tmp}/crewly-jq.XXXXXX")" || { command jq "$@"; return $?; }
+  # kind, name, value triples separated by U+001E, read back by jq from stdin
+  # (bytes, so UTF-8 survives).
+  if ! for k in "${!kinds[@]}"; do
+         printf '%s\036%s\036%s\036' "${kinds[$k]}" "${names[$k]}" "${vals[$k]}"
+       done | command jq -Rs '(split("\u001e") | .[:-1]) as $p
+         | reduce range(0; $p | length; 3) as $i ({env: {}, arg: {}, argjson: {}}; .[$p[$i]][$p[$i + 1]] = $p[$i + 2])' > "$carrier"; then
+    unlink "$carrier" 2>/dev/null || true
+    command jq "$@"
+    return $?
+  fi
+  prefix='$__crewly_text[0] as $__crewly_t | ($ENV + $__crewly_t.env) as $ENV | def env: $ENV; '
+  for k in "${!kinds[@]}"; do
+    case "${kinds[$k]}" in
+      arg) prefix="${prefix}\$__crewly_t.arg[\"${names[$k]}\"] as \$${names[$k]} | " ;;
+      argjson) prefix="${prefix}(\$__crewly_t.argjson[\"${names[$k]}\"] | fromjson) as \$${names[$k]} | " ;;
+    esac
+  done
+  out[$fidx]="${prefix}${out[$fidx]}"
+  local carrier_arg="$carrier"
+  if command -v cygpath >/dev/null 2>&1; then carrier_arg="$(cygpath -m "$carrier")"; fi
+  rc=0
+  command jq --slurpfile __crewly_text "$carrier_arg" "${out[@]}" || rc=$?
+  unlink "$carrier" 2>/dev/null || true
+  return $rc
+}
+fi
+
+# -----------------------------------------------------------------------------
 # Skill output cap (context-cost control)
 #
 # A single unbounded `api_call` response (70k+ chars from get-team-status,
@@ -225,6 +346,7 @@ api_call() {
   local url="${CREWLY_API_URL}/api${endpoint}"
   _prune_skill_output
   local args=(-s -w '\n%{http_code}' -X "$method")
+  local body_on_stdin=0
   # A binary download (app-data --download): the body goes to CREWLY_API_DOWNLOAD_TO
   # byte for byte and the response headers to CREWLY_API_DOWNLOAD_TO.hdr; stdout stays empty.
   if [ -n "${CREWLY_API_DOWNLOAD_TO:-}" ]; then
@@ -306,12 +428,22 @@ api_call() {
   if [ -n "${CREWLY_API_UPLOAD_FILE:-}" ]; then
     args+=(--data-binary "@${CREWLY_API_UPLOAD_FILE}")
   elif [ -n "$body" ]; then
-    args+=(-d "$body")
+    # On Windows the body goes on stdin: as an argument it would be re-encoded
+    # into the legacy code page (see "Non-ASCII text on Windows" above).
+    if _crewly_native_text_shim; then
+      body_on_stdin=1
+      args+=(--data-binary @-)
+    else
+      args+=(-d "$body")
+    fi
   fi
 
-  local response
-  response=$(curl "${args[@]}" "$url")
-  local curl_exit=$?
+  local response curl_exit=0
+  if [ "$body_on_stdin" = "1" ]; then
+    response=$(printf '%s' "$body" | curl "${args[@]}" "$url") || curl_exit=$?
+  else
+    response=$(curl "${args[@]}" "$url") || curl_exit=$?
+  fi
 
   if [ $curl_exit -ne 0 ]; then
     echo '{"error":true,"status":0,"details":"curl failed with exit code '"$curl_exit"'"}' >&2

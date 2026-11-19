@@ -362,6 +362,41 @@ CREWLY_SESSION_NAME=dev-1 CREWLY_SCHEDULER_CREDENTIAL=scheduler.sig bash "$TEMP_
 assert_eq "api_call: an agent session wins over a leaked scheduler credential" "0" "$(grep -c 'X-Crewly-Internal' "$ARGS_OUT" || true)"
 unset ARGS_OUT
 
+# ---- Test 33: Windows text shim — non-ASCII text bypasses jq arguments/environment and curl arguments ----
+mkdir -p "$TEMP_DIR/skills/fake-shim"
+cat > "$TEMP_DIR/skills/fake-shim/execute.sh" << 'SKILL_EOF'
+#!/bin/bash
+set -euo pipefail
+source "$LIB_PATH"
+# Record what the real jq binary was given, then run it.
+command() {
+  if [ "$1" = "jq" ]; then printf '%s\n' "$@" >> "$JQ_ARGS_OUT"; fi
+  builtin command "$@"
+}
+curl() {
+  : > "$BODY_OUT"
+  case " $* " in *" @- "*) cat > "$BODY_OUT" ;; esac
+  printf '%s\n' "$@" > "$ARGS_OUT"
+  printf '%s\n%s' '{"ok":true}' 200
+}
+export _SHIM_TEXT='已建好了 "x" \ y'
+jq -nc --arg a '中文 $t' --arg plain ok --argjson j '{"k":"值"}' 'def f: $a; {a: f, plain: $plain, j: $j, e: env._SHIM_TEXT, e2: $ENV._SHIM_TEXT}'
+api_call POST "/slack/send" '{"text":"好"}' >/dev/null
+SKILL_EOF
+chmod +x "$TEMP_DIR/skills/fake-shim/execute.sh"
+export JQ_ARGS_OUT="$TEMP_DIR/jq-args.txt" BODY_OUT="$TEMP_DIR/curl-body.txt" ARGS_OUT="$TEMP_DIR/curl-args.txt"
+: > "$JQ_ARGS_OUT"
+RESULT=$(CREWLY_NATIVE_TEXT_SHIM=1 CREWLY_SESSION_NAME=dev-1 bash "$TEMP_DIR/skills/fake-shim/execute.sh" 2>/dev/null)
+assert_eq "text shim: jq result is the same as without it" '{"a":"中文 $t","plain":"ok","j":{"k":"值"},"e":"已建好了 \"x\" \\ y","e2":"已建好了 \"x\" \\ y"}' "$RESULT"
+assert_eq "text shim: no non-ASCII argument reaches jq" "0" "$(LC_ALL=C grep -c '[^ -~]' "$JQ_ARGS_OUT" || true)"
+assert_contains "text shim: ASCII arguments are passed as before" "^plain$" "$(cat "$JQ_ARGS_OUT")"
+assert_eq "text shim: api_call sends the body on stdin" '{"text":"好"}' "$(cat "$BODY_OUT")"
+assert_contains "text shim: curl reads the body from stdin" "^@-$" "$(cat "$ARGS_OUT")"
+assert_eq "text shim: the body is not a curl argument" "0" "$(grep -c '好' "$ARGS_OUT" || true)"
+: > "$JQ_ARGS_OUT"
+CREWLY_NATIVE_TEXT_SHIM=0 CREWLY_SESSION_NAME=dev-1 bash "$TEMP_DIR/skills/fake-shim/execute.sh" >/dev/null 2>&1
+assert_contains "text shim off: the body stays a curl argument" '{"text":"好"}' "$(cat "$ARGS_OUT")"
+
 # ---- Test 31: unknown_arg_exit — the error is the LAST line, one JSON object, exit 2 ----
 UA_OUT=$(bash -c 'source "$1"; unknown_arg_exit app; ' _ "$SCRIPT_DIR/lib.sh" 2>&1 >/dev/null; echo "rc=$?")
 assert_contains "unknown_arg_exit: bare word → nothing sent + quoting hint" "nothing was sent" "$UA_OUT"
