@@ -886,7 +886,12 @@ export async function writeToSession(this: unknown, req: Request, res: Response)
 /**
  * Send terminal input to a session (legacy endpoint).
  *
- * @param req - Express request object with sessionName param and input in body
+ * The body carries either `input` (text, written followed by a carriage
+ * return) or `key` (one named key from
+ * {@link TERMINAL_CONTROLLER_CONSTANTS.INPUT_KEYS}, written as is). Text that
+ * contains Esc is refused, so `key: "escape"` is how a bare Esc is sent.
+ *
+ * @param req - Express request object with sessionName param and input or key in body
  * @param res - Express response object
  * @returns Promise that resolves when response is sent
  *
@@ -894,11 +899,16 @@ export async function writeToSession(this: unknown, req: Request, res: Response)
  * POST /api/terminal/my-session/input
  * Body: { input: "echo hello" }
  * Response: { success: true, message: "Input sent successfully" }
+ *
+ * @example
+ * POST /api/terminal/my-session/input
+ * Body: { key: "escape" }
+ * Response: { success: true, message: "Key sent successfully" }
  */
 export async function sendTerminalInput(req: Request, res: Response): Promise<void> {
 	try {
 		const { sessionName } = req.params;
-		const { input } = req.body;
+		const { input, key } = req.body;
 
 		if (!sessionName) {
 			res.status(400).json({
@@ -918,7 +928,28 @@ export async function sendTerminalInput(req: Request, res: Response): Promise<vo
 			return;
 		}
 
-		if (!input) {
+		// A named key instead of text: only names from the allowlist, never raw bytes.
+		const namedKey = key !== undefined && key !== null;
+		let keySequence: string | undefined;
+		if (namedKey) {
+			const validKeys = Object.keys(TERMINAL_CONTROLLER_CONSTANTS.INPUT_KEYS);
+			if (input) {
+				res.status(400).json({
+					success: false,
+					error: 'Send either key or input, not both',
+				} as ApiResponse);
+				return;
+			}
+			const keyName = typeof key === 'string' ? key.trim().toLowerCase() : '';
+			if (!validKeys.includes(keyName)) {
+				res.status(400).json({
+					success: false,
+					error: `Unknown key. Valid keys: ${validKeys.join(', ')}`,
+				} as ApiResponse);
+				return;
+			}
+			keySequence = TERMINAL_CONTROLLER_CONSTANTS.INPUT_KEYS[keyName];
+		} else if (!input) {
 			res.status(400).json({
 				success: false,
 				error: 'Input is required',
@@ -927,7 +958,7 @@ export async function sendTerminalInput(req: Request, res: Response): Promise<vo
 		}
 
 		// Convert input to string and validate for dangerous control sequences
-		const inputStr = String(input);
+		const inputStr = namedKey ? '' : String(input);
 		const validation = validateTerminalInput(inputStr);
 		if (!validation.isValid) {
 			logger.warn('Terminal input validation failed', {
@@ -960,18 +991,20 @@ export async function sendTerminalInput(req: Request, res: Response): Promise<vo
 			return;
 		}
 
-		// Write input to session (add carriage return for command execution)
+		// Write input to session (add carriage return for command execution);
+		// a named key is written alone.
 		noteOutsideInput(sessionName); // raw input: outside input (input-ledger)
-		session.write(inputStr + '\r');
+		session.write(keySequence ?? inputStr + '\r');
 
 		logger.debug('Input sent to session', {
 			sessionName,
 			inputLength: inputStr.length,
+			namedKey,
 		});
 
 		res.json({
 			success: true,
-			message: 'Input sent successfully',
+			message: namedKey ? 'Key sent successfully' : 'Input sent successfully',
 		} as ApiResponse);
 	} catch (error) {
 		logger.error('Error sending terminal input', {

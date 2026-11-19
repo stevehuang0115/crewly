@@ -971,6 +971,21 @@ export const TERMINAL_CONTROLLER_CONSTANTS = {
 	DEFAULT_CAPTURE_LINES: 50,
 	MAX_CAPTURE_LINES: 500,
 	MAX_OUTPUT_SIZE: 131072, // 128KB max output per request
+	/**
+	 * Single keys `POST /terminal/:sessionName/input` accepts by name in its
+	 * `key` field (lower-case name → bytes written). Raw text containing Esc is
+	 * refused there (escape-sequence injection), so a bare Esc can only be sent
+	 * by name. Arrows use the CSI form: a Windows console ignores SS3 (`\x1bOA`).
+	 */
+	INPUT_KEYS: {
+		escape: '\x1b',
+		enter: '\r',
+		tab: '\t',
+		up: '\x1b[A',
+		down: '\x1b[B',
+		right: '\x1b[C',
+		left: '\x1b[D',
+	} as Readonly<Record<string, string>>,
 } as const;
 
 /** Constants for the TerminalGateway orchestrator output buffer management. */
@@ -3574,6 +3589,32 @@ export const CLAUDE_STARTUP_CONSTANTS = {
 	UNANSWERED_MENU_PATTERN: /(?:❯|^\s*>)\s*\d+\.\s|Enter to confirm|Esc to (?:cancel|exit)/m,
 	/** Most characters of the stuck screen quoted in the blocked message */
 	UNANSWERED_SCREEN_EXCERPT_CHARS: 600,
+	/**
+	 * The one-time "Try the new fullscreen renderer?" menu (Claude Code
+	 * 2.1.328). Crewly declines it: the agent's screen is read by a harness.
+	 * The option layout is not relied on, only the title, the option label and
+	 * the confirm footer (see `readFullscreenRendererMenu`).
+	 */
+	FULLSCREEN_RENDERER_MENU: {
+		/** The menu's title, alone on a line */
+		TITLE: 'Try the new fullscreen renderer?',
+		/** The only option Crewly ever confirms */
+		DECLINE_OPTION: 'Not now',
+		/** The key hint every selection menu of this version ends with */
+		FOOTER: 'Enter to confirm',
+		/** How far below the title the decline option may be (non-empty lines) */
+		MAX_OPTION_DISTANCE: 12,
+		/** How far below the decline option the footer may be (non-empty lines) */
+		MAX_FOOTER_DISTANCE: 8,
+		/** Non-empty lines the screen may show below the footer */
+		MAX_LINES_BELOW_FOOTER: 1,
+		/** Down presses tried to reach the decline option before giving up with Esc */
+		MAX_DOWN_PRESSES: 6,
+		/** How long the menu may take to repaint after a key (ms) */
+		KEY_SETTLE_MS: 300,
+		/** Times one start-up answers the menu before leaving it to the unanswered-prompt path */
+		MAX_ATTEMPTS: 3,
+	},
 	MESSAGES: {
 		BYPASS_CONSENT: 'Claude Code is asking you to accept Bypass Permissions mode, which Crewly agents run in. Crewly does not accept it without you. If Slack is connected, Crewly has asked you there: reply `accept bypass`. Otherwise, in a terminal on this machine run `claude --dangerously-skip-permissions` once, choose "Yes, I accept", exit, then start the team again.',
 		UNANSWERED_PROMPT: 'Claude Code is waiting on a prompt that Crewly does not answer for you, so the agent cannot start. In a terminal on this machine run `claude --dangerously-skip-permissions` once in the agent\'s folder, answer what it asks, exit, then start the team again. The screen it is showing:',

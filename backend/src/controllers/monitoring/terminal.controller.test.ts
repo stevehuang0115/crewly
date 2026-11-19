@@ -94,6 +94,7 @@ jest.mock('../../constants.js', () => ({
 		DEFAULT_CAPTURE_LINES: 50,
 		MAX_CAPTURE_LINES: 500,
 		MAX_OUTPUT_SIZE: 131072,
+		INPUT_KEYS: jest.requireActual<typeof import('../../constants.js')>('../../constants.js').TERMINAL_CONTROLLER_CONSTANTS.INPUT_KEYS,
 	},
 	ORCHESTRATOR_SESSION_NAME: 'crewly-orc',
 	// Read at import by the caller-identity middleware (owner auth, #999).
@@ -1332,6 +1333,65 @@ describe('TerminalController', () => {
 			await terminalController.sendTerminalInput(mockReq as Request, mockRes as Response);
 
 			expect(mockSession.write).toHaveBeenCalledWith('grep -r "test" . | head -10\r');
+		});
+
+		it('still refuses text the validator rejects (Esc and other control sequences)', async () => {
+			const security = jest.requireMock('../../utils/security.js') as { validateTerminalInput: jest.Mock };
+			security.validateTerminalInput.mockReturnValueOnce({
+				isValid: false,
+				error: 'Input contains dangerous control sequences',
+			});
+			mockReq = { params: { sessionName: 'test-session' } as any, body: { input: '\x1b' } };
+
+			await terminalController.sendTerminalInput(mockReq as Request, mockRes as Response);
+
+			expect(security.validateTerminalInput).toHaveBeenCalledWith('\x1b');
+			expect(mockRes.status).toHaveBeenCalledWith(400);
+			expect(mockSession.write).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			['escape', '\x1b'],
+			['enter', '\r'],
+			['tab', '\t'],
+			['up', '\x1b[A'],
+			['down', '\x1b[B'],
+			['right', '\x1b[C'],
+			['left', '\x1b[D'],
+			['Escape', '\x1b'],
+		])('sends the named key %s as its bytes, with no carriage return added', async (key, bytes) => {
+			mockReq = { params: { sessionName: 'test-session' } as any, body: { key } };
+
+			await terminalController.sendTerminalInput(mockReq as Request, mockRes as Response);
+
+			expect(mockSession.write).toHaveBeenCalledTimes(1);
+			expect(mockSession.write).toHaveBeenCalledWith(bytes);
+			expect(mockRes.json).toHaveBeenCalledWith({ success: true, message: 'Key sent successfully' });
+		});
+
+		it.each([['f13'], ['\x1b]0;x\x07'], [''], [42], [{ name: 'escape' }], ['constructor']])(
+			'refuses the unknown key %p with the list of valid names',
+			async (key) => {
+				mockReq = { params: { sessionName: 'test-session' } as any, body: { key } };
+
+				await terminalController.sendTerminalInput(mockReq as Request, mockRes as Response);
+
+				expect(mockRes.status).toHaveBeenCalledWith(400);
+				expect(mockRes.json).toHaveBeenCalledWith({
+					success: false,
+					error: 'Unknown key. Valid keys: escape, enter, tab, up, down, right, left',
+				});
+				expect(mockSession.write).not.toHaveBeenCalled();
+			},
+		);
+
+		it('refuses a body with both key and input', async () => {
+			mockReq = { params: { sessionName: 'test-session' } as any, body: { key: 'enter', input: 'rm -rf x' } };
+
+			await terminalController.sendTerminalInput(mockReq as Request, mockRes as Response);
+
+			expect(mockRes.status).toHaveBeenCalledWith(400);
+			expect(mockSession.write).not.toHaveBeenCalled();
 		});
 	});
 
