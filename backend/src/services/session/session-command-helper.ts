@@ -16,6 +16,7 @@
  * @module session-command-helper
  */
 
+import { resolveAgentShell } from '../../utils/agent-shell.utils.js';
 import type { ISession, ISessionBackend } from './session-backend.interface.js';
 import { RECOVERY_TERMINAL_COLS, RECOVERY_TERMINAL_ROWS } from './session-backend.interface.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
@@ -1327,7 +1328,7 @@ export class SessionCommandHelper {
 		SessionCommandHelper.resetSessionInput(sessionName);
 
 		// Default to shell if no command specified
-		const command = options?.command || process.env.SHELL || '/bin/bash';
+		const command = options?.command || resolveAgentShell();
 
 		const session = await this.backend.createSession(sessionName, {
 			cwd,

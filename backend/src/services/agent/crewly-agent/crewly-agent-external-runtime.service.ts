@@ -10,6 +10,7 @@
  * @module services/agent/crewly-agent/crewly-agent-external-runtime.service
  */
 
+import { resolveAgentShell } from '../../../utils/agent-shell.utils.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { promises as fs } from 'fs';
 import * as path from 'path';
@@ -572,7 +573,7 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
       // settings.general.runtimeCommands['crewly-agent'] to a shell-ready
       // string. Validated against a strict allow-list (see
       // resolveRuntimeCommand) before reaching here.
-      const shell = process.env.SHELL || '/bin/bash';
+      const shell = resolveAgentShell();
       this.child = spawn(shell, ['-lc', command], {
         cwd: config.projectPath || this.projectRoot,
         env,
