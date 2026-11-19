@@ -632,6 +632,8 @@ export class AgentHeartbeatMonitorService {
 				role: state.role,
 				teamId: state.teamId,
 				memberId: state.memberId,
+				// Nobody asked for this start: leave a start-up blocked on the user alone.
+				automatic: true,
 			});
 
 			if (!result.success) {

@@ -163,13 +163,25 @@ describe('serviceCommand', () => {
 		});
 
 		it('rejects unsupported platforms', async () => {
-			Object.defineProperty(process, 'platform', { value: 'win32' });
+			Object.defineProperty(process, 'platform', { value: 'freebsd' });
 
 			await serviceCommand('install', {});
 
 			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('not supported on win32');
+			expect(output).toContain('not supported on freebsd');
 			expect(exitSpy).toHaveBeenCalledWith(1);
+		});
+
+		it('hands Windows to its own service commands', async () => {
+			Object.defineProperty(process, 'platform', { value: 'win32' });
+			const before = process.exitCode;
+
+			await serviceCommand('logs', {});
+
+			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			expect(output).toContain('"crewly service logs" is not available on Windows yet.');
+			expect(process.exitCode).toBe(1);
+			process.exitCode = before;
 		});
 	});
 

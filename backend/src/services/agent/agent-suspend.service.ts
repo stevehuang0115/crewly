@@ -256,6 +256,8 @@ export class AgentSuspendService {
 				role: info.role,
 				teamId: info.teamId,
 				memberId: info.memberId,
+				// Nobody asked for this start: leave a start-up blocked on the user alone.
+				automatic: true,
 			});
 
 			if (!result.success) {
