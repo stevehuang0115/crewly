@@ -1,9 +1,18 @@
 import { acceptBypassConsent, consentCommand, hasBypassConsent, type ConsentPty } from './bypass-consent-acceptor.js';
 
-const CONSENT_SCREEN = 'WARNING: Claude Code running in Bypass Permissions mode\r\n❯ No, exit\r\n  Yes, I accept\r\nEnter to confirm\r\n';
-const CONSENT_ON_YES = '  No, exit\r\n❯ Yes, I accept\r\n';
-const TRUST_SCREEN = 'Quick safety check\r\n❯ No, exit\r\n  Yes, I trust this folder\r\n';
-const TRUST_ON_YES = '  No, exit\r\n❯ Yes, I trust this folder\r\n';
+const CLEAR = '\x1b[2J\x1b[H';
+/** Draw a whole screen the way a TUI does: clear, then the lines from the top. */
+const draw = (lines: string[]): string => CLEAR + lines.join('\r\n');
+/** The consent with the marker (`m`) on the first or the second option. */
+const consent = (on: 'no' | 'yes', m = '❯'): string =>
+	draw([' WARNING: Claude Code running in Bypass Permissions mode', '', on === 'no' ? ` ${m} No, exit` : '   No, exit', on === 'yes' ? ` ${m} Yes, I accept` : '   Yes, I accept', '', ' Enter to confirm · Esc to cancel']);
+/** The folder-trust prompt, same layout. */
+const trust = (on: 'no' | 'yes', m = '❯'): string =>
+	draw([' Accessing workspace:', ' Quick safety check', on === 'no' ? ` ${m} No, exit` : '   No, exit', on === 'yes' ? ` ${m} Yes, I trust this folder` : '   Yes, I trust this folder', '', ' Enter to confirm · Esc to cancel']);
+/** What a Windows console sends after Down: blank the old marker (row 3), write `>` on row 4. Nothing else. */
+const WINDOWS_DOWN_DIFF = '\x1b[3;2H \x1b[4;2H>';
+const READY = draw([' Claude Code v2', '', '❯ ', '  ⏵⏵ bypass permissions on']);
+const CONSENT_SCREEN = consent('no');
 const DOWN = '\x1b[B';
 const ENTER = '\r';
 
@@ -65,7 +74,7 @@ function deps(terminal: ConsentPty, onStart: () => void = () => undefined) {
 
 describe('hasBypassConsent', () => {
 	it('needs the menu itself, not just its words', () => {
-		expect(hasBypassConsent(CONSENT_SCREEN)).toBe(true);
+		expect(hasBypassConsent(' WARNING: Claude Code running in Bypass Permissions mode\n ❯ No, exit\n   Yes, I accept\n Enter to confirm')).toBe(true);
 		expect(hasBypassConsent('Bypass Permissions mode … Yes, I accept')).toBe(false);
 		expect(hasBypassConsent('Bypass Permissions mode on')).toBe(false);
 	});
@@ -87,12 +96,12 @@ describe('acceptBypassConsent', () => {
 
 	it('moves to "Yes, I accept", confirms, ends the process and removes its folder', async () => {
 		const { terminal, written, api } = fakePty((key, a) => {
-			if (key === DOWN) a.print(CONSENT_ON_YES);
-			if (key === ENTER) a.print('\r\n> Welcome to Claude Code\r\n');
+			if (key === DOWN) a.print(consent('yes'));
+			if (key === ENTER) a.print(READY);
 		});
 		const d = deps(terminal, () => api.print(CONSENT_SCREEN));
 		const result = await acceptBypassConsent(d);
-		expect(result.outcome).toBe('accepted');
+		expect(result).toEqual({ outcome: 'accepted', detail: 'consent_answered' });
 		expect(written).toEqual([DOWN, ENTER]);
 		expect(d.spawnPty).toHaveBeenCalledWith('/usr/local/bin/claude', ['--dangerously-skip-permissions'], expect.objectContaining({ cwd: '/tmp/crewly-consent-x' }));
 		expect(terminal.kill).toHaveBeenCalled();
@@ -100,31 +109,30 @@ describe('acceptBypassConsent', () => {
 	});
 
 	it('trusts its own empty folder first when asked', async () => {
-		let screen: 'trust' | 'consent' = 'trust';
+		let shown: 'trust' | 'consent' = 'trust';
 		const { terminal, written, api } = fakePty((key, a) => {
-			if (key === DOWN) a.print(screen === 'trust' ? TRUST_ON_YES : CONSENT_ON_YES);
-			if (key === ENTER && screen === 'trust') {
-				screen = 'consent';
+			if (key === DOWN) a.print(shown === 'trust' ? trust('yes') : consent('yes'));
+			if (key === ENTER && shown === 'trust') {
+				shown = 'consent';
 				a.print(CONSENT_SCREEN);
-			} else if (key === ENTER) a.print('\r\n> ready\r\n');
+			} else if (key === ENTER) a.print(READY);
 		});
-		const result = await acceptBypassConsent(deps(terminal, () => api.print(TRUST_SCREEN)));
+		const result = await acceptBypassConsent(deps(terminal, () => api.print(trust('no'))));
 		expect(result.outcome).toBe('accepted');
 		expect(written).toEqual([DOWN, ENTER, DOWN, ENTER]);
 	});
 
-	it('reads the `>` highlight of a Windows console (trust prompt, then consent)', async () => {
-		let screen: 'trust' | 'consent' = 'trust';
+	it('reads a Windows console, which sends only the moved marker after Down (trust_not_answered on DESKTOP-RIG1SOO)', async () => {
+		let shown: 'trust' | 'consent' = 'trust';
 		const { terminal, written, api } = fakePty((key, a) => {
-			if (key === DOWN) a.print(screen === 'trust' ? '  No, exit\r\n> Yes, I trust this folder\r\n' : '  No, exit\r\n> Yes, I accept\r\n');
-			if (key === ENTER && screen === 'trust') {
-				screen = 'consent';
-				a.print('WARNING: Claude Code running in Bypass Permissions mode\r\n> No, exit\r\n  Yes, I accept\r\n');
-			} else if (key === ENTER) a.print('\r\n> ready\r\n');
+			if (key === DOWN) a.print(WINDOWS_DOWN_DIFF);
+			if (key === ENTER && shown === 'trust') {
+				shown = 'consent';
+				a.print(consent('no', '>'));
+			} else if (key === ENTER) a.print(READY);
 		});
-		const start = 'Accessing workspace: C:\\Temp\\crewly-consent-x\r\n> No, exit\r\n  Yes, I trust this folder\r\nEnter to confirm\r\n';
-		const result = await acceptBypassConsent({ ...deps(terminal, () => api.print(start)), platform: 'win32' });
-		expect(result.outcome).toBe('accepted');
+		const result = await acceptBypassConsent({ ...deps(terminal, () => api.print(trust('no', '>'))), platform: 'win32' });
+		expect(result).toEqual({ outcome: 'accepted', detail: 'consent_answered' });
 		expect(written).toEqual([DOWN, ENTER, DOWN, ENTER]);
 	});
 
@@ -135,9 +143,16 @@ describe('acceptBypassConsent', () => {
 		expect(written).toEqual([DOWN]);
 	});
 
+	it('never presses Enter on the trust prompt either when the highlight did not move', async () => {
+		const { terminal, written, api } = fakePty(() => undefined);
+		const result = await acceptBypassConsent(deps(terminal, () => api.print(trust('no', '>'))));
+		expect(result).toEqual({ outcome: 'failed', detail: 'trust_not_answered' });
+		expect(written).toEqual([DOWN]);
+	});
+
 	it('fails when the answer made Claude Code exit', async () => {
 		const { terminal, api } = fakePty((key, a) => {
-			if (key === DOWN) a.print(CONSENT_ON_YES);
+			if (key === DOWN) a.print(consent('yes'));
 			if (key === ENTER) a.exit();
 		});
 		const result = await acceptBypassConsent(deps(terminal, () => api.print(CONSENT_SCREEN)));
@@ -147,8 +162,7 @@ describe('acceptBypassConsent', () => {
 
 	it('fails when the consent stays on screen', async () => {
 		const { terminal, api } = fakePty((key, a) => {
-			if (key === DOWN) a.print(CONSENT_ON_YES);
-			if (key === ENTER) a.print(CONSENT_SCREEN);
+			if (key === DOWN) a.print(consent('yes'));
 		});
 		const result = await acceptBypassConsent(deps(terminal, () => api.print(CONSENT_SCREEN)));
 		expect(result).toEqual({ outcome: 'failed', detail: 'consent_still_shown' });
@@ -156,17 +170,17 @@ describe('acceptBypassConsent', () => {
 
 	it('reports not_shown when Claude Code starts without the consent', async () => {
 		const { terminal, written, api } = fakePty(() => undefined);
-		const result = await acceptBypassConsent(deps(terminal, () => api.print('> Welcome back\r\n')));
+		const result = await acceptBypassConsent(deps(terminal, () => api.print(READY)));
 		expect(result.outcome).toBe('not_shown');
 		expect(written).toEqual([]);
 	});
 
 	it('ends the whole process tree on Windows', async () => {
 		const { terminal, api } = fakePty((key, a) => {
-			if (key === DOWN) a.print(CONSENT_ON_YES);
-			if (key === ENTER) a.print('ready\r\n');
+			if (key === DOWN) a.print(WINDOWS_DOWN_DIFF);
+			if (key === ENTER) a.print(READY);
 		});
-		const d = { ...deps(terminal, () => api.print(CONSENT_SCREEN)), platform: 'win32' as NodeJS.Platform };
+		const d = { ...deps(terminal, () => api.print(consent('no', '>'))), platform: 'win32' as NodeJS.Platform };
 		await acceptBypassConsent(d);
 		expect(d.killTree).toHaveBeenCalledWith(4242);
 	});

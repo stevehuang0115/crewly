@@ -10,7 +10,8 @@
  * its own (in an empty temp folder, which it trusts when asked), answers the
  * one screen it knows, and ends the process. Both menus list "No, exit" first
  * with no numbers, so it moves down, checks the highlight is on the option it
- * wants, and only then presses Enter.
+ * wants, and only then presses Enter. It reads a rendered virtual screen, since
+ * a Windows console sends only the cells that changed.
  *
  * @module services/harness/bypass-consent-acceptor
  */
@@ -25,7 +26,7 @@ import { findExecutable } from '../../utils/find-executable.utils.js';
 import { killWindowsProcessTree } from '../../utils/windows-process.utils.js';
 import { stripNestedClaudeSessionEnv } from '../agent/runtime-session-recovery.js';
 import { withHarnessPath } from './harness-exec.utils.js';
-import { normalizeTerminalOutput } from './login-rules.js';
+import { PtyTerminalBuffer } from '../session/pty/pty-terminal-buffer.js';
 
 /**
  * How the attempt ended.
@@ -139,30 +140,36 @@ export async function acceptBypassConsent(deps: BypassConsentDeps = {}): Promise
 	}
 
 	let terminal: ConsentPty | null = null;
-	let raw = '';
+	let sawOutput = false;
 	let exited = false;
-	/** Text printed since `from`, as the screen would read. */
-	const textSince = (from: number): string => normalizeTerminalOutput(raw.slice(from)).text;
+	// A virtual screen, not the bytes since a key: a Windows console redraws
+	// only what changed. After Down it sends two cursor moves, a blank and the
+	// marker (`ESC[14;2H ESC[15;2H>`), never the option's label again, so the
+	// label and its marker can only be read together off a rendered screen
+	// (DESKTOP-RIG1SOO, 2026-11-19).
+	const display = new PtyTerminalBuffer(RUNTIME_CONSENT_CONSTANTS.PTY_COLS, RUNTIME_CONSENT_CONSTANTS.PTY_ROWS);
+	/** What the terminal shows right now. */
+	const screen = async (): Promise<string> => {
+		await display.flush();
+		return display.getContent(RUNTIME_CONSENT_CONSTANTS.PTY_ROWS);
+	};
 	/**
-	 * Move the highlight to the second option, check it is the expected one,
-	 * and confirm. Never presses Enter on an option it did not see highlighted.
-	 * Returns where the output stood just before Enter, or null when it did
-	 * not confirm.
+	 * Move the highlight to the second option, check on screen that the
+	 * marker now stands before the expected option, and confirm. Never
+	 * presses Enter on an option it did not see highlighted.
 	 */
-	const chooseSecondOption = async (label: string): Promise<number | null> => {
-		if (!terminal) return null;
+	const chooseSecondOption = async (label: string): Promise<boolean> => {
+		if (!terminal) return false;
 		await sleep(RUNTIME_CONSENT_CONSTANTS.KEY_DELAY_MS);
-		const movedAt = raw.length;
 		terminal.write(RUNTIME_CONSENT_CONSTANTS.DOWN_KEY);
-		const highlighted = new RegExp(`${RUNTIME_CONSENT_CONSTANTS.MENU_CURSOR_PATTERN}\\s*${label}`);
+		const highlighted = new RegExp(`^\\s*${RUNTIME_CONSENT_CONSTANTS.MENU_CURSOR_PATTERN}\\s*${label}\\s*$`, 'm');
 		const by = now() + RUNTIME_CONSENT_CONSTANTS.SETTLE_MS;
-		while (!highlighted.test(textSince(movedAt))) {
-			if (exited || now() >= by) return null;
+		while (!highlighted.test(await screen())) {
+			if (exited || now() >= by) return false;
 			await sleep(RUNTIME_CONSENT_CONSTANTS.POLL_MS);
 		}
-		const confirmedAt = raw.length;
 		terminal.write(RUNTIME_CONSENT_CONSTANTS.ENTER_KEY);
-		return confirmedAt;
+		return true;
 	};
 
 	try {
@@ -172,7 +179,8 @@ export async function acceptBypassConsent(deps: BypassConsentDeps = {}): Promise
 			return { outcome: 'failed', detail: `spawn_failed: ${error instanceof Error ? error.message : String(error)}` };
 		}
 		terminal.onData((data) => {
-			raw += data;
+			sawOutput = true;
+			display.write(data);
 		});
 		terminal.onExit(() => {
 			exited = true;
@@ -180,32 +188,31 @@ export async function acceptBypassConsent(deps: BypassConsentDeps = {}): Promise
 
 		// 1. Wait for the consent screen, trusting our own empty folder on the way.
 		const shownBy = now() + RUNTIME_CONSENT_CONSTANTS.SHOW_TIMEOUT_MS;
-		let screenFrom = 0;
 		let trusted = false;
-		while (!hasBypassConsent(textSince(screenFrom))) {
+		for (;;) {
+			const shown = await screen();
+			if (hasBypassConsent(shown)) break;
 			if (exited) return { outcome: 'failed', detail: 'exited_before_consent' };
-			if (now() >= shownBy) return { outcome: raw.length > 0 ? 'not_shown' : 'failed', detail: raw.length > 0 ? 'consent_not_shown' : 'no_output' };
-			if (!trusted && textSince(screenFrom).includes(RUNTIME_CONSENT_CONSTANTS.TRUST_OPTION)) {
+			if (now() >= shownBy) return { outcome: sawOutput ? 'not_shown' : 'failed', detail: sawOutput ? 'consent_not_shown' : 'no_output' };
+			if (!trusted && shown.includes(RUNTIME_CONSENT_CONSTANTS.TRUST_OPTION)) {
 				trusted = true;
-				const trustedAt = await chooseSecondOption(RUNTIME_CONSENT_CONSTANTS.TRUST_OPTION);
-				if (trustedAt === null) return { outcome: 'failed', detail: 'trust_not_answered' };
-				screenFrom = trustedAt;
+				if (!(await chooseSecondOption(RUNTIME_CONSENT_CONSTANTS.TRUST_OPTION))) return { outcome: 'failed', detail: 'trust_not_answered' };
 				continue;
 			}
 			await sleep(RUNTIME_CONSENT_CONSTANTS.POLL_MS);
 		}
 
 		// 2. Choose "Yes, I accept".
-		const answeredAt = await chooseSecondOption(RUNTIME_CONSENT_CONSTANTS.ACCEPT_OPTION);
-		if (answeredAt === null) return { outcome: 'failed', detail: exited ? 'exited_before_answer' : 'accept_not_highlighted' };
+		if (!(await chooseSecondOption(RUNTIME_CONSENT_CONSTANTS.ACCEPT_OPTION))) {
+			return { outcome: 'failed', detail: exited ? 'exited_before_answer' : 'accept_not_highlighted' };
+		}
 		const goneBy = now() + RUNTIME_CONSENT_CONSTANTS.SETTLE_MS;
 		for (;;) {
 			await sleep(RUNTIME_CONSENT_CONSTANTS.POLL_MS);
 			// "No, exit" ends the process; an accepted consent leaves Claude Code running.
 			if (exited) return { outcome: 'failed', detail: 'exited_after_answer' };
-			const after = textSince(answeredAt);
 			if (now() >= goneBy) {
-				if (raw.length > answeredAt && !hasBypassConsent(after)) return { outcome: 'accepted', detail: 'consent_answered' };
+				if (!hasBypassConsent(await screen())) return { outcome: 'accepted', detail: 'consent_answered' };
 				return { outcome: 'failed', detail: 'consent_still_shown' };
 			}
 		}
@@ -223,5 +230,6 @@ export async function acceptBypassConsent(deps: BypassConsentDeps = {}): Promise
 		} catch {
 			// A leftover empty temp folder is harmless.
 		}
+		display.dispose();
 	}
 }
