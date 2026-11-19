@@ -142,6 +142,8 @@ export async function acceptBypassConsent(deps: BypassConsentDeps = {}): Promise
 	let terminal: ConsentPty | null = null;
 	let sawOutput = false;
 	let exited = false;
+	/** The run is over: late output is dropped */
+	let finished = false;
 	// A virtual screen, not the bytes since a key: a Windows console redraws
 	// only what changed. After Down it sends two cursor moves, a blank and the
 	// marker (`ESC[14;2H ESC[15;2H>`), never the option's label again, so the
@@ -179,8 +181,17 @@ export async function acceptBypassConsent(deps: BypassConsentDeps = {}): Promise
 			return { outcome: 'failed', detail: `spawn_failed: ${error instanceof Error ? error.message : String(error)}` };
 		}
 		terminal.onData((data) => {
+			// Output can still arrive after the run ended and the screen was
+			// released: a Windows console delivers a last chunk after the kill.
+			// An exception here is uncaught and stops the whole server
+			// (DESKTOP-RIG1SOO, 1.37.2: consent accepted, then the backend exited).
+			if (finished) return;
 			sawOutput = true;
-			display.write(data);
+			try {
+				display.write(data);
+			} catch {
+				// The screen is gone; nothing reads it any more.
+			}
 		});
 		terminal.onExit(() => {
 			exited = true;
@@ -217,6 +228,7 @@ export async function acceptBypassConsent(deps: BypassConsentDeps = {}): Promise
 			}
 		}
 	} finally {
+		finished = true;
 		if (terminal && !exited) {
 			try {
 				if (platform === 'win32') (deps.killTree ?? killWindowsProcessTree)(terminal.pid);

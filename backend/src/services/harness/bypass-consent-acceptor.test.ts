@@ -185,6 +185,19 @@ describe('acceptBypassConsent', () => {
 		expect(d.killTree).toHaveBeenCalledWith(4242);
 	});
 
+	it('drops output that arrives after the run ended (a Windows console sends a last chunk after the kill; it crashed the server)', async () => {
+		const { terminal, api } = fakePty((key, a) => {
+			if (key === DOWN) a.print(consent('yes'));
+			if (key === ENTER) a.print(READY);
+		});
+		const result = await acceptBypassConsent(deps(terminal, () => api.print(CONSENT_SCREEN)));
+		expect(result.outcome).toBe('accepted');
+		expect(() => api.print('late output after the kill\r\n')).not.toThrow();
+		const failed = fakePty(() => undefined);
+		await acceptBypassConsent(deps(failed.terminal, () => failed.api.print(CONSENT_SCREEN)));
+		expect(() => failed.api.print('late')).not.toThrow();
+	});
+
 	it('fails when the terminal cannot start', async () => {
 		const result = await acceptBypassConsent({
 			findClaude: () => '/bin/claude',
