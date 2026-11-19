@@ -56,6 +56,29 @@ jobs:
             printf '%s -> ' "$p"; curl -s -m 10 -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $T" "http://localhost:8787$p"
           done
           ls "$USERPROFILE/.crewly" | head -30
+      - name: node-pty alone with Git Bash
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          @'
+          const pty = require('node-pty');
+          const run = (file, args, input) => new Promise((done) => {
+            let out = '';
+            const p = pty.spawn(file, args, { name: 'xterm-256color', cols: 160, rows: 50, cwd: process.env.USERPROFILE, env: process.env });
+            console.log('spawned', file, 'pid', p.pid);
+            p.onData((d) => { out += d; });
+            p.onExit((e) => { console.log('exit', JSON.stringify(e)); });
+            setTimeout(() => p.write(input), 3000);
+            setTimeout(() => { console.log('bytes', out.length); console.log(out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').slice(-600)); try { p.kill(); } catch {} done(); }, 9000);
+          });
+          (async () => {
+            await run('C:\\Program Files\\Git\\bin\\bash.exe', [], 'echo PTY_OK_$((6*7)); uname -s\r');
+            await run('C:\\Program Files\\Git\\bin\\bash.exe', ['--login', '-i'], 'echo LOGIN_OK_$((6*7))\r');
+            await run('powershell.exe', [], 'echo PS_OK\r');
+            process.exit(0);
+          })();
+          '@ | Set-Content -Path pty-probe.cjs
+          node pty-probe.cjs
       - name: Terminal session under Git Bash (ConPTY)
         continue-on-error: true
         shell: bash
@@ -69,9 +92,6 @@ jobs:
           curl -s -m 15 -H "$A" -H 'Content-Type: application/json' -X POST "$B/win-smoke/write" \
             -d '{"data":"echo PTY_OK_$((6*7)); uname -s; pwd; curl -s localhost:8787/api/health | jq -r .data.live; export CREWLY_X=1 && echo EXPORT_$CREWLY_X\r"}' | cut -c1-200; echo
           sleep 6
-          curl -s -m 15 -H "$A" "$B/win-smoke/output?lines=40" | jq -r '.output // .data.output // .' | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' | tail -25
-      - name: unit tests (session, system, cli, utils)
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          npx jest backend/src/services/session backend/src/services/system backend/src/utils cli/src --maxWorkers=2 2>&1 | Select-String -Pattern 'FAIL |Tests:|Test Suites:|^\s+● |ENOENT|EPERM|Expected|Received' | Select-Object -First 260 | ForEach-Object { $_.Line.Substring(0, [Math]::Min(220, $_.Line.Length)) }
+          curl -s -m 15 -H "$A" "$B/win-smoke/output?lines=40" | cut -c1-900; echo
+          curl -s -m 15 -H "$A" "$B" | cut -c1-400; echo
+          grep -aE "win-smoke|PtySession" "$RUNNER_TEMP/crewly-start.log" | tail -12 | cut -c1-400
