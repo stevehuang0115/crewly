@@ -21,6 +21,43 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Native jq and curl get arguments and environment in the legacy code page;
+      # config/skills/_common/lib.sh routes non-ASCII text around that.
+      - name: Skills keep non-ASCII text intact (jq + curl under Git Bash)
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/echo.js" <<'JS'
+          require('http').createServer((req, res) => {
+            const chunks = [];
+            req.on('data', (c) => chunks.push(c));
+            req.on('end', () => {
+              let hex = 'unparsable';
+              try { hex = Buffer.from(String(JSON.parse(Buffer.concat(chunks).toString('utf8')).text), 'utf8').toString('hex'); } catch (e) {}
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ hex }));
+            });
+          }).listen(8799);
+          JS
+          node "$RUNNER_TEMP/echo.js" &
+          sleep 3
+          export CREWLY_API_URL=http://localhost:8799
+          T='已建好了：团队 WeChatBot 的频道'
+          WANT="$(printf '%s' "$T" | od -An -tx1 | tr -d ' \n')"
+          echo "jq: $(jq --version)  curl: $(curl --version | head -1 | cut -c1-40)  OSTYPE=$OSTYPE"
+          via_env() { ( source config/skills/_common/lib.sh; export _T="$T"; api_call POST /x "$(jq -n '{text: env._T}')" | jq -r .hex ) 2>/dev/null; }
+          via_arg() { ( source config/skills/_common/lib.sh; api_call POST /x "$(jq -n --arg t "$T" '{text: $t}')" | jq -r .hex ) 2>/dev/null; }
+          echo "without the shim: env=$(CREWLY_NATIVE_TEXT_SHIM=0 via_env) arg=$(CREWLY_NATIVE_TEXT_SHIM=0 via_arg)"
+          echo "want:             $WANT"
+          GOT_ENV="$(via_env)"; GOT_ARG="$(via_arg)"
+          echo "with the shim:    env=$GOT_ENV arg=$GOT_ARG"
+          GOT_SKILL="$(bash config/skills/orchestrator/reply-slack/execute.sh --channel C1 --thread 1.2 --text "$T" 2>/dev/null | jq -r .hex)"
+          echo "reply-slack:      $GOT_SKILL"
+          GOT_CURL="$( ( source config/skills/_common/lib.sh; curl -s -X POST -d "{\"text\":\"$T\"}" http://localhost:8799/x | jq -r .hex ) )"
+          echo "own curl -d:      $GOT_CURL"
+          [ "$GOT_CURL" = "$WANT" ] || { echo "a skill's own curl -d changed the text"; exit 1; }
+          [ "$GOT_ENV" = "$WANT" ] || { echo "text read through jq env was changed"; exit 1; }
+          [ "$GOT_ARG" = "$WANT" ] || { echo "text passed as jq --arg was changed"; exit 1; }
+          [ "$GOT_SKILL" = "$WANT" ] || { echo "reply-slack changed the text"; exit 1; }
       - name: npm ci
         shell: pwsh
         run: |
