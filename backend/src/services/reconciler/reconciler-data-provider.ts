@@ -1708,8 +1708,10 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         let body: Record<string, unknown>;
         if (agentSessionName === ORCHESTRATOR_SESSION_NAME) {
           url = `${apiBase}/api/orchestrator/setup`;
-          // setupOrchestrator takes no body; it is idempotent and self-gating.
-          body = {};
+          // setupOrchestrator is idempotent and self-gating. `automatic` tells
+          // it nobody asked for this start, so it leaves an orchestrator whose
+          // start-up is blocked on the user alone.
+          body = { automatic: true };
         } else {
           url = `${apiBase}/api/teams/members/start`;
           if (teamId && memberId) {

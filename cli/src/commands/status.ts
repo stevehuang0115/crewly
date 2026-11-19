@@ -35,6 +35,9 @@ const BACKEND_PORT = process.env.WEB_PORT || WEB_CONSTANTS.PORTS.BACKEND;
 /** Longest message preview shown for a busy agent. */
 const BUSY_PREVIEW_MAX = 60;
 
+/** Longest reason shown for an agent whose start-up is blocked on the user. */
+const BLOCKED_REASON_MAX = 160;
+
 interface StatusOptions {
 	verbose?: boolean;
 }
@@ -134,12 +137,27 @@ function printAgents(snapshot: BackendSnapshot, verbose: boolean): void {
 			const clipped = preview.length > BUSY_PREVIEW_MAX ? `${preview.slice(0, BUSY_PREVIEW_MAX)}...` : preview;
 			state = `busy since ${agent.busySince ?? '?'}${clipped ? ` — ${clipped}` : ''}`;
 		}
+		// Start-up blocked on the user: never "idle", it waits on them.
+		if (agent.blocked) state = blockedState(agent.blocked);
 		const line = `   • ${describeAgent(agent)}  ${where}${state ? `  ${state}` : ''}`;
-		console.log(agent.busy ? chalk.yellow(line) : chalk.gray(line));
+		console.log(agent.busy || agent.blocked ? chalk.yellow(line) : chalk.gray(line));
 		if (verbose && agent.cwd) {
 			console.log(chalk.gray(`     cwd: ${agent.cwd}`));
 		}
 	}
+}
+
+/**
+ * State text of an agent whose start-up is blocked on the user: the reason
+ * code and the message on one line.
+ *
+ * @param blocked - Reason code and user-facing message from the backend
+ * @returns e.g. `blocked — waiting on you (consent_required): Claude Code asks ...`
+ */
+export function blockedState(blocked: { reason: string; message: string }): string {
+	const reason = blocked.message.replace(/\s+/g, ' ').trim();
+	const clipped = reason.length > BLOCKED_REASON_MAX ? `${reason.slice(0, BLOCKED_REASON_MAX)}...` : reason;
+	return `blocked — waiting on you (${blocked.reason})${clipped ? `: ${clipped}` : ''}`;
 }
 
 /**

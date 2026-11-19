@@ -73,6 +73,8 @@ jest.mock('../../constants', () => ({
   // Real values: read by the usage-limit state the status consults.
   RUNTIME_FALLBACK_CONSTANTS: (jest.requireActual('../../constants') as Record<string, unknown>).RUNTIME_FALLBACK_CONSTANTS,
   USAGE_LIMIT_STATE_CONSTANTS: (jest.requireActual('../../constants') as Record<string, unknown>).USAGE_LIMIT_STATE_CONSTANTS,
+  // Real values: the text of the start-up-blocked status.
+  STARTUP_BLOCK_CONSTANTS: (jest.requireActual('../../constants') as Record<string, unknown>).STARTUP_BLOCK_CONSTANTS,
 }));
 
 jest.mock('../core/logger.service.js', () => ({
@@ -117,6 +119,7 @@ import {
   getOrchestratorOfflineMessage,
 } from './orchestrator-status.service.js';
 import { markUsageLimited, resetUsageLimitState } from '../runtime-fallback/usage-limit-state.js';
+import { clearStartupBlock, recordStartupBlock, resetStartupBlocksForTesting } from '../agent/startup-block.registry.js';
 
 describe('OrchestratorStatusService', () => {
   /**
@@ -228,6 +231,32 @@ describe('OrchestratorStatusService', () => {
   });
 
   describe('getOrchestratorStatus', () => {
+    describe('start-up blocked on the user (Windows host, 2026-11-19)', () => {
+      afterEach(() => resetStartupBlocksForTesting());
+
+      it('is not active while blocked, even with a live session whose child runs (it sits on the menu)', async () => {
+        mockOrchestratorData.value = createMockOrchestratorStatus('active');
+        mockSessionState.exists = true;
+        recordStartupBlock('crewly-orc', 'consent_required', 'Claude Code asks to accept Bypass Permissions mode.');
+
+        const result = await getOrchestratorStatus();
+        expect(result.isActive).toBe(false);
+        expect(result.message).toBe('Orchestrator start-up is waiting on you: Claude Code asks to accept Bypass Permissions mode.');
+        expect(result.startupBlocked).toMatchObject({ reason: 'consent_required', message: 'Claude Code asks to accept Bypass Permissions mode.' });
+      });
+
+      it('is active again once the block is cleared', async () => {
+        mockOrchestratorData.value = createMockOrchestratorStatus('active');
+        mockSessionState.exists = true;
+        recordStartupBlock('crewly-orc', 'consent_required', 'blocked');
+        clearStartupBlock('crewly-orc');
+
+        const result = await getOrchestratorStatus();
+        expect(result.isActive).toBe(true);
+        expect(result.startupBlocked).toBeUndefined();
+      });
+    });
+
     describe('usage-limited orchestrator (2026-10-16 weekly-limit incident)', () => {
       afterEach(() => resetUsageLimitState());
 

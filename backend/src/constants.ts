@@ -10671,3 +10671,21 @@ export const RUNTIME_CONSENT_CONSTANTS = {
 	/** Whole-message replies that decline (normalised, lower-case) */
 	DECLINE_PATTERN: /^(?:decline bypass(?: permissions?)?(?: mode)?|no,? exit|不同意跳过权限(?:模式)?|不接受跳过权限(?:模式)?|拒绝跳过权限(?:模式)?)$/,
 } as const;
+
+/**
+ * Start-up blocks (services/agent/startup-block.registry.ts): an agent whose
+ * last start ended in a RuntimeStartupBlockedError waits on the user. Status
+ * and health say so, and automatic callers do not start it again.
+ */
+export const STARTUP_BLOCK_CONSTANTS = {
+	/** Reason stored when the blocked error carried none */
+	UNKNOWN_REASON: 'unknown',
+	/** Joins who is blocked and the error's message in status / health text */
+	WAITING_ON_USER_TEXT: ' start-up is waiting on you: ',
+	/** Subject of the status / health line for the orchestrator */
+	ORCHESTRATOR_SUBJECT: 'Orchestrator',
+	/** How long a block holds automatic starts back before one more attempt is let through (ms) */
+	AUTOMATIC_RETRY_AFTER_MS: 60 * 60 * 1000,
+	/** Health status of an orchestrator whose start-up is blocked (never `ok`) */
+	HEALTH_STATUS: 'degraded',
+} as const;

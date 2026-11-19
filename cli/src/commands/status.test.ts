@@ -200,6 +200,28 @@ describe('statusCommand', () => {
 			expect(output).not.toContain('idle');
 		});
 
+		it('shows an agent whose start-up is blocked as waiting on the user with the reason, not idle (Windows host, 2026-11-19)', async () => {
+			mockBackend({
+				...HEALTHY_ROUTES,
+				'/health': {
+					status: 'healthy',
+					version: '1.20.99',
+					uptime: 5,
+					orchestrator: { status: 'degraded', reason: 'Orchestrator start-up is waiting on you: Claude Code asks to accept\nBypass Permissions mode.' },
+					startup_blocked: [{ sessionName: 'crewly-orc', reason: 'consent_required', message: 'Claude Code asks to accept\nBypass Permissions mode.', at: 'T' }],
+				},
+			});
+			mockProcesses();
+
+			await statusCommand({});
+
+			const output = printed(logSpy);
+			expect(output).toContain('orchestrator degraded');
+			expect(output).not.toContain('orchestrator ok');
+			expect(output).toMatch(/crewly-orc \(Orchestrator, Orchestrator, claude-code\)\s+PID 5001\s+blocked — waiting on you \(consent_required\): Claude Code asks to accept Bypass Permissions mode\./);
+			expect(output).not.toMatch(/crewly-orc.*idle/);
+		});
+
 		it('flags a degraded orchestrator with its reason', async () => {
 			mockBackend({
 				...HEALTHY_ROUTES,

@@ -33,6 +33,17 @@ export interface BackendHealth {
 	orchestratorReason: string | null;
 	/** Team health watchdog status */
 	teamHealthStatus: string | null;
+	/** Agents whose last start is blocked on the user (empty on an older backend) */
+	startupBlocked: StartupBlockedAgent[];
+}
+
+/** An agent that cannot start until the user acts. */
+export interface StartupBlockedAgent {
+	sessionName: string;
+	/** Reason code, e.g. `consent_required` */
+	reason: string;
+	/** What the user has to do */
+	message: string;
 }
 
 /** One running agent session. */
@@ -53,6 +64,8 @@ export interface RunningAgent {
 	memberName?: string;
 	teamName?: string;
 	runtimeType?: string;
+	/** Set when the agent's last start is blocked on the user (it is not idle: it waits on them) */
+	blocked?: { reason: string; message: string };
 }
 
 /** Everything the backend reports about itself, each part fail-soft. */
@@ -136,7 +149,26 @@ export function parseHealth(body: unknown): BackendHealth {
 		orchestratorStatus: str(orchestrator.status),
 		orchestratorReason: str(orchestrator.reason),
 		teamHealthStatus: str(teamHealth.status),
+		startupBlocked: parseStartupBlocked(b.startup_blocked),
 	};
+}
+
+/**
+ * Parse the `/health` body's `startup_blocked` list.
+ *
+ * @param value - The field (absent on an older backend)
+ * @returns Blocked agents; entries without a session name are dropped
+ */
+export function parseStartupBlocked(value: unknown): StartupBlockedAgent[] {
+	if (!Array.isArray(value)) return [];
+	const result: StartupBlockedAgent[] = [];
+	for (const entry of value) {
+		const e = obj(entry);
+		const sessionName = str(e.sessionName);
+		if (!sessionName) continue;
+		result.push({ sessionName, reason: str(e.reason) ?? 'unknown', message: str(e.message) ?? '' });
+	}
+	return result;
 }
 
 /** Team-member identity keyed by session name. */
@@ -181,6 +213,7 @@ export function parseTeamMembers(body: unknown): Map<string, MemberInfo> {
  * @param terminalBody - `GET /api/terminal/sessions` body, or null (adds in-process agents)
  * @param readiness - Restart readiness, or null (busy flags then stay false)
  * @param members - Session name → member info
+ * @param startupBlocked - Agents whose last start is blocked on the user (listed even without a live session)
  * @returns Agents sorted by name
  */
 export function buildAgentList(
@@ -188,6 +221,7 @@ export function buildAgentList(
 	terminalBody: unknown,
 	readiness: RestartReadiness | null,
 	members: Map<string, MemberInfo>,
+	startupBlocked: readonly StartupBlockedAgent[] = [],
 ): RunningAgent[] {
 	const agents = new Map<string, RunningAgent>();
 	const sessions = obj(sessionsBody).sessions;
@@ -220,6 +254,11 @@ export function buildAgentList(
 		agent.busySince = busy.since;
 		agent.busyMessage = busy.messagePreview;
 		agents.set(busy.session, agent);
+	}
+	for (const blocked of startupBlocked) {
+		const agent = agents.get(blocked.sessionName) ?? { sessionName: blocked.sessionName, inProcess: false, busy: false };
+		agent.blocked = { reason: blocked.reason, message: blocked.message };
+		agents.set(blocked.sessionName, agent);
 	}
 	for (const agent of agents.values()) {
 		const member = members.get(agent.sessionName);
@@ -262,7 +301,7 @@ export async function fetchBackendSnapshot(port: number | string, httpGet: HttpG
 		return { url, health, agents: null, agentsError: `GET ${WEB_CONSTANTS.ENDPOINTS.SESSIONS} failed: ${reason}`, readiness };
 	}
 	const members = teams.status === 'fulfilled' ? parseTeamMembers(teams.value) : new Map<string, MemberInfo>();
-	const agents = buildAgentList(sessions.value, terminal.status === 'fulfilled' ? terminal.value : null, readiness, members);
+	const agents = buildAgentList(sessions.value, terminal.status === 'fulfilled' ? terminal.value : null, readiness, members, health.startupBlocked);
 	return { url, health, agents, readiness };
 }
 

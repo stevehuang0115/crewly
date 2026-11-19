@@ -190,6 +190,8 @@ describe('orchestrator-setup.service', () => {
 				role: 'orchestrator',
 				runtimeType: 'crewly-agent',
 				forceRecreate: true,
+				// Auto-recovery: refused while start-up is blocked on the user.
+				automatic: true,
 			});
 		});
 
