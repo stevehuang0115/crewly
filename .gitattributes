@@ -1,2 +1,7 @@
 # Raw TUI byte streams (test fixtures): keep CR/LF and escapes exactly as recorded
 backend/src/services/session/__fixtures__/tui/** -text
+
+# Shell scripts and skill docs must keep LF on a Windows checkout: bash and the
+# SKILL.md front-matter parser both fail on CRLF.
+*.sh text eol=lf
+*.md text eol=lf

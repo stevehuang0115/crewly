@@ -71,8 +71,8 @@
     "check:input-guard": "node dist/cli/cli/src/index.js doctor --input-guard --build dist",
     "check:oss-boundary": "npx tsx backend/src/scripts/check-oss-boundary.ts",
     "check:rule-metadata": "npx tsx backend/src/scripts/check-rule-metadata.ts",
-    "preinstall": "node dist/cli/cli/src/scripts/check-native-toolchain.js 2>/dev/null || true",
-    "postinstall": "([ ! -f dist/cli/cli/src/scripts/ensure-node-pty.js ] || node dist/cli/cli/src/scripts/ensure-node-pty.js) && (npm rebuild better-sqlite3 2>/dev/null || true) && (node dist/cli/cli/src/scripts/check-native-toolchain.js || true)",
+    "preinstall": "node -e \"const f='dist/cli/cli/src/scripts/check-native-toolchain.js';if(require('fs').existsSync(f))require('child_process').spawnSync(process.execPath,[f],{stdio:['ignore','inherit','ignore']})\"",
+    "postinstall": "node -e \"const fs=require('fs'),cp=require('child_process');const run=f=>fs.existsSync(f)?cp.spawnSync(process.execPath,[f],{stdio:'inherit'}).status:0;const pty=run('dist/cli/cli/src/scripts/ensure-node-pty.js');if(pty)process.exit(pty);cp.spawnSync('npm rebuild better-sqlite3',{stdio:'ignore',shell:true});run('dist/cli/cli/src/scripts/check-native-toolchain.js')\"",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

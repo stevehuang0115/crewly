@@ -1,0 +1,75 @@
+# Native Windows (no WSL): build from source, start the backend, and drive a
+# terminal session under Git for Windows' bash. Not a required check yet:
+# native Windows support is in progress. Run it by hand, or push a
+# `windows-*` branch.
+name: Windows native smoke
+
+on:
+  push:
+    branches: ['windows-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  from-source:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm ci
+        shell: pwsh
+        run: |
+          npm ci 2>&1 | Select-Object -Last 25
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: build
+        shell: pwsh
+        run: |
+          npm run build 2>&1 | Select-Object -Last 40
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: crewly start, wait for health
+        shell: pwsh
+        run: |
+          $log = "$env:RUNNER_TEMP\crewly-start.log"
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c node dist\cli\cli\src\index.js start --no-browser > `"$log`" 2>&1" -WindowStyle Hidden
+          $ok = $false
+          for ($i = 0; $i -lt 48; $i++) {
+            Start-Sleep -Seconds 5
+            try { $r = Invoke-WebRequest -Uri http://localhost:8787/api/health -UseBasicParsing -TimeoutSec 4; "health: $($r.StatusCode) after $(($i+1)*5)s"; $r.Content.Substring(0, [Math]::Min(300, $r.Content.Length)); $ok = $true; break } catch { }
+          }
+          if (-not $ok) { "health: no answer in 240 s" }
+          Start-Sleep -Seconds 45
+          "--- start log: errors and warnings ---"
+          Get-Content $log -ErrorAction SilentlyContinue | Select-String -Pattern 'ERROR|WARN|not recognized|ENOENT|EPERM|EINVAL|Failed|Unhandled|unknown option' | Select-Object -First 80 | ForEach-Object { $_.Line.Substring(0, [Math]::Min(300, $_.Line.Length)) }
+          "--- start log: last 40 lines ---"
+          Get-Content $log -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) }
+          if (-not $ok) { exit 1 }
+      - name: API after start
+        shell: bash
+        run: |
+          T="$(cat "$USERPROFILE/.crewly/api-token" 2>/dev/null || true)"
+          for p in /api/teams /api/projects /api/cloud/status; do
+            code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $T" "http://localhost:8787$p")"
+            echo "$p -> $code"; [ "$code" = 200 ] || exit 1
+          done
+          ls "$USERPROFILE/.crewly" | head -30
+      - name: Terminal session under Git Bash (ConPTY)
+        shell: bash
+        run: |
+          T="$(cat "$USERPROFILE/.crewly/api-token")"
+          A="Authorization: Bearer $T"
+          B=http://localhost:8787/api/sessions
+          curl -s -m 15 -H "$A" -H 'Content-Type: application/json' -X POST "$B" \
+            -d '{"name":"win-smoke","command":"C:\\Program Files\\Git\\bin\\bash.exe","cwd":"C:\\Users\\runneradmin"}' | cut -c1-200; echo
+          sleep 5
+          curl -s -m 15 -o /dev/null -H "$A" -H 'Content-Type: application/json' -X POST "$B/win-smoke/write" \
+            -d '{"data":"echo PTY_OK_$((6*7)); curl -s localhost:8787/api/health | jq -r .data.live\r"}'
+          sleep 6
+          OUT="$(curl -s -m 15 -H "$A" "$B/win-smoke/output?lines=60" | jq -r .output | grep -v '^\s*$')"
+          echo "$OUT" | tail -8
+          echo "$OUT" | grep -q '^PTY_OK_42' || { echo "the session did not run the command"; exit 1; }
+          echo "$OUT" | grep -q '^true' || { echo "curl + jq inside the session failed"; exit 1; }

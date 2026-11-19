@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { resolveAgentShell } from '../../utils/agent-shell.utils.js';
 import { getHarnessCredentialsStore, harnessEnvForAgents } from '../harness/harness-credentials.store.js';
 import * as path from 'path';
 import * as os from 'os';
@@ -4179,7 +4180,7 @@ Loop until done, blocked, or explicitly reassigned:
 						const persistence = getSessionStatePersistence();
 						persistence.registerSession(sessionName, {
 							cwd: projectPath || process.cwd(),
-							command: process.env.SHELL || '/bin/bash',
+							command: resolveAgentShell(),
 							args: [],
 						}, runtimeType, role, config.teamId, config.memberId);
 					} catch (persistError) {
@@ -4405,7 +4406,7 @@ Loop until done, blocked, or explicitly reassigned:
 				const persistence = getSessionStatePersistence();
 				persistence.registerSession(sessionName, {
 					cwd: cwdToUse,
-					command: process.env.SHELL || '/bin/bash',
+					command: resolveAgentShell(),
 					args: [],
 				}, runtimeType, role, config.teamId, config.memberId);
 			} catch (persistError) {

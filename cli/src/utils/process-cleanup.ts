@@ -55,6 +55,8 @@ export function killZombieProcesses(port: number, logFn: (msg: string) => void =
 	const signalled: number[] = [];
 
 	let listeners: number[] = [];
+	// Windows has no lsof / ps: nothing is listed there (and nothing is printed).
+	if (process.platform === 'win32') return signalled;
 	try {
 		listeners = execSync(listListenersCommand(port), { encoding: 'utf8', timeout: 5000 })
 			.trim()
@@ -117,6 +119,8 @@ export function killZombieProcesses(port: number, logFn: (msg: string) => void =
  */
 export function isOrphanParent(ppid: number): boolean {
 	if (ppid <= 1) return true;
+	// No ps on Windows, and no reparenting to an init process either.
+	if (process.platform === 'win32') return false;
 	try {
 		const comm = execSync(`ps -o comm= -p ${ppid}`, { encoding: 'utf8', timeout: 2000 }).trim();
 		return comm === 'systemd' || comm === 'launchd' || comm === '';
