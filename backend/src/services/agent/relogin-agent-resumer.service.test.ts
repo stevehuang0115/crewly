@@ -4,6 +4,7 @@
 
 import { ReloginAgentResumerService, type ReloginAgentResumerDeps } from './relogin-agent-resumer.service.js';
 import type { PersistedSessionInfo } from '../session/session-state-persistence.js';
+import { recordStartupBlock, resetStartupBlocksForTesting, startupBlockOf } from './startup-block.registry.js';
 
 jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
@@ -97,7 +98,34 @@ describe('ReloginAgentResumerService.resume', () => {
 		const { resumer, registration, calls } = setup();
 		expect(await resumer.resume(['dev-1'])).toEqual({ resumed: ['dev-1'], failed: [] });
 		expect(calls).toEqual(['stop:dev-1', 'kill:dev-1', 'id:dev-1:conv-123', 'create:dev-1']);
-		expect(registration.createAgentSession).toHaveBeenCalledWith({ sessionName: 'dev-1', role: 'developer', teamId: 't1', memberId: 'm1' });
+		expect(registration.createAgentSession).toHaveBeenCalledWith({ sessionName: 'dev-1', role: 'developer', teamId: 't1', memberId: 'm1', automatic: true });
+	});
+
+	describe('start-up blocked on the user', () => {
+		afterEach(() => resetStartupBlocksForTesting());
+
+		it('an automatic restart leaves a blocked agent and a blocked orchestrator alone (no kill, no start)', async () => {
+			const { resumer, deps, backend, registration } = setup();
+			recordStartupBlock('dev-1', 'consent_required', 'Accept Bypass Permissions mode.');
+			recordStartupBlock('crewly-orc', 'consent_required', 'Accept Bypass Permissions mode.');
+			expect(await resumer.resume(['crewly-orc', 'dev-1', 'qa-1'])).toEqual({ resumed: ['qa-1'], failed: ['crewly-orc', 'dev-1'] });
+			expect(deps.restartOrchestrator).not.toHaveBeenCalled();
+			expect(backend.killSession).toHaveBeenCalledTimes(1);
+			expect(registration.createAgentSession).toHaveBeenCalledTimes(1);
+			expect(startupBlockOf('dev-1')).not.toBeNull();
+		});
+
+		it('an owner-approved restart (re-login, consent) clears the block first and starts both', async () => {
+			const beforeOwnerApprovedRestart = jest.fn();
+			const { resumer, deps, registration } = setup({ ownerApproved: true, beforeOwnerApprovedRestart });
+			recordStartupBlock('dev-1', 'consent_required', 'Accept Bypass Permissions mode.');
+			recordStartupBlock('crewly-orc', 'consent_required', 'Accept Bypass Permissions mode.');
+			(deps.restartOrchestrator as jest.Mock).mockImplementation(async () => startupBlockOf('crewly-orc') === null);
+			expect(await resumer.resume(['crewly-orc', 'dev-1'])).toEqual({ resumed: ['crewly-orc', 'dev-1'], failed: [] });
+			expect(beforeOwnerApprovedRestart).toHaveBeenCalledWith('crewly-orc');
+			expect(startupBlockOf('dev-1')).toBeNull();
+			expect(registration.createAgentSession).toHaveBeenCalledWith({ sessionName: 'dev-1', role: 'developer', teamId: 't1', memberId: 'm1', automatic: false });
+		});
 	});
 
 	it('restarts the orchestrator through its restart service', async () => {

@@ -21,11 +21,13 @@
  */
 
 import { isSessionPaused } from '../team/team-pause.registry.js';
+import { clearStartupBlock } from './startup-block.registry.js';
 
 const stopped = new Set<string>();
 
 /**
- * Remember that a session was stopped on purpose.
+ * Remember that a session was stopped on purpose. Also drops a start-up
+ * block on it (startup-block.registry.ts): a stopped agent is not waiting.
  *
  * @param sessionName - Session that was stopped
  *
@@ -35,7 +37,10 @@ const stopped = new Set<string>();
  * ```
  */
 export function markOwnerStopped(sessionName: string): void {
-	if (sessionName) stopped.add(sessionName);
+	if (!sessionName) return;
+	stopped.add(sessionName);
+	// Stopped by the user: it no longer waits on them to start.
+	clearStartupBlock(sessionName);
 }
 
 /**

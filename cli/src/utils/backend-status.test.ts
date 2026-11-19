@@ -49,7 +49,25 @@ describe('parseHealth', () => {
 			orchestratorStatus: 'degraded',
 			orchestratorReason: 'hung',
 			teamHealthStatus: 'ok',
+			startupBlocked: [],
 		});
+	});
+
+	it('reads the agents whose start-up is blocked on the user, dropping malformed entries', () => {
+		expect(
+			parseHealth({
+				status: 'healthy',
+				startup_blocked: [
+					{ sessionName: 'crewly-orc', reason: 'consent_required', message: 'Accept Bypass Permissions mode.', at: 'T' },
+					{ reason: 'consent_required' },
+					{ sessionName: 'dev-1' },
+					7,
+				],
+			}).startupBlocked,
+		).toEqual([
+			{ sessionName: 'crewly-orc', reason: 'consent_required', message: 'Accept Bypass Permissions mode.' },
+			{ sessionName: 'dev-1', reason: 'unknown', message: '' },
+		]);
 	});
 
 	it('tolerates an old or odd body', () => {
@@ -94,6 +112,23 @@ describe('buildAgentList', () => {
 	it('includes a busy agent that is missing from the session list', () => {
 		const agents = buildAgentList({ sessions: [] }, null, { safe: false, busyAgents: [{ session: 'ghost', since: 'T', messagePreview: '' }], queued: 0 }, new Map());
 		expect(agents).toEqual([expect.objectContaining({ sessionName: 'ghost', busy: true })]);
+	});
+
+	it('marks agents whose start-up is blocked on the user, with or without a live session', () => {
+		const agents = buildAgentList(
+			{ sessions: [{ sessionName: 'crewly-orc', pid: 10 }, { sessionName: 'dev-1', pid: 11 }] },
+			null,
+			{ safe: true, busyAgents: [], queued: 0 },
+			new Map(),
+			[
+				{ sessionName: 'crewly-orc', reason: 'consent_required', message: 'Accept Bypass Permissions mode.' },
+				{ sessionName: 'gone-1', reason: 'runtime_not_installed', message: 'Install it.' },
+			],
+		);
+		expect(agents.map((a) => a.sessionName)).toEqual(['crewly-orc', 'dev-1', 'gone-1']);
+		expect(agents[0].blocked).toEqual({ reason: 'consent_required', message: 'Accept Bypass Permissions mode.' });
+		expect(agents[1].blocked).toBeUndefined();
+		expect(agents[2]).toMatchObject({ busy: false, blocked: { reason: 'runtime_not_installed', message: 'Install it.' } });
 	});
 });
 

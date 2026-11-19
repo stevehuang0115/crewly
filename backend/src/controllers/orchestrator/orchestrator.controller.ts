@@ -19,6 +19,7 @@ import { OrchestratorRestartService } from '../../services/orchestrator/orchestr
 import { clearUsageLimit } from '../../services/runtime-fallback/usage-limit-state.js';
 import { MemoryService } from '../../services/memory/memory.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
+import { clearStartupBlock } from '../../services/agent/startup-block.registry.js';
 import { isModelProvider } from '../../services/agent/crewly-agent/types.js';
 import { isSafeModelId, isSafeReasoningEffort } from '../../utils/runtime-model-flags.utils.js';
 
@@ -279,7 +280,12 @@ export async function setupOrchestrator(
 
 	// Create the setup promise and store it for deduplication
 	const context = this;
-	setupInFlightPromise = _performOrchestratorSetup(context);
+	// `automatic: true` in the body = nobody asked for this start (the CLI's
+	// follow-up call after boot, the reconciler's wake): it is refused while
+	// the orchestrator's start-up is blocked on the user. The dashboard sends
+	// no such flag, so its Start button clears the block and tries again.
+	const automatic = (req.body as { automatic?: unknown } | undefined)?.automatic === true;
+	setupInFlightPromise = _performOrchestratorSetup(context, automatic);
 
 	try {
 		const result = await setupInFlightPromise;
@@ -311,10 +317,12 @@ export async function setupOrchestrator(
  * for deduplication.
  *
  * @param context - API context with services
+ * @param automatic - True when no user asked for this start (refused while start-up is blocked on the user)
  * @returns Setup result object
  */
 async function _performOrchestratorSetup(
-	context: ApiContext
+	context: ApiContext,
+	automatic = false
 ): Promise<{ success: boolean; message?: string; sessionName?: string; error?: string }> {
 	try {
 		// Check if the orchestrator is already running and healthy.
@@ -393,6 +401,7 @@ async function _performOrchestratorSetup(
 			runtimeType: runtimeType as RuntimeType,
 			forceRecreate: true,
 			additionalAllowlistPaths,
+			...(automatic ? { automatic: true } : {}),
 		});
 
 		logger.info('createAgentSession result', {
@@ -511,6 +520,9 @@ export async function stopOrchestrator(
 			} as ApiResponse);
 			return;
 		}
+
+		// Stopped by the user: it no longer waits on them to start.
+		clearStartupBlock(ORCHESTRATOR_SESSION_NAME);
 
 		res.json({
 			success: true,
@@ -781,6 +793,12 @@ export async function getOrchestratorStatus(
 		// says so, and until when, instead of "active and ready" (2026-10-16).
 		const usageLimited = status.usageLimited ?? null;
 
+		// Last start blocked on the user (consent, sign-in, unknown menu) and
+		// not started since: the reason code and the message to act on.
+		const startupBlocked = status.startupBlocked
+			? { reason: status.startupBlocked.reason, message: status.startupBlocked.message, at: status.startupBlocked.at }
+			: null;
+
 		res.json({
 			success: true,
 			data: {
@@ -788,13 +806,14 @@ export async function getOrchestratorStatus(
 				agentStatus: status.agentStatus,
 				message: loginRequired
 					? `Orchestrator needs you to sign in${loginRequired.url ? `: ${loginRequired.url}` : ''}${loginRequired.code ? ` code ${loginRequired.code}` : ''}`
-					: restartGaveUp
+					: restartGaveUp && !startupBlocked
 						? `Orchestrator stopped restarting: ${restartGaveUp.reason}`
 						: status.message,
 				offlineMessage: status.isActive ? null : getOrchestratorOfflineMessage(false),
 				loginRequired,
 				restartGaveUp,
 				usageLimited,
+				startupBlocked,
 			},
 		} as ApiResponse);
 	} catch (error) {

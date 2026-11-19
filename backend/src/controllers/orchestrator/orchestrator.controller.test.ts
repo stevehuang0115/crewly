@@ -41,6 +41,7 @@ jest.mock('../../services/session/index.js', () => ({
 import { getOrchestratorStatus as mockGetOrchestratorStatusFn } from '../../services/orchestrator/index.js';
 import type { ApiContext } from '../types.js';
 import { CREWLY_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { recordStartupBlock, resetStartupBlocksForTesting, startupBlockOf } from '../../services/agent/startup-block.registry.js';
 
 const mockGetOrchestratorStatus = mockGetOrchestratorStatusFn as jest.MockedFunction<typeof mockGetOrchestratorStatusFn>;
 
@@ -481,6 +482,20 @@ describe('Orchestrator Handlers', () => {
     afterEach(() => {
       // Reset in-flight state between tests
       orchestratorHandlers._resetSetupInFlightState();
+    });
+
+    it('passes automatic: true through for a start nobody asked for (CLI follow-up, reconciler), and not otherwise', async () => {
+      mockGetOrchestratorStatus.mockResolvedValue({ isActive: false, agentStatus: 'inactive', message: 'Orchestrator is not running.' });
+      mockAgentRegistrationService.createAgentSession.mockResolvedValue({ success: true, sessionName: ORCHESTRATOR_SESSION_NAME });
+
+      mockRequest.body = { automatic: true };
+      await orchestratorHandlers.setupOrchestrator.call(mockApiContext as ApiContext, mockRequest as Request, mockResponse as Response);
+      expect(mockAgentRegistrationService.createAgentSession).toHaveBeenLastCalledWith(expect.objectContaining({ forceRecreate: true, automatic: true }));
+
+      // The dashboard's Start button sends no flag: a start that was asked for.
+      mockRequest.body = {};
+      await orchestratorHandlers.setupOrchestrator.call(mockApiContext as ApiContext, mockRequest as Request, mockResponse as Response);
+      expect(mockAgentRegistrationService.createAgentSession.mock.calls[1][0]).not.toHaveProperty('automatic');
     });
 
     it('should skip setup when orchestrator is already healthy and running', async () => {
@@ -955,6 +970,16 @@ describe('Orchestrator Handlers', () => {
   });
 
   describe('stopOrchestrator', () => {
+    it('clears a start-up block: an orchestrator the user stopped no longer waits on them', async () => {
+      recordStartupBlock(ORCHESTRATOR_SESSION_NAME, 'consent_required', 'Accept Bypass Permissions mode.');
+      mockAgentRegistrationService.terminateAgentSession.mockResolvedValue({ success: true, message: 'stopped' });
+
+      await orchestratorHandlers.stopOrchestrator.call(mockApiContext as ApiContext, mockRequest as Request, mockResponse as Response);
+
+      expect(startupBlockOf(ORCHESTRATOR_SESSION_NAME)).toBeNull();
+      resetStartupBlocksForTesting();
+    });
+
     it('should stop orchestrator successfully when session exists', async () => {
       mockAgentRegistrationService.terminateAgentSession.mockResolvedValue({
         success: true,
@@ -1224,6 +1249,34 @@ describe('Orchestrator Handlers', () => {
             url: 'https://auth.openai.com/codex/device',
             code: 'FBVZ-MJHKK',
           }),
+        }),
+      });
+    });
+
+    it('says the orchestrator start-up is blocked on the user, with the reason code and message (not active)', async () => {
+      const { OrchestratorRestartService } = await import('../../services/orchestrator/orchestrator-restart.service.js');
+      const restart = OrchestratorRestartService.getInstance();
+      restart.markGaveUp('Accept Bypass Permissions mode.', { blocked: true, attempts: 1 });
+      const startupBlocked = { sessionName: ORCHESTRATOR_SESSION_NAME, reason: 'consent_required', message: 'Accept Bypass Permissions mode.', at: '2026-11-19T10:00:00.000Z' };
+      mockGetOrchestratorStatus.mockResolvedValue({
+        isActive: false,
+        agentStatus: 'started',
+        message: 'Orchestrator start-up is waiting on you: Accept Bypass Permissions mode.',
+        startupBlocked,
+      });
+
+      try {
+        await orchestratorHandlers.getOrchestratorStatus.call(mockApiContext as ApiContext, mockRequest as Request, mockResponse as Response);
+      } finally {
+        restart.clearGiveUp();
+      }
+
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: true,
+        data: expect.objectContaining({
+          isActive: false,
+          message: 'Orchestrator start-up is waiting on you: Accept Bypass Permissions mode.',
+          startupBlocked: { reason: 'consent_required', message: 'Accept Bypass Permissions mode.', at: '2026-11-19T10:00:00.000Z' },
         }),
       });
     });

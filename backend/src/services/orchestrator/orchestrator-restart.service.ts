@@ -28,6 +28,7 @@ import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service
 import { delay } from '../../utils/async.utils.js';
 import { isPlannedRelaunch } from '../agent/planned-relaunch.registry.js';
 import { usageLimitOf } from '../runtime-fallback/usage-limit-state.js';
+import { automaticStartBlockOf } from '../agent/startup-block.registry.js';
 
 /** Options of {@link OrchestratorRestartService.attemptRestart}. */
 export interface RestartOptions {
@@ -111,6 +112,8 @@ export class OrchestratorRestartService {
 	private gaveUp: RestartGiveUp | null = null;
 	/** Retry time of the usage-limit state last logged as blocking a restart (log once) */
 	private loggedUsageLimitRetryAt: string | null = null;
+	/** Time of the start-up block last logged as blocking a restart (log once) */
+	private loggedStartupBlockAt: string | null = null;
 
 	/** External dependencies (injected via setDependencies) */
 	private agentRegistrationService: AgentRegistrationService | null = null;
@@ -193,6 +196,9 @@ export class OrchestratorRestartService {
 	 * 6. Notifies Slack (if configured)
 	 * 7. Broadcasts WebSocket event
 	 *
+	 * An unplanned restart is refused while the orchestrator's last start is
+	 * blocked on the user (startup-block.registry.ts).
+	 *
 	 * A planned relaunch ({@link RestartOptions.planned}) skips the cooldown and
 	 * give-up checks, is not counted, and sends no alarm. While one is in its
 	 * window, unplanned callers (heartbeat / exit monitors) are refused: the
@@ -219,6 +225,22 @@ export class OrchestratorRestartService {
 				this.logger.warn('Not restarting the orchestrator: its runtime is out of usage', {
 					until: limited.until ?? null,
 					retryAt: limited.retryAt,
+				});
+			}
+			return false;
+		}
+
+		// Last start blocked on the user (consent, sign-in, unknown menu): the
+		// same screen is still there, and a restart would kill the session
+		// that shows it. Only a start the user asks for, or the consent /
+		// re-login resume, clears the block — not the periodic retry below.
+		const blocked = automaticStartBlockOf(ORCHESTRATOR_SESSION_NAME);
+		if (blocked) {
+			if (this.loggedStartupBlockAt !== blocked.at) {
+				this.loggedStartupBlockAt = blocked.at;
+				this.logger.warn('Not restarting the orchestrator: its start-up is blocked on the user', {
+					reason: blocked.reason,
+					blockedAt: blocked.at,
 				});
 			}
 			return false;
@@ -325,6 +347,10 @@ export class OrchestratorRestartService {
 				windowName: ORCHESTRATOR_WINDOW_NAME,
 				runtimeType,
 				additionalAllowlistPaths,
+				// A planned relaunch (e.g. onto a fallback runtime) is a real
+				// change and may try; a crash / heartbeat restart may not start
+				// an orchestrator that waits on the user.
+				automatic: !planned,
 			});
 
 			if (!result.success) {

@@ -22,6 +22,7 @@ import type { ReloginAgentResumer } from '../harness/harness-relogin.service.js'
 import type { ISessionBackend } from '../session/session-backend.interface.js';
 import type { PersistedSessionInfo } from '../session/session-state-persistence.js';
 import type { AgentRegistrationService } from './agent-registration.service.js';
+import { clearStartupBlock, automaticStartBlockOf } from './startup-block.registry.js';
 
 /** The slice of the session-state persistence the resumer uses. */
 export interface ResumerPersistence {
@@ -42,6 +43,15 @@ export interface ReloginAgentResumerDeps {
 	stopExitMonitoring?: (sessionName: string) => void;
 	/** Forget PTY activity of the old session */
 	clearActivity?: (sessionName: string) => void;
+	/**
+	 * True when the restart follows something the owner did (a re-login, the
+	 * runtime consent): a start-up block on the agent is cleared first, so it
+	 * starts. Absent = an automatic restart (the unreadable-input ladder): an
+	 * agent whose start-up is blocked on the user is left as it is.
+	 */
+	ownerApproved?: boolean;
+	/** Extra reset before an owner-approved orchestrator restart (e.g. re-arm auto-restart) */
+	beforeOwnerApprovedRestart?: (sessionName: string) => void;
 	logger?: Pick<ComponentLogger, 'info' | 'warn'>;
 }
 
@@ -87,6 +97,16 @@ export class ReloginAgentResumerService implements ReloginAgentResumer {
 		const failed: string[] = [];
 		for (const name of new Set(sessionNames)) {
 			let ok = false;
+			if (this.deps.ownerApproved) {
+				// The owner fixed what blocked the start: it must go through.
+				clearStartupBlock(name);
+				this.deps.beforeOwnerApprovedRestart?.(name);
+			} else if (automaticStartBlockOf(name)) {
+				// Waiting on the user: killing and restarting shows the same screen.
+				this.logger.info('Not restarting an agent whose start-up is blocked on the user', { sessionName: name });
+				failed.push(name);
+				continue;
+			}
 			try {
 				ok = name === ORCHESTRATOR_SESSION_NAME ? await this.deps.restartOrchestrator() : await this.restartAgent(name);
 			} catch (error) {
@@ -127,6 +147,7 @@ export class ReloginAgentResumerService implements ReloginAgentResumer {
 			role: meta.role,
 			teamId: meta.teamId,
 			memberId: meta.memberId,
+			automatic: !this.deps.ownerApproved,
 		});
 		if (!result.success) {
 			this.logger.warn('createAgentSession failed after re-login', { sessionName, error: result.error });

@@ -36,6 +36,7 @@ import {
 	ORCHESTRATOR_SESSION_NAME,
 	ORCHESTRATOR_ROLE,
 	RUNTIME_TYPES,
+	CLAUDE_STARTUP_CONSTANTS,
 	RuntimeType,
 	SESSION_COMMAND_DELAYS,
 	SUB_AGENT_QUEUE_CONSTANTS,
@@ -115,6 +116,7 @@ import {
 import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
 import { synthesizeSlackConversationId } from '../chat-v2/legacy-dto.utils.js';
 import { isRuntimeStartupBlockedError, type RuntimeStartupBlockedReason } from './runtime-startup-blocked.error.js';
+import { clearStartupBlock, recordStartupBlock, automaticStartBlockOf } from './startup-block.registry.js';
 import { getRuntimeConsentService } from '../harness/runtime-consent.service.js';
 import {
 	buildHandoverSummary,
@@ -1587,6 +1589,7 @@ export class AgentRegistrationService {
 					reason: error.reason,
 					error: error.message,
 				});
+				recordStartupBlock(sessionName, error.reason, error.message);
 				this.askOwnerForConsent(sessionName, error.reason);
 				return { success: false, error: error.message, errorCode: error.code };
 			}
@@ -1622,6 +1625,7 @@ export class AgentRegistrationService {
 						reason: error.reason,
 						error: error.message,
 					});
+					recordStartupBlock(sessionName, error.reason, error.message);
 					this.askOwnerForConsent(sessionName, error.reason);
 					return { success: false, error: error.message, errorCode: error.code };
 				}
@@ -3731,6 +3735,15 @@ Loop until done, blocked, or explicitly reassigned:
 		 * race with the "Read the file..." prompt.
 		 */
 		additionalAllowlistPaths?: string[];
+		/**
+		 * True when nobody asked for this start: a restart service, a monitor,
+		 * the reconciler, the CLI's follow-up setup call. Such a start is
+		 * refused while the session's last start was blocked on the user
+		 * (startup-block.registry.ts). Any other start counts as asked for:
+		 * it clears the block and goes ahead.
+		 * @default false
+		 */
+		automatic?: boolean;
 	}): Promise<{
 		success: boolean;
 		sessionName?: string;
@@ -3816,6 +3829,15 @@ Loop until done, blocked, or explicitly reassigned:
 			}
 		}
 
+		// Start-up blocked on the user: an automatic start would only hit the
+		// same wall. A start someone asked for clears the block and tries.
+		if (config.automatic) {
+			const refused = this.refuseBlockedAutomaticStart(config.sessionName);
+			if (refused) return refused;
+		} else {
+			clearStartupBlock(config.sessionName);
+		}
+
 		// Single-flight per session name. A second caller while a creation is
 		// in flight joins it (same result, one PTY, one kickoff flow) — team
 		// start, reconciler wake and activateAgentBySession all land here.
@@ -3839,12 +3861,17 @@ Loop until done, blocked, or explicitly reassigned:
 		if (predecessor) {
 			this.logger.info('forceRecreate queued behind in-flight session creation', { sessionName: config.sessionName });
 		}
+		// An automatic forceRecreate queued behind a start that then ended blocked
+		// must not run: this was the second orchestrator start at boot (`crewly
+		// start` calls /orchestrator/setup while the boot auto-start is in flight).
 		const creationPromise = predecessor
-			? predecessor.catch(() => undefined).then(() => this._createAgentSessionImpl(config))
+			? predecessor.catch(() => undefined).then(() =>
+				(config.automatic ? this.refuseBlockedAutomaticStart(config.sessionName) : null) ?? this._createAgentSessionImpl(config))
 			: this._createAgentSessionImpl(config);
 		this.sessionCreationLocks.set(config.sessionName, creationPromise);
 		try {
 			const result = await creationPromise;
+			if (result.success) clearStartupBlock(config.sessionName);
 			return result;
 		} finally {
 			// Only delete lock if it's still ours — a concurrent caller may have
@@ -3853,6 +3880,26 @@ Loop until done, blocked, or explicitly reassigned:
 				this.sessionCreationLocks.delete(config.sessionName);
 			}
 		}
+	}
+
+	/**
+	 * The refusal for an automatic start of a session whose last start was
+	 * blocked on the user, or null when it is not blocked. Carries the blocked
+	 * error's own message and code, so callers treat it like the first refusal
+	 * (no retry) and the user still reads what to do.
+	 *
+	 * @param sessionName - Session an automatic caller wants to start
+	 * @returns The failure result to return, or null to go ahead
+	 */
+	private refuseBlockedAutomaticStart(sessionName: string): { success: false; sessionName: string; error: string; errorCode: string } | null {
+		const block = automaticStartBlockOf(sessionName);
+		if (!block) return null;
+		this.logger.info('Start-up is blocked on the user — not starting the agent again automatically', {
+			sessionName,
+			reason: block.reason,
+			blockedAt: block.at,
+		});
+		return { success: false, sessionName, error: block.message, errorCode: CLAUDE_STARTUP_CONSTANTS.BLOCKED_ERROR_CODE };
 	}
 
 	/**

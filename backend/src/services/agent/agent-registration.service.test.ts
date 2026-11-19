@@ -417,6 +417,10 @@ describe('AgentRegistrationService', () => {
 			// Step 2 (full recreation) kills the session first; it must not run.
 			expect(mockSessionHelper.killSession).not.toHaveBeenCalled();
 			expect(mockRuntimeService.waitForRuntimeReady).toHaveBeenCalledTimes(1);
+			// Recorded, so status says "waiting on you" and automatic callers hold off.
+			const { startupBlockOf, resetStartupBlocksForTesting } = await import('./startup-block.registry.js');
+			expect(startupBlockOf('test-session')).toMatchObject({ reason: 'first_run_setup', message: 'Run `claude` once, choose a theme and log in.' });
+			resetStartupBlocksForTesting();
 		});
 
 		it('asks the owner over Slack when the start-up stops on the Bypass Permissions consent, and only then', async () => {
@@ -6223,6 +6227,112 @@ describe('AgentRegistrationService', () => {
 				'Agent registration confirmed after prompt delivery',
 				expect.objectContaining({ sessionName: 'test-session', redeliveries: 0 }),
 			);
+		});
+	});
+
+	// ── Windows host 2026-11-19: a blocked start is authoritative for automatic callers ──
+	describe('createAgentSession and a start-up blocked on the user', () => {
+		const BLOCKED = { success: false, sessionName: 'crewly-orc', error: 'Accept Bypass Permissions mode.', errorCode: 'RUNTIME_STARTUP_BLOCKED' };
+		let registry: typeof import('./startup-block.registry.js');
+		let impl: jest.SpyInstance;
+
+		beforeEach(async () => {
+			registry = await import('./startup-block.registry.js');
+			impl = jest.spyOn(service as any, '_createAgentSessionImpl');
+		});
+
+		afterEach(() => {
+			registry.resetStartupBlocksForTesting();
+			impl.mockRestore();
+		});
+
+		it('refuses an automatic start while blocked, with the blocked message and code, and keeps the block', async () => {
+			registry.recordStartupBlock('crewly-orc', 'consent_required', 'Accept Bypass Permissions mode.');
+
+			const result = await service.createAgentSession({ sessionName: 'crewly-orc', role: 'orchestrator', forceRecreate: true, automatic: true });
+
+			expect(result).toEqual(BLOCKED);
+			expect(impl).not.toHaveBeenCalled();
+			expect(registry.startupBlockOf('crewly-orc')).not.toBeNull();
+		});
+
+		it('lets an automatic start through when nothing is blocked', async () => {
+			impl.mockResolvedValue({ success: true, sessionName: 'crewly-orc' });
+			const result = await service.createAgentSession({ sessionName: 'crewly-orc', role: 'orchestrator', automatic: true });
+			expect(result.success).toBe(true);
+			expect(impl).toHaveBeenCalledTimes(1);
+		});
+
+		it('a start that was asked for clears the block first and goes ahead; success leaves it cleared', async () => {
+			registry.recordStartupBlock('crewly-orc', 'consent_required', 'Accept Bypass Permissions mode.');
+			let blockedDuringStart: unknown = 'unset';
+			impl.mockImplementation(async () => {
+				blockedDuringStart = registry.startupBlockOf('crewly-orc');
+				return { success: true, sessionName: 'crewly-orc' };
+			});
+
+			const result = await service.createAgentSession({ sessionName: 'crewly-orc', role: 'orchestrator', forceRecreate: true });
+
+			expect(result.success).toBe(true);
+			expect(blockedDuringStart).toBeNull();
+			expect(registry.startupBlockOf('crewly-orc')).toBeNull();
+		});
+
+		it('a successful start clears a block recorded by an earlier attempt of the same run', async () => {
+			impl.mockImplementation(async () => {
+				registry.recordStartupBlock('crewly-orc', 'unanswered_prompt', 'stale');
+				return { success: true, sessionName: 'crewly-orc' };
+			});
+			await service.createAgentSession({ sessionName: 'crewly-orc', role: 'orchestrator' });
+			expect(registry.startupBlockOf('crewly-orc')).toBeNull();
+		});
+
+		it('an automatic forceRecreate queued behind a start that ends blocked does not start it a second time (boot auto-start + `crewly start` setup call)', async () => {
+			let endFirst: () => void = () => undefined;
+			impl.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						endFirst = () => {
+							registry.recordStartupBlock('crewly-orc', 'consent_required', 'Accept Bypass Permissions mode.');
+							resolve(BLOCKED);
+						};
+					}),
+			);
+			impl.mockResolvedValue({ success: true, sessionName: 'crewly-orc' });
+
+			const boot = service.createAgentSession({ sessionName: 'crewly-orc', role: 'orchestrator', forceRecreate: true });
+			await Promise.resolve();
+			const followUp = service.createAgentSession({ sessionName: 'crewly-orc', role: 'orchestrator', forceRecreate: true, automatic: true });
+			endFirst();
+
+			expect(await boot).toEqual(BLOCKED);
+			expect(await followUp).toEqual(BLOCKED);
+			expect(impl).toHaveBeenCalledTimes(1);
+			expect(registry.startupBlockOf('crewly-orc')).not.toBeNull();
+		});
+
+		it('a forceRecreate that was asked for, queued behind a start that ends blocked, still runs', async () => {
+			let endFirst: () => void = () => undefined;
+			impl.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						endFirst = () => {
+							registry.recordStartupBlock('crewly-orc', 'consent_required', 'Accept Bypass Permissions mode.');
+							resolve(BLOCKED);
+						};
+					}),
+			);
+			impl.mockResolvedValue({ success: true, sessionName: 'crewly-orc' });
+
+			const boot = service.createAgentSession({ sessionName: 'crewly-orc', role: 'orchestrator', forceRecreate: true });
+			await Promise.resolve();
+			const asked = service.createAgentSession({ sessionName: 'crewly-orc', role: 'orchestrator', forceRecreate: true });
+			endFirst();
+
+			expect((await boot).success).toBe(false);
+			expect((await asked).success).toBe(true);
+			expect(impl).toHaveBeenCalledTimes(2);
+			expect(registry.startupBlockOf('crewly-orc')).toBeNull();
 		});
 	});
 

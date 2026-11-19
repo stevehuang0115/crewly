@@ -27,6 +27,8 @@
  *   shell output, but not inside the UI.
  */
 
+import { CLAUDE_STARTUP_CONSTANTS } from '../../constants.js';
+
 /** A character only a runtime TUI draws (borders, logos, tool bullets). */
 const RUNTIME_UI_LINE = /[╭╮╰╯│┃━═⏺⎿✻✳▐▛▜▝▘█░]/;
 
@@ -145,4 +147,52 @@ export function showsBypassConsentMenu(output: string): boolean {
 	if (!BYPASS_DECLINE_LINE.test(lines[accept - 1])) return false;
 	const from = Math.max(0, accept - 1 - BYPASS_MENU_MAX_HEADING_DISTANCE);
 	return lines.slice(from, accept - 1).some((line) => BYPASS_CONSENT_HEADING.test(line));
+}
+
+/** What the screen shows of Claude Code's "Try the new fullscreen renderer?" menu. */
+export type FullscreenRendererMenuState =
+	/** The menu is not (or no longer) the last thing on screen */
+	| 'absent'
+	/** The menu is up and the highlight is on "Not now" */
+	| 'decline_selected'
+	/** The menu is up and the highlight is elsewhere (or not recognised) */
+	| 'other_selected';
+
+/** A screen line without the `│` borders a boxed menu draws around it. */
+const withoutBoxBorder = (line: string): string => line.replace(/^\s*│/, '').replace(/│\s*$/, '');
+
+/**
+ * Read Claude Code's one-time "Try the new fullscreen renderer?" menu off a
+ * captured screen, without relying on where its options are.
+ *
+ * As with {@link showsBypassConsentMenu}, the words alone prove nothing (a
+ * resumed conversation re-renders its transcript). The menu counts only when
+ * the title is alone on a line, "Not now" is alone on a line below it (with
+ * or without the highlight marker), and the "Enter to confirm" key hint
+ * below that is the end of the screen.
+ *
+ * @param output - Captured pane text
+ * @returns Whether the menu is up, and whether "Not now" is highlighted
+ *
+ * @example
+ * ```ts
+ * readFullscreenRendererMenu(' Try the new fullscreen renderer?\n ❯ Yes\n   Not now\n Enter to confirm · Esc to cancel'); // 'other_selected'
+ * readFullscreenRendererMenu(' Try the new fullscreen renderer?\n   Yes\n > Not now\n Enter to confirm · Esc to cancel'); // 'decline_selected'
+ * readFullscreenRendererMenu('⏺ It asked "Try the new fullscreen renderer?" and I chose Not now\n❯ '); // 'absent'
+ * ```
+ */
+export function readFullscreenRendererMenu(output: string): FullscreenRendererMenuState {
+	const M = CLAUDE_STARTUP_CONSTANTS.FULLSCREEN_RENDERER_MENU;
+	const lines = output
+		.split('\n')
+		.map((line) => withoutBoxBorder(line.replace(/\r/g, '')))
+		.filter((line) => line.trim().length > 0);
+	const title = lines.map((line) => line.trim()).lastIndexOf(M.TITLE);
+	if (title === -1) return 'absent';
+	const optionLine = menuOptionLine(M.DECLINE_OPTION);
+	const option = lines.findIndex((line, i) => i > title && i <= title + M.MAX_OPTION_DISTANCE && optionLine.test(line));
+	if (option === -1) return 'absent';
+	const footer = lines.findIndex((line, i) => i > option && i <= option + M.MAX_FOOTER_DISTANCE && line.includes(M.FOOTER));
+	if (footer === -1 || lines.length - 1 - footer > M.MAX_LINES_BELOW_FOOTER) return 'absent';
+	return new RegExp(`^\\s*[❯>]\\s*${M.DECLINE_OPTION}\\s*$`).test(lines[option]) ? 'decline_selected' : 'other_selected';
 }

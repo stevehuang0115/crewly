@@ -1632,6 +1632,8 @@ describe('LiveReconcilerDataProvider', () => {
       expect(result).toBe(true);
       const calledUrl = (globalThis.fetch as jest.Mock).mock.calls[0][0] as string;
       expect(calledUrl).toContain('/api/orchestrator/setup');
+      // Nobody asked for this start: setup skips it while start-up is blocked on the user.
+      expect(JSON.parse((globalThis.fetch as jest.Mock).mock.calls[0][1].body)).toEqual({ automatic: true });
       // Must NOT hit the misrouting member-start fallback.
       expect(calledUrl).not.toContain('/api/teams/members/start');
 

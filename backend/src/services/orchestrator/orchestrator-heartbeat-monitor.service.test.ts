@@ -75,6 +75,7 @@ import { OrchestratorRestartService } from './orchestrator-restart.service.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { ORCHESTRATOR_HEARTBEAT_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { markPlannedRelaunch, resetPlannedRelaunches } from '../agent/planned-relaunch.registry.js';
+import { recordStartupBlock, resetStartupBlocksForTesting } from '../agent/startup-block.registry.js';
 
 /**
  * Helper to run performCheck and flush the internal paste delay timer.
@@ -282,6 +283,33 @@ describe('OrchestratorHeartbeatMonitorService', () => {
 			const state = service.getState();
 			expect(state.heartbeatRequestSentAt).not.toBeNull();
 			expect(state.heartbeatRequestCount).toBe(1);
+		});
+
+		it('start-up blocked on the user: types no heartbeat into the menu, re-arms nothing and restarts nothing', async () => {
+			recordStartupBlock(ORCHESTRATOR_SESSION_NAME, 'consent_required', 'Accept Bypass Permissions mode.');
+			const restartService = OrchestratorRestartService.getInstance();
+			restartService.markGaveUp('Accept Bypass Permissions mode.', { blocked: true, attempts: 1 });
+			const attemptRestart = jest.spyOn(restartService, 'attemptRestart');
+			try {
+				service.start();
+				service.stop();
+				jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+				jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.RESTART_THRESHOLD_MS + 1);
+
+				// Dead or alive on its menu: neither is acted on while blocked.
+				await performCheckAndFlush(service);
+				mockSessionBackend.isChildProcessAlive.mockReturnValue(false);
+				await performCheckAndFlush(service);
+
+				expect(mockSession.write).not.toHaveBeenCalled();
+				expect(attemptRestart).not.toHaveBeenCalled();
+				expect(restartService.getGiveUp()).not.toBeNull();
+				expect(service.getState().heartbeatRequestSentAt).toBeNull();
+			} finally {
+				attemptRestart.mockRestore();
+				restartService.clearGiveUp();
+				resetStartupBlocksForTesting();
+			}
 		});
 
 		it('should skip heartbeat request when idle and no pending work', async () => {

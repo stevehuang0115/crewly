@@ -34,6 +34,7 @@ import type { ISessionBackend } from '../session/session-backend.interface.js';
 import { isPlannedRelaunch } from '../agent/planned-relaunch.registry.js';
 import { createSessionCommandHelper } from '../session/session-command-helper.js';
 import { usageLimitOf } from '../runtime-fallback/usage-limit-state.js';
+import { automaticStartBlockOf } from '../agent/startup-block.registry.js';
 
 /**
  * Per-agent API activity record for on-demand heartbeat optimization.
@@ -379,6 +380,17 @@ export class OrchestratorHeartbeatMonitorService {
 		// screen sweep, e.g. Claude Code's weekly-limit menu). It cannot answer
 		// a heartbeat and a restart cannot help: wait for the reset.
 		if (usageLimitOf(ORCHESTRATOR_SESSION_NAME)) {
+			this.heartbeatRequestSentAt = null;
+			this.heartbeatRequestCount = 0;
+			this.inProgressSince = null;
+			return;
+		}
+
+		// Guard: the orchestrator's last start is blocked on the user and it
+		// sits on that screen (consent, sign-in, unknown menu). A heartbeat
+		// request would be typed into the menu, "running again" would re-arm
+		// auto-restart, and a restart shows the same screen: wait for the user.
+		if (automaticStartBlockOf(ORCHESTRATOR_SESSION_NAME)) {
 			this.heartbeatRequestSentAt = null;
 			this.heartbeatRequestCount = 0;
 			this.inProgressSince = null;

@@ -21,6 +21,16 @@ describe('owner-stopped registry', () => {
 		expect(isOwnerStopped('dev-1')).toBe(false);
 	});
 
+	it('a deliberate stop drops the start-up block: a stopped agent no longer waits on the user', async () => {
+		const { recordStartupBlock, startupBlockOf, resetStartupBlocksForTesting } = await import('./startup-block.registry.js');
+		recordStartupBlock('dev-1', 'consent_required', 'Accept Bypass Permissions mode.');
+		recordStartupBlock('dev-2', 'consent_required', 'Accept Bypass Permissions mode.');
+		markOwnerStopped('dev-1');
+		expect(startupBlockOf('dev-1')).toBeNull();
+		expect(startupBlockOf('dev-2')).not.toBeNull();
+		resetStartupBlocksForTesting();
+	});
+
 	it('ignores an empty session name', () => {
 		markOwnerStopped('');
 		expect(isOwnerStopped('')).toBe(false);

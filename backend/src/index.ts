@@ -126,7 +126,7 @@ import { getOwnerMessageWatchdog } from './services/messaging/owner-message-watc
 import { getOwnerThreadSentinel, reportOwnerThreadBlocking } from './services/messaging/owner-thread-sentinel.service.js';
 import { parseInboundOrigin } from './services/orc/orc-reply-route.service.js';
 import { parseSlackThreadKey } from './services/slack/slack-thread-key.js';
-import { LIVENESS_MONITOR_CONSTANTS, INPUT_CIRCUIT_CONSTANTS, INPUT_BLOCKED_RETRY_CONSTANTS } from './constants.js';
+import { LIVENESS_MONITOR_CONSTANTS, INPUT_CIRCUIT_CONSTANTS, INPUT_BLOCKED_RETRY_CONSTANTS, STARTUP_BLOCK_CONSTANTS } from './constants.js';
 import { InputBlockedRetryService } from './services/messaging/input-blocked-retry.service.js';
 import { driveCapabilities } from './services/drive/drive-agent.service.js';
 import { canvasCapabilities } from './services/board/canvas/canvas-inbound.service.js';
@@ -229,6 +229,7 @@ import { getRuntimeFallbackService } from './services/runtime-fallback/runtime-f
 import { getSlackAgentIdentityService } from './services/slack/slack-agent-identity.service.js';
 import { getChatV2Service } from './services/chat-v2/chat-v2.singleton.js';
 import { isOwnerStopped } from './services/agent/owner-stopped.registry.js';
+import { describeStartupBlock, listStartupBlocks } from './services/agent/startup-block.registry.js';
 import { pausedTeamOfSession } from './services/team/team-pause.registry.js';
 import { getFollowThrough } from './services/agent/follow-through.service.js';
 import { getAgentAskLedger } from './services/messaging/agent-ask-ledger.service.js';
@@ -2219,13 +2220,24 @@ void (async () => {
 				// Task pool not ready yet — treat as not-hung.
 			}
 
+			// Start-up blocked on the user (consent, sign-in, unknown menu): the
+			// session may be alive on that screen, so none of the checks above
+			// see it. Never "ok" while the orchestrator waits on the user.
+			const startupBlocks = listStartupBlocks();
+			const orchestratorStartupBlock = startupBlocks.find((b) => b.sessionName === ORCHESTRATOR_SESSION_NAME) ?? null;
+
 			const orchestratorStalled = orchestratorDown || orchestratorHung;
 			const orchestratorBlock = {
-				status: orchestratorStalled ? 'degraded' : 'ok',
+				status: orchestratorStartupBlock ? STARTUP_BLOCK_CONSTANTS.HEALTH_STATUS : orchestratorStalled ? 'degraded' : 'ok',
 				activeAgents: agentCount,
 				pendingUserRequests,
 				hung: orchestratorHung,
-				reason: orchestratorHung
+				startupBlocked: orchestratorStartupBlock
+					? { reason: orchestratorStartupBlock.reason, message: orchestratorStartupBlock.message, at: orchestratorStartupBlock.at }
+					: null,
+				reason: orchestratorStartupBlock
+					? describeStartupBlock(STARTUP_BLOCK_CONSTANTS.ORCHESTRATOR_SUBJECT, orchestratorStartupBlock)
+					: orchestratorHung
 					? 'orchestrator session is hung — claiming work but not heartbeating (repeated grace-revokes)'
 					: orchestratorDown
 						? `no active agent with ${pendingUserRequests} pending user request(s) — orchestrator may be down`
@@ -2249,6 +2261,8 @@ void (async () => {
 				},
 				team_health: teamHealthBlock,
 				orchestrator: orchestratorBlock,
+				// Agents (orchestrator included) whose last start is blocked on the user.
+				startup_blocked: startupBlocks,
 				// Agents whose deliveries the input guard keeps refusing (crewly#1028).
 				input_circuit: inputCircuitStats(),
 				cloud: cloudHealthBlock(),
@@ -2788,6 +2802,12 @@ void (async () => {
 					restartOrchestrator: () => OrchestratorRestartService.getInstance().attemptRestart(),
 					stopExitMonitoring: (sessionName) => RuntimeExitMonitorService.getInstance().stopMonitoring(sessionName),
 					clearActivity: (sessionName) => PtyActivityTrackerService.getInstance().clearSession(sessionName),
+					// The owner signed in / gave the consent: a start-up block and
+					// a stopped auto-restart must not keep the agent down.
+					ownerApproved: true,
+					beforeOwnerApprovedRestart: (sessionName) => {
+						if (sessionName === ORCHESTRATOR_SESSION_NAME) OrchestratorRestartService.getInstance().clearGiveUp();
+					},
 				});
 				relogin.setResumer(agentResumer);
 				OAuthReloginMonitorService.getInstance().setHarnessExpiryHandler((report) => relogin.reportExpiry(report));

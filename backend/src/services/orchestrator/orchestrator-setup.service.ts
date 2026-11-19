@@ -49,6 +49,8 @@ export interface AgentRegistrationServiceLike {
 		runtimeType: RuntimeType;
 		forceRecreate?: boolean;
 		additionalAllowlistPaths?: string[];
+		/** True for a start nobody asked for (refused while start-up is blocked on the user) */
+		automatic?: boolean;
 	}): Promise<{ success: boolean; sessionName?: string; message?: string; error?: string }>;
 }
 
@@ -212,6 +214,9 @@ async function _runSetup(deps: SetupDependencies): Promise<OrchestratorSetupResu
 			windowName: ORCHESTRATOR_WINDOW_NAME,
 			runtimeType,
 			forceRecreate: true,
+			// Auto-recovery, not a user's request: left alone while the
+			// orchestrator's start-up is blocked on the user.
+			automatic: true,
 		});
 
 		if (!result.success) {

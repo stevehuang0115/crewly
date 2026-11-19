@@ -12,7 +12,8 @@ import { StorageService } from '../core/storage.service.js';
 import { CREWLY_CONSTANTS, WEB_CONSTANTS } from '../../../../config/index.js';
 import { getSessionBackendSync } from '../session/index.js';
 import { isInProcessRuntimeActive } from '../agent/crewly-agent/in-process-runtime-registry.js';
-import { RUNTIME_TYPES, type RuntimeType } from '../../constants.js';
+import { RUNTIME_TYPES, STARTUP_BLOCK_CONSTANTS, type RuntimeType } from '../../constants.js';
+import { describeStartupBlock, startupBlockOf, type StartupBlock } from '../agent/startup-block.registry.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 import { usageLimitOf, usageLimitReason, usageLimitedView, type UsageLimitedView } from '../runtime-fallback/usage-limit-state.js';
 
@@ -35,6 +36,12 @@ export interface OrchestratorStatusResult {
    * not be restarted — but it takes no turn before `until` / `retryAt`.
    */
   usageLimited?: UsageLimitedView;
+  /**
+   * Set while the orchestrator's last start is blocked on the user (a consent
+   * screen, a sign-in, an unknown menu). `isActive` is false even when the
+   * session is alive on that screen: it takes no message until the user acts.
+   */
+  startupBlocked?: StartupBlock;
 }
 
 /**
@@ -140,6 +147,19 @@ export async function getOrchestratorStatus(): Promise<OrchestratorStatusResult>
     }
 
     const agentStatus = orchestratorStatus.agentStatus || CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE;
+
+    // Last start blocked on the user and not started since: the session may
+    // sit alive on its menu, which the checks below would read as "active and
+    // ready" (Windows host, 2026-11-19). Say what it waits for instead.
+    const startupBlocked = startupBlockOf(sessionName);
+    if (startupBlocked) {
+      return {
+        isActive: false,
+        agentStatus,
+        message: describeStartupBlock(STARTUP_BLOCK_CONSTANTS.ORCHESTRATOR_SUBJECT, startupBlocked),
+        startupBlocked,
+      };
+    }
 
     // Orchestrator is active when fully registered via MCP AND the session is
     // confirmed alive (or the session backend was unavailable to check).

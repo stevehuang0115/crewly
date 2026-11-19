@@ -241,7 +241,9 @@ async function setupOrchestratorSession(webPort: number): Promise<void> {
 		// Call the backend API to setup orchestrator session
 		const response = await axios.post(
 			`http://localhost:${webPort}${API_ENDPOINTS.ORCHESTRATOR_SETUP}`,
-			{},
+			// A follow-up to the backend's own boot start, not a second request:
+			// the backend skips it when that start is blocked on the user.
+			{ automatic: true },
 			{
 				timeout: ORCHESTRATOR_SETUP_TIMEOUT
 			}
@@ -257,6 +259,13 @@ async function setupOrchestratorSession(webPort: number): Promise<void> {
 			);
 		}
 	} catch (error) {
+		// The backend answered with a reason (e.g. the orchestrator's start-up
+		// waits on the user): show it, not "it will be created when needed".
+		const serverError = (error as { response?: { data?: { error?: unknown } } })?.response?.data?.error;
+		if (typeof serverError === 'string' && serverError.length > 0) {
+			console.log(chalk.yellow(`⚠️  Orchestrator is not started: ${serverError}`));
+			return;
+		}
 		console.log(
 			chalk.yellow(
 				'⚠️  Could not setup orchestrator session - it will be created when needed'

@@ -56,8 +56,9 @@ jest.mock('../core/storage.service.js', () => ({
 }));
 
 import { OrchestratorRestartService } from './orchestrator-restart.service.js';
-import { ORCHESTRATOR_RESTART_CONSTANTS, ORCHESTRATOR_SESSION_NAME, RUNTIME_TYPES, CLAUDE_STARTUP_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_RESTART_CONSTANTS, ORCHESTRATOR_SESSION_NAME, RUNTIME_TYPES, CLAUDE_STARTUP_CONSTANTS, STARTUP_BLOCK_CONSTANTS } from '../../constants.js';
 import { markPlannedRelaunch, resetPlannedRelaunches } from '../agent/planned-relaunch.registry.js';
+import { recordStartupBlock, resetStartupBlocksForTesting } from '../agent/startup-block.registry.js';
 import { markUsageLimited, resetUsageLimitState } from '../runtime-fallback/usage-limit-state.js';
 
 describe('OrchestratorRestartService', () => {
@@ -104,6 +105,7 @@ describe('OrchestratorRestartService', () => {
 	afterEach(() => {
 		OrchestratorRestartService.resetInstance();
 		resetPlannedRelaunches();
+		resetStartupBlocksForTesting();
 		mockSendNotification.mockClear();
 	});
 
@@ -123,6 +125,37 @@ describe('OrchestratorRestartService', () => {
 			await jest.advanceTimersByTimeAsync(0);
 			return p;
 		}
+
+		it('start-up blocked on the user: an unplanned restart does nothing while the block is fresh, and one attempt goes through after the retry period', async () => {
+			recordStartupBlock(ORCHESTRATOR_SESSION_NAME, 'consent_required', 'Accept Bypass Permissions mode.');
+			service.markGaveUp('Accept Bypass Permissions mode.', { blocked: true, attempts: 1 });
+
+			await expect(run()).resolves.toBe(false);
+			// The session showing the screen is not killed, nothing is started.
+			expect(mockSessionBackend.killSession).not.toHaveBeenCalled();
+			expect(mockAgentRegistrationService.createAgentSession).not.toHaveBeenCalled();
+
+			// The owner is usually away and the detection can be wrong: after the
+			// retry period one automatic attempt is made again.
+			await jest.advanceTimersByTimeAsync(Math.max(ORCHESTRATOR_RESTART_CONSTANTS.GAVE_UP_RETRY_MS, STARTUP_BLOCK_CONSTANTS.AUTOMATIC_RETRY_AFTER_MS) + 1000);
+			await expect(run()).resolves.toBe(true);
+			expect(mockAgentRegistrationService.createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ automatic: true }));
+		});
+
+		it('start-up blocked on the user: restarts again once the block is cleared, as an automatic start', async () => {
+			recordStartupBlock(ORCHESTRATOR_SESSION_NAME, 'consent_required', 'Accept Bypass Permissions mode.');
+			await expect(run()).resolves.toBe(false);
+
+			resetStartupBlocksForTesting();
+			await expect(run()).resolves.toBe(true);
+			expect(mockAgentRegistrationService.createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ automatic: true }));
+		});
+
+		it('start-up blocked on the user: a planned relaunch still goes through, as a start that was asked for', async () => {
+			recordStartupBlock(ORCHESTRATOR_SESSION_NAME, 'auth_required', 'Sign in to Claude Code.');
+			await expect(run({ planned: true, reason: 'runtime_fallback' })).resolves.toBe(true);
+			expect(mockAgentRegistrationService.createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ automatic: false }));
+		});
 
 		it('relaunches without the "Orchestrator Restarted … unresponsive" alarm and without counting an attempt', async () => {
 			await expect(run({ planned: true, reason: 'runtime_fallback' })).resolves.toBe(true);

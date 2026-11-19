@@ -5,7 +5,7 @@ import { RuntimeAgentService, type McpConfigResult } from './runtime-agent.servi
 import { SessionCommandHelper } from '../session/index.js';
 import { RUNTIME_TYPES, CLAUDE_FATAL_PATTERNS, CLAUDE_STARTUP_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS, type RuntimeType } from '../../constants.js';
 import { RuntimeStartupBlockedError, detectRuntimeCliMissing } from './runtime-startup-blocked.error.js';
-import { findStartupErrorPattern, showsBypassConsentMenu } from './runtime-startup-screen.js';
+import { findStartupErrorPattern, readFullscreenRendererMenu, showsBypassConsentMenu } from './runtime-startup-screen.js';
 import { delay } from '../../utils/async.utils.js';
 
 /**
@@ -162,6 +162,35 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 	}
 
 	/**
+	 * Answer the "Try the new fullscreen renderer?" menu with "Not now".
+	 *
+	 * The option's position is not assumed: Down is pressed, re-reading the
+	 * screen each time, until the highlight is on "Not now", and Enter is
+	 * pressed only then. When the highlight cannot be brought there, Esc
+	 * cancels the menu instead. Enter is never pressed on another option. A
+	 * menu that goes away on its own is left alone.
+	 *
+	 * @param sessionName - Session showing the menu
+	 * @param screen - The captured screen the menu was seen on
+	 */
+	private async declineFullscreenRendererMenu(sessionName: string, screen: string): Promise<void> {
+		const M = CLAUDE_STARTUP_CONSTANTS.FULLSCREEN_RENDERER_MENU;
+		let state = readFullscreenRendererMenu(screen);
+		for (let presses = 0; state === 'other_selected' && presses < M.MAX_DOWN_PRESSES; presses++) {
+			await this.sessionHelper.sendKey(sessionName, 'Down');
+			await delay(M.KEY_SETTLE_MS);
+			state = readFullscreenRendererMenu(this.sessionHelper.capturePane(sessionName));
+		}
+		if (state === 'decline_selected') {
+			this.logger.info('Fullscreen renderer menu: choosing "Not now"', { sessionName });
+			await this.sessionHelper.sendEnter(sessionName);
+		} else if (state === 'other_selected') {
+			this.logger.warn('Fullscreen renderer menu: could not highlight "Not now"; cancelling with Esc', { sessionName });
+			await this.sessionHelper.sendEscape(sessionName);
+		}
+	}
+
+	/**
 	 * Override waitForRuntimeReady to auto-accept workspace trust prompt (#144).
 	 *
 	 * Claude Code shows an interactive trust gate on first launch for
@@ -180,6 +209,7 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 	): Promise<boolean> {
 		const startTime = Date.now();
 		let trustPromptAttempts = 0;
+		let fullscreenMenuAttempts = 0;
 
 		this.logger.info('Waiting for Claude Code to be ready (with trust prompt detection)', {
 			sessionName,
@@ -201,6 +231,17 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 						totalElapsed: Date.now() - startTime,
 					});
 					throw blocked;
+				}
+
+				// One-time "Try the new fullscreen renderer?" menu: decline it.
+				if (
+					fullscreenMenuAttempts < CLAUDE_STARTUP_CONSTANTS.FULLSCREEN_RENDERER_MENU.MAX_ATTEMPTS &&
+					readFullscreenRendererMenu(output) !== 'absent'
+				) {
+					fullscreenMenuAttempts++;
+					await this.declineFullscreenRendererMenu(sessionName, output);
+					await delay(checkInterval);
+					continue;
 				}
 
 				// #144: Auto-accept workspace trust prompt
