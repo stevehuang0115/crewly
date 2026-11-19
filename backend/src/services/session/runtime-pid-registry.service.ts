@@ -18,6 +18,7 @@
  * @module services/session/runtime-pid-registry.service
  */
 
+import { readWindowsProcessesSync } from '../../utils/windows-process.utils.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { execFileSync } from 'child_process';
 import * as path from 'path';
@@ -66,6 +67,11 @@ export function readProcessCmdline(pid: number): string | null {
     } catch {
       return null;
     }
+  }
+  // Windows: no /proc and no ps — the cached process table.
+  if (process.platform === 'win32') {
+    const row = readWindowsProcessesSync().find((r) => r.pid === pid);
+    return row ? normalizeCmdline(row.command) || null : null;
   }
   // Portable fallback (macOS): ask `ps`.
   try {

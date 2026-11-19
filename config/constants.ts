@@ -451,6 +451,8 @@ export const OWNER_AUTH_CONSTANTS = {
 	},
 	/** Give up looking up a local client's process after this long (fail open) */
 	PEER_LOOKUP_TIMEOUT_MS: 3000,
+	/** The same budget on Windows, where the process table comes from PowerShell (slow to start) (ms) */
+	PEER_LOOKUP_TIMEOUT_WINDOWS_MS: 8_000,
 	/** Longest parent chain walked from a client process */
 	PEER_MAX_ANCESTRY_DEPTH: 64,
 	/** `X-Agent-Session` without a badge (migration window) is logged at most this often per session */

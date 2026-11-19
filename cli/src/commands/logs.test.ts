@@ -26,6 +26,14 @@ jest.mock('chalk', () => ({
 }));
 
 const mockExecAsync = jest.fn();
+// The log reader no longer shells out to `tail`; the same mock stands in for it.
+jest.mock('../utils/tail-file.js', () => ({
+	tailFile: (file: string, lines: number): string => {
+		const result = mockExecAsync(`tail -n ${lines} "${file}"`);
+		return typeof result === 'string' ? result : 'No logs';
+	},
+	followCommand: (files: string[]) => ({ command: 'tail', args: ['-f', ...files] }),
+}));
 jest.mock('child_process', () => ({
 	exec: jest.fn(
 		(
@@ -303,7 +311,7 @@ describe('logsCommand', () => {
 			expect(output).toContain('Crewly Logs');
 		});
 
-		it('handles tail command failure gracefully', async () => {
+		it('handles a log read failure gracefully', async () => {
 			mockExistsSync.mockImplementation((p: string) => {
 				if (p.includes('projects.json')) return false;
 				if (p.includes('communication.log')) return true;

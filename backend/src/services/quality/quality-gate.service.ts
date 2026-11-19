@@ -7,6 +7,7 @@
  * @module services/quality/quality-gate.service
  */
 
+import { resolveAgentShell } from '../../utils/agent-shell.utils.js';
 import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
@@ -372,11 +373,13 @@ export class QualityGateService implements IQualityGateService {
     timeout: number,
   ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
-      const child = spawn('sh', ['-c', command], {
+      // Gate commands are written for a POSIX shell: Git Bash on Windows, where
+      // `detached` would also open a console window instead of a process group.
+      const child = spawn(process.platform === 'win32' ? resolveAgentShell() : 'sh', ['-c', command], {
         cwd,
         env,
         stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true, // Creates a new process group
+        detached: process.platform !== 'win32', // Creates a new process group
       });
 
       let stdout = '';

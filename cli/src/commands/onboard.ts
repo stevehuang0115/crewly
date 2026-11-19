@@ -36,8 +36,8 @@
  * @module cli/commands/onboard
  */
 
+import { findExecutable, probeVersion } from '../../../backend/src/utils/find-executable.utils.js';
 import { createInterface, type Interface as ReadlineInterface } from 'readline';
-import { execSync } from 'child_process';
 import { mkdirSync, writeFileSync, existsSync, copyFileSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
@@ -339,18 +339,16 @@ export async function continueInWebApp(
 // ========================= Step 1: System tools & harness =========================
 
 /**
- * Checks whether a CLI tool is installed by running `which <command>`.
+ * Checks whether a CLI tool is on PATH.
+ *
+ * No shell is involved: `which` does not exist under cmd.exe, so on Windows
+ * every tool used to read as missing.
  *
  * @param command - The command name to look for (e.g. "jq")
  * @returns True if the command is found on the PATH
  */
 export function checkToolInstalled(command: string): boolean {
-  try {
-    execSync(`which ${command}`, { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
+  return findExecutable(command) !== null;
 }
 
 /**
@@ -361,17 +359,7 @@ export function checkToolInstalled(command: string): boolean {
  * @returns The version string or null if not determinable
  */
 export function getToolVersion(command: string, versionFlag = '--version'): string | null {
-  try {
-    const output = execSync(`${command} ${versionFlag} 2>/dev/null`, {
-      stdio: 'pipe',
-      timeout: 10000,
-    }).toString().trim();
-    // Extract first version-like pattern
-    const match = output.match(/\d+\.\d+[\w.-]*/);
-    return match ? match[0] : output.split('\n')[0];
-  } catch {
-    return null;
-  }
+  return probeVersion(command, versionFlag);
 }
 
 /** A system (non-npm) tool the Crewly agent runtime cannot work without. */
@@ -383,7 +371,7 @@ export interface SystemToolInfo {
   /** Why Crewly needs it, shown when it is missing */
   reason: string;
   /** Install command per platform */
-  install: { macos: string; linux: string };
+  install: { macos: string; linux: string; windows: string };
 }
 
 /**
@@ -401,7 +389,7 @@ export const REQUIRED_SYSTEM_TOOLS: readonly SystemToolInfo[] = [
     command: 'jq',
     versionFlag: '--version',
     reason: 'Agent skills use jq to read and write JSON; agents cannot register without it.',
-    install: { macos: HARNESS_CONSTANTS.SYSTEM_TOOLS.JQ.INSTALL_HINT_MACOS, linux: HARNESS_CONSTANTS.SYSTEM_TOOLS.JQ.INSTALL_HINT_LINUX },
+    install: { macos: HARNESS_CONSTANTS.SYSTEM_TOOLS.JQ.INSTALL_HINT_MACOS, linux: HARNESS_CONSTANTS.SYSTEM_TOOLS.JQ.INSTALL_HINT_LINUX, windows: HARNESS_CONSTANTS.SYSTEM_TOOLS.JQ.INSTALL_HINT_WINDOWS },
   },
 ];
 
@@ -430,6 +418,7 @@ export function ensureSystemTools(): number {
       console.log(chalk.yellow(`    ${tool.reason}`));
       console.log(chalk.gray(`    macOS: ${tool.install.macos}`));
       console.log(chalk.gray(`    Linux: ${tool.install.linux}`));
+      console.log(chalk.gray(`    Windows: ${tool.install.windows}`));
     }
     console.log(chalk.gray('    Install the tool(s) above, then run `crewly onboard` again.\n'));
     process.exit(1);

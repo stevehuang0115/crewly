@@ -109,7 +109,7 @@ export const DOCTOR_SYSTEM_TOOLS: readonly SystemToolInfo[] = [
 		command: 'curl',
 		versionFlag: '--version',
 		reason: 'Agent skills call the Crewly API with curl.',
-		install: { macos: 'brew install curl', linux: 'sudo apt-get install -y curl   (Fedora: sudo dnf install -y curl)' },
+		install: { macos: 'brew install curl', linux: 'sudo apt-get install -y curl   (Fedora: sudo dnf install -y curl)', windows: 'curl ships with Windows 10 and later (C:\\Windows\\System32\\curl.exe); check PATH' },
 	},
 ];
 
@@ -336,7 +336,7 @@ export async function collectDoctorChecks(deps: DoctorDeps = {}): Promise<Doctor
 				name: tool.displayName,
 				status: 'fail',
 				detail: `not found — ${tool.reason}`,
-				hint: platform === 'darwin' ? tool.install.macos : tool.install.linux,
+				hint: platform === 'darwin' ? tool.install.macos : platform === 'win32' ? tool.install.windows : tool.install.linux,
 			});
 		}
 	}

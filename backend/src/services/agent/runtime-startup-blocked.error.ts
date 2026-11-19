@@ -15,6 +15,11 @@ import { shellOutputLines } from './runtime-startup-screen.js';
  * - `auth_required`: the runtime asks the user to sign in (e.g. Gemini with
  *   no key and no Google login).
  * - `runtime_not_installed`: the runtime's CLI is not on the session's PATH.
+ * - `consent_required`: the runtime asks for a one-time consent only the
+ *   user may give (Claude Code's Bypass Permissions mode).
+ * - `unanswered_prompt`: the start-up timed out on a menu Crewly does not
+ *   know. Retrying shows the same menu again (Windows, 2026-11-19: 25 minutes
+ *   of restarts).
  */
 export type RuntimeStartupBlockedReason =
 	| 'root_user'
@@ -23,7 +28,9 @@ export type RuntimeStartupBlockedReason =
 	| 'account_login_refused'
 	| 'settings_unreadable'
 	| 'auth_required'
-	| 'runtime_not_installed';
+	| 'runtime_not_installed'
+	| 'consent_required'
+	| 'unanswered_prompt';
 
 /**
  * Thrown when an agent runtime cannot start until the user does something:

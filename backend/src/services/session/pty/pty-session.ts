@@ -7,6 +7,7 @@
  * @module pty-session
  */
 
+import { hasNonShellDescendant, killWindowsProcessTree, readWindowsProcessesSync } from '../../../utils/windows-process.utils.js';
 import { windowsPathsToShell } from '../../../utils/shell-path.utils.js';
 import * as pty from 'node-pty';
 import { execSync } from 'child_process';
@@ -82,6 +83,8 @@ function syncSleepMs(ms: number): void {
  * diagnostic to tell the user if they're near macOS `kern.maxprocperuid`.
  */
 function readUserProcessCount(): number | null {
+	// A POSIX pipeline (`id`, `ps`, `wc`); the limit it informs is macOS-only.
+	if (process.platform === 'win32') return null;
 	try {
 		const out = execSync('ps -u "$(id -un)" 2>/dev/null | wc -l', {
 			encoding: 'utf8',
@@ -536,7 +539,19 @@ export class PtySession implements ISession {
 		}
 
 		this.killed = true;
-		this.ptyProcess.kill(signal);
+		if (process.platform === 'win32') {
+			// Closing the ConPTY leaves the shell and the runtime under it running:
+			// end the tree first, while its root can still be found. node-pty on
+			// Windows also refuses a signal argument.
+			killWindowsProcessTree(this.ptyProcess.pid);
+			try {
+				this.ptyProcess.kill();
+			} catch {
+				// already gone
+			}
+		} else {
+			this.ptyProcess.kill(signal);
+		}
 
 		// Release the underlying PTY master/slave file descriptors. `kill()` only
 		// signals the child shell — it does NOT close node-pty's master fd socket,
@@ -609,11 +624,19 @@ export class PtySession implements ISession {
 
 		this.logger.info('Force-killing session', { name: this.name, pid });
 
+		// Windows: no signals and no process groups. End the whole tree under the
+		// shell now; the steps below then only close the ConPTY.
+		if (process.platform === 'win32') {
+			const ended = killWindowsProcessTree(pid);
+			this.logger.info('Ended the session process tree', { name: this.name, pid, ended });
+		}
+
 		// Step 1: Send SIGTERM via node-pty
 		if (!this.killed) {
 			this.killed = true;
 			try {
-				this.ptyProcess.kill('SIGTERM');
+				if (process.platform === 'win32') this.ptyProcess.kill();
+				else this.ptyProcess.kill('SIGTERM');
 			} catch (err) {
 				this.logger.debug('Error sending SIGTERM via node-pty (process may already be dead)', {
 					error: err instanceof Error ? err.message : String(err),
@@ -626,7 +649,7 @@ export class PtySession implements ISession {
 
 		// SIGKILL the process directly
 		try {
-			process.kill(pid, 'SIGKILL');
+			if (pid > 0) process.kill(pid, 'SIGKILL');
 			this.logger.debug('Sent SIGKILL to process', { pid });
 		} catch {
 			// ESRCH = process already gone, which is fine
@@ -634,7 +657,7 @@ export class PtySession implements ISession {
 
 		// SIGKILL the entire process group (negative PID)
 		try {
-			process.kill(-pid, 'SIGKILL');
+			if (process.platform !== 'win32' && pid > 0) process.kill(-pid, 'SIGKILL');
 			this.logger.debug('Sent SIGKILL to process group', { pgid: -pid });
 		} catch {
 			// ESRCH = process group already gone, which is fine
@@ -676,6 +699,9 @@ export class PtySession implements ISession {
 
 		try {
 			const pid = this.ptyProcess.pid;
+			// Windows: no pgrep, and the Git Bash launcher always has a child (the
+			// real bash) — look for a non-shell process anywhere under the session.
+			if (process.platform === 'win32') return hasNonShellDescendant(readWindowsProcessesSync(), pid);
 			// pgrep -P <pid> lists child PIDs; exits 0 if found, 1 if none
 			execSync(`pgrep -P ${pid}`, { stdio: 'pipe', timeout: 3000 });
 			return true;

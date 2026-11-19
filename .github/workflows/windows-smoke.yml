@@ -73,6 +73,26 @@ jobs:
           echo "$OUT" | tail -8
           echo "$OUT" | grep -q '^PTY_OK_42' || { echo "the session did not run the command"; exit 1; }
           echo "$OUT" | grep -q '^true' || { echo "curl + jq inside the session failed"; exit 1; }
+      - name: Killing a session ends the processes under it
+        shell: bash
+        run: |
+          T="$(cat "$USERPROFILE/.crewly/api-token")"
+          A="Authorization: Bearer $T"
+          B=http://localhost:8787/api/sessions
+          curl -s -m 15 -o /dev/null -H "$A" -H 'Content-Type: application/json' -X POST "$B" \
+            -d '{"name":"win-kill","command":"C:\\Program Files\\Git\\bin\\bash.exe","cwd":"C:\\Users\\runneradmin"}'
+          sleep 5
+          # A long-lived non-shell process under the session, the way an agent runtime is.
+          curl -s -m 15 -o /dev/null -H "$A" -H 'Content-Type: application/json' -X POST "$B/win-kill/write" \
+            -d '{"data":"node -e \"setTimeout(()=>{},600000)\" crewly-kill-marker\r"}'
+          sleep 6
+          count() { powershell.exe -NoProfile -Command "(Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -like '*crewly-kill-marker*' -and \$_.Name -eq 'node.exe' } | Measure-Object).Count" | tr -d '\r'; }
+          before="$(count)"; echo "marker processes before kill: $before"
+          [ "$before" = "1" ] || { echo "the marker process did not start"; exit 1; }
+          curl -s -m 30 -o /dev/null -w "delete %{http_code}\n" -H "$A" -X DELETE "$B/win-kill"
+          sleep 5
+          after="$(count)"; echo "marker processes after kill: $after"
+          [ "$after" = "0" ] || { echo "killing the session left its child running"; exit 1; }
       - name: Launch lines Crewly typed into the orchestrator session
         shell: bash
         run: |
@@ -88,6 +108,30 @@ jobs:
           FOUND="$(grep -rIhoE '.{0,60}[A-Za-z]:\\\\?[^" ]*execute\.sh' . 2>/dev/null | head -8 | cut -c1-220 || true)"
           if [ -n "$FOUND" ]; then echo "$FOUND"; echo "a prompt or catalog still carries a backslash path"; exit 1; fi
           echo "none"
+      - name: Caller identity check has a working lookup
+        shell: pwsh
+        run: |
+          $log = "$env:RUNNER_TEMP\crewly-start.log"
+          $bad = Get-Content $log | Select-String -Pattern 'lookup tool unavailable|lookup timed out'
+          if ($bad) { $bad | Select-Object -First 5 | ForEach-Object { $_.Line.Substring(0, [Math]::Min(300, $_.Line.Length)) }; "the local-caller lookup did not run on Windows"; exit 1 }
+          "no failed caller lookups"
+      - name: crewly init finds jq without a POSIX shell on PATH
+        shell: pwsh
+        run: |
+          # cmd.exe has no `which`: drop Git's POSIX tool directories so a shell-out to it would fail.
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and $_ -notmatch 'Git\\(usr|mingw64)\\bin' }) -join ';'
+          if (Get-Command which -ErrorAction SilentlyContinue) { "note: a which is still on PATH: $((Get-Command which).Source)" }
+          $out = node dist\cli\cli\src\index.js init --yes 2>&1 | Out-String
+          $out.Substring(0, [Math]::Min(2500, $out.Length))
+          if ($out -match 'jq not found') { "init did not find jq"; exit 1 }
+          if ($out -notmatch 'jq detected \(\d') { "init did not report jq with its version"; exit 1 }
+      # The lsof/ps tests of backend-status and process-cleanup describe the POSIX
+      # path and are not run here; their Windows parsers are covered on Linux CI.
+      - name: Unit tests of the Windows-specific code
+        shell: pwsh
+        run: |
+          npx jest backend/src/utils/find-executable backend/src/utils/windows-process backend/src/utils/agent-shell backend/src/utils/shell-path backend/src/utils/main-module cli/src/utils/tail-file --maxWorkers=2 2>&1 | Select-String -Pattern 'PASS|FAIL|Tests:|●' | Select-Object -First 60
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: crewly status and crewly stop
         shell: pwsh
         run: |

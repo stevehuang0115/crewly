@@ -15,6 +15,7 @@
  * @module services/agent/agent-process-origin.service
  */
 
+import { queryWindowsProcesses } from '../../utils/windows-process.utils.js';
 import { execFile } from 'child_process';
 import { AGENT_ORIGIN_CONSTANTS } from '../../constants.js';
 
@@ -86,6 +87,8 @@ export function parseProcessTable(output: string): Map<number, ProcessEntry> {
  * @returns pid → entry
  */
 export function readProcessTable(): Promise<Map<number, ProcessEntry>> {
+	// Windows has no ps: the same `pid ppid args` rows come from PowerShell.
+	if (process.platform === 'win32') return queryWindowsProcesses().then(parseProcessTable);
 	return new Promise((resolve, reject) => {
 		execFile(
 			'ps',

@@ -1,11 +1,10 @@
-import { exec, spawn } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
+import { followCommand, tailFile } from '../utils/tail-file.js';
 import chalk from 'chalk';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 
-const execAsync = promisify(exec);
 
 interface LogsOptions {
   follow?: boolean;
@@ -50,7 +49,7 @@ async function showProjectLogs(crewlyHome: string, lines: number): Promise<void>
         console.log(chalk.cyan(`\n📁 Project: ${path.basename(projectPath)}`));
         
         try {
-          const { stdout } = await execAsync(`tail -n ${Math.floor(lines / 2)} "${logPath}" 2>/dev/null || echo "No logs"`);
+          const stdout = tailFile(logPath, Math.floor(lines / 2));
           
           if (stdout.trim()) {
             const logLines = stdout.trim().split('\n');
@@ -78,7 +77,7 @@ async function showCommunicationLogs(crewlyHome: string, lines: number): Promise
     const globalLogPath = path.join(crewlyHome, 'communication.log');
     
     if (fs.existsSync(globalLogPath)) {
-      const { stdout } = await execAsync(`tail -n ${lines} "${globalLogPath}" 2>/dev/null || echo "No logs"`);
+      const stdout = tailFile(globalLogPath, lines);
       
       if (stdout.trim()) {
         const logLines = stdout.trim().split('\n');
@@ -110,7 +109,7 @@ async function showSchedulerLogs(crewlyHome: string, lines: number): Promise<voi
     const schedulerLogPath = path.join(crewlyHome, 'scheduler.log');
     
     if (fs.existsSync(schedulerLogPath)) {
-      const { stdout } = await execAsync(`tail -n ${Math.floor(lines / 2)} "${schedulerLogPath}" 2>/dev/null || echo "No logs"`);
+      const stdout = tailFile(schedulerLogPath, Math.floor(lines / 2));
       
       if (stdout.trim()) {
         const logLines = stdout.trim().split('\n');
@@ -158,7 +157,8 @@ async function followLogs(crewlyHome: string): Promise<void> {
   }
   
   // Use tail -f to follow multiple files
-  const tailProcess = spawn('tail', ['-f', ...logFiles.filter(f => fs.existsSync(f))], {
+  const follow = followCommand(logFiles.filter(f => fs.existsSync(f)));
+  const tailProcess = spawn(follow.command, follow.args, {
     stdio: 'pipe'
   });
   

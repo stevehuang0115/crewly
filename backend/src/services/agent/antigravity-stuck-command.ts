@@ -11,6 +11,7 @@
  * @module services/agent/antigravity-stuck-command
  */
 
+import { readWindowsProcessesSync } from '../../utils/windows-process.utils.js';
 import { execFileSync } from 'child_process';
 import { ANTIGRAVITY_STUCK_COMMAND_CONSTANTS as C } from '../../constants.js';
 
@@ -39,6 +40,7 @@ export interface StuckCommandDeps {
  * @returns Child PIDs (empty when none, or when pgrep fails)
  */
 export function pgrepChildren(pid: number): number[] {
+	if (process.platform === 'win32') return readWindowsProcessesSync().filter((r) => r.ppid === pid).map((r) => r.pid);
 	try {
 		const out = execFileSync('pgrep', ['-P', String(pid)], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).toString();
 		return out.split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 0);
