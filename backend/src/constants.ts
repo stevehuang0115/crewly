@@ -3572,7 +3572,7 @@ export const CLAUDE_STARTUP_CONSTANTS = {
 	 */
 	BYPASS_CONSENT_MARKERS: ['Bypass Permissions mode', 'Yes, I accept'] as readonly string[],
 	/** A menu that waits for a choice: a `❯`-marked numbered option, or the confirm footer. */
-	UNANSWERED_MENU_PATTERN: /❯\s*\d+\.\s|Enter to confirm|Esc to (?:cancel|exit)/,
+	UNANSWERED_MENU_PATTERN: /(?:❯|^\s*>)\s*\d+\.\s|Enter to confirm|Esc to (?:cancel|exit)/m,
 	/** Most characters of the stuck screen quoted in the blocked message */
 	UNANSWERED_SCREEN_EXCERPT_CHARS: 600,
 	MESSAGES: {
@@ -10642,8 +10642,12 @@ export const RUNTIME_CONSENT_CONSTANTS = {
 	SETTLE_MS: 3_000,
 	/** Down arrow: both menus list "No, exit" first */
 	DOWN_KEY: '\x1b[B',
-	/** Marks the highlighted option */
-	MENU_CURSOR: '❯',
+	/**
+	 * Marks the highlighted option, as a regex character class: `❯`, or `>` in
+	 * a Windows console (DESKTOP-RIG1SOO, 2026-11-19: the trust menu read
+	 * `> No, exit` and the highlight was never recognised).
+	 */
+	MENU_CURSOR_PATTERN: '[❯>]',
 	/** The option to choose on the consent menu */
 	ACCEPT_OPTION: 'Yes, I accept',
 	/** The option to choose when Claude Code asks to trust the (empty, Crewly-made) folder */

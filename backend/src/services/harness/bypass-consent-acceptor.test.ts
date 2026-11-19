@@ -112,6 +112,21 @@ describe('acceptBypassConsent', () => {
 		expect(written).toEqual([DOWN, ENTER, DOWN, ENTER]);
 	});
 
+	it('reads the `>` highlight of a Windows console (trust prompt, then consent)', async () => {
+		let screen: 'trust' | 'consent' = 'trust';
+		const { terminal, written, api } = fakePty((key, a) => {
+			if (key === DOWN) a.print(screen === 'trust' ? '  No, exit\r\n> Yes, I trust this folder\r\n' : '  No, exit\r\n> Yes, I accept\r\n');
+			if (key === ENTER && screen === 'trust') {
+				screen = 'consent';
+				a.print('WARNING: Claude Code running in Bypass Permissions mode\r\n> No, exit\r\n  Yes, I accept\r\n');
+			} else if (key === ENTER) a.print('\r\n> ready\r\n');
+		});
+		const start = 'Accessing workspace: C:\\Temp\\crewly-consent-x\r\n> No, exit\r\n  Yes, I trust this folder\r\nEnter to confirm\r\n';
+		const result = await acceptBypassConsent({ ...deps(terminal, () => api.print(start)), platform: 'win32' });
+		expect(result.outcome).toBe('accepted');
+		expect(written).toEqual([DOWN, ENTER, DOWN, ENTER]);
+	});
+
 	it('never presses Enter when the highlight did not reach "Yes, I accept"', async () => {
 		const { terminal, written, api } = fakePty(() => undefined);
 		const result = await acceptBypassConsent(deps(terminal, () => api.print(CONSENT_SCREEN)));
