@@ -235,6 +235,7 @@ import { isInterim } from './services/slack/slack-typing-placeholder.service.js'
 import { detectStatedIntent } from './services/agent/stated-intent.js';
 import { createAgentAskLedger, type AskTranscriptLocator } from './services/messaging/agent-ask-ledger.wiring.js';
 import { BackgroundWorkWatchdog } from './services/monitoring/background-work-watchdog.js';
+import { toShellPath } from './utils/shell-path.utils.js';
 import { isBackendEntryScript } from './utils/main-module.utils.js';
 import { createFollowThrough, settleFollowThrough, idlePendingWorkCheck, releaseWorkForStop, restoreStoppedOwingWork, owedWorkReminder, OWED_REMINDER_MARKER } from './services/agent/follow-through.wiring.js';
 import { isSessionPaused } from './services/team/team-pause.registry.js';
@@ -7773,7 +7774,7 @@ void (async () => {
 			} catch {
 				/* names are cosmetic */
 			}
-			const skillsRoot = path.join(findPackageRoot(__dirname), 'config', 'skills', 'agent');
+			const skillsRoot = toShellPath(path.join(findPackageRoot(__dirname), 'config', 'skills', 'agent'));
 			const service = new OwnerCompletionReportService({
 				crewlyHome: this.config.crewlyHome,
 				listItems: () => TaskPoolService.getInstance().getAllItems(),
