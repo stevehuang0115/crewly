@@ -312,6 +312,8 @@ export interface SlackInstanceSettingsFile {
   version: 1;
   /** This instance receives DMs / unmapped channels for the account */
   primary: boolean;
+  /** True when `primary` was claimed by default (the account had none), not set by the owner */
+  primaryAuto?: boolean;
   /** Slack team id this instance serves when the account has several workspaces */
   slackTeamId?: string;
 }

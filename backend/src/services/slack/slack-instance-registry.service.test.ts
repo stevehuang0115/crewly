@@ -121,7 +121,10 @@ function makeService() {
 
 /** Calls by method+path suffix, for readable assertions. */
 function calls(): Array<{ method: string; url: string; body: any }> {
-  return fetchMock.mock.calls.map(([url, init]) => ({ method: init.method, url, body: init.body === undefined ? undefined : JSON.parse(init.body) }));
+  return fetchMock.mock.calls
+    .map(([url, init]) => ({ method: init.method, url, body: init.body === undefined ? undefined : JSON.parse(init.body), headers: init.headers }))
+    // The read of the account's machines before each registration is covered by its own tests.
+    .filter((c) => !(c.method === 'GET' && c.url.endsWith('/instances')));
 }
 
 beforeEach(async () => {
@@ -235,12 +238,12 @@ describe('heartbeat', () => {
   it('PUTs /api/cloud/slack/instances/<device id> with the payload and a bearer', async () => {
     const service = makeService();
     expect(await service.heartbeat()).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('https://api.crewlyai.com/api/cloud/slack/instances/device-1');
-    expect(init.method).toBe('PUT');
-    expect(init.headers.Authorization).toBe('Bearer jwt-1');
-    expect(JSON.parse(init.body)).toMatchObject({ deviceName: 'steve-mbp', relayQueueId: 'queue-abc', crewlyVersion: '1.16.0' });
+    expect(calls()).toHaveLength(1);
+    const put = calls()[0] as { method: string; url: string; body: unknown; headers: { Authorization: string } };
+    expect(put.url).toBe('https://api.crewlyai.com/api/cloud/slack/instances/device-1');
+    expect(put.method).toBe('PUT');
+    expect(put.headers.Authorization).toBe('Bearer jwt-1');
+    expect(put.body).toMatchObject({ deviceName: 'steve-mbp', relayQueueId: 'queue-abc', crewlyVersion: '1.16.0' });
     expect(service.getInstanceId()).toBe('device-1');
     expect(service.getLastHeartbeatAt()).toBe(new Date(1_800_000_000_000).toISOString());
   });
@@ -502,6 +505,67 @@ describe('primary toggle', () => {
 
     await service.setPrimary(false);
     expect(calls()[1].body.primary).toBe(false);
+  });
+});
+
+describe('default primary (the account has none)', () => {
+  const listed = (over: Array<Record<string, unknown>>) =>
+    jest.fn(async (url: string, init: { method: string }) =>
+      init.method === 'GET' && url.endsWith('/instances')
+        ? jsonResponse({ success: true, data: over })
+        : jsonResponse({ success: true, data: { installUrls: [] } }),
+    );
+  const me = { instanceId: 'device-1', deviceName: 'steve-mbp', primary: false, live: true, crewlyVersion: '1.40.0', teams: [{ name: 'A' }, { name: 'B' }] };
+  const other = { instanceId: 'device-2', deviceName: 'mini', primary: false, live: true, crewlyVersion: '1.40.0', teams: [{ name: 'C' }] };
+
+  it('the machine every instance agrees on claims the flag and keeps it', async () => {
+    fetchMock = listed([me, other]);
+    const service = makeService();
+    expect(await service.heartbeat()).toBe(true);
+    expect(calls()[0].body.primary).toBe(true);
+    const onDisk = JSON.parse(await fs.readFile(path.join(tmpDir, 'slack-instance.json'), 'utf8'));
+    expect(onDisk).toEqual({ version: 1, primary: true, primaryAuto: true });
+    expect(service.getAccountInstances().map((i) => i.deviceName)).toEqual(['steve-mbp', 'mini']);
+  });
+
+  it('a machine that is not the choice leaves the flag alone', async () => {
+    fetchMock = listed([{ ...me, teams: [] }, other]);
+    const service = makeService();
+    await service.heartbeat();
+    expect(calls()[0].body.primary).toBe(false);
+  });
+
+  it('does nothing while another live machine is primary', async () => {
+    fetchMock = listed([me, { ...other, primary: true }]);
+    const service = makeService();
+    await service.heartbeat();
+    expect(calls()[0].body.primary).toBe(false);
+  });
+
+  it('gives the flag up when another machine claimed it later', async () => {
+    await fs.writeFile(path.join(tmpDir, 'slack-instance.json'), JSON.stringify({ version: 1, primary: true }));
+    fetchMock = listed([me, { ...other, primary: true }]);
+    const service = makeService();
+    await service.heartbeat();
+    expect(calls()[0].body.primary).toBe(false);
+    expect(await makeService().isPrimary()).toBe(false);
+  });
+
+  it('a flag the owner just set is not given up before Cloud hears of it', async () => {
+    fetchMock = listed([me, { ...other, primary: true }]);
+    const service = makeService();
+    await service.setPrimary(true);
+    expect(calls()[0].body.primary).toBe(true);
+    expect(await service.isPrimary()).toBe(true);
+  });
+
+  it('registers as before when the list cannot be read', async () => {
+    fetchMock = jest.fn(async (url: string, init: { method: string }) =>
+      init.method === 'GET' ? jsonResponse({ success: false, error: 'nope' }, 500) : jsonResponse({ success: true, data: {} }),
+    );
+    const service = makeService();
+    expect(await service.heartbeat()).toBe(true);
+    expect(calls()[0].body.primary).toBe(false);
   });
 });
 

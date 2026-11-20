@@ -38,6 +38,12 @@ import type {
 } from '../../types/slack.types.js';
 import type { StorageEvent } from '../core/storage.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+import {
+  pickDefaultPrimary,
+  primaryTakenByAnother,
+  toAccountInstance,
+  type AccountInstance,
+} from './slack-request-scope.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { NetworkStatusService, warnUnlessOfflineRepeat } from '../core/network-status.service.js';
@@ -142,6 +148,10 @@ export class SlackInstanceRegistryService {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private unsubscribeStorage: (() => void) | null = null;
   private pendingInstalls: SlackPendingInstall[] = [];
+  /** The account's machines as of the last read from Cloud */
+  private accountInstances: AccountInstance[] = [];
+  /** A primary flag set locally that Cloud has not been told yet: do not give it up meanwhile */
+  private pendingPrimaryClaim = false;
   private lastHeartbeatAt: string | null = null;
   private lastError: string | null = null;
   private started = false;
@@ -346,8 +356,10 @@ export class SlackInstanceRegistryService {
     }
     try {
       const { deviceId } = await this.resolveIdentity();
+      await this.reconcilePrimary(deviceId);
       const payload = await this.buildPayload();
       await this.cloudRequest('PUT', `${SLACK_CLOUD_CONSTANTS.INSTANCES_PATH}/${encodeURIComponent(deviceId)}`, payload);
+      this.pendingPrimaryClaim = false;
       this.queueWaitRetries = 0;
       this.lastHeartbeatAt = new Date(this.now()).toISOString();
       this.lastError = null;
@@ -468,9 +480,98 @@ export class SlackInstanceRegistryService {
   async setPrimary(primary: boolean): Promise<void> {
     const settings = await this.loadSettings();
     settings.primary = primary;
+    delete settings.primaryAuto;
+    this.pendingPrimaryClaim = primary;
     await fs.mkdir(path.dirname(this.settingsPath), { recursive: true });
     await atomicWriteJson(this.settingsPath, settings);
     await this.heartbeat();
+  }
+
+  /**
+   * Keep the account at one primary machine, before each registration:
+   *
+   *  - this machine holds the flag locally but Cloud lists another live
+   *    machine as primary (it claimed later) → give the flag up, so the two
+   *    do not take it from each other on every heartbeat;
+   *  - nobody holds it → the machine every instance agrees on
+   *    ({@link pickDefaultPrimary}) claims it. Without this a DM to the
+   *    account's Crewly bot went to whichever machine had the most recent
+   *    heartbeat, a different one each time (2026-11-19, four machines).
+   *
+   * `CREWLY_SLACK_PRIMARY` is the operator's word and is left alone. Any
+   * failure to read the list leaves things as they are.
+   *
+   * @param deviceId - This machine's instance id
+   */
+  private async reconcilePrimary(deviceId: string): Promise<void> {
+    let list: AccountInstance[];
+    try {
+      list = await this.refreshAccountInstances();
+    } catch (err) {
+      this.logger.debug('Could not list the account machines; primary left as is', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    const raw = ((this.deps.env ?? process.env)[SLACK_CLOUD_CONSTANTS.PRIMARY_ENV_VAR] ?? '').trim().toLowerCase();
+    if (raw === '1' || raw === 'true') return;
+    const settings = await this.loadSettings();
+    if (settings.primary) {
+      if (!this.pendingPrimaryClaim && primaryTakenByAnother(list, deviceId)) {
+        settings.primary = false;
+        delete settings.primaryAuto;
+        await this.saveSettings(settings);
+        this.logger.info('Another machine is now the account primary; this one gave the flag up', { instanceId: deviceId });
+      }
+      return;
+    }
+    if (pickDefaultPrimary(list, SLACK_CLOUD_CONSTANTS.DEFAULT_PRIMARY_MIN_VERSION) !== deviceId) return;
+    settings.primary = true;
+    settings.primaryAuto = true;
+    await this.saveSettings(settings);
+    this.pendingPrimaryClaim = true;
+    this.logger.info('The account had no primary machine; this one takes it by default', {
+      instanceId: deviceId,
+      machines: list.length,
+    });
+  }
+
+  /**
+   * Read the account's machines from Cloud and cache them.
+   *
+   * @returns The machines
+   * @throws SlackIdentityCloudError when Cloud cannot be reached
+   */
+  async refreshAccountInstances(): Promise<AccountInstance[]> {
+    const data = await this.cloudRequest<unknown>('GET', SLACK_CLOUD_CONSTANTS.INSTANCES_PATH, undefined);
+    const list = (Array.isArray(data) ? data : [])
+      .map((raw) => toAccountInstance(raw))
+      .filter((i): i is AccountInstance => i !== null);
+    this.accountInstances = list;
+    return list;
+  }
+
+  /**
+   * The account's machines as of the last heartbeat (every 5 minutes).
+   *
+   * @returns Copies; empty before the first successful read
+   */
+  getAccountInstances(): AccountInstance[] {
+    return this.accountInstances.map((i) => ({ ...i, teams: [...i.teams] }));
+  }
+
+  /**
+   * This machine's name and instance id, for text shown to agents.
+   *
+   * @returns The name ('' when unknown) and the id (null before it resolves)
+   */
+  async describeSelf(): Promise<{ deviceName: string; instanceId: string | null }> {
+    try {
+      const { deviceName, deviceId } = await this.resolveIdentity();
+      return { deviceName, instanceId: deviceId };
+    } catch {
+      return { deviceName: '', instanceId: this.instanceId };
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -634,12 +735,23 @@ export class SlackInstanceRegistryService {
     return this.version;
   }
 
+  /**
+   * Persist the settings file.
+   *
+   * @param settings - The settings to write
+   */
+  private async saveSettings(settings: SlackInstanceSettingsFile): Promise<void> {
+    await fs.mkdir(path.dirname(this.settingsPath), { recursive: true });
+    await atomicWriteJson(this.settingsPath, settings);
+  }
+
   private async loadSettings(): Promise<SlackInstanceSettingsFile> {
     if (this.settings) return this.settings;
     const raw = await safeReadJson<Partial<SlackInstanceSettingsFile> | null>(this.settingsPath, null);
     this.settings = {
       version: 1,
       primary: raw?.primary === true,
+      ...(raw?.primary === true && raw?.primaryAuto === true ? { primaryAuto: true } : {}),
       ...(typeof raw?.slackTeamId === 'string' && raw.slackTeamId ? { slackTeamId: raw.slackTeamId } : {}),
     };
     return this.settings;

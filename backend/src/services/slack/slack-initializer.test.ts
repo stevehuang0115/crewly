@@ -623,6 +623,8 @@ describe('Slack Initializer', () => {
         expect(getSlackInstanceRegistryService()).not.toBeNull();
         const registryCalls = globalFetch.mock.calls.map(([url, init]) => `${(init as RequestInit).method} ${String(url)}`);
         expect(registryCalls).toEqual([
+          // The account's machines, read before registering (default primary).
+          'GET https://api.crewlyai.com/api/cloud/slack/instances',
           'PUT https://api.crewlyai.com/api/cloud/slack/instances/device-1',
           'POST https://api.crewlyai.com/api/cloud/slack/agents/sync',
         ]);

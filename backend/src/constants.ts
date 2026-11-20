@@ -2793,6 +2793,8 @@ export const SLACK_CLOUD_CONSTANTS = {
 	SOURCE_ENV_VAR: 'CREWLY_SLACK_SOURCE',
 	/** `1`/`true` marks this instance as the account's primary (DM / unmapped-channel target) */
 	PRIMARY_ENV_VAR: 'CREWLY_SLACK_PRIMARY',
+	/** First version that claims the primary flag when the account has none; older machines are never chosen */
+	DEFAULT_PRIMARY_MIN_VERSION: '1.40.0',
 	/** Relay `type` of a Slack event pushed by Cloud */
 	MESSAGE_TYPE: 'slack_event',
 	/** `fromDeviceName` Cloud uses on pushed Slack events */
