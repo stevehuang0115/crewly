@@ -81,7 +81,7 @@ describe('upgradeCommand', () => {
 
 			await upgradeCommand({ check: true });
 
-			expect(mockedCheckForUpdate).toHaveBeenCalled();
+			expect(mockedCheckForUpdate).toHaveBeenCalledWith({ fresh: true });
 			expect(mockedPrintUpdateNotification).toHaveBeenCalledWith('1.0.0', '2.0.0');
 		});
 
