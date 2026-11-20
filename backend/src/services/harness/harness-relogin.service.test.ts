@@ -893,7 +893,7 @@ describe('owner-requested login (relogin <harness>)', () => {
 		 * @returns The relay
 		 */
 		function siblings(took: boolean) {
-			return { hasSiblings: () => true, ask: jest.fn(async () => took) };
+			return { hasSiblings: () => true, ask: jest.fn(async () => took), passCode: jest.fn(async () => 1) };
 		}
 
 		it('is passed to the machine that is signed out instead of asking "which one"', async () => {
@@ -951,6 +951,27 @@ describe('owner-requested login (relogin <harness>)', () => {
 			expect(alone.sent[0].text).toMatch(/^Which one should I sign in\?/);
 		});
 
+		it('passes a login code written in that thread to the machine that took the request, and nothing else', async () => {
+			const ctx = setup();
+			const relay = siblings(true);
+			ctx.service.setSiblings(relay);
+			const code = 'ab12cd34ef56gh78ij90kl12mn34op56#st4te';
+
+			// Before any machine took a request from the thread, a code is not ours to pass on.
+			ctx.service.handleOwnerReply(code, SHARED_THREAD);
+			expect(relay.passCode).not.toHaveBeenCalled();
+
+			ctx.service.handleOwnerReply('login', SHARED_THREAD);
+			await flush();
+			expect(ctx.service.handleOwnerReply(code, SHARED_THREAD)).toBe(true);
+			expect(relay.passCode).toHaveBeenCalledWith(code, SHARED_THREAD);
+
+			expect(ctx.service.handleOwnerReply('thanks, that worked', SHARED_THREAD)).toBe(false);
+			expect(ctx.service.handleOwnerReply(code, { channelId: 'DMASTER', threadTs: '9.9' })).toBe(false);
+			expect(relay.passCode).toHaveBeenCalledTimes(1);
+			expect(allLogs(ctx.logger)).not.toContain(code);
+		});
+
 		it('also tells the others when this machine had a sign-in of its own waiting', async () => {
 			const ctx = setup({ agents: [], sessionsByHarness: {} });
 			const relay = siblings(false);
@@ -969,6 +990,12 @@ describe('owner-requested login (relogin <harness>)', () => {
 
 	describe('handleSiblingLogin (a `login` passed on by another machine)', () => {
 		const SHARED_THREAD: ReloginReplyTarget = { channelId: 'DMASTER', threadTs: '1790450776.351799' };
+
+		it('takes a passed-on code only into a running sign-in, never a keyword', () => {
+			const ctx = setup();
+			expect(ctx.service.handleSiblingCode('ab12cd34ef56gh78ij90kl12mn34op56#st4te', SHARED_THREAD)).toBe(false);
+			expect(ctx.service.handleSiblingCode('login', SHARED_THREAD)).toBe(false);
+		});
 
 		it('does nothing on a machine with nothing signed out', () => {
 			const ctx = setup();

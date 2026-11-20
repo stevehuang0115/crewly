@@ -8,7 +8,8 @@
  * the primary never heard the reply, and the primary, with nothing signed
  * out, asked "which one should I sign in?" (2026-11-20). Now the machine
  * that hears it asks the others first; the one that is signed out starts
- * its sign-in, answers in the same thread, and confirms.
+ * its sign-in, answers in the same thread, and confirms. A login code the
+ * owner then writes in that thread is passed on the same way.
  *
  * Same shape as runtime-consent.relay.ts.
  *
@@ -24,7 +25,9 @@ import type { HarnessReloginService, ReloginReplyTarget } from './harness-relogi
 /** What travels on the relay. */
 export type ReloginWireMessage =
 	| { v: number; kind: 'ask'; id: string; harnessId: HarnessId | null; target: ReloginReplyTarget | null; fromInstanceId: string }
-	| { v: number; kind: 'ack'; id: string; fromInstanceId: string };
+	| { v: number; kind: 'ack'; id: string; fromInstanceId: string }
+	/** A login code the owner wrote in the thread a machine is signing in from. Never logged. */
+	| { v: number; kind: 'code'; id: string; text: string; target: ReloginReplyTarget; fromInstanceId: string };
 
 /** What the relogin service forwards through. */
 export interface ReloginSiblingRelay {
@@ -38,6 +41,15 @@ export interface ReloginSiblingRelay {
 	 * @returns True when another machine took it before the wait ran out
 	 */
 	ask(harnessId: HarnessId | null, target: ReloginReplyTarget | null): Promise<boolean>;
+	/**
+	 * Pass a login code to the other machines; the one signing in from that
+	 * thread types it in.
+	 *
+	 * @param text - What the owner wrote (never logged)
+	 * @param target - The thread it was written in
+	 * @returns How many machines it was sent to
+	 */
+	passCode(text: string, target: ReloginReplyTarget): Promise<number>;
 }
 
 /** What the relay needs from the rest of the backend (injectable). */
@@ -76,6 +88,12 @@ export function parseReloginWire(payload: unknown): ReloginWireMessage | null {
 	const fromInstanceId = p['fromInstanceId'];
 	if (typeof id !== 'string' || !id || typeof fromInstanceId !== 'string' || !fromInstanceId) return null;
 	if (p['kind'] === 'ack') return { v, kind: 'ack', id, fromInstanceId };
+	if (p['kind'] === 'code') {
+		const text = p['text'];
+		const target = parseTarget(p['target']);
+		if (typeof text !== 'string' || !text || text.length > RELOGIN_RELAY_CONSTANTS.CODE_MAX_LENGTH || !target) return null;
+		return { v, kind: 'code', id, text, target, fromInstanceId };
+	}
 	if (p['kind'] !== 'ask') return null;
 	const harness = p['harnessId'];
 	if (harness !== null && harness !== undefined && !(typeof harness === 'string' && isHarnessId(harness))) return null;
@@ -111,25 +129,38 @@ export interface ReloginRelayHandle {
  */
 export function createReloginSiblingRelay(deps: ReloginRelayDeps): ReloginRelayHandle {
 	const waiting = new Map<string, (took: boolean) => void>();
-	const relay: ReloginSiblingRelay = {
-		hasSiblings: () => deps.hasOtherMachines(),
-		ask: async (harnessId, target) => {
-			const selfId = await deps.selfId();
-			const instances = await deps.accountInstances();
-			const id = randomUUID();
-			const forwardable = target && !target.agentSession ? target : null;
-			const message: ReloginWireMessage = { v: RELOGIN_RELAY_CONSTANTS.RELAY_WIRE_VERSION, kind: 'ask', id, harnessId, target: forwardable, fromInstanceId: selfId };
-			const answered = new Promise<boolean>((resolve) => waiting.set(id, resolve));
-			let sent = 0;
-			for (const [instanceId, queueId] of instances) {
-				if (instanceId === selfId) continue;
+	/**
+	 * Put a message on every other machine's queue.
+	 *
+	 * @param build - Makes the message from this machine's id
+	 * @returns How many machines it was sent to
+	 */
+	const broadcast = async (build: (selfId: string) => ReloginWireMessage): Promise<number> => {
+		const selfId = await deps.selfId();
+		const instances = await deps.accountInstances();
+		const message = build(selfId);
+		const results = await Promise.all(
+			[...instances].filter(([instanceId]) => instanceId !== selfId).map(async ([instanceId, queueId]) => {
 				try {
 					await deps.send(queueId, message);
-					sent++;
+					return true;
 				} catch (error) {
-					deps.logger?.warn('Could not pass the sign-in request to a machine', { instanceId, error: error instanceof Error ? error.message : String(error) });
+					deps.logger?.warn('Could not pass the sign-in message to a machine', { instanceId, error: error instanceof Error ? error.message : String(error) });
+					return false;
 				}
-			}
+			}),
+		);
+		return results.filter(Boolean).length;
+	};
+	const relay: ReloginSiblingRelay = {
+		hasSiblings: () => deps.hasOtherMachines(),
+		passCode: (text, target) =>
+			broadcast((selfId) => ({ v: RELOGIN_RELAY_CONSTANTS.RELAY_WIRE_VERSION, kind: 'code', id: randomUUID(), text, target: { channelId: target.channelId, ...(target.threadTs ? { threadTs: target.threadTs } : {}) }, fromInstanceId: selfId })),
+		ask: async (harnessId, target) => {
+			const id = randomUUID();
+			const forwardable = target && !target.agentSession ? target : null;
+			const answered = new Promise<boolean>((resolve) => waiting.set(id, resolve));
+			const sent = await broadcast((selfId) => ({ v: RELOGIN_RELAY_CONSTANTS.RELAY_WIRE_VERSION, kind: 'ask', id, harnessId, target: forwardable, fromInstanceId: selfId }));
 			if (sent === 0) {
 				waiting.delete(id);
 				return false;
@@ -162,10 +193,10 @@ export function createReloginSiblingRelay(deps: ReloginRelayDeps): ReloginRelayH
  */
 export async function receiveReloginWire(
 	payload: unknown,
-	relogin: Pick<HarnessReloginService, 'handleSiblingLogin'>,
+	relogin: Pick<HarnessReloginService, 'handleSiblingLogin' | 'handleSiblingCode'>,
 	handle: Pick<ReloginRelayHandle, 'acked'>,
 	deps: ReloginRelayDeps,
-): Promise<'ignored' | 'nothing_signed_out' | 'taken' | 'ack'> {
+): Promise<'ignored' | 'nothing_signed_out' | 'taken' | 'ack' | 'code_typed' | 'code_not_mine'> {
 	const message = parseReloginWire(payload);
 	if (!message) return 'ignored';
 	const selfId = await deps.selfId();
@@ -179,6 +210,7 @@ export async function receiveReloginWire(
 		handle.acked(message.id);
 		return 'ack';
 	}
+	if (message.kind === 'code') return relogin.handleSiblingCode(message.text, message.target) ? 'code_typed' : 'code_not_mine';
 	if (!relogin.handleSiblingLogin(message.harnessId, message.target)) return 'nothing_signed_out';
 	try {
 		await deps.send(senderQueue, { v: RELOGIN_RELAY_CONSTANTS.RELAY_WIRE_VERSION, kind: 'ack', id: message.id, fromInstanceId: selfId });
@@ -189,6 +221,7 @@ export async function receiveReloginWire(
 }
 
 let listening = false;
+let current: ReloginRelayHandle | null = null;
 
 /**
  * Start passing `login` replies between this account's machines: give the
@@ -213,7 +246,10 @@ export async function startReloginReplyRelay(relogin: HarnessReloginService): Pr
 			send: (queueId, message) => sync.sendToPeerQueueId(queueId, RELOGIN_RELAY_CONSTANTS.RELAY_MESSAGE_TYPE, message),
 			logger,
 		};
-		const handle = createReloginSiblingRelay(deps);
+		// One handle for the life of the process: the listener below feeds
+		// confirmations into the same relay every later call hands out.
+		current ??= createReloginSiblingRelay(deps);
+		const handle = current;
 		relogin.setSiblings(handle.relay);
 		if (listening) return;
 		listening = true;

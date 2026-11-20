@@ -10711,6 +10711,10 @@ export const RELOGIN_RELAY_CONSTANTS = {
 	RELAY_WIRE_VERSION: 1,
 	/** How long the machine that heard the reply waits for another to take it (ms) */
 	ACK_WAIT_MS: 8_000,
+	/** How long a login code written in that thread is still passed to the machine that took the request (ms) */
+	CODE_FORWARD_WINDOW_MS: 20 * 60_000,
+	/** Longest text passed on as a login code */
+	CODE_MAX_LENGTH: 512,
 } as const;
 
 export const RUNTIME_CONSENT_CONSTANTS = {

@@ -107,7 +107,7 @@ describe('receiveReloginWire', () => {
 
 	it('starts the sign-in here and confirms to the sender\'s queue from the account list', async () => {
 		const { deps, sent } = make();
-		const relogin = { handleSiblingLogin: jest.fn().mockReturnValue(true) };
+		const relogin = { handleSiblingLogin: jest.fn().mockReturnValue(true), handleSiblingCode: jest.fn() };
 
 		await expect(receiveReloginWire(ask, relogin, { acked: jest.fn() }, deps)).resolves.toBe('taken');
 		expect(relogin.handleSiblingLogin).toHaveBeenCalledWith('codex-cli', { channelId: 'D1', threadTs: '5' });
@@ -116,15 +116,37 @@ describe('receiveReloginWire', () => {
 
 	it('stays silent when nothing is signed out here', async () => {
 		const { deps, sent } = make();
-		const relogin = { handleSiblingLogin: jest.fn().mockReturnValue(false) };
+		const relogin = { handleSiblingLogin: jest.fn().mockReturnValue(false), handleSiblingCode: jest.fn() };
 
 		await expect(receiveReloginWire(ask, relogin, { acked: jest.fn() }, deps)).resolves.toBe('nothing_signed_out');
 		expect(sent).toHaveLength(0);
 	});
 
+	it('hands a passed-on login code to this machine\'s sign-in, and only a well-formed one', async () => {
+		const { deps, sent } = make();
+		const relogin = { handleSiblingLogin: jest.fn(), handleSiblingCode: jest.fn().mockReturnValueOnce(true).mockReturnValueOnce(false) };
+		const code = { v: 1, kind: 'code', id: 'c1', text: 'abc123#state', target: { channelId: 'D1', threadTs: '5' }, fromInstanceId: 'mini' };
+
+		await expect(receiveReloginWire(code, relogin, { acked: jest.fn() }, deps)).resolves.toBe('code_typed');
+		await expect(receiveReloginWire(code, relogin, { acked: jest.fn() }, deps)).resolves.toBe('code_not_mine');
+		expect(relogin.handleSiblingCode).toHaveBeenCalledWith('abc123#state', { channelId: 'D1', threadTs: '5' });
+		expect(sent).toHaveLength(0);
+
+		expect(parseReloginWire({ ...code, target: null })).toBeNull();
+		expect(parseReloginWire({ ...code, text: 'x'.repeat(600) })).toBeNull();
+	});
+
+	it('passes a code to every other machine with the thread but not the agent session', async () => {
+		const { deps, sent } = make();
+		const count = await createReloginSiblingRelay(deps).relay.passCode('abc123#state', { channelId: 'D1', threadTs: '5' });
+		expect(count).toBe(2);
+		expect(sent.map((s) => s.queueId).sort()).toEqual(['q-mini', 'q-win']);
+		expect(sent[0].message).toMatchObject({ kind: 'code', text: 'abc123#state', target: { channelId: 'D1', threadTs: '5' } });
+	});
+
 	it('ignores its own message, a stranger\'s, and garbage; feeds a confirmation to the waiting ask', async () => {
 		const { deps } = make();
-		const relogin = { handleSiblingLogin: jest.fn() };
+		const relogin = { handleSiblingLogin: jest.fn(), handleSiblingCode: jest.fn() };
 		const acked = jest.fn();
 
 		await expect(receiveReloginWire({ ...ask, fromInstanceId: 'mbp' }, relogin, { acked }, deps)).resolves.toBe('ignored');

@@ -58,7 +58,7 @@
 
 import type { ReloginSiblingRelay } from './relogin-reply.relay.js';
 import * as os from 'os';
-import { HARNESS_CONSTANTS } from '../../constants.js';
+import { HARNESS_CONSTANTS, RELOGIN_RELAY_CONSTANTS } from '../../constants.js';
 import { listClaudeAccounts } from './claude-accounts.js';
 import { effectiveClaudeAccount } from '../runtime-fallback/effective-runtime.js';
 import { LoggerService } from '../core/logger.service.js';
@@ -408,6 +408,17 @@ export function unwrapReply(text: string): string {
 }
 
 /**
+ * Key of a Slack thread, for remembering which thread another machine is
+ * signing in from.
+ *
+ * @param target - Conversation
+ * @returns `<channel>:<thread ts>`
+ */
+function threadKey(target: ReloginReplyTarget): string {
+	return `${target.channelId}:${target.threadTs ?? ''}`;
+}
+
+/**
  * Whether a reply plausibly is Claude's authorization code: one token with
  * no whitespace and a plausible length.
  *
@@ -738,6 +749,8 @@ export class HarnessReloginService {
 	private notifier: ReloginOwnerNotifier | null;
 	/** The account's other machines, for a `login` this machine has no use for. */
 	private siblings: ReloginSiblingRelay | null = null;
+	/** Threads another machine took a login request from → when passing codes on stops (ms). */
+	private readonly siblingThreads = new Map<string, number>();
 	private resumer: ReloginAgentResumer | null;
 	private readonly now: () => number;
 	private readonly logger: HarnessLogger;
@@ -920,7 +933,15 @@ export class HarnessReloginService {
 		if (typeof text !== 'string') return false;
 		if (this.flows.size > 0 && this.consumeFlowReply(text, target)) {
 			// Another machine may be signed out too, and it never hears this DM.
-			if (scope === 'orc' && !target?.agentSession && isLoginKeyword(text)) void this.askSiblings(null, target);
+			if (scope === 'orc' && target?.channelId && !target.agentSession && isLoginKeyword(text)) void this.askSiblings(null, target);
+			return true;
+		}
+		// A login code in a thread another machine is signing in from: that
+		// machine never hears this DM, so the code is passed to it.
+		if (scope === 'orc' && target && this.siblingTookThread(target) && looksLikeAuthCode(unwrapReply(text))) {
+			void this.siblings?.passCode(text, target).catch((error: unknown) => {
+				this.logger.warn('Could not pass the login code to the other machine', { error: error instanceof Error ? error.message : String(error) });
+			});
 			return true;
 		}
 
@@ -971,7 +992,7 @@ export class HarnessReloginService {
 	 * @param scope - Where the owner wrote
 	 */
 	private async routeOwnerLoginRequest(request: OwnerLoginRequest, target: ReloginReplyTarget | null, scope: OwnerReplyScope): Promise<void> {
-		const mine = scope === 'orc' && !target?.agentSession;
+		const mine = scope === 'orc' && Boolean(target?.channelId) && !target?.agentSession;
 		const bare = request.kind === 'unknown' && !request.name && !request.switchAccount;
 		const namedButFineHere =
 			request.kind === 'harness' &&
@@ -981,7 +1002,10 @@ export class HarnessReloginService {
 			![...this.flows.values()].some((flow) => flow.harnessId === request.harnessId);
 		if (mine && (bare || namedButFineHere)) {
 			const took = await this.askSiblings(request.kind === 'harness' ? request.harnessId : null, target);
-			if (took) return;
+			if (took) {
+				if (target?.threadTs) this.siblingThreads.set(threadKey(target), this.now() + RELOGIN_RELAY_CONSTANTS.CODE_FORWARD_WINDOW_MS);
+				return;
+			}
 		}
 		await this.handleOwnerLoginRequest(request, target);
 	}
@@ -1003,6 +1027,35 @@ export class HarnessReloginService {
 			this.logger.warn('Could not offer the login request to the other machines', { error: error instanceof Error ? error.message : String(error) });
 			return false;
 		}
+	}
+
+	/**
+	 * Whether another machine recently took a login request from this thread.
+	 *
+	 * @param target - Conversation the owner wrote in
+	 * @returns True while a code written there should be passed on
+	 */
+	private siblingTookThread(target: ReloginReplyTarget): boolean {
+		if (!target.threadTs || target.agentSession) return false;
+		const until = this.siblingThreads.get(threadKey(target));
+		if (until === undefined) return false;
+		if (until > this.now()) return true;
+		this.siblingThreads.delete(threadKey(target));
+		return false;
+	}
+
+	/**
+	 * A login code the owner wrote reached another machine of this account
+	 * and was passed here. Typed into this machine's running sign-in when it
+	 * belongs to one; never logged.
+	 *
+	 * @param text - What the owner wrote
+	 * @param target - The thread it was written in
+	 * @returns True when a sign-in here took it
+	 */
+	handleSiblingCode(text: string, target: ReloginReplyTarget): boolean {
+		if (typeof text !== 'string' || isLoginKeyword(text) || this.flows.size === 0) return false;
+		return this.consumeFlowReply(text, target);
 	}
 
 	/**
