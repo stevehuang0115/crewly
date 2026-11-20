@@ -121,6 +121,20 @@ describe('CLI version-check utilities', () => {
 			}
 		});
 
+		it('fresh: asks npm even when a recent cached answer exists', async () => {
+			jest.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ version: '99.0.0' }) } as Response);
+			await checkForUpdate();
+			const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ version: '99.1.0' }) } as Response);
+
+			expect((await checkForUpdate()).latestVersion).toBe('99.0.0');
+			expect(fetchSpy).not.toHaveBeenCalled();
+			expect((await checkForUpdate({ fresh: true })).latestVersion).toBe('99.1.0');
+
+			if (fs.existsSync(CACHE_FILE)) {
+				fs.unlinkSync(CACHE_FILE);
+			}
+		});
+
 		it('should handle network errors gracefully', async () => {
 			jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network error'));
 

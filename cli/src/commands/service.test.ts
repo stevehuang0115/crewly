@@ -1280,6 +1280,11 @@ describe('isLoginItemRegistered', () => {
 		expect(await isLoginItemRegistered()).toBe(true);
 	});
 
+	it('returns true when macOS lists it under the file name or path', async () => {
+		mockExecAsync.mockReturnValue('/Applications/Notion.app, /Users/me/.crewly/crewly-start.command\nNotion, crewly-start.command');
+		expect(await isLoginItemRegistered()).toBe(true);
+	});
+
 	it('returns false when Login Item is not in the list', async () => {
 		mockExecAsync.mockReturnValue('SomeOther, AnotherItem');
 		expect(await isLoginItemRegistered()).toBe(false);

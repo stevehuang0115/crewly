@@ -534,9 +534,12 @@ async function statusDarwin(): Promise<void> {
 	}
 
 	console.log('');
-	if (commandExists && isRegistered && pid) {
-		console.log(chalk.green('Service is fully operational.'));
-	} else if (commandExists && isRegistered) {
+	// Either start-up path counts as installed: the login item, or the watchdog
+	// that relaunches Crewly. The verdict used to rest on the login item alone.
+	const installed = commandExists && (isRegistered || watchdogLoaded);
+	if (installed && pid) {
+		console.log(chalk.green(isRegistered ? 'Service is fully operational.' : 'Service is running (watchdog only: the login item is missing, run "crewly service install").'));
+	} else if (installed) {
 		console.log(chalk.yellow('Service is installed but not running.'));
 		console.log(chalk.gray(`  Start with: open ${COMMAND_FILE_PATH}`));
 	} else {
@@ -1089,8 +1092,9 @@ async function registerLoginItem(): Promise<void> {
  */
 async function removeLoginItem(): Promise<void> {
 	try {
+		// By path: the item is listed under the file's name, not LOGIN_ITEM_NAME.
 		await execAsync(
-			`osascript -e 'tell application "System Events" to delete login item "${LOGIN_ITEM_NAME}"'`,
+			`osascript -e 'tell application "System Events" to delete login item "${LOGIN_ITEM_NAME}"' 2>/dev/null || osascript -e 'tell application "System Events" to delete (every login item whose path is "${COMMAND_FILE_PATH}")'`,
 		);
 		console.log(chalk.green('  Removed Login Item'));
 	} catch {
@@ -1104,11 +1108,19 @@ async function removeLoginItem(): Promise<void> {
  * @returns true if registered
  */
 export async function isLoginItemRegistered(): Promise<boolean> {
+	// macOS lists a file login item under the file's own name
+	// ("crewly-start.command"), not the name it was created with, so the name
+	// alone reported an installed service as "Not registered". The path is what
+	// identifies it; the names are kept for older systems.
 	try {
 		const { stdout } = await execAsync(
-			`osascript -e 'tell application "System Events" to get the name of every login item'`,
+			`osascript -e 'tell application "System Events" to get the path of every login item' -e 'tell application "System Events" to get the name of every login item'`,
 		);
-		return stdout.includes(LOGIN_ITEM_NAME);
+		return (
+			stdout.includes(COMMAND_FILE_PATH) ||
+			stdout.includes(path.basename(COMMAND_FILE_PATH)) ||
+			stdout.includes(LOGIN_ITEM_NAME)
+		);
 	} catch {
 		return false;
 	}

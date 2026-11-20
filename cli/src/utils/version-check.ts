@@ -222,13 +222,15 @@ function isNewerVersion(latest: string, current: string): boolean {
  * Checks whether a newer version of Crewly is available on npm.
  * Uses the disk cache if it is still fresh (within CACHE_TTL_MS).
  *
+ * @param options.fresh - True to ask npm now instead of using the cached answer
  * @returns An object with currentVersion, latestVersion, and updateAvailable
  */
-export async function checkForUpdate(): Promise<VersionCheckResult> {
+export async function checkForUpdate(options: { fresh?: boolean } = {}): Promise<VersionCheckResult> {
 	const currentVersion = getLocalVersion();
 
-	// Check cache first
-	const cached = readCache();
+	// Check cache first, unless the caller asked npm directly (`upgrade --check`:
+	// a release made after the last cached answer was reported as "latest").
+	const cached = options.fresh ? null : readCache();
 	if (cached) {
 		const age = Date.now() - new Date(cached.checkedAt).getTime();
 		if (age < VERSION_CHECK_CONSTANTS.CACHE_TTL_MS) {

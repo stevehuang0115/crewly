@@ -108,7 +108,8 @@ export async function upgradeCommand(options: UpgradeOptions): Promise<void> {
 	if (options.check) {
 		console.log(chalk.blue('Checking for updates...'));
 
-		const result = await checkForUpdate();
+		// An explicit check asks npm now; the cached answer can predate a release.
+		const result = await checkForUpdate({ fresh: true });
 
 		if (result.updateAvailable && result.latestVersion) {
 			printUpdateNotification(result.currentVersion, result.latestVersion);
@@ -144,11 +145,38 @@ export async function upgradeCommand(options: UpgradeOptions): Promise<void> {
 	child.on('exit', (code) => {
 		if (code === 0) {
 			console.log(chalk.green('Crewly upgraded successfully!'));
+			verifyAfterUpgrade();
 		} else {
 			console.error(
 				chalk.red(`Upgrade failed. Try running manually: npm ${npmArgs.join(' ')}`)
 			);
 			process.exit(code ?? 1);
+		}
+	});
+}
+
+/**
+ * Run `crewly doctor` from the freshly installed copy.
+ *
+ * npm can finish an install without running the packages' install scripts
+ * (npm's `allowScripts` gate reported crewly, node-pty and better-sqlite3 as
+ * "not yet covered" on a new Mac, 2026-11-20). When the Node version has not
+ * changed the old native builds still load and nothing shows; when it has,
+ * Crewly fails at the next start. Doctor loads the native modules and says how
+ * to rebuild them, so a skipped script is caught here instead.
+ */
+function verifyAfterUpgrade(): void {
+	const entry = process.argv[1];
+	if (!entry) return;
+	console.log(chalk.blue('Checking the new install (crewly doctor)...'));
+	const doctor = spawn(process.execPath, [entry, 'doctor'], { stdio: 'inherit' });
+	doctor.on('error', () => {
+		console.log(chalk.yellow('Could not run the check. Run it yourself: crewly doctor'));
+	});
+	doctor.on('exit', (doctorCode) => {
+		if (doctorCode !== 0) {
+			console.log(chalk.yellow('The new install has a problem (see above). Fix it before restarting Crewly.'));
+			process.exitCode = doctorCode ?? 1;
 		}
 	});
 }
