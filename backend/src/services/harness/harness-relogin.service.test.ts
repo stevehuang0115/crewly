@@ -882,6 +882,147 @@ describe('owner-requested login (relogin <harness>)', () => {
 		});
 	});
 
+	describe('a `login` written in the DM every machine shares', () => {
+		/** The shared master-bot DM: no agent's own bot, so no agentSession. */
+		const SHARED_THREAD: ReloginReplyTarget = { channelId: 'DMASTER', threadTs: '1790450776.351799' };
+
+		/**
+		 * A sibling relay whose other machines answer `took`.
+		 *
+		 * @param took - Whether another machine takes the request
+		 * @returns The relay
+		 */
+		function siblings(took: boolean) {
+			return { hasSiblings: () => true, ask: jest.fn(async () => took), passCode: jest.fn(async () => 1) };
+		}
+
+		it('is passed to the machine that is signed out instead of asking "which one"', async () => {
+			const ctx = setup();
+			const relay = siblings(true);
+			ctx.service.setSiblings(relay);
+
+			expect(ctx.service.handleOwnerReply('login', SHARED_THREAD)).toBe(true);
+			await flush();
+
+			expect(relay.ask).toHaveBeenCalledWith(null, SHARED_THREAD);
+			expect(ctx.sent).toHaveLength(0);
+			expect(ctx.broker.startCalls).toHaveLength(0);
+		});
+
+		it('still asks "which one" when no other machine is signed out', async () => {
+			const ctx = setup();
+			ctx.service.setSiblings(siblings(false));
+
+			ctx.service.handleOwnerReply('login', SHARED_THREAD);
+			await flush();
+
+			expect(ctx.sent).toHaveLength(1);
+			expect(ctx.sent[0].text).toMatch(/^Which one should I sign in\?/);
+		});
+
+		it('offers a named harness that is fine here to the others first, and signs in here when none takes it', async () => {
+			const taken = setup();
+			const relay = siblings(true);
+			taken.service.setSiblings(relay);
+			taken.service.handleOwnerReply('relogin codex', SHARED_THREAD);
+			await flush();
+			expect(relay.ask).toHaveBeenCalledWith('codex-cli', SHARED_THREAD);
+			expect(taken.broker.startCalls).toHaveLength(0);
+
+			const local = setup();
+			local.service.setSiblings(siblings(false));
+			local.service.handleOwnerReply('relogin codex', SHARED_THREAD);
+			await flush();
+			expect(local.broker.startCalls).toHaveLength(1);
+		});
+
+		it('does not ask the others from a machine\'s own orc DM, for an account switch, or with no relay', async () => {
+			const ctx = setup();
+			const relay = siblings(true);
+			ctx.service.setSiblings(relay);
+			ctx.service.handleOwnerReply('login', ORC_THREAD);
+			ctx.service.handleOwnerReply('switch claude account', SHARED_THREAD);
+			await flush();
+			expect(relay.ask).not.toHaveBeenCalled();
+
+			const alone = setup();
+			alone.service.handleOwnerReply('login', SHARED_THREAD);
+			await flush();
+			expect(alone.sent[0].text).toMatch(/^Which one should I sign in\?/);
+		});
+
+		it('passes a login code written in that thread to the machine that took the request, and nothing else', async () => {
+			const ctx = setup();
+			const relay = siblings(true);
+			ctx.service.setSiblings(relay);
+			const code = 'ab12cd34ef56gh78ij90kl12mn34op56#st4te';
+
+			// Before any machine took a request from the thread, a code is not ours to pass on.
+			ctx.service.handleOwnerReply(code, SHARED_THREAD);
+			expect(relay.passCode).not.toHaveBeenCalled();
+
+			ctx.service.handleOwnerReply('login', SHARED_THREAD);
+			await flush();
+			expect(ctx.service.handleOwnerReply(code, SHARED_THREAD)).toBe(true);
+			expect(relay.passCode).toHaveBeenCalledWith(code, SHARED_THREAD);
+
+			expect(ctx.service.handleOwnerReply('thanks, that worked', SHARED_THREAD)).toBe(false);
+			expect(ctx.service.handleOwnerReply(code, { channelId: 'DMASTER', threadTs: '9.9' })).toBe(false);
+			expect(relay.passCode).toHaveBeenCalledTimes(1);
+			expect(allLogs(ctx.logger)).not.toContain(code);
+		});
+
+		it('also tells the others when this machine had a sign-in of its own waiting', async () => {
+			const ctx = setup({ agents: [], sessionsByHarness: {} });
+			const relay = siblings(false);
+			ctx.service.setSiblings(relay);
+			ctx.login.codexStatus = 'logged_out';
+			ctx.service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+			await flush();
+
+			expect(ctx.service.handleOwnerReply('login', SHARED_THREAD)).toBe(true);
+			await flush();
+
+			expect(relay.ask).toHaveBeenCalledWith(null, SHARED_THREAD);
+			expect(ctx.broker.startCalls.length).toBeGreaterThan(0);
+		});
+	});
+
+	describe('handleSiblingLogin (a `login` passed on by another machine)', () => {
+		const SHARED_THREAD: ReloginReplyTarget = { channelId: 'DMASTER', threadTs: '1790450776.351799' };
+
+		it('takes a passed-on code only into a running sign-in, never a keyword', () => {
+			const ctx = setup();
+			expect(ctx.service.handleSiblingCode('ab12cd34ef56gh78ij90kl12mn34op56#st4te', SHARED_THREAD)).toBe(false);
+			expect(ctx.service.handleSiblingCode('login', SHARED_THREAD)).toBe(false);
+		});
+
+		it('does nothing on a machine with nothing signed out', () => {
+			const ctx = setup();
+			expect(ctx.service.handleSiblingLogin(null, SHARED_THREAD)).toBe(false);
+			expect(ctx.service.handleSiblingLogin('codex-cli', SHARED_THREAD)).toBe(false);
+			expect(ctx.broker.startCalls).toHaveLength(0);
+		});
+
+		it('starts the sign-in for what is signed out here and answers in the owner\'s thread', async () => {
+			const ctx = setup({ agents: [], sessionsByHarness: {} });
+			ctx.login.codexStatus = 'logged_out';
+			ctx.service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+			await flush();
+			const before = ctx.broker.startCalls.length;
+
+			expect(ctx.service.handleSiblingLogin('claude-code', SHARED_THREAD)).toBe(false);
+			expect(ctx.service.handleSiblingLogin(null, SHARED_THREAD)).toBe(true);
+			await flush();
+			expect(ctx.broker.startCalls.length).toBe(before + 1);
+
+			const session = [...ctx.broker.sessions.keys()].pop() as string;
+			ctx.broker.patch(session, { state: 'awaiting_user', url: CODEX_URL, userCode: 'WH2P-EO69V' });
+			await flush();
+			expect(ctx.sent[ctx.sent.length - 1].target).toEqual(SHARED_THREAD);
+		});
+	});
+
 	it('leaves ordinary messages about logins to the orc', () => {
 		const ctx = setup();
 		expect(ctx.service.handleOwnerReply('claude 登录了吗', ORC_THREAD)).toBe(false);

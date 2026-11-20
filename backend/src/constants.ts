@@ -10703,6 +10703,20 @@ export const OPS_SIDECAR_CONSTANTS = {
  * consent, and answering the screen after they agreed
  * (services/harness/runtime-consent.service.ts).
  */
+/** Passing the owner's `login` reply to the machine that is signed out. */
+export const RELOGIN_RELAY_CONSTANTS = {
+	/** Cloud relay message type (see cloud-sync.types.ts) */
+	RELAY_MESSAGE_TYPE: 'owner_relogin_reply',
+	/** Wire format version */
+	RELAY_WIRE_VERSION: 1,
+	/** How long the machine that heard the reply waits for another to take it (ms) */
+	ACK_WAIT_MS: 8_000,
+	/** How long a login code written in that thread is still passed to the machine that took the request (ms) */
+	CODE_FORWARD_WINDOW_MS: 20 * 60_000,
+	/** Longest text passed on as a login code */
+	CODE_MAX_LENGTH: 512,
+} as const;
+
 export const RUNTIME_CONSENT_CONSTANTS = {
 	/** The Claude Code executable */
 	CLAUDE_BIN: 'claude',

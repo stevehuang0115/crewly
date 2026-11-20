@@ -4700,6 +4700,9 @@ void (async () => {
 			try {
 				const { startRuntimeConsentRelay } = await import('./services/harness/runtime-consent.relay.js');
 				await startRuntimeConsentRelay(getRuntimeConsentService());
+				// Same for `login`: it is passed to the machine that is signed out.
+				const { startReloginReplyRelay } = await import('./services/harness/relogin-reply.relay.js');
+				await startReloginReplyRelay(getHarnessReloginService());
 			} catch (consentErr) {
 				this.logger.warn('Runtime consent relay not wired (non-critical)', {
 					error: consentErr instanceof Error ? consentErr.message : String(consentErr),
