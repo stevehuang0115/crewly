@@ -226,6 +226,14 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$CODE" ] && CODE=$(printf '%s' "$INPUT" | jq -r '.code // empty')
   [ -z "$GOAL" ] && GOAL=$(printf '%s' "$INPUT" | jq -r '.goal // empty')
   [ -z "$BROWSER" ] && BROWSER=$(printf '%s' "$INPUT" | jq -r '.browser // empty')
+  if [ "$AS_DEFAULT" = "false" ]; then
+    json_default=$(printf '%s' "$INPUT" | jq -r '.default // empty')
+    [ "$json_default" = "true" ] && AS_DEFAULT="true"
+  fi
+  if [ "$CLEAR_PIN" = "false" ]; then
+    json_clear=$(printf '%s' "$INPUT" | jq -r '.clear // empty')
+    [ "$json_clear" = "true" ] && CLEAR_PIN="true"
+  fi
   # Per-tab dispatch fields surfaced in JSON input. CLI flags win over JSON
   # (CLI is more explicit). Empty string = "not provided".
   if [ -z "$TAB_ID" ]; then
@@ -242,7 +250,7 @@ if [ -n "$INPUT_JSON" ]; then
   # Capture all extra fields from JSON input as pass-through params (strip
   # per-tab fields too — they're handled by the dedicated branches below).
   if [ -z "$EXTRA_PARAMS" ]; then
-    EXTRA_PARAMS=$(printf '%s' "$INPUT" | jq -c 'del(.action, .url, .selector, .value, .text, .code, .goal, .browser, .tabId, .noBind, .active) | if length == 0 then empty else . end' 2>/dev/null || true)
+    EXTRA_PARAMS=$(printf '%s' "$INPUT" | jq -c 'del(.action, .url, .selector, .value, .text, .code, .goal, .browser, .default, .clear, .tabId, .noBind, .active) | if length == 0 then empty else . end' 2>/dev/null || true)
   fi
 fi
 

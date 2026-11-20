@@ -1776,6 +1776,25 @@ describe('Browser Controller — choosing between several browsers', () => {
 			expect(pins.set).toHaveBeenCalledWith(mini, undefined);
 		});
 
+		it('lets the owner set the machine default and warns when a tab is still open elsewhere', async () => {
+			const { pins } = await twoBrowsers();
+			const owner = await request(app).post('/api/browser/pin').send({ instance: 'bbbb2222', machineDefault: true });
+			expect(owner.status).toBe(200);
+			expect(pins.set).toHaveBeenCalledWith(mbp, undefined);
+
+			jest.spyOn(BrowserBridgeService.getInstance(), 'getBinding').mockReturnValue({
+				agentSession: 'ce-owen',
+				tabId: 7,
+				instanceId: mini.instanceId,
+				boundAt: new Date(),
+				lastActivityAt: new Date(),
+			});
+			const switched = await request(app).post('/api/browser/pin').set('X-Agent-Session', 'ce-owen').send({ instance: 'bbbb2222' });
+			expect(switched.body.data.note).toContain('--action done');
+			const same = await request(app).post('/api/browser/pin').set('X-Agent-Session', 'ce-owen').send({ instance: 'aaaa1111' });
+			expect(same.body.data.note).toBeUndefined();
+		});
+
 		it('forgets a choice and needs an agent unless it is the machine default', async () => {
 			const { pins } = await twoBrowsers();
 			const cleared = await request(app).post('/api/browser/pin').set('X-Agent-Session', 'ce-owen').send({ clear: true });

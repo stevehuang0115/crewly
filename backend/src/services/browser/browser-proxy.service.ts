@@ -547,7 +547,10 @@ export class BrowserProxyService {
     const binding = agentSession
       ? (await import('./browser-bridge.service.js')).BrowserBridgeService.getInstance().getBinding(agentSession)
       : undefined;
-    const targetInstance = this.targetFor(instance, agentSession, binding?.instanceId);
+    // Owner input and the live view name a bound tab but no agent: they
+    // follow that tab's browser too, when exactly one binding holds it.
+    const tabOwner = !binding && !instance ? this.browserHoldingTab((params as { tabId?: unknown } | undefined)?.tabId) : undefined;
+    const targetInstance = this.targetFor(instance ?? tabOwner, agentSession, binding?.instanceId);
 
     // Issue #384 — inject the bound tabId when the call names none, so the
     // extension never falls back to the owner's focused tab. Explicit
@@ -649,6 +652,22 @@ export class BrowserProxyService {
       ...(pin ? { pinnedInstanceId: pin.instanceId } : {}),
       requireChoice: Boolean(agentSession),
     });
+  }
+
+  /**
+   * The browser whose bound tab has this id, when exactly one connected
+   * browser does (tab ids are only unique inside one Chrome).
+   *
+   * @param tabId - Tab id from the command's params
+   * @returns That browser's id, or undefined
+   */
+  private browserHoldingTab(tabId: unknown): string | undefined {
+    if (typeof tabId !== 'number') return undefined;
+    const holders = new Set<string>();
+    for (const b of getRegisteredBridge()?.listBindings() ?? []) {
+      if (b.tabId === tabId && b.instanceId && this.instances.has(b.instanceId)) holders.add(b.instanceId);
+    }
+    return holders.size === 1 ? [...holders][0] : undefined;
   }
 
   /**

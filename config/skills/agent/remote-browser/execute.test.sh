@@ -574,6 +574,19 @@ assert_eq "--default sets the machine default" "true" "$(request_field 1 body | 
 assert_eq "--clear forgets the choice" "true" "$(request_field 2 body | jq -r '.clear')"
 scenario_teardown
 
+# Scenario 26: JSON input carries browser / default / clear too
+scenario_init "scenario 26: use-browser from JSON input"
+queue_response '{"success":true}'
+queue_response '{"success":true}'
+start_stub
+export CREWLY_SESSION_NAME="agent-26"
+"$SKILL" '{"action":"use-browser","browser":"aaaa1111","default":true}' > /dev/null 2>&1 || true
+"$SKILL" '{"action":"use-browser","clear":true}' > /dev/null 2>&1 || true
+assert_eq "JSON default reaches the body" "true" "$(request_field 0 body | jq -r '.machineDefault')"
+assert_eq "JSON browser reaches the body" "aaaa1111" "$(request_field 0 body | jq -r '.instance')"
+assert_eq "JSON clear reaches the body" "true" "$(request_field 1 body | jq -r '.clear')"
+scenario_teardown
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

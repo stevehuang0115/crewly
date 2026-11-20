@@ -33,6 +33,7 @@ import {
 import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 import { BROWSER_BRIDGE_CONSTANTS, BROWSER_OWNER_INPUT_CONSTANTS, BROWSER_SESSION_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
+import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('BrowserController');
 
@@ -216,7 +217,10 @@ export function pinBrowser(req: Request, res: Response): void {
 	const agentSession = extractAgentSession(req);
 	const body = (req.body ?? {}) as { instance?: unknown; machineDefault?: unknown; clear?: unknown };
 	const machineDefault = body.machineDefault === true;
-	if (machineDefault && agentSession && agentSession !== ORCHESTRATOR_SESSION_NAME) {
+	// The machine default steers every agent here, so it takes an owner
+	// credential or the orchestrator. A call with no identity at all (an
+	// agent that dropped its session header) is not the owner.
+	if (machineDefault && !isOwnerCaller(req) && agentSession !== ORCHESTRATOR_SESSION_NAME) {
 		res.status(403).json({ success: false, code: 'owner_decision', error: 'The default browser for this machine is the owner\'s decision. Ask the owner, or set a choice for yourself without --default.' });
 		return;
 	}
@@ -243,7 +247,20 @@ export function pinBrowser(req: Request, res: Response): void {
 		return;
 	}
 	const pin = store.set(matches[0], scope);
-	res.json({ success: true, data: { pinned: { ...pin, label: labelBrowser(matches[0]) }, scope: machineDefault ? 'machine' : 'agent', pins: store.describe(agentSession) } });
+	// A tab already open elsewhere still decides where commands go.
+	const boundElsewhere = agentSession ? BrowserBridgeService.getInstance().getBinding(agentSession)?.instanceId : undefined;
+	const note = !machineDefault && boundElsewhere && boundElsewhere !== matches[0].instanceId
+		? 'Your tab is still open in another browser and your commands keep going there. Run --action done; your next call then opens a tab in the browser you chose.'
+		: undefined;
+	res.json({
+		success: true,
+		data: {
+			pinned: { ...pin, label: labelBrowser(matches[0]) },
+			scope: machineDefault ? 'machine' : 'agent',
+			pins: store.describe(agentSession),
+			...(note ? { note } : {}),
+		},
+	});
 }
 
 /**

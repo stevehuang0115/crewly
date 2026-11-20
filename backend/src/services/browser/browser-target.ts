@@ -143,7 +143,8 @@ export function chooseBrowser<T extends BrowserCandidate>(input: ChooseBrowserIn
 		if (pinned) return pinned;
 		throw new BrowserTargetError(
 			'BROWSER_NOT_CONNECTED',
-			`The browser chosen for this work is not connected right now. Do not use another one unless the owner says so. Connected: ${listed}`,
+			`The browser chosen for this work is not connected right now. Do not use another one unless the owner says so; ` +
+				`if they do, name it with --browser "<name or id>" or change the choice with --action use-browser. Connected: ${listed}`,
 			browsers,
 		);
 	}

@@ -13,6 +13,7 @@
  * @module services/browser/browser-bridge.service
  */
 
+import { BrowserTargetError, matchBrowsers } from './browser-target.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server as HttpServer } from 'http';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -629,6 +630,17 @@ export class BrowserBridgeService {
 		// Idempotent: existing binding short-circuits creation.
 		const existing = this.agentTabBindings.get(agentSession);
 		if (existing) {
+			// Asking for a tab in browser B while one is open in A must not
+			// answer "done" and keep working in A.
+			if (opts.instance && existing.instanceId) {
+				const named = matchBrowsers(this.tryGetProxyInstance()?.getInstances() ?? [], opts.instance);
+				if (named.length !== 1 || named[0].instanceId !== existing.instanceId) {
+					throw new BrowserTargetError(
+						'BROWSER_BOUND_ELSEWHERE',
+						`Your tab is open in another browser. Finish there first (--action done), then start again with --browser "${opts.instance}".`,
+					);
+				}
+			}
 			existing.lastActivityAt = new Date();
 			return existing;
 		}
@@ -1135,7 +1147,7 @@ export class BrowserBridgeService {
 	 */
 	private tryGetProxyInstance(): {
 		isAvailable: () => boolean;
-		getInstances: () => Array<{ instanceId: string; instanceName: string }>;
+		getInstances: () => Array<{ instanceId: string; instanceName: string; lastSeenAt: string }>;
 	} | null {
 		// Read the proxy through the registry, not a `require()`. The shipped
 		// backend is ESM ("type": "module"), where a bare require throws — and

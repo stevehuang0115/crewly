@@ -972,6 +972,22 @@ describe('BrowserProxyService', () => {
       await cmdPromise;
     });
 
+    it('sends a command that names a bound tab but no agent to that tab\'s browser (owner input, live view)', async () => {
+      const proxy = connectTwoBrowsers();
+      const { BrowserBridgeService } = await import('./browser-bridge.service.js');
+      jest.spyOn(BrowserBridgeService.getInstance(), 'listBindings').mockReturnValue([
+        { agentSession: 'ce-owen', tabId: 7, instanceId: 'id-mini', boundAt: new Date(), lastActivityAt: new Date() },
+      ]);
+
+      const cmdPromise = proxy.sendCommand('screenshot', { tabId: 7 });
+      const sentMsg = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);
+      expect(sentMsg.targetInstance).toBe('id-mini');
+
+      const payload = JSON.parse(sentMsg.payload as string);
+      latestMockWs!._trigger('message', JSON.stringify({ type: 'relay', payload: JSON.stringify({ id: payload.id, success: true }) }));
+      await cmdPromise;
+    });
+
     it('uses the browser an agent chose earlier', async () => {
       const proxy = connectTwoBrowsers();
       proxy.setPinStore({ pinFor: () => ({ instanceId: 'id-mbp', instanceName: 'Chrome (macOS)', pinnedAt: '' }) } as unknown as Parameters<typeof proxy.setPinStore>[0]);
