@@ -1645,3 +1645,164 @@ describe('Crewly tab group is known from startup (crewly#1014 review #4)', () =>
 		BrowserBridgeService.resetInstance();
 	});
 });
+
+describe('Browser Controller — choosing between several browsers', () => {
+	let app: express.Application;
+	const mini = { instanceId: 'aaaa1111-mini', instanceName: 'Chrome (macOS)', sessionId: 's1', lastSeenAt: '2026-11-20T10:00:00Z' };
+	const mbp = { instanceId: 'bbbb2222-mbp', instanceName: 'Chrome (macOS)', sessionId: 's2', lastSeenAt: '2026-11-20T11:00:00Z' };
+
+	/**
+	 * A proxy that reports two connected browsers and an in-memory pin store.
+	 *
+	 * @returns The proxy and the pin-store spies
+	 */
+	async function twoBrowsers(): Promise<{ proxy: import('../../services/browser/browser-proxy.service.js').BrowserProxyService; pins: Record<string, jest.Mock> }> {
+		const { BrowserProxyService } = await import('../../services/browser/browser-proxy.service.js');
+		const proxy = BrowserProxyService.getInstance();
+		jest.spyOn(proxy, 'isAvailable').mockReturnValue(true);
+		jest.spyOn(proxy, 'getInstances').mockReturnValue([mini, mbp]);
+		const pins = {
+			pinFor: jest.fn(),
+			describe: jest.fn().mockReturnValue({}),
+			set: jest.fn((b: { instanceId: string; instanceName: string }) => ({ ...b, pinnedAt: 'now' })),
+			clear: jest.fn().mockReturnValue(true),
+		};
+		jest.spyOn(proxy, 'getPinStore').mockReturnValue(pins as unknown as ReturnType<typeof proxy.getPinStore>);
+		return { proxy, pins };
+	}
+
+	beforeEach(() => {
+		BrowserBridgeService.resetInstance();
+		app = express();
+		app.use(ownerUnlessAgentForTests);
+		app.use(express.json());
+		app.use('/api/browser', createBrowserRouter());
+		jest.restoreAllMocks();
+	});
+
+	afterEach(() => {
+		BrowserBridgeService.resetInstance();
+		jest.restoreAllMocks();
+	});
+
+	it('answers 409 BROWSER_AMBIGUOUS with the candidates instead of picking one', async () => {
+		const { proxy } = await twoBrowsers();
+		const { BrowserTargetError } = await import('../../services/browser/browser-target.js');
+		jest.spyOn(BrowserBridgeService.getInstance(), 'sendCommandForAgent').mockRejectedValue(
+			new BrowserTargetError('BROWSER_AMBIGUOUS', '2 browsers are connected', [{ id: mini.instanceId, name: mini.instanceName }, { id: mbp.instanceId, name: mbp.instanceName }]),
+		);
+		const relayed = jest.spyOn(proxy, 'sendCommand');
+
+		const res = await request(app).post('/api/browser/navigate').set('X-Agent-Session', 'ce-owen').send({ url: 'https://example.com' });
+
+		expect(res.status).toBe(409);
+		expect(res.body.code).toBe('BROWSER_AMBIGUOUS');
+		expect(res.body.browsers).toHaveLength(2);
+		expect(relayed).not.toHaveBeenCalled();
+	});
+
+	it('never falls back to another browser when the named one fails', async () => {
+		const { proxy } = await twoBrowsers();
+		jest.spyOn(proxy, 'sendCommand').mockRejectedValue(new Error("Browser command 'navigate' timed out after 5ms"));
+		const other = jest.spyOn(BrowserBridgeService.getInstance(), 'sendCommandForAgent');
+
+		const res = await request(app)
+			.post('/api/browser/navigate')
+			.set('X-Agent-Session', 'ce-owen')
+			.send({ url: 'https://example.com', instance: mini.instanceId });
+
+		expect(res.status).toBe(504);
+		expect(other).not.toHaveBeenCalled();
+	});
+
+	it('opens the agent\'s tab in the browser the bind call names', async () => {
+		await twoBrowsers();
+		const bind = jest.spyOn(BrowserBridgeService.getInstance(), 'bindAgentTab').mockResolvedValue({
+			agentSession: 'ce-owen',
+			tabId: 7,
+			instanceId: mini.instanceId,
+			boundAt: new Date(),
+			lastActivityAt: new Date(),
+		});
+
+		const res = await request(app).post('/api/browser/bind').set('X-Agent-Session', 'ce-owen').send({ instance: 'aaaa1111' });
+
+		expect(res.status).toBe(200);
+		expect(res.body.data.instanceId).toBe(mini.instanceId);
+		expect(bind).toHaveBeenCalledWith('ce-owen', expect.objectContaining({ instance: 'aaaa1111' }));
+	});
+
+	it('lists browsers with a label that tells same-named ones apart', async () => {
+		const { pins } = await twoBrowsers();
+		pins.describe.mockReturnValue({ agent: { instanceId: mbp.instanceId, instanceName: mbp.instanceName, pinnedAt: 'now' } });
+
+		const res = await request(app).get('/api/browser/instances').set('X-Agent-Session', 'ce-owen');
+
+		expect(res.body.instances.map((i: { label: string }) => i.label)).toEqual(['Chrome (macOS) [id aaaa1111]', 'Chrome (macOS) [id bbbb2222]']);
+		expect(res.body.instances[1].yourChoice).toBe(true);
+		expect(res.body.instances[0].yourChoice).toBeUndefined();
+	});
+
+	describe('POST /api/browser/pin', () => {
+		it('remembers a browser for the calling agent, by id prefix', async () => {
+			const { pins } = await twoBrowsers();
+			const res = await request(app).post('/api/browser/pin').set('X-Agent-Session', 'ce-owen').send({ instance: 'aaaa1111' });
+
+			expect(res.status).toBe(200);
+			expect(res.body.data.scope).toBe('agent');
+			expect(pins.set).toHaveBeenCalledWith(mini, 'ce-owen');
+		});
+
+		it('rejects a name two browsers share and one that is not connected', async () => {
+			const { pins } = await twoBrowsers();
+			const shared = await request(app).post('/api/browser/pin').set('X-Agent-Session', 'ce-owen').send({ instance: 'Chrome (macOS)' });
+			const missing = await request(app).post('/api/browser/pin').set('X-Agent-Session', 'ce-owen').send({ instance: 'Firefox' });
+
+			expect(shared.status).toBe(409);
+			expect(shared.body.code).toBe('BROWSER_AMBIGUOUS');
+			expect(missing.body.code).toBe('BROWSER_NOT_CONNECTED');
+			expect(pins.set).not.toHaveBeenCalled();
+		});
+
+		it('keeps the machine default for the owner and the orchestrator', async () => {
+			const { pins } = await twoBrowsers();
+			const member = await request(app).post('/api/browser/pin').set('X-Agent-Session', 'ce-owen').send({ instance: 'aaaa1111', machineDefault: true });
+			const orc = await request(app).post('/api/browser/pin').set('X-Agent-Session', 'crewly-orc').send({ instance: 'aaaa1111', machineDefault: true });
+
+			expect(member.status).toBe(403);
+			expect(orc.status).toBe(200);
+			expect(orc.body.data.scope).toBe('machine');
+			expect(pins.set).toHaveBeenCalledTimes(1);
+			expect(pins.set).toHaveBeenCalledWith(mini, undefined);
+		});
+
+		it('lets the owner set the machine default and warns when a tab is still open elsewhere', async () => {
+			const { pins } = await twoBrowsers();
+			const owner = await request(app).post('/api/browser/pin').send({ instance: 'bbbb2222', machineDefault: true });
+			expect(owner.status).toBe(200);
+			expect(pins.set).toHaveBeenCalledWith(mbp, undefined);
+
+			jest.spyOn(BrowserBridgeService.getInstance(), 'getBinding').mockReturnValue({
+				agentSession: 'ce-owen',
+				tabId: 7,
+				instanceId: mini.instanceId,
+				boundAt: new Date(),
+				lastActivityAt: new Date(),
+			});
+			const switched = await request(app).post('/api/browser/pin').set('X-Agent-Session', 'ce-owen').send({ instance: 'bbbb2222' });
+			expect(switched.body.data.note).toContain('--action done');
+			const same = await request(app).post('/api/browser/pin').set('X-Agent-Session', 'ce-owen').send({ instance: 'aaaa1111' });
+			expect(same.body.data.note).toBeUndefined();
+		});
+
+		it('forgets a choice and needs an agent unless it is the machine default', async () => {
+			const { pins } = await twoBrowsers();
+			const cleared = await request(app).post('/api/browser/pin').set('X-Agent-Session', 'ce-owen').send({ clear: true });
+			const anonymous = await request(app).post('/api/browser/pin').send({ instance: 'aaaa1111' });
+
+			expect(cleared.body.data.cleared).toBe(true);
+			expect(pins.clear).toHaveBeenCalledWith('ce-owen');
+			expect(anonymous.status).toBe(400);
+		});
+	});
+});

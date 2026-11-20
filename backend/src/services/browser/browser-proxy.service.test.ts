@@ -680,7 +680,7 @@ describe('BrowserProxyService', () => {
       // Verify relay_to was sent with targetInstance = 'Chrome'
       const sentMsg = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);
       expect(sentMsg.type).toBe('relay_to');
-      expect(sentMsg.targetInstance).toBe('Chrome');
+      expect(sentMsg.targetInstance).toBe('id-1');
 
       // Resolve to avoid hanging promise
       const payload = JSON.parse(sentMsg.payload as string);
@@ -758,8 +758,9 @@ describe('BrowserProxyService', () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      // Explicit tabId path: getBinding should NOT have been consulted.
-      expect(getBindingSpy).not.toHaveBeenCalled();
+      // The binding is still read (it decides the browser), but the
+      // explicit tabId is what gets sent.
+      expect(getBindingSpy).toHaveBeenCalledWith('crewly-product-leo');
 
       const sentMsg = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);
       const payload = JSON.parse(sentMsg.payload as string);
@@ -825,7 +826,8 @@ describe('BrowserProxyService', () => {
       const cmdPromise = proxy.sendCommand('navigate', { url: 'https://example.com' }, 'Work');
 
       const sentMsg = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);
-      expect(sentMsg.targetInstance).toBe('Work');
+      // By id: two browsers may share a name.
+      expect(sentMsg.targetInstance).toBe('id-2');
 
       // Resolve
       const payload = JSON.parse(sentMsg.payload as string);
@@ -845,7 +847,7 @@ describe('BrowserProxyService', () => {
 
       await expect(
         proxy.sendCommand('navigate', { url: 'https://example.com' }, 'NonExistent'),
-      ).rejects.toThrow('Browser instance "NonExistent" not found');
+      ).rejects.toThrow('Browser "NonExistent" is not connected');
     });
 
     it('should error when no instances and no explicit target', async () => {
@@ -899,7 +901,7 @@ describe('BrowserProxyService', () => {
       const cmdPromise = proxy.sendCommand('getTabs');
       const sentMsg = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);
       expect(sentMsg.type).toBe('relay_to');
-      expect(sentMsg.targetInstance).toBe('Fresh');
+      expect(sentMsg.targetInstance).toBe('id-fresh');
 
       // Resolve to avoid hanging promise
       const payload = JSON.parse(sentMsg.payload as string);
@@ -913,30 +915,84 @@ describe('BrowserProxyService', () => {
       await cmdPromise;
     });
 
-    it('auto-select error message distinguishes empty from ambiguous when all timestamps are unparseable', async () => {
+    /**
+     * Connect the proxy with two browsers that share a default name.
+     *
+     * @returns The connected proxy
+     */
+    function connectTwoBrowsers(): BrowserProxyService {
       const proxy = BrowserProxyService.getInstance();
       proxy.connect('test-token');
       latestMockWs!._trigger('open');
-      latestMockWs!._trigger(
-        'message',
-        JSON.stringify({ type: 'registered', sessionId: 'sess-1' }),
-      );
-      // Two instances with garbage timestamps so resolveInstance returns null
-      // even though instances.size > 0. This validates the new error branch.
+      latestMockWs!._trigger('message', JSON.stringify({ type: 'registered', sessionId: 'sess-1' }));
       latestMockWs!._trigger(
         'message',
         JSON.stringify({
           type: 'browser_list',
           instances: [
-            { instanceId: 'a', instanceName: 'A', sessionId: 's-a', lastSeenAt: 'not-a-date' },
-            { instanceId: 'b', instanceName: 'B', sessionId: 's-b', lastSeenAt: 'also-bad' },
+            { instanceId: 'id-mini', instanceName: 'Chrome (macOS)', sessionId: 's-a' },
+            { instanceId: 'id-mbp', instanceName: 'Chrome (macOS)', sessionId: 's-b' },
           ],
         }),
       );
+      return proxy;
+    }
 
-      await expect(proxy.sendCommand('navigate')).rejects.toThrow(
-        /Could not resolve a browser instance from 2 candidates/,
-      );
+    it('refuses to guess for an agent when several browsers are connected', async () => {
+      const proxy = connectTwoBrowsers();
+      const sendsBefore = latestMockWs!.send.mock.calls.length;
+
+      await expect(
+        proxy.sendCommand('navigate', { url: 'https://example.com' }, undefined, 5000, undefined, 'ce-owen'),
+      ).rejects.toMatchObject({ code: 'BROWSER_AMBIGUOUS' });
+      expect(latestMockWs!.send.mock.calls.length).toBe(sendsBefore);
+    });
+
+    it('sends an agent\'s commands to the browser that holds its bound tab', async () => {
+      const proxy = connectTwoBrowsers();
+      const { BrowserBridgeService } = await import('./browser-bridge.service.js');
+      jest.spyOn(BrowserBridgeService.getInstance(), 'getBinding').mockReturnValue({
+        agentSession: 'ce-owen',
+        tabId: 7,
+        instanceId: 'id-mini',
+        boundAt: new Date(),
+        lastActivityAt: new Date(),
+      });
+
+      const cmdPromise = proxy.sendCommand('click', { selector: '.x' }, undefined, 5000, undefined, 'ce-owen');
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const sentMsg = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);
+      expect(sentMsg.targetInstance).toBe('id-mini');
+      const payload = JSON.parse(sentMsg.payload as string);
+      expect(payload.params.tabId).toBe(7);
+
+      latestMockWs!._trigger('message', JSON.stringify({ type: 'relay', payload: JSON.stringify({ id: payload.id, success: true }) }));
+      await cmdPromise;
+    });
+
+    it('sends a command that names a bound tab but no agent to that tab\'s browser (owner input, live view)', async () => {
+      const proxy = connectTwoBrowsers();
+      const { BrowserBridgeService } = await import('./browser-bridge.service.js');
+      jest.spyOn(BrowserBridgeService.getInstance(), 'listBindings').mockReturnValue([
+        { agentSession: 'ce-owen', tabId: 7, instanceId: 'id-mini', boundAt: new Date(), lastActivityAt: new Date() },
+      ]);
+
+      const cmdPromise = proxy.sendCommand('screenshot', { tabId: 7 });
+      const sentMsg = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);
+      expect(sentMsg.targetInstance).toBe('id-mini');
+
+      const payload = JSON.parse(sentMsg.payload as string);
+      latestMockWs!._trigger('message', JSON.stringify({ type: 'relay', payload: JSON.stringify({ id: payload.id, success: true }) }));
+      await cmdPromise;
+    });
+
+    it('uses the browser an agent chose earlier', async () => {
+      const proxy = connectTwoBrowsers();
+      proxy.setPinStore({ pinFor: () => ({ instanceId: 'id-mbp', instanceName: 'Chrome (macOS)', pinnedAt: '' }) } as unknown as Parameters<typeof proxy.setPinStore>[0]);
+
+      expect(proxy.targetFor(undefined, 'ce-owen').instanceId).toBe('id-mbp');
     });
   });
 

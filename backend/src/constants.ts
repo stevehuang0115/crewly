@@ -4291,6 +4291,16 @@ export const BROWSER_OUTBOUND_GUARD = {
  * Owner approval of held browser actions (irreversible clicks): Slack
  * decision cards, persistence across restarts, and the answer deadline.
  */
+/** Choosing which connected Chrome an agent drives. */
+export const BROWSER_TARGET_CONSTANTS = {
+	/** Per-agent and machine-default browser choices under CREWLY_HOME */
+	PIN_STORE_FILENAME: 'browser-pins.json',
+	/** Shortest id prefix accepted when naming a browser by id */
+	MIN_ID_PREFIX_CHARS: 4,
+	/** Id characters shown next to a browser's name */
+	SHORT_ID_CHARS: 8,
+} as const;
+
 export const BROWSER_APPROVAL_CONSTANTS = {
 	/** Pending held actions under CREWLY_HOME */
 	STORE_FILENAME: 'browser-pending-actions.json',

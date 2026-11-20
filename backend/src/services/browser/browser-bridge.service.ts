@@ -13,6 +13,7 @@
  * @module services/browser/browser-bridge.service
  */
 
+import { BrowserTargetError, matchBrowsers } from './browser-target.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server as HttpServer } from 'http';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -444,6 +445,8 @@ export class BrowserBridgeService {
 	 * @param timeoutMs - Command timeout in milliseconds
 	 * @param agentName - Optional agent name to display in the extension banner
 	 * @param agentGoal - Optional agent goal/objective to display in the banner
+	 * @param target - Relay routing: the browser to use and/or the agent the
+	 *   command is for (its bound tab and remembered browser decide)
 	 * @returns Response from the Chrome Extension
 	 * @throws Error if no client is connected or command times out
 	 */
@@ -452,7 +455,8 @@ export class BrowserBridgeService {
 		params?: Record<string, unknown>,
 		timeoutMs: number = BROWSER_BRIDGE_CONSTANTS.COMMAND_TIMEOUT_MS,
 		agentName?: string,
-		agentGoal?: string
+		agentGoal?: string,
+		target: { instance?: string; agentSession?: string } = {}
 	): Promise<BrowserCommandResponse> {
 		const client = this.getActiveClient();
 
@@ -476,7 +480,7 @@ export class BrowserBridgeService {
 			const proxy = BrowserProxyService.getInstance();
 			if (proxy.isAvailable()) {
 				this.logger.info('No direct WS client, routing via BrowserProxy', { tool });
-				return proxy.sendCommand(tool, params, undefined, timeoutMs, agentName, undefined, agentGoal);
+				return proxy.sendCommand(tool, params, target.instance, timeoutMs, agentName, target.agentSession, agentGoal);
 			}
 			const { BrowserRelayAdapter } = await import('./browser-relay-adapter.service.js');
 			const relayAdapter = BrowserRelayAdapter.getInstance();
@@ -611,12 +615,13 @@ export class BrowserBridgeService {
 	 * @param opts.foreground Pass `active: true` to the Extension on create.
 	 *   Defaults to `false` so the user's foreground tab is never disturbed.
 	 * @param opts.timeoutMs Optional override for the create-tab WS round-trip.
+	 * @param opts.instance Browser to open the tab in (name or id), over the relay.
 	 * @returns The (possibly pre-existing) binding.
 	 * @throws `Error` with a `tab_pool_full` cause when at hard cap.
 	 */
 	async bindAgentTab(
 		agentSession: string,
-		opts: { foreground?: boolean; timeoutMs?: number; agentName?: string } = {}
+		opts: { foreground?: boolean; timeoutMs?: number; agentName?: string; instance?: string } = {}
 	): Promise<AgentTabBinding> {
 		if (!agentSession) {
 			throw new Error('bindAgentTab requires a non-empty agentSession');
@@ -625,6 +630,17 @@ export class BrowserBridgeService {
 		// Idempotent: existing binding short-circuits creation.
 		const existing = this.agentTabBindings.get(agentSession);
 		if (existing) {
+			// Asking for a tab in browser B while one is open in A must not
+			// answer "done" and keep working in A.
+			if (opts.instance && existing.instanceId) {
+				const named = matchBrowsers(this.tryGetProxyInstance()?.getInstances() ?? [], opts.instance);
+				if (named.length !== 1 || named[0].instanceId !== existing.instanceId) {
+					throw new BrowserTargetError(
+						'BROWSER_BOUND_ELSEWHERE',
+						`Your tab is open in another browser. Finish there first (--action done), then start again with --browser "${opts.instance}".`,
+					);
+				}
+			}
 			existing.lastActivityAt = new Date();
 			return existing;
 		}
@@ -642,7 +658,9 @@ export class BrowserBridgeService {
 			'bindTab',
 			{ active: opts.foreground === true },
 			opts.timeoutMs,
-			opts.agentName
+			opts.agentName,
+			undefined,
+			{ agentSession, ...(opts.instance ? { instance: opts.instance } : {}) }
 		);
 
 		if (!response.success) {
@@ -712,7 +730,10 @@ export class BrowserBridgeService {
 				const resp = await this.sendCommand(
 					'unbindTab',
 					{ tabId: binding.tabId },
-					opts.timeoutMs
+					opts.timeoutMs,
+					undefined,
+					undefined,
+					binding.instanceId ? { instance: binding.instanceId } : {}
 				);
 				tabClosed = resp.success === true;
 			} catch (err) {
@@ -771,7 +792,7 @@ export class BrowserBridgeService {
 				tabId: (params as { tabId?: number }).tabId,
 				tool,
 			});
-			return this.sendCommand(tool, params, timeoutMs, agentName, agentGoal);
+			return this.sendCommand(tool, params, timeoutMs, agentName, agentGoal, agentSession ? { agentSession } : {});
 		}
 
 		// Path 4: no agent session — legacy active-tab path.
@@ -789,7 +810,7 @@ export class BrowserBridgeService {
 		delete binding.turnEndedAt;
 
 		const merged: Record<string, unknown> = { ...(params ?? {}), tabId: binding.tabId };
-		return this.sendCommand(tool, merged, timeoutMs, agentName, agentGoal);
+		return this.sendCommand(tool, merged, timeoutMs, agentName, agentGoal, { agentSession });
 	}
 
 	/**
@@ -1126,7 +1147,7 @@ export class BrowserBridgeService {
 	 */
 	private tryGetProxyInstance(): {
 		isAvailable: () => boolean;
-		getInstances: () => Array<{ instanceId: string; instanceName: string }>;
+		getInstances: () => Array<{ instanceId: string; instanceName: string; lastSeenAt: string }>;
 	} | null {
 		// Read the proxy through the registry, not a `require()`. The shipped
 		// backend is ESM ("type": "module"), where a bare require throws — and
