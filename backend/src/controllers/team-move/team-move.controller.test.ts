@@ -3,7 +3,7 @@ import request from 'supertest';
 import { TeamMoveBlockedError } from '../../services/team-move/team-move-exporter.js';
 import { TeamMoveSecretScanError } from '../../services/team-move/team-move-secret-scan.js';
 import { TeamMoveCloudError } from '../../services/team-move/team-move-cloud.client.js';
-import { createTeamMovesRouter, type MachineView } from './team-move.controller.js';
+import { createTeamMovesRouter, isMoveApproval, type MachineView } from './team-move.controller.js';
 
 // The caller kind comes from a test header; the real middleware needs the full server.
 jest.mock('../../middleware/caller-identity.middleware.js', () => ({
@@ -17,6 +17,20 @@ const machines: MachineView[] = [
   { instanceId: 'air-id', name: 'Air', online: true, isLocal: false, canReceive: true },
   { instanceId: 'old-id', name: 'Old', online: true, isLocal: false, canReceive: false, crewlyVersion: '1.20.100' },
 ];
+
+describe('isMoveApproval', () => {
+  it('takes a short plain yes, in the words the owner actually used', () => {
+    for (const yes of ['好', '好的', '可以', '确认，好的，开始搬。', '确认', 'ok', 'Yes, move it', '行', '同意搬，批准，开始吧。', 'go ahead']) {
+      expect(isMoveApproval(yes)).toBe(true);
+    }
+  });
+
+  it('never takes a question, a refusal, or a long message that merely opens with yes', () => {
+    for (const no of ['', '可以吗', '好的？', '先等一下', '不用搬了', 'ok but wait', "don't", '好的，我看了你的计划，里面第三步有问题，等我想想再说，另外那个仓库的事也要确认一下再定下来怎么处理']) {
+      expect(isMoveApproval(no)).toBe(false);
+    }
+  });
+});
 
 describe('team moves routes', () => {
   const driver = {

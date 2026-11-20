@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { StagingArea } from './team-move-fs.js';
-import { TeamMoveSecretScanError, isSkippableFinding, scanStaging } from './team-move-secret-scan.js';
+import { TeamMoveSecretScanError, isRedactableFinding, isSkippableFinding, redactTranscriptInStaging, scanStaging } from './team-move-secret-scan.js';
 
 // Fake credentials are assembled at run time so secret scanners do not flag this file.
 const FAKE_SLACK = ['xoxb', '123456789012', '123456789012', 'abcdefghijklmnop'].join('-');
@@ -26,6 +26,38 @@ describe('team-move-secret-scan', () => {
     for (const [rel, content] of Object.entries(files)) await s.writeText(rel, content.toString('latin1'));
     return s;
   }
+
+  it('redacts a conversation transcript in the package: valid JSON Lines, no secret left, the rest intact', async () => {
+    const lines = [
+      JSON.stringify({ type: 'user', message: { content: 'deploy with the key below' } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_result', content: `export ANTHROPIC_API_KEY=${FAKE_ANTHROPIC}\nok "quoted" \\ done` }] } }),
+      JSON.stringify({ type: 'assistant', nested: { deep: [FAKE_SLACK, 'plain text', 42, null, true] } }),
+      'not json at all, token ' + FAKE_OPENAI,
+      '',
+    ];
+    const s = await stage({ 'transcripts/ryan/abc.jsonl': lines.join('\n') });
+    const before = s.files().find((f) => f.path === 'transcripts/ryan/abc.jsonl');
+
+    const { entry, redactions } = await redactTranscriptInStaging(s, 'transcripts/ryan/abc.jsonl');
+    expect(redactions).toBeGreaterThanOrEqual(3);
+    expect(entry.sha256).not.toBe(before?.sha256);
+    expect(s.files().find((f) => f.path === entry.path)).toEqual(entry);
+
+    const text = await fs.readFile(s.abs('transcripts/ryan/abc.jsonl'), 'utf8');
+    for (const secret of [FAKE_ANTHROPIC, FAKE_SLACK, FAKE_OPENAI]) expect(text).not.toContain(secret);
+    const out = text.split('\n').filter((l) => l.length > 0);
+    expect(JSON.parse(out[0])).toEqual({ type: 'user', message: { content: 'deploy with the key below' } });
+    const second = JSON.parse(out[1]);
+    expect(second.message.content[0].content).toContain('ok "quoted" \\ done');
+    expect(JSON.parse(out[2]).nested.deep.slice(1)).toEqual(['plain text', 42, null, true]);
+    expect(out[3].startsWith('not json at all, token ')).toBe(true);
+    expect((await scanStaging(s, s.files())).findings).toEqual([]);
+  });
+
+  it('only conversation transcripts are redacted in place', () => {
+    expect(isRedactableFinding('transcripts/ryan/abc.jsonl')).toBe(true);
+    for (const p of ['team/config.json', 'records/task-pool.json', 'transcripts/ryan/notes.md', 'agents/s/memory.json']) expect(isRedactableFinding(p)).toBe(false);
+  });
 
   it('finds token shapes, secret assignments and known values, and reports paths only', async () => {
     const s = await stage({

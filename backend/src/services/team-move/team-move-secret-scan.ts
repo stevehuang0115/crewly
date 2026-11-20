@@ -11,6 +11,9 @@
  */
 
 import * as fs from 'node:fs/promises';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { createInterface } from 'node:readline';
+import { once } from 'node:events';
 import { redactSecretsWithCount } from '../../utils/secret-redactor.js';
 import type { SecretEnvValue } from '../../utils/secret-env.js';
 import { looksLikeText } from './team-move-fs.js';
@@ -102,6 +105,93 @@ export async function scanStaging(
     if (matches > 0) findings.push({ path: f.path, matches });
   }
   return { filesScanned, findings };
+}
+
+/** Package paths of conversation transcripts (JSON Lines, one per member). */
+const TRANSCRIPT_PREFIX = 'transcripts/';
+
+/**
+ * Whether a flagged file is a conversation transcript, which is redacted in
+ * the package copy instead of stopping the move.
+ *
+ * @param packagePath - Package path of the flagged file
+ * @returns True for a transcript
+ */
+export function isRedactableFinding(packagePath: string): boolean {
+  return packagePath.startsWith(TRANSCRIPT_PREFIX) && packagePath.endsWith('.jsonl');
+}
+
+/**
+ * Redact every string inside a parsed JSON value.
+ *
+ * @param value - Any JSON value
+ * @param known - Exact secret values to look for
+ * @param tally - Receives the number of redactions
+ * @returns The value with secrets masked in its strings (and in its keys)
+ */
+function redactJsonValue(value: unknown, known: readonly SecretEnvValue[], tally: { count: number }): unknown {
+  if (typeof value === 'string') {
+    const out = redactSecretsWithCount(value, known);
+    tally.count += out.count;
+    return out.text;
+  }
+  if (Array.isArray(value)) return value.map((item) => redactJsonValue(item, known, tally));
+  if (value && typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      result[String(redactJsonValue(key, known, tally))] = redactJsonValue(item, known, tally);
+    }
+    return result;
+  }
+  return value;
+}
+
+/**
+ * Mask the secrets in a conversation transcript inside the package, leaving
+ * the file on the machine untouched.
+ *
+ * A transcript is what lets a member resume its conversation on the target
+ * machine, and agents routinely read keys while they work, so a secret in one
+ * is the normal case: stopping the whole move over it (2026-11-20: four
+ * Google keys in one member's transcript, "nothing was sent") leaves the owner
+ * to hand-edit a 4 MB log. Each line is parsed and only its strings are
+ * redacted, so the file stays valid JSON Lines; a line that does not parse is
+ * redacted as text.
+ *
+ * @param staging - The package being built
+ * @param packagePath - A transcript in it
+ * @param known - Exact secret values to look for
+ * @returns The new file entry and the number of redactions
+ */
+export async function redactTranscriptInStaging(
+  staging: StagingArea,
+  packagePath: string,
+  known: readonly SecretEnvValue[] = [],
+): Promise<{ entry: PackageFileEntry; redactions: number }> {
+  const source = staging.abs(packagePath);
+  const temp = `${source}.redacting`;
+  const tally = { count: 0 };
+  const out = createWriteStream(temp, { encoding: 'utf8' });
+  const lines = createInterface({ input: createReadStream(source, { encoding: 'utf8' }), crlfDelay: Infinity });
+  for await (const line of lines) {
+    let written: string;
+    if (line.trim().length === 0) {
+      written = line;
+    } else {
+      try {
+        written = JSON.stringify(redactJsonValue(JSON.parse(line), known, tally));
+      } catch {
+        const raw = redactSecretsWithCount(line, known);
+        tally.count += raw.count;
+        written = raw.text;
+      }
+    }
+    if (!out.write(`${written}\n`)) await once(out, 'drain');
+  }
+  out.end();
+  await once(out, 'finish');
+  await fs.rename(temp, source);
+  return { entry: await staging.adopt(packagePath), redactions: tally.count };
 }
 
 /**

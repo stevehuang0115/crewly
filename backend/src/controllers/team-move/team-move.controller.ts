@@ -35,6 +35,33 @@ import { actorFromRequest, recordActivity } from '../../services/activity/activi
 /** How recent the owner's "yes" must be when the orchestrator starts a move. */
 export const MOVE_APPROVAL_LOOKBACK_MS = 30 * 60 * 1000;
 
+/** A reply this short that opens with a plain yes is the owner answering the orchestrator's "shall I move it?". */
+const SHORT_YES_MAX_CHARS = 40;
+const SHORT_YES = /^\s*(好的?|可以|行|嗯|对|是的?|确认|确定|没问题|搬吧?|转吧?|ok(ay)?|yes|yep|sure|confirm(ed)?)(?![\p{L}\p{N}])/iu;
+/** Not a yes, however it starts. */
+const REFUSAL = /不|别|先等|等一下|暂停|取消|\b(no|not|don'?t|wait|cancel|stop)\b/i;
+
+/**
+ * Whether an owner message approves a team move.
+ *
+ * The orchestrator asks "move team X to machine Y?" and tells the owner a
+ * yes starts it. The launch guard's approval words (同意, 批准, go ahead…)
+ * leave out 好 / 可以 / 确认 / ok on purpose, because they are everywhere in
+ * ordinary chat; applied here, the owner's "确认，好的，开始搬" was refused
+ * twice (2026-11-20). For a move, a short reply that opens with a plain yes
+ * and holds no refusal counts too. A question never does.
+ *
+ * @param content - An owner message from the approval window
+ * @returns True when it reads as a yes to the move
+ */
+export function isMoveApproval(content: string): boolean {
+  if (!content) return false;
+  if (containsApprovalToken(content)) return true;
+  if (/[?？]|[吗呢]\s*[。.!！]?\s*$/.test(content)) return false;
+  const text = content.trim();
+  return text.length <= SHORT_YES_MAX_CHARS && SHORT_YES.test(text) && !REFUSAL.test(text);
+}
+
 export type { MachineView };
 
 /** Collaborators (injectable for tests). */
@@ -183,7 +210,7 @@ export function createTeamMovesRouter(deps: Partial<TeamMoveControllerDeps> = {}
       // An agent (the orchestrator) may start a move only after the owner said yes in chat.
       if (getCallerIdentity(req).kind === 'agent') {
         const recent = ownerMessages(now() - MOVE_APPROVAL_LOOKBACK_MS);
-        if (!recent.some((m) => containsApprovalToken(m))) {
+        if (!recent.some((m) => isMoveApproval(m))) {
           return fail(res, 403, 'Ask the owner first: tell them which team moves to which machine and wait for a yes in chat, then try again.', { code: 'owner_approval_required' });
         }
       }
