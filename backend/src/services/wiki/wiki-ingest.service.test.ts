@@ -269,6 +269,24 @@ describe('WikiIngestService', () => {
       expect(log).toContain('Append-only log');
     });
 
+    it('an entity page keeps its aliases, and a later write adds to them without duplicates', async () => {
+      const base = {
+        vaultPath: vault,
+        sourceType: 'user_chat' as const,
+        sourceRef: 'chat:msg-e1',
+        callerSession: 'user/steve',
+        targetRelativePath: 'llm-curated/customers/robohub.md',
+      };
+      const first = await service.ingest({ ...base, sourceBody: '10/9 call.', title: 'RoboHub', summary: 'In talks', keepBecause: 'hard_fact', aliases: ['Xin', ' RoboHub ', 'xin'] });
+      expect(first.ok).toBe(true);
+      const second = await service.ingest({ ...base, sourceRef: 'chat:msg-e2', sourceBody: '10/13 proposal v5 sent.', aliases: ['Michael Zhang', 'XIN'] });
+      expect(second.ok).toBe(true);
+      const page = await fs.readFile(path.join(vault, 'llm-curated/customers/robohub.md'), 'utf8');
+      expect(page).toMatch(/aliases:\n\s+- Xin\n\s+- RoboHub\n\s+- Michael Zhang\n/);
+      expect(page).toContain('10/9 call.');
+      expect(page).toContain('10/13 proposal v5 sent.');
+    });
+
     it('a page gets YAML frontmatter (title/summary/keep_because/provenance), an H1, an index line — NOT the activity-log preamble', async () => {
       const r = await service.ingest({
         vaultPath: vault,

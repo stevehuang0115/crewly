@@ -802,6 +802,51 @@ describe('ChatV2DispatcherService', () => {
       expect(delivered.find((d) => d.s === 'sam')?.m).toContain('CTX-FOR-sam');
     });
 
+    it('wiki records: looked up from the message and its thread, per recipient, on the delivered copy', async () => {
+      const delivered: Array<{ s: string; m: string }> = [];
+      const asked: Array<{ agentSession: string; text: string; ownerOnlyAudience: boolean }> = [];
+      const dispatcher = new ChatV2DispatcherService({
+        agentSink: { sendMessageToAgent: async (s: string, m: string) => { delivered.push({ s, m }); return { success: true }; } },
+        huddleMembersFor: () => ['atlas'],
+        recordsFor: async (request) => {
+          asked.push(request);
+          return `[RECORDS for ${request.agentSession}]`;
+        },
+      });
+      await dispatcher.dispatchMessage(makeChannel({ id: 'h1', type: 'huddle', agentSession: undefined }), makeMessage({ channelId: 'h1', mentions: ['atlas'], content: 'what about RoboHub?' }), {
+        slackContextFor: () => 'THREAD mentions Xin',
+      });
+      const prompt = delivered.find((d) => d.s === 'atlas')?.m ?? '';
+      expect(prompt).toContain('[RECORDS for atlas]');
+      expect(prompt.indexOf('THREAD mentions Xin')).toBeLessThan(prompt.indexOf('[RECORDS for atlas]'));
+      expect(prompt.indexOf('[RECORDS for atlas]')).toBeLessThan(prompt.lastIndexOf('what about RoboHub?'));
+      expect(asked[0]).toMatchObject({ agentSession: 'atlas', ownerOnlyAudience: false });
+      expect(asked[0].text).toContain('what about RoboHub?');
+      expect(asked[0].text).toContain('THREAD mentions Xin');
+    });
+
+    it('wiki records: a direct conversation with the owner may show restricted ones; a failing lookup costs only the block', async () => {
+      const asked: boolean[] = [];
+      const { sink, calls } = makeSink({ success: true });
+      const dispatcher = new ChatV2DispatcherService({
+        agentSink: sink,
+        isOwnerMessage: () => true,
+        recordsFor: async (request) => {
+          asked.push(request.ownerOnlyAudience);
+          return '[RECORDS]';
+        },
+      });
+      await dispatcher.dispatchMessage(makeChannel(), makeMessage());
+      expect(asked).toEqual([true]);
+      expect(calls[0].message).toContain('[RECORDS]');
+
+      const failing = makeSink({ success: true });
+      const broken = new ChatV2DispatcherService({ agentSink: failing.sink, recordsFor: async () => { throw new Error('boom'); } });
+      const r = await broken.dispatchMessage(makeChannel(), makeMessage());
+      expect(r.dispatched).toBe(true);
+      expect(failing.calls[0].message).not.toContain('[RECORDS]');
+    });
+
     it('a DM dispatch carries it; a throwing renderer costs only the block', async () => {
       const { sink, calls } = makeSink({ success: true });
       const dispatcher = new ChatV2DispatcherService({ agentSink: sink });

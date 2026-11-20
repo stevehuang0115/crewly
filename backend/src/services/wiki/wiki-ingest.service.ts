@@ -75,6 +75,13 @@ export interface WikiIngestInput {
   /** Page writes only: why it earns a page. */
   keepBecause?: WikiKeepBecause | string;
   tags?: string[];
+  /**
+   * Page writes only: the names the page's subject goes by (a customer's
+   * company, contacts, nicknames). A page under an entity folder is attached
+   * to a delivered message that mentions one of them. Merged with the page's
+   * existing aliases.
+   */
+  aliases?: string[];
   /** Page writes only: roles that may read it (default: the vault's default_visibility). */
   visibility?: string[];
   /**
@@ -282,6 +289,13 @@ export class WikiIngestService {
       ...(input.tags ? { tags: input.tags } : {}),
       ...(input.visibility ? { visibility: input.visibility } : {}),
     };
+    if (input.aliases && input.aliases.length > 0) {
+      const before = Array.isArray(existing?.frontmatter?.['aliases']) ? (existing?.frontmatter?.['aliases'] as unknown[]).map((v) => String(v)) : [];
+      const seen = new Set<string>();
+      supplied['aliases'] = [...before, ...input.aliases]
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0 && !seen.has(name.toLowerCase()) && seen.add(name.toLowerCase()));
+    }
     if (!supplied.title && existing === null) supplied.title = this.titleFromBody(input.sourceBody);
     const refusal = checkRetention(supplied);
     if (refusal) {

@@ -1858,6 +1858,31 @@ export const SLACK_THREAD_KEY_CONSTANTS = {
  * LLM-wiki as a knowledge base (2026-09-19 review): retention gate,
  * two-step retrieval index, usage ledger, proposals, history, privacy.
  */
+/**
+ * Records attached to a delivered message (`wiki-record-attach.service.ts`):
+ * entity pages whose names appear in the message or its thread.
+ */
+export const WIKI_RECORD_ATTACH_CONSTANTS = {
+	/** Folders under `llm-curated/` whose pages are entities (one page per customer, person, project, product) */
+	ENTITY_FOLDERS: ['customers', 'people', 'projects', 'products'],
+	/** Shortest Latin-script name that is matched; shorter ones (ids, initials) match too much */
+	MIN_ALIAS_CHARS: 3,
+	/** Shortest CJK name that is matched */
+	MIN_ALIAS_CHARS_CJK: 2,
+	/** Pages attached to one message at most */
+	MAX_PAGES: 3,
+	/** Characters of one page body attached; the rest is clipped with the page path */
+	PAGE_BODY_MAX_CHARS: 1200,
+	/** Characters of the whole block */
+	TOTAL_MAX_CHARS: 2200,
+	/** Characters of message + thread scanned for names */
+	TEXT_SCAN_MAX_CHARS: 20000,
+	/** How long a vault's list of entity pages is kept before it is read again */
+	INDEX_TTL_MS: 2 * 60 * 1000,
+	/** `via` value in the wiki usage ledger */
+	USAGE_VIA: 'attach',
+} as const;
+
 export const WIKI_KB_CONSTANTS = {
 	/** Why a page earns a place in the vault (one is required to create a page). */
 	KEEP_BECAUSE: ['changes_decision', 'contradicts', 'hard_fact', 'reusable_method'] as const,
