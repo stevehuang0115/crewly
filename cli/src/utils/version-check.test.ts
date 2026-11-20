@@ -125,6 +125,7 @@ describe('CLI version-check utilities', () => {
 			jest.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ version: '99.0.0' }) } as Response);
 			await checkForUpdate();
 			const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ version: '99.1.0' }) } as Response);
+			fetchSpy.mockClear();
 
 			expect((await checkForUpdate({ fresh: true })).latestVersion).toBe('99.1.0');
 			expect(fetchSpy).toHaveBeenCalledTimes(1);
