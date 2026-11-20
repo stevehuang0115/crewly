@@ -43,6 +43,8 @@ crewly init
 crewly start
 ```
 
+**On Windows?** Run `npm install -g crewly` (version 1.39.0 or later) in a terminal, then `crewly init` and `crewly start`. You need Node.js 22 or later, [Git for Windows](https://gitforwindows.org/) (Git Bash) and `jq`. The `curl` installer is for macOS and Linux. Step by step: [Install Crewly on Windows](https://crewlyai.com/en/blog/install-crewly-on-windows).
+
 **`EACCES: permission denied` from `npm install -g` on Linux?** A system Node (from apt, NodeSource or the official Docker images) keeps its global packages under `/usr/local`, which a normal user cannot write. Do not use `sudo`. Install into your home folder instead, which is what the installer script does, and `crewly upgrade` keeps using that folder:
 
 ```bash
@@ -69,6 +71,7 @@ The `init` command walks you through provider selection, installs agent skills, 
   On Debian/Ubuntu, install the toolchain with `sudo apt-get install -y python3 make g++`. `crewly doctor` tells you whether you need it.
 - **jq** (`brew install jq` on macOS, `sudo apt-get install -y jq` on Debian/Ubuntu). Agent skills use it, and `crewly init` stops if it is missing.
 - **curl**
+- **On Windows: Git for Windows (Git Bash)**, and `jq` (for example `winget install jqlang.jq`).
 - **One AI coding CLI, installed and logged in**: Claude Code (`claude`), Gemini CLI (`gemini`) or Codex (`codex`). OpenCode also works.
 - **A normal user account, not root.** Run Crewly as a normal user, not with `sudo` or as root. Claude Code refuses to start its agents under root.
 
