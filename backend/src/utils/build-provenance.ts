@@ -27,7 +27,7 @@
  */
 
 import { execFileSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 
 /** Filename written into the build output directory at build time. */
@@ -129,6 +129,7 @@ const EXPECTED_BRANCHES = new Set(['main', 'master']);
  * @returns The state; `{ branch: null, dirty: false }` when git is unavailable
  */
 export function readCheckoutState(repoRoot: string): CheckoutState {
+  if (!isOwnGitCheckout(repoRoot)) return { branch: null, dirty: false };
   const run = (args: string[]): string | null => {
     try {
       return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
@@ -199,13 +200,42 @@ export function formatVerdict(verdict: ProvenanceVerdict): string {
 }
 
 /**
+ * Whether a directory is the top of its own git checkout.
+ *
+ * `git` run inside a directory answers for whichever repository encloses it.
+ * An npm-installed Crewly under nvm sits inside `~/.nvm`, which is itself a
+ * git clone: without this test the build check compared the package's build
+ * stamp with nvm's HEAD and refused to start a fresh install (2026-11-20).
+ *
+ * @param dir - Directory to test
+ * @returns True only when git's toplevel for `dir` is `dir` itself
+ */
+export function isOwnGitCheckout(dir: string): boolean {
+  try {
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: dir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (!top) return false;
+    const same = (a: string, b: string): boolean =>
+      process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    return same(realpathSync(top), realpathSync(dir));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Reads the current HEAD commit via the `git` binary.
  *
  * @param repoRoot - Directory to run `git` in
- * @returns The 40-char SHA, or null when git is unavailable or this is not a
- *   repository (a container or tarball deploy, where the check must not fire)
+ * @returns The 40-char SHA, or null when git is unavailable or this is not
+ *   the top of its own checkout (a container, tarball or npm install, even one
+ *   that sits inside some other repository: the check must not fire there)
  */
 export function readGitHead(repoRoot: string): string | null {
+  if (!isOwnGitCheckout(repoRoot)) return null;
   try {
     const out = execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: repoRoot,

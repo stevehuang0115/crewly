@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -10,6 +11,8 @@ import {
   formatVerdict,
   readBuildInfo,
   readGitHead,
+  isOwnGitCheckout,
+  readCheckoutState,
   writeBuildInfo,
 } from './build-provenance.js';
 
@@ -127,6 +130,45 @@ describe('readBuildInfo / writeBuildInfo', () => {
 describe('readGitHead', () => {
   it('returns null outside a repository instead of throwing', () => {
     expect(readGitHead(dir)).toBeNull();
+  });
+});
+
+describe('a package installed inside another repository (npm under nvm)', () => {
+  let outer: string;
+  let pkg: string;
+
+  beforeEach(() => {
+    outer = mkdtempSync(join(tmpdir(), 'bp-outer-'));
+    const git = (...args: string[]): void => {
+      execFileSync('git', args, { cwd: outer, stdio: 'ignore' });
+    };
+    git('init', '-q');
+    git('-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'outer');
+    pkg = join(outer, 'lib', 'node_modules', 'crewly');
+    mkdirSync(pkg, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(outer, { recursive: true, force: true });
+  });
+
+  it('the outer repository is its own checkout, the package is not', () => {
+    expect(isOwnGitCheckout(outer)).toBe(true);
+    expect(isOwnGitCheckout(pkg)).toBe(false);
+  });
+
+  it('does not read the outer HEAD or branch for the package', () => {
+    expect(readGitHead(outer)).toMatch(/^[0-9a-f]{40}$/);
+    expect(readGitHead(pkg)).toBeNull();
+    expect(readCheckoutState(pkg)).toEqual({ branch: null, dirty: false });
+  });
+
+  it('starts instead of calling the package a stale build', () => {
+    mkdirSync(join(pkg, 'dist'));
+    writeBuildInfo(join(pkg, 'dist'), 'a'.repeat(40), '2026-11-19T00:00:00.000Z');
+    const warn = jest.fn();
+    const verdict = assertBuildProvenance({ repoRoot: pkg, moduleDir: join(pkg, 'dist'), env: {}, log: jest.fn(), warn });
+    expect(verdict.state).toBe('unknown');
   });
 });
 
