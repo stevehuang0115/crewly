@@ -5,6 +5,7 @@
  * @module services/team-move/team-move-select
  */
 
+import { SLACK_TEAM_CHANNEL_CONSTANTS } from '../../constants.js';
 import type { Team } from '../../types/index.js';
 import type { ScheduledMessage } from '../../types/index.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
@@ -157,4 +158,28 @@ export function selectDecisions<T extends DecisionLike>(decisions: readonly T[],
       PENDING_DECISION_STATUSES.has(d.status) &&
       (d.teamId === id.teamId || (typeof d.asker === 'string' && id.sessions.has(d.asker)) || (typeof d.requestedBy === 'string' && id.sessions.has(d.requestedBy))),
   );
+}
+
+/**
+ * The Crewly channels (ad-hoc Slack mappings, shared by agents of several
+ * teams) that have at least one of the team's agents as a member. Each comes
+ * back with `members` and `excluded` cut to the team's own agents: the other
+ * teams' agents are not on the target machine and stay in the channel on the
+ * source.
+ *
+ * @param mappings - Every mapping in `slack-team-channels.json`
+ * @param id - Identity of the team that moves
+ * @returns Mapping copies for the package (empty when the team is in none)
+ */
+export function selectAdhocMappings(mappings: ReadonlyArray<Record<string, unknown>>, id: TeamIdentity): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  for (const m of mappings) {
+    const teamId = m['teamId'];
+    if (typeof teamId !== 'string' || !teamId.startsWith(SLACK_TEAM_CHANNEL_CONSTANTS.ADHOC_TEAM_PREFIX)) continue;
+    const mine = (Array.isArray(m['members']) ? (m['members'] as unknown[]) : []).filter((x): x is string => typeof x === 'string' && id.sessions.has(x));
+    if (mine.length === 0) continue;
+    const excluded = (Array.isArray(m['excluded']) ? (m['excluded'] as unknown[]) : []).filter((x): x is string => typeof x === 'string' && id.sessions.has(x));
+    out.push({ ...m, members: mine, ...(excluded.length > 0 ? { excluded } : { excluded: undefined }) });
+  }
+  return out;
 }

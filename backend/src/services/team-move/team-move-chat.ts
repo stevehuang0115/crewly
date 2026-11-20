@@ -60,9 +60,10 @@ function open(home: string): ChatDatabase {
  *
  * @param home - Crewly home of the source
  * @param id - Team identity
+ * @param options - `includeChannelIds` always travel; `rosterOnlyChannelIds` carry only this team's members; `messages` caps the history carried
  * @returns Records (empty when the machine has no chat store)
  */
-export function readTeamChat(home: string, id: TeamIdentity, options: { includeChannelIds?: readonly string[]; messages?: ChatMessageLimits & { channelIds: readonly string[] } } = {}): ChatRecords {
+export function readTeamChat(home: string, id: TeamIdentity, options: { includeChannelIds?: readonly string[]; rosterOnlyChannelIds?: readonly string[]; messages?: ChatMessageLimits & { channelIds: readonly string[] } } = {}): ChatRecords {
   if (!existsSync(path.join(home, CHAT_V2_DB_FILE))) return { channels: [], members: [] };
   const db = open(home);
   try {
@@ -90,7 +91,12 @@ export function readTeamChat(home: string, id: TeamIdentity, options: { includeC
       return false;
     });
     const ids = new Set(selected.map((c) => String(c['id'])));
-    const records: ChatRecords = { channels: selected, members: members.filter((m) => ids.has(m.channel_id)) };
+    // A channel shared with other teams carries only this team's agents: the others are not on the target.
+    const rosterOnly = new Set(options.rosterOnlyChannelIds ?? []);
+    const records: ChatRecords = {
+      channels: selected,
+      members: members.filter((m) => ids.has(m.channel_id) && (!rosterOnly.has(m.channel_id) || id.sessions.has(m.member_session))),
+    };
     if (options.messages) {
       const wanted = options.messages.channelIds.filter((c) => ids.has(c));
       if (wanted.length > 0) records.messages = readRecentMessages(db, wanted, options.messages);
@@ -124,6 +130,31 @@ function readRecentMessages(db: ChatDatabase, channelIds: readonly string[], lim
       kept.unshift(rows[i]!);
     }
     out.push(...kept);
+  }
+  return out;
+}
+
+/**
+ * Point carried records at the channel ids the target already uses: a channel
+ * that exists there under another id is not inserted again; its members and
+ * messages move to the existing id. Moved messages carry no `seq`: {@link applyTeamChat}
+ * numbers them after the messages the channel already has there.
+ *
+ * @param records - Records from the package
+ * @param idMap - Source channel id to the id on this machine
+ * @returns Records for {@link applyTeamChat}
+ */
+export function remapChatChannels(records: ChatRecords, idMap: ReadonlyMap<string, string>): ChatRecords {
+  const out: ChatRecords = {
+    channels: records.channels.filter((c) => !idMap.has(String(c['id']))),
+    members: records.members.map((m) => ({ ...m, channel_id: idMap.get(m.channel_id) ?? m.channel_id })),
+  };
+  if (records.messages) {
+    out.messages = records.messages.map((row) => {
+      const to = idMap.get(String(row['channel_id']));
+      if (!to) return row;
+      return { ...row, channel_id: to, seq: null };
+    });
   }
   return out;
 }
@@ -168,9 +199,15 @@ export function applyTeamChat(home: string, records: ChatRecords): ApplyChatResu
       if (records.messages && records.messages.length > 0) {
         result.messagesAdded = 0;
         const messageColumns = new Set((db.prepare('PRAGMA table_info(chat_messages)').all() as Array<{ name: string }>).map((c) => c.name));
+        const nextSeq = new Map<string, number>();
         for (const row of records.messages) {
           const channelId = row['channel_id'];
           if (typeof channelId !== 'string' || !db.prepare('SELECT 1 FROM chat_channels WHERE id = ?').get(channelId)) continue;
+          if (row['seq'] === null || row['seq'] === undefined) {
+            const next = nextSeq.get(channelId) ?? ((db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM chat_messages WHERE channel_id = ?').get(channelId) as { m: number }).m + 1);
+            row['seq'] = next;
+            nextSeq.set(channelId, next + 1);
+          }
           const keys = Object.keys(row).filter((k) => messageColumns.has(k));
           const sql = `INSERT OR IGNORE INTO chat_messages (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`;
           if (db.prepare(sql).run(...keys.map((k) => row[k] ?? null)).changes > 0) result.messagesAdded += 1;

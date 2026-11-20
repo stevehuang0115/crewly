@@ -40,6 +40,7 @@ import { safeReadJson } from '../../utils/file-io.utils.js';
 import { collectSecretEnvValues, type SecretEnvValue } from '../../utils/secret-env.js';
 import { PACKAGE_TREE_STORES, getCrewlyHomePath, isInsidePackageTree, resolveProjectDataDir } from '../core/crewly-home.utils.js';
 import { readTeamChat } from './team-move-chat.js';
+import { selectAdhocMappings } from './team-move-select.js';
 import { collectAgentTranscripts } from './team-move-transcripts.js';
 import { createEncryptStream, createHashTap } from './team-move-crypto.js';
 import { StagingArea, walkFiles } from './team-move-fs.js';
@@ -887,15 +888,22 @@ export class TeamMoveExporter {
 
     // The Slack channel mapping of the team, so the target reuses the same channel.
     const slackFile = await safeReadJson<{ mappings?: Array<Record<string, unknown>> }>(path.join(this.home, 'slack-team-channels.json'), {});
-    const mapping = (Array.isArray(slackFile.mappings) ? slackFile.mappings : []).find((m) => m['teamId'] === team.id) ?? null;
-    await staging.writeJson('records/slack-team-channel.json', { mapping });
-    if (mapping) counts['slackChannelMappings'] = 1;
+    const allMappings = Array.isArray(slackFile.mappings) ? slackFile.mappings : [];
+    const mapping = allMappings.find((m) => m['teamId'] === team.id) ?? null;
+    // Crewly channels (ad-hoc mappings, shared with other teams) the team's agents are in: the moved
+    // agents are carried as members, the other teams' agents stay where they are.
+    const adhocMappings = selectAdhocMappings(allMappings, id);
+    await staging.writeJson('records/slack-team-channel.json', { mapping, adhocMappings });
+    const mappingCount = (mapping ? 1 : 0) + adhocMappings.length;
+    if (mappingCount > 0) counts['slackChannelMappings'] = mappingCount;
 
     // Chat channels, rooms and DMs with their membership — the room behind the
     // Slack mapping always, with its recent messages (crewly#1344).
-    const roomId = typeof mapping?.['chatChannelId'] === 'string' ? [mapping['chatChannelId'] as string] : [];
+    const adhocRoomIds = adhocMappings.map((m) => String(m['chatChannelId'])).filter((c) => c.length > 0);
+    const roomId = [...(typeof mapping?.['chatChannelId'] === 'string' ? [mapping['chatChannelId'] as string] : []), ...adhocRoomIds];
     const chat = readTeamChat(this.home, id, {
       includeChannelIds: roomId,
+      rosterOnlyChannelIds: adhocRoomIds,
       messages: { channelIds: roomId, perChannel: C.CHAT_MESSAGES_PER_CHANNEL, totalBytes: C.CHAT_MESSAGES_MAX_BYTES },
     });
     await staging.writeJson('records/chat-channels.json', chat);

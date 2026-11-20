@@ -1,6 +1,6 @@
 import type { Team } from '../../types/index.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
-import { identityOf, isOpenWorkItem, resetWorkItemForTarget, selectDecisions, selectPoolItems, selectScheduledMessages, targetsTeam } from './team-move-select.js';
+import { selectAdhocMappings, identityOf, isOpenWorkItem, resetWorkItemForTarget, selectDecisions, selectPoolItems, selectScheduledMessages, targetsTeam } from './team-move-select.js';
 
 const team = { id: 't1', name: 'CE', members: [{ id: 'm1', sessionName: 'ce-a' }, { id: 'm2', sessionName: 'ce-b' }] } as unknown as Team;
 const id = identityOf(team);
@@ -54,5 +54,17 @@ describe('team-move-select', () => {
       { id: 'D5', status: 'open', teamId: 'other' },
     ];
     expect(selectDecisions(ds, id).map((d) => d.id)).toEqual(['D1', 'D3', 'D4']);
+  });
+
+  it('selects the Crewly channels the team is in, with only its own agents as members', () => {
+    const mappings = [
+      { teamId: 'adhoc:C1', slackChannelId: 'C1', chatChannelId: 'h1', members: ['ce-a', 'someone-else'], excluded: ['someone-else', 'ce-b'] },
+      { teamId: 'adhoc:C2', slackChannelId: 'C2', chatChannelId: 'h2', members: ['someone-else'] },
+      { teamId: 't1', slackChannelId: 'C3', chatChannelId: 'h3', members: ['ce-a'] },
+    ];
+    const picked = selectAdhocMappings(mappings, id);
+    expect(picked.map((m) => m['chatChannelId'])).toEqual(['h1']);
+    expect(picked[0]).toMatchObject({ members: ['ce-a'], excluded: ['ce-b'] });
+    expect(selectAdhocMappings([{ teamId: 'adhoc:C9' }], id)).toEqual([]);
   });
 });

@@ -62,7 +62,7 @@ describe('team move between two homes', () => {
       ...overrides,
     });
 
-  const importer = (): TeamMoveImporter =>
+  const importer = (extra: Partial<ConstructorParameters<typeof TeamMoveImporter>[0]> = {}): TeamMoveImporter =>
     new TeamMoveImporter({
       home: targetHome,
       crewlyVersion: '9.9.9',
@@ -97,6 +97,7 @@ describe('team move between two homes', () => {
       },
       hasCommand: (bin) => bin !== 'ffmpeg',
       runtimeLogins: async () => ({ 'claude-code': false }),
+      ...extra,
     });
 
   /** Export from the source, encrypt for a fresh target key, return the pieces. */
@@ -230,6 +231,89 @@ describe('team move between two homes', () => {
     await expect(fs.stat(file)).rejects.toThrow();
     await expect(fs.stat(path.join(targetHome, 'team-moves', MOVE_ID, 'staging'))).rejects.toThrow();
     expect((await fs.stat(path.join(targetHome, 'team-moves', MOVE_ID, 'import-report.json'))).isFile()).toBe(true);
+  });
+
+  describe('a Crewly channel shared with another team (the Iris shape)', () => {
+    const ROOM = 'chan-0004-shared-room';
+    const OTHER = 'other-team-session';
+    const adhocTeamId = 'adhoc:C0SHARED';
+
+    /** Source: a Crewly channel with this team's two agents and one agent of another team, with history. */
+    async function addSharedRoom(): Promise<void> {
+      const now = Date.parse('2026-10-05T10:00:00.000Z');
+      const db = openChatDatabase({ dbPath: path.join(fx.home, 'chat.db'), skipIntegrityCheck: true });
+      try {
+        db.prepare('INSERT INTO chat_channels (id, agent_session, owner_user_id, name, purpose, created_at, type, team_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(ROOM, '', 'owner', 'shared-room', null, now, 'huddle', null);
+        const member = db.prepare('INSERT INTO chat_channel_members (channel_id, member_session, joined_at) VALUES (?, ?, ?)');
+        for (const s of [F.leadSession, F.devSession, OTHER, 'team:placeholder']) member.run(ROOM, s, now);
+        const msg = db.prepare("INSERT INTO chat_messages (id, channel_id, seq, sender_type, sender_id, content, content_type, created_at) VALUES (?, ?, ?, 'user', 'owner', ?, 'text', ?)");
+        for (let i = 1; i <= 3; i++) msg.run(`m-${i}`, ROOM, i, `shared history ${i}`, now + i);
+      } finally {
+        db.close();
+      }
+      const file = path.join(fx.home, 'slack-team-channels.json');
+      const store = await safeReadJson<{ mappings: Array<Record<string, unknown>> }>(file, { mappings: [] });
+      store.mappings.push({ teamId: adhocTeamId, slackChannelId: 'C0SHARED', slackChannelName: 'shared-room', chatChannelId: ROOM, createdAt: '2026-10-05T10:00:00.000Z', autoCreated: false, members: [F.leadSession, F.devSession, OTHER], excluded: [OTHER] });
+      await atomicWriteJson(file, store);
+    }
+
+    it('carries the channel, its members of this team and its history to the target', async () => {
+      await addSharedRoom();
+      const adoptedAdhoc: Array<Record<string, unknown>> = [];
+      const { key, enc, file } = await exportAndEncrypt();
+      const report = await importer({
+        adoptAdhocMapping: async (mapping) => {
+          adoptedAdhoc.push(mapping);
+          return { chatChannelId: String(mapping['chatChannelId']), added: true };
+        },
+      }).run({ moveId: MOVE_ID, packageFile: file, privateKey: key.privateKey, expectedSha256: enc.sha256 });
+
+      // The Slack link comes along, with this team's agents only.
+      expect(adoptedAdhoc).toHaveLength(1);
+      expect(adoptedAdhoc[0]).toMatchObject({ teamId: adhocTeamId, slackChannelId: 'C0SHARED', chatChannelId: ROOM, members: [F.leadSession, F.devSession] });
+      expect(adoptedAdhoc[0]!['excluded']).toBeUndefined();
+      expect(report.moved['slackChannelMappings']).toBe(2);
+
+      // The huddle, its roster (no other team's agent, no placeholder) and the history exist on the target.
+      const db = openChatDatabase({ dbPath: path.join(targetHome, 'chat.db'), skipIntegrityCheck: true });
+      try {
+        expect((db.prepare('SELECT 1 FROM chat_channels WHERE id = ?').get(ROOM) as unknown) !== undefined).toBe(true);
+        const roster = (db.prepare('SELECT member_session s FROM chat_channel_members WHERE channel_id = ? ORDER BY s').all(ROOM) as Array<{ s: string }>).map((r) => r.s);
+        expect(roster).toEqual([F.devSession, F.leadSession].sort());
+        const history = (db.prepare('SELECT content FROM chat_messages WHERE channel_id = ? ORDER BY seq').all(ROOM) as Array<{ content: string }>).map((r) => r.content);
+        expect(history).toEqual(['shared history 1', 'shared history 2', 'shared history 3']);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('joins a channel the target already has for that Slack channel, under the target\'s own huddle id', async () => {
+      await addSharedRoom();
+      // Target: the same Slack channel is known here already, under another huddle, with a member and one message.
+      const existing = 'target-huddle-7';
+      const targetDb = openChatDatabase({ dbPath: path.join(targetHome, 'chat.db'), skipIntegrityCheck: true });
+      try {
+        targetDb.prepare('INSERT INTO chat_channels (id, agent_session, owner_user_id, name, purpose, created_at, type, team_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(existing, '', 'owner', 'shared-room', null, 1, 'huddle', null);
+        targetDb.prepare('INSERT INTO chat_channel_members (channel_id, member_session, joined_at) VALUES (?, ?, ?)').run(existing, 'already-here', 1);
+        targetDb.prepare("INSERT INTO chat_messages (id, channel_id, seq, sender_type, sender_id, content, content_type, created_at) VALUES ('t-1', ?, 1, 'user', 'owner', 'local history', 'text', 1)").run(existing);
+      } finally {
+        targetDb.close();
+      }
+      const { key, enc, file } = await exportAndEncrypt();
+      await importer({ adoptAdhocMapping: async () => ({ chatChannelId: existing, added: false }) }).run({ moveId: MOVE_ID, packageFile: file, privateKey: key.privateKey, expectedSha256: enc.sha256 });
+
+      const db = openChatDatabase({ dbPath: path.join(targetHome, 'chat.db'), skipIntegrityCheck: true });
+      try {
+        expect(db.prepare('SELECT 1 FROM chat_channels WHERE id = ?').get(ROOM)).toBeUndefined();
+        const roster = (db.prepare('SELECT member_session s FROM chat_channel_members WHERE channel_id = ? ORDER BY s').all(existing) as Array<{ s: string }>).map((r) => r.s);
+        expect(roster).toEqual(['already-here', F.devSession, F.leadSession].sort());
+        const history = (db.prepare('SELECT seq, content FROM chat_messages WHERE channel_id = ? ORDER BY seq').all(existing) as Array<{ seq: number; content: string }>);
+        expect(history.map((h) => h.content)).toEqual(['local history', 'shared history 1', 'shared history 2', 'shared history 3']);
+        expect(history.map((h) => h.seq)).toEqual([1, 2, 3, 4]);
+      } finally {
+        db.close();
+      }
+    });
   });
 
   it('contains no secret in any packaged file', async () => {
