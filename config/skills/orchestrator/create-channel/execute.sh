@@ -45,11 +45,16 @@ if [ "${CREWLY_SKILL_DRY_RUN:-}" = "1" ]; then
   exit 0
 fi
 
-RAW=$(api_call POST "/channels/compose" "$BODY")
+# Test hook: format a canned backend response instead of calling the backend.
+if [ -n "${CREWLY_SKILL_FAKE_RESPONSE:-}" ]; then
+  RAW="$CREWLY_SKILL_FAKE_RESPONSE"
+else
+  RAW=$(api_call POST "/channels/compose" "$BODY")
+fi
 printf '%s' "$RAW" | jq -r '
   if .success == true then
     .data as $d
-    | "Channel #\($d.channel.name) " + (if $d.channel.created then "created" else "updated") + (if $d.channel.slackChannelId then " (Slack \($d.channel.slackChannelId))" else " (Crewly-only, Slack is not connected)" end),
+    | "Channel #\($d.channel.name) " + (if $d.channel.created then "created" else "updated" end) + (if $d.channel.slackChannelId then " (Slack \($d.channel.slackChannelId))" else " (Crewly-only, Slack is not connected)" end),
       ($d.added[] | "ADDED: \(.name) (\(.team // "?"), \(.machine // "?"))"),
       ($d.requested[] | "ASKED (joins on its own machine shortly): \(.name) (\(.machine // "?"))"),
       ($d.failed[] | "FAILED: \(.name) — \(.reason)"),
