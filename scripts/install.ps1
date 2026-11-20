@@ -136,6 +136,16 @@ function Test-JqInstalled {
     return [bool](Get-Command jq -ErrorAction SilentlyContinue)
 }
 
+function Test-NpmInstalled {
+    return [bool](Get-Command npm -ErrorAction SilentlyContinue)
+}
+
+# `npm install -g crewly`; returns $true when npm reports success.
+function Invoke-NpmInstallCrewly {
+    & npm install -g crewly | Out-Host
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Test-WingetInstalled {
     return [bool](Get-Command winget -ErrorAction SilentlyContinue)
 }
@@ -257,7 +267,7 @@ function Install-Crewly {
 
     # ========================= npm Check =========================
 
-    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    if (-not (Test-NpmInstalled)) {
         Write-Fail 'npm not found. It should come with Node.js.'
         Write-Plain 'Open a new PowerShell window and run this installer again, or reinstall Node.js from https://nodejs.org'
         return $false
@@ -266,8 +276,7 @@ function Install-Crewly {
     # ========================= Install Crewly =========================
 
     Write-Step 'Installing Crewly...'
-    & npm install -g crewly | Out-Host
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Invoke-NpmInstallCrewly)) {
         Write-Fail 'Failed to install Crewly.'
         Write-Plain 'Try this and read the message above it:  npm install -g crewly'
         return $false

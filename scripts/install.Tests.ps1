@@ -27,8 +27,8 @@ Describe 'install.ps1' {
         Mock Sync-SessionPath { }
         Mock Find-CrewlyCommand { 'C:\npm\crewly.cmd' }
         Mock Get-CrewlyVersion { '1.39.1' }
-        Mock Get-Command { [pscustomobject]@{ Source = 'C:\npm\npm.cmd' } } -ParameterFilter { $Name -eq 'npm' }
-        Mock npm { $global:LASTEXITCODE = 0 }
+        Mock Test-NpmInstalled { $true }
+        Mock Invoke-NpmInstallCrewly { $true }
     }
 
     Context 'everything is already installed' {
@@ -36,7 +36,7 @@ Describe 'install.ps1' {
             $r = Invoke-Installer
             $r.Ok | Should -BeTrue
             Should -Invoke Invoke-Winget -Times 0 -Exactly
-            Should -Invoke npm -Times 1 -Exactly
+            Should -Invoke Invoke-NpmInstallCrewly -Times 1 -Exactly
             $r.Text | Should -Match 'Node.js .*detected'
             $r.Text | Should -Match 'Git for Windows detected'
             $r.Text | Should -Match 'jq detected'
@@ -111,7 +111,7 @@ Describe 'install.ps1' {
             Mock Test-WingetInstalled { $false }
             $r = Invoke-Installer
             $r.Ok | Should -BeFalse
-            Should -Invoke npm -Times 0 -Exactly
+            Should -Invoke Invoke-NpmInstallCrewly -Times 0 -Exactly
             $r.Text | Should -Match 'winget'
             $r.Text | Should -Match 'https://nodejs.org'
             $r.Text | Should -Match 'https://gitforwindows.org'
@@ -123,7 +123,7 @@ Describe 'install.ps1' {
             Mock Invoke-Winget { $false }
             $r = Invoke-Installer
             $r.Ok | Should -BeFalse
-            Should -Invoke npm -Times 0 -Exactly
+            Should -Invoke Invoke-NpmInstallCrewly -Times 0 -Exactly
             $r.Text | Should -Match 'jq could not be installed'
         }
 
@@ -137,7 +137,7 @@ Describe 'install.ps1' {
 
     Context 'installing Crewly' {
         It 'stops when npm install fails' {
-            Mock npm { $global:LASTEXITCODE = 1 }
+            Mock Invoke-NpmInstallCrewly { $false }
             $r = Invoke-Installer
             $r.Ok | Should -BeFalse
             $r.Text | Should -Match 'Failed to install Crewly'
@@ -162,7 +162,7 @@ Describe 'install.ps1' {
             Mock Test-WindowsHost { $false }
             $r = Invoke-Installer
             $r.Ok | Should -BeFalse
-            Should -Invoke npm -Times 0 -Exactly
+            Should -Invoke Invoke-NpmInstallCrewly -Times 0 -Exactly
             $r.Text | Should -Match 'install.sh'
         }
     }
