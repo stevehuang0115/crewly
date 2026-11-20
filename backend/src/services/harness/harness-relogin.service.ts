@@ -56,6 +56,7 @@
  * @module services/harness/harness-relogin.service
  */
 
+import type { ReloginSiblingRelay } from './relogin-reply.relay.js';
 import * as os from 'os';
 import { HARNESS_CONSTANTS } from '../../constants.js';
 import { listClaudeAccounts } from './claude-accounts.js';
@@ -735,6 +736,8 @@ export class HarnessReloginService {
 	private readonly machineName: () => string;
 	private readonly state: ReloginStateStore;
 	private notifier: ReloginOwnerNotifier | null;
+	/** The account's other machines, for a `login` this machine has no use for. */
+	private siblings: ReloginSiblingRelay | null = null;
 	private resumer: ReloginAgentResumer | null;
 	private readonly now: () => number;
 	private readonly logger: HarnessLogger;
@@ -915,7 +918,11 @@ export class HarnessReloginService {
 	 */
 	handleOwnerReply(text: string, target: ReloginReplyTarget | null = null, scope: OwnerReplyScope = 'orc'): boolean {
 		if (typeof text !== 'string') return false;
-		if (this.flows.size > 0 && this.consumeFlowReply(text, target)) return true;
+		if (this.flows.size > 0 && this.consumeFlowReply(text, target)) {
+			// Another machine may be signed out too, and it never hears this DM.
+			if (scope === 'orc' && !target?.agentSession && isLoginKeyword(text)) void this.askSiblings(null, target);
+			return true;
+		}
 
 		// `login` in an agent's own bot DM (the orc's too) while that agent sits
 		// at a sign-in screen: sign in the login it actually runs on (the
@@ -936,8 +943,97 @@ export class HarnessReloginService {
 		const request = parseOwnerLoginRequest(text, { knownClaudeAccounts: this.knownClaudeAccounts() });
 		if (!request) return false;
 		if (scope === 'agent' && request.kind !== 'harness') return false;
-		void this.handleOwnerLoginRequest(request, target);
+		void this.routeOwnerLoginRequest(request, target, scope);
 		return true;
+	}
+
+	/**
+	 * Give the machines of this account a way to pass a `login` reply on.
+	 *
+	 * @param siblings - Sibling relay, or null for this machine only
+	 */
+	setSiblings(siblings: ReloginSiblingRelay | null): void {
+		this.siblings = siblings;
+	}
+
+	/**
+	 * Act on a login request, on the machine it is meant for.
+	 *
+	 * The owner's DM with the Crewly bot reaches the primary machine only. A
+	 * request this machine has no use for (a bare `login` with nothing signed
+	 * out here, or a harness that is signed in here) is offered to the
+	 * account's other machines first; if one of them is signed out it starts
+	 * its sign-in and answers in the same thread. Otherwise this machine
+	 * handles the request as before.
+	 *
+	 * @param request - Parsed request
+	 * @param target - Conversation to answer in
+	 * @param scope - Where the owner wrote
+	 */
+	private async routeOwnerLoginRequest(request: OwnerLoginRequest, target: ReloginReplyTarget | null, scope: OwnerReplyScope): Promise<void> {
+		const mine = scope === 'orc' && !target?.agentSession;
+		const bare = request.kind === 'unknown' && !request.name && !request.switchAccount;
+		const namedButFineHere =
+			request.kind === 'harness' &&
+			!request.switchAccount &&
+			!request.account &&
+			!this.isSignedOut(request.harnessId) &&
+			![...this.flows.values()].some((flow) => flow.harnessId === request.harnessId);
+		if (mine && (bare || namedButFineHere)) {
+			const took = await this.askSiblings(request.kind === 'harness' ? request.harnessId : null, target);
+			if (took) return;
+		}
+		await this.handleOwnerLoginRequest(request, target);
+	}
+
+	/**
+	 * Offer a login request to the account's other machines.
+	 *
+	 * @param harnessId - Harness the owner named, or null for whatever is signed out
+	 * @param target - Conversation the owner wrote in
+	 * @returns True when another machine took it; false on none, a timeout or an error
+	 */
+	private async askSiblings(harnessId: HarnessId | null, target: ReloginReplyTarget | null): Promise<boolean> {
+		try {
+			if (!this.siblings || !this.siblings.hasSiblings()) return false;
+			const took = await this.siblings.ask(harnessId, target);
+			this.logger.info('Offered the owner\'s login request to the other machines', { harnessId, took });
+			return took;
+		} catch (error) {
+			this.logger.warn('Could not offer the login request to the other machines', { error: error instanceof Error ? error.message : String(error) });
+			return false;
+		}
+	}
+
+	/**
+	 * A `login` the owner wrote reached another machine of this account and
+	 * was passed here. Start a sign-in for what is signed out on this
+	 * machine (or signing in), answered in the conversation the owner wrote in.
+	 *
+	 * @param harnessId - Harness the owner named, or null for whatever is signed out
+	 * @param target - Conversation the owner wrote in (this machine's own DM when null)
+	 * @returns True when a sign-in was started here; false when nothing here needs one
+	 */
+	handleSiblingLogin(harnessId: HarnessId | null, target: ReloginReplyTarget | null): boolean {
+		const started = new Set<HarnessId>();
+		for (const flow of [...this.flows.values()]) {
+			if (harnessId && flow.harnessId !== harnessId) continue;
+			this.replaceAndStart(flow.harnessId, flow, {
+				trigger: flow.trigger,
+				switchAccount: flow.switchAccount,
+				replyTarget: target ?? flow.replyTarget,
+				account: flow.account,
+			});
+			started.add(flow.harnessId);
+		}
+		const candidates = harnessId ? [harnessId] : (Object.values(HARNESS_CONSTANTS.IDS) as HarnessId[]);
+		for (const candidate of candidates) {
+			if (started.has(candidate) || !hasBrokerLogin(candidate) || !this.isSignedOut(candidate)) continue;
+			this.startOwnerLogin(candidate, { replyTarget: target, requestedBy: 'owner_dm' });
+			started.add(candidate);
+		}
+		if (started.size > 0) this.logger.info('Sign-in started on a login reply passed on by another machine', { harnessIds: [...started] });
+		return started.size > 0;
 	}
 
 	/**
