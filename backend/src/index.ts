@@ -2952,6 +2952,12 @@ void (async () => {
 				browserBridge.attach(this.httpServer);
 				this.logger.info('Crewly in Chrome WebSocket bridge started');
 
+				// Remembered browser choices (which Chrome each agent drives when
+				// several are connected).
+				const { BrowserPinStore } = await import('./services/browser/browser-target.js');
+				const { BrowserProxyService: PinnedProxy } = await import('./services/browser/browser-proxy.service.js');
+				PinnedProxy.getInstance().setPinStore(BrowserPinStore.inHome(this.config.crewlyHome));
+
 				// Live browser view: make each agent's browser work watchable.
 				// The capturer is injected rather than imported by the session
 				// service so transport selection (direct WS vs relay) stays in

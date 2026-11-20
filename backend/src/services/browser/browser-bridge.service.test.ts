@@ -181,6 +181,29 @@ describe('BrowserBridgeService', () => {
 			adapterSpy.mockRestore();
 		});
 
+		it('carries the agent and the named browser to the relay on bind, and the tab\'s browser on unbind', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			const { BrowserProxyService } = await import('./browser-proxy.service.js');
+			const proxy = BrowserProxyService.getInstance();
+			const proxyAvailableSpy = jest.spyOn(proxy, 'isAvailable').mockReturnValue(true);
+			const proxySpy = jest
+				.spyOn(proxy, 'sendCommand')
+				.mockResolvedValue({ id: 'p-2', success: true, result: { tabId: 7 }, instanceId: 'id-mini' });
+
+			const binding = await bridge.bindAgentTab('ce-owen', { instance: 'mini-CE' });
+			expect(binding.instanceId).toBe('id-mini');
+			expect(proxySpy).toHaveBeenLastCalledWith('bindTab', { active: false }, 'mini-CE', expect.any(Number), undefined, 'ce-owen', undefined);
+
+			await bridge.sendCommandForAgent('ce-owen', 'click', { selector: '.x' });
+			expect(proxySpy).toHaveBeenLastCalledWith('click', { selector: '.x', tabId: 7 }, undefined, expect.any(Number), undefined, 'ce-owen', undefined);
+
+			await bridge.unbindAgentTab('ce-owen');
+			expect(proxySpy).toHaveBeenLastCalledWith('unbindTab', { tabId: 7 }, 'id-mini', expect.any(Number), undefined, undefined, undefined);
+
+			proxySpy.mockRestore();
+			proxyAvailableSpy.mockRestore();
+		});
+
 		it('falls back to adapter only when proxy is NOT available', async () => {
 			const bridge = BrowserBridgeService.getInstance();
 			const { BrowserProxyService } = await import('./browser-proxy.service.js');

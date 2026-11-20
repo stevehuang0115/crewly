@@ -544,6 +544,36 @@ assert_contains "done posts to /browser/unbind" "$(request_field 0 path)" "unbin
   || pass "cache purged after done"
 scenario_teardown
 
+# Scenario 24: --browser names the Chrome a call goes to
+scenario_init "scenario 24: --browser adds instance to the body (POST) and the query (GET)"
+queue_response '{"success":true}'
+queue_response '{"success":true,"tabs":[]}'
+start_stub
+export CREWLY_SESSION_NAME="agent-24"
+"$SKILL" --action navigate --url https://example.com --browser "mini CE" > /dev/null 2>&1 || true
+"$SKILL" --action tabs --browser "mini CE" > /dev/null 2>&1 || true
+assert_eq "POST body carries instance" "mini CE" "$(request_field 0 body | jq -r '.instance')"
+assert_eq "POST body keeps url" "https://example.com" "$(request_field 0 body | jq -r '.url')"
+assert_contains "GET query carries instance" "$(request_field 1 path)" "instance=mini%20CE"
+scenario_teardown
+
+# Scenario 25: use-browser remembers, sets the machine default, and forgets
+scenario_init "scenario 25: use-browser posts to /browser/pin"
+queue_response '{"success":true}'
+queue_response '{"success":true}'
+queue_response '{"success":true}'
+start_stub
+export CREWLY_SESSION_NAME="agent-25"
+"$SKILL" --action use-browser --browser "aaaa1111" > /dev/null 2>&1 || true
+"$SKILL" --action use-browser --browser "aaaa1111" --default > /dev/null 2>&1 || true
+"$SKILL" --action use-browser --clear > /dev/null 2>&1 || true
+assert_contains "use-browser posts to /browser/pin" "$(request_field 0 path)" "browser/pin"
+assert_eq "pin names the browser" "aaaa1111" "$(request_field 0 body | jq -r '.instance')"
+assert_eq "pin is per agent by default" "false" "$(request_field 0 body | jq -r '.machineDefault')"
+assert_eq "--default sets the machine default" "true" "$(request_field 1 body | jq -r '.machineDefault')"
+assert_eq "--clear forgets the choice" "true" "$(request_field 2 body | jq -r '.clear')"
+scenario_teardown
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

@@ -95,6 +95,9 @@ EXTRA_PARAMS=""
 TAB_ID=""        # --tab-id <N>: explicit override
 NO_BIND="false"  # --no-bind: drop X-Agent-Session for this call
 FOREGROUND="false" # --active: only meaningful with bind-tab
+BROWSER=""       # --browser <name|id>: which connected Chrome to use
+AS_DEFAULT="false" # --default: with use-browser, set this machine's default
+CLEAR_PIN="false"  # --clear: with use-browser, forget the choice
 GOAL=""          # --goal <text>: what the agent is trying to accomplish
                  # (shown in the Chrome takeover banner). Overrides any
                  # inherited CREWLY_AGENT_GOAL for this call.
@@ -147,6 +150,18 @@ while [[ $# -gt 0 ]]; do
       TAB_ID="$2"
       shift 2
       ;;
+    --browser|-b)
+      BROWSER="$2"
+      shift 2
+      ;;
+    --default)
+      AS_DEFAULT="true"
+      shift
+      ;;
+    --clear)
+      CLEAR_PIN="true"
+      shift
+      ;;
     --no-bind)
       NO_BIND="true"
       shift
@@ -164,7 +179,11 @@ while [[ $# -gt 0 ]]; do
       echo "                 user's Chrome takeover banner. Recommended on the"
       echo "                 first action of a browser task."
       echo ""
-      echo "Actions: status, navigate, screenshot, read-text, click, fill, type,"
+      echo "  --browser <name|id>  Which connected Chrome to use, when several"
+      echo "                 are connected (see --action instances). Remember"
+      echo "                 it with: --action use-browser --browser <name|id>"
+      echo ""
+      echo "Actions: instances, use-browser, status, navigate, screenshot, read-text, click, fill, type,"
       echo "         scroll, hover, press-key, get-element, wait-for-selector,"
       echo "         execute-js, tabs, cookies, console, local-storage,"
       echo "         get-interactive-elements, search-text, full-page-screenshot,"
@@ -206,6 +225,7 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$TEXT" ] && TEXT=$(printf '%s' "$INPUT" | jq -r '.text // empty')
   [ -z "$CODE" ] && CODE=$(printf '%s' "$INPUT" | jq -r '.code // empty')
   [ -z "$GOAL" ] && GOAL=$(printf '%s' "$INPUT" | jq -r '.goal // empty')
+  [ -z "$BROWSER" ] && BROWSER=$(printf '%s' "$INPUT" | jq -r '.browser // empty')
   # Per-tab dispatch fields surfaced in JSON input. CLI flags win over JSON
   # (CLI is more explicit). Empty string = "not provided".
   if [ -z "$TAB_ID" ]; then
@@ -222,7 +242,7 @@ if [ -n "$INPUT_JSON" ]; then
   # Capture all extra fields from JSON input as pass-through params (strip
   # per-tab fields too — they're handled by the dedicated branches below).
   if [ -z "$EXTRA_PARAMS" ]; then
-    EXTRA_PARAMS=$(printf '%s' "$INPUT" | jq -c 'del(.action, .url, .selector, .value, .text, .code, .goal, .tabId, .noBind, .active) | if length == 0 then empty else . end' 2>/dev/null || true)
+    EXTRA_PARAMS=$(printf '%s' "$INPUT" | jq -c 'del(.action, .url, .selector, .value, .text, .code, .goal, .browser, .tabId, .noBind, .active) | if length == 0 then empty else . end' 2>/dev/null || true)
   fi
 fi
 
@@ -480,6 +500,18 @@ case "$ACTION" in
     METHOD="GET"
     ENDPOINT="/browser/instances"
     ;;
+  use-browser)
+    # Remember which Chrome this agent drives (or, with --default, every
+    # agent on this machine). --clear forgets the choice.
+    ENDPOINT="/browser/pin"
+    if [ "$CLEAR_PIN" = "true" ]; then
+      BODY=$(jq -n -c --argjson d "$AS_DEFAULT" '{clear: true, machineDefault: $d}')
+    else
+      require_param "browser (--browser)" "$BROWSER"
+      BODY=$(jq -n -c --arg b "$BROWSER" --argjson d "$AS_DEFAULT" '{instance: $b, machineDefault: $d}')
+    fi
+    BROWSER=""
+    ;;
   bind-tab)
     ENDPOINT="/browser/bind"
     if [ "$FOREGROUND" = "true" ]; then
@@ -504,7 +536,7 @@ esac
 # `tabId` in the body as an explicit override and skips its own binding
 # lookup, so this also covers the cached-tabId fast path.
 case "$ACTION" in
-  status|instances|tabs|bind-tab|unbind-tab)
+  status|instances|tabs|bind-tab|unbind-tab|use-browser)
     : # control-plane / read-only — leave BODY alone
     ;;
   *)
@@ -514,6 +546,19 @@ case "$ACTION" in
     fi
     ;;
 esac
+
+# ---- Named browser -------------------------------------------------------
+#
+# --browser names the Chrome this call goes to. The backend reads it as
+# `instance` from the body (POST) or the query string (GET).
+if [ -n "$BROWSER" ]; then
+  if [ "$METHOD" = "GET" ]; then
+    ENDPOINT="${ENDPOINT}?instance=$(jq -rn --arg b "$BROWSER" '$b|@uri')"
+  else
+    [ -n "$BODY" ] || BODY="{}"
+    BODY=$(printf '%s' "$BODY" | jq -c --arg b "$BROWSER" '. + {instance: $b}')
+  fi
+fi
 
 # ---- Execute the API call ------------------------------------------------
 #

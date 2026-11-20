@@ -11,6 +11,7 @@
 import type { Request, Response } from 'express';
 import { BrowserBridgeService, type BrowserCommandResponse } from '../../services/browser/browser-bridge.service.js';
 import { BrowserProxyService } from '../../services/browser/browser-proxy.service.js';
+import { BrowserTargetError, labelBrowser, matchBrowsers } from '../../services/browser/browser-target.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { getBrowserSessions, matchIrreversible } from '../../services/browser/browser-session.service.js';
 import { traceBrowserAction } from '../../services/trace/turn-origin.js';
@@ -30,7 +31,7 @@ import {
 	type Viewport,
 } from '../../services/browser/owner-browser-input.js';
 import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
-import { BROWSER_BRIDGE_CONSTANTS, BROWSER_OWNER_INPUT_CONSTANTS, BROWSER_SESSION_CONSTANTS } from '../../constants.js';
+import { BROWSER_BRIDGE_CONSTANTS, BROWSER_OWNER_INPUT_CONSTANTS, BROWSER_SESSION_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('BrowserController');
@@ -151,20 +152,98 @@ export function getStatus(_req: Request, res: Response): void {
  * @param _req - Express request (unused)
  * @param res - Express response
  */
-export function getInstances(_req: Request, res: Response): void {
+export function getInstances(req: Request, res: Response): void {
 	const bridge = BrowserBridgeService.getInstance();
 	const proxy = BrowserProxyService.getInstance();
+	const agentSession = extractAgentSession(req);
 
 	// Combine direct WS clients and relay proxy instances
 	const directClients = bridge.getStatus().clientCount;
 	const proxyInstances = proxy.getInstances();
+	const pins = proxy.getPinStore()?.describe(agentSession) ?? {};
+	const boundInstanceId = agentSession ? bridge.getBinding(agentSession)?.instanceId : undefined;
 
 	res.json({
 		success: true,
-		instances: proxyInstances,
+		instances: proxyInstances.map((i) => ({
+			...i,
+			label: labelBrowser(i),
+			...(i.instanceId === boundInstanceId ? { holdsYourTab: true } : {}),
+			...(i.instanceId === pins.agent?.instanceId ? { yourChoice: true } : {}),
+			...(i.instanceId === pins.machineDefault?.instanceId ? { machineDefault: true } : {}),
+		})),
+		pins,
 		directClientCount: directClients,
 		proxyConnected: proxy.isConnected(),
 	});
+}
+
+/**
+ * Answer a refusal to choose a browser: 409 with the candidates, so the
+ * caller can name one.
+ *
+ * @param res - Express response
+ * @param err - The refusal
+ */
+function sendBrowserTargetError(res: Response, err: BrowserTargetError): void {
+	res.status(err.code === 'NO_BROWSER_CLIENT' ? 503 : 409).json({
+		success: false,
+		code: err.code,
+		error: err.message,
+		browsers: err.browsers,
+	});
+}
+
+/**
+ * POST /api/browser/pin
+ *
+ * Remember which browser an agent uses, so it is not asked again. Body:
+ *   - `instance` — browser name, id or id prefix (omit with `clear: true`)
+ *   - `machineDefault: true` — set the default for every agent on this
+ *     machine instead (the owner's call: orchestrator or an owner request only)
+ *   - `clear: true` — forget the choice
+ *
+ * @param req - Express request
+ * @param res - Express response
+ */
+export function pinBrowser(req: Request, res: Response): void {
+	const proxy = BrowserProxyService.getInstance();
+	const store = proxy.getPinStore();
+	if (!store) {
+		res.status(503).json({ success: false, code: 'PIN_STORE_UNAVAILABLE', error: 'Browser choices cannot be saved on this machine yet.' });
+		return;
+	}
+	const agentSession = extractAgentSession(req);
+	const body = (req.body ?? {}) as { instance?: unknown; machineDefault?: unknown; clear?: unknown };
+	const machineDefault = body.machineDefault === true;
+	if (machineDefault && agentSession && agentSession !== ORCHESTRATOR_SESSION_NAME) {
+		res.status(403).json({ success: false, code: 'owner_decision', error: 'The default browser for this machine is the owner\'s decision. Ask the owner, or set a choice for yourself without --default.' });
+		return;
+	}
+	if (!machineDefault && !agentSession) {
+		res.status(400).json({ success: false, error: 'agent_session_required', details: 'X-Agent-Session is required to remember a browser for an agent (or pass machineDefault: true).' });
+		return;
+	}
+	const scope = machineDefault ? undefined : agentSession;
+	if (body.clear === true) {
+		res.json({ success: true, data: { cleared: store.clear(scope), pins: store.describe(agentSession) } });
+		return;
+	}
+	const wanted = typeof body.instance === 'string' ? body.instance : '';
+	const instances = proxy.getInstances();
+	const matches = matchBrowsers(instances, wanted);
+	if (matches.length !== 1) {
+		sendBrowserTargetError(res, new BrowserTargetError(
+			matches.length === 0 ? 'BROWSER_NOT_CONNECTED' : 'BROWSER_AMBIGUOUS',
+			matches.length === 0
+				? `Browser "${wanted}" is not connected. Connected: ${instances.map(labelBrowser).join(', ') || 'none'}`
+				: `${matches.length} connected browsers are named "${wanted}". Name one by id: ${matches.map(labelBrowser).join(', ')}`,
+			instances.map((i) => ({ id: i.instanceId, name: i.instanceName })),
+		));
+		return;
+	}
+	const pin = store.set(matches[0], scope);
+	res.json({ success: true, data: { pinned: { ...pin, label: labelBrowser(matches[0]) }, scope: machineDefault ? 'machine' : 'agent', pins: store.describe(agentSession) } });
 }
 
 /**
@@ -542,8 +621,15 @@ async function sendToolCommand(
 			return;
 		} catch (err) {
 			logPath('proxy-instance', (err as Error).message);
-			errors.push(`proxy(instance=${instance}): ${(err as Error).message}`);
-			// Fall through to try other paths
+			if (err instanceof BrowserTargetError) {
+				sendBrowserTargetError(res, err);
+				return;
+			}
+			// A named browser that failed is never swapped for another one:
+			// the other paths may reach a Chrome signed in to different accounts.
+			const failure = classifyDispatchFailure(tool, [`proxy(instance=${instance}): ${(err as Error).message}`]);
+			res.status(failure.status).json({ success: false, error: failure.error, code: failure.code });
+			return;
 		}
 	}
 
@@ -560,6 +646,10 @@ async function sendToolCommand(
 			return;
 		} catch (err) {
 			logPath('direct-ws', (err as Error).message);
+			if (err instanceof BrowserTargetError) {
+				sendBrowserTargetError(res, err);
+				return;
+			}
 			errors.push(`direct-ws: ${(err as Error).message}`);
 			// Fall through to try proxy path
 		}
@@ -575,6 +665,10 @@ async function sendToolCommand(
 			return;
 		} catch (err) {
 			logPath('proxy-relay', (err as Error).message);
+			if (err instanceof BrowserTargetError) {
+				sendBrowserTargetError(res, err);
+				return;
+			}
 			errors.push(`proxy-relay: ${(err as Error).message}`);
 			// Fall through to error response
 		}
@@ -1113,16 +1207,22 @@ export async function bindTab(req: Request, res: Response): Promise<void> {
 	const agentName = extractAgentName(req);
 
 	try {
-		const binding = await bridge.bindAgentTab(agentSession, { foreground, agentName });
+		const instance = resolveInstanceParam(req);
+		const binding = await bridge.bindAgentTab(agentSession, { foreground, agentName, ...(instance ? { instance } : {}) });
 		res.json({
 			success: true,
 			data: {
 				tabId: binding.tabId,
 				windowId: binding.windowId,
+				...(binding.instanceId ? { instanceId: binding.instanceId } : {}),
 				bindingCount: bridge.listBindings().length,
 			},
 		});
 	} catch (err) {
+		if (err instanceof BrowserTargetError) {
+			sendBrowserTargetError(res, err);
+			return;
+		}
 		const code = (err as Error & { code?: string }).code;
 		if (code === 'tab_pool_full') {
 			res.status(503).json({

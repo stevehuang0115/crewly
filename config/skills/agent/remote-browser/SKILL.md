@@ -109,7 +109,8 @@ bash execute.sh -a click -s "#submit"
 | `console` | recent console messages; optional `?clear=true` |
 | `local-storage` | `--params` to scope the read |
 | `status` | extension connection status |
-| `instances` | connected browser instances |
+| `instances` | connected browsers, with the one holding your tab and any remembered choice marked |
+| `use-browser` | `--browser <name\|id>` remembers which Chrome you drive; `--clear` forgets it; `--default` sets it for every agent on this machine (owner's decision) |
 | `proxy-connect` | manually connect the proxy to Cloud Relay |
 
 ### Tab binding
@@ -117,6 +118,31 @@ bash execute.sh -a click -s "#submit"
 |---|---|
 | `bind-tab` | bind a tab to this agent; `--active` foregrounds it (default: background) |
 | `unbind-tab` (aliases `done`, `close-tab`) | release the tab and close it. Run it when the job is finished |
+
+## Several browsers connected
+
+One account can have several Chromes connected (one per machine or Chrome
+profile), and they are often signed in to different accounts on the same
+site. Crewly does not guess between them:
+
+- one browser connected: it is used, nothing to do;
+- several connected and you have not chosen: the call fails with
+  `BROWSER_AMBIGUOUS` and lists them. Pick by what the task says ("use the
+  Mac mini's Chrome", "post from the company account"). If the task does not
+  say, ask the owner once. Never pick one at random: a post or upload from
+  the wrong account is not something you can take back.
+
+```bash
+bash execute.sh --action instances                                  # who is connected
+bash execute.sh --action navigate --url https://x.com --browser "mini-CE"   # this call only
+bash execute.sh --action use-browser --browser "mini-CE"            # remember it
+```
+
+`--browser` takes a name, an id, or the first characters of an id. Two
+browsers can share a name (the default is "Chrome (macOS)"); name those by
+id. Once you have a tab open, every later call follows that tab's browser; to
+move to another browser run `--action done` first. If your chosen browser is
+offline the call fails rather than using a different one.
 
 ## Per-agent tab binding
 

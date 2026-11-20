@@ -19,6 +19,7 @@ import { NetworkStatusService } from '../core/network-status.service.js';
 import type { BrowserCommandResponse } from './browser-bridge.service.js';
 import { BROWSER_BRIDGE_CONSTANTS, BROWSER_PROXY_CONSTANTS } from '../../constants.js';
 import { getRegisteredBridge, registerProxyAccessor } from './browser-services.registry.js';
+import { chooseBrowser, type BrowserPinStore } from './browser-target.js';
 
 /** Minimal info about a connected browser instance. */
 export interface BrowserInstanceInfo {
@@ -174,6 +175,8 @@ export class BrowserProxyService {
    * synthesized id if identity lookup fails.
    */
   private deviceId: string | null = null;
+  /** Remembered browser choices (per agent, plus a machine default). */
+  private pinStore: BrowserPinStore | null = null;
   /**
    * Heartbeat-ack watchdog timer. Armed when a `heartbeat` is sent and cleared
    * when the matching `heartbeat_ack` arrives. If it fires (no ack within
@@ -538,57 +541,25 @@ export class BrowserProxyService {
       throw new Error('Browser proxy not connected to relay');
     }
 
-    // Resolve target instance
-    const targetInstance = this.resolveInstance(instance);
-    if (!targetInstance) {
-      const available = this.getInstances().map((i) => i.instanceName).join(', ');
-      throw new Error(
-        instance
-          ? `Browser instance "${instance}" not found. Available: ${available || 'none'}`
-          : this.instances.size === 0
-            ? `No browser instances connected`
-            : `Could not resolve a browser instance from ${this.instances.size} candidates (none have a recent lastSeenAt). Available: ${available}`,
-      );
-    }
+    // The agent's bound tab decides the browser: a tab id only means
+    // something in the Chrome that opened it.
+    // Lazy import to avoid a circular dep at module-load time.
+    const binding = agentSession
+      ? (await import('./browser-bridge.service.js')).BrowserBridgeService.getInstance().getBinding(agentSession)
+      : undefined;
+    const targetInstance = this.targetFor(instance, agentSession, binding?.instanceId);
 
-    // Issue #384 — Per-tab dispatch was previously bypassed on the
-    // proxy path. The direct-WS path uses `BrowserBridgeService.
-    // sendCommandForAgent` which auto-injects `params.tabId` from the
-    // agentTabBindings map; the proxy path silently forwarded without
-    // tabId and the Chrome Extension fell back to `tabs.query({active:
-    // true})` (the user's focused tab — wrong tab when the user
-    // switched away). Steve's 2026-04-30 demo bug: Olivia's clicks
-    // "stopped registering" after a tab switch.
-    //
-    // Mirror sendCommandForAgent here: if agentSession is supplied AND
-    // params has no explicit tabId, look up the binding from the
-    // shared BrowserBridgeService.agentTabBindings map and inject the
-    // bound tabId before forwarding. Explicit tabId still wins.
+    // Issue #384 — inject the bound tabId when the call names none, so the
+    // extension never falls back to the owner's focused tab. Explicit
+    // tabId still wins.
     let resolvedParams = params ?? {};
-    if (
-      agentSession &&
-      resolvedParams &&
-      typeof (resolvedParams as { tabId?: unknown }).tabId !== 'number'
-    ) {
-      // Lazy import to avoid a circular dep at module-load time.
-      // BrowserBridgeService and BrowserProxyService are wired together
-      // by the controller but neither service should import the other
-      // eagerly.
-      const { BrowserBridgeService } = await import('./browser-bridge.service.js');
-      const binding = BrowserBridgeService.getInstance().getBinding(agentSession);
-      if (binding) {
-        resolvedParams = { ...resolvedParams, tabId: binding.tabId };
-        this.logger.debug('Injected bound tabId on proxy path (#384)', {
-          agentSession,
-          tabId: binding.tabId,
-          tool,
-        });
-      } else {
-        this.logger.debug('No binding for agentSession on proxy path — Extension will fall back to active tab', {
-          agentSession,
-          tool,
-        });
-      }
+    if (binding && typeof (resolvedParams as { tabId?: unknown }).tabId !== 'number') {
+      resolvedParams = { ...resolvedParams, tabId: binding.tabId };
+      this.logger.debug('Injected bound tabId on proxy path (#384)', {
+        agentSession,
+        tabId: binding.tabId,
+        tool,
+      });
     }
 
     const id = `proxy-${++this.commandCounter}-${Date.now()}`;
@@ -615,7 +586,9 @@ export class BrowserProxyService {
 
       this.sendRaw({
         type: 'relay_to',
-        targetInstance: targetInstance.instanceName,
+        // By id: several browsers can share a name, and the relay would
+        // deliver to whichever of them registered first.
+        targetInstance: targetInstance.instanceId,
         payload,
       });
 
@@ -657,50 +630,43 @@ export class BrowserProxyService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Resolve which browser instance to target.
+   * Choose the browser a command goes to (see `browser-target.ts` for the
+   * rules). An agent caller is never given a guess when several browsers
+   * are connected.
    *
-   * Auto-select rules when no explicit `instance` is provided:
-   *   - 0 instances → null (caller raises "No browser instances connected")
-   *   - 1 instance  → that instance
-   *   - N>1 instances → the freshest by `lastSeenAt`. This handles two cases:
-   *       (a) Multiple Chromes connected (user gets the most-recently-active one).
-   *       (b) Ghost entries left behind by a relay that has not yet pruned a
-   *           stale session after the extension reconnected with a new sessionId.
-   *           The freshest entry is the live one.
-   *     Ties on `lastSeenAt` are broken by insertion order (Map iteration).
-   *
-   * @param instance - Explicit instance name/ID, or undefined for auto-select
-   * @returns Matching BrowserInstanceInfo or null
+   * @param explicit - Browser the call named (name, id or id prefix)
+   * @param agentSession - The calling agent, if any
+   * @param boundInstanceId - Browser holding the agent's bound tab, if any
+   * @returns The chosen browser
+   * @throws BrowserTargetError when none fits or the choice must not be guessed
    */
-  private resolveInstance(instance?: string): BrowserInstanceInfo | null {
-    if (!instance) {
-      const size = this.instances.size;
-      if (size === 0) return null;
-      if (size === 1) {
-        return this.instances.values().next().value ?? null;
-      }
-      // Multiple candidates → pick the freshest by lastSeenAt to tolerate
-      // ghost entries from extension reconnect cycles and to pick the most
-      // active browser when several are genuinely connected.
-      let freshest: BrowserInstanceInfo | null = null;
-      let freshestTs = -Infinity;
-      for (const info of this.instances.values()) {
-        const ts = Date.parse(info.lastSeenAt);
-        if (Number.isFinite(ts) && ts > freshestTs) {
-          freshestTs = ts;
-          freshest = info;
-        }
-      }
-      return freshest;
-    }
+  targetFor(explicit?: string, agentSession?: string, boundInstanceId?: string): BrowserInstanceInfo {
+    const pin = this.pinStore?.pinFor(agentSession);
+    return chooseBrowser({
+      instances: this.getInstances(),
+      ...(explicit ? { explicit } : {}),
+      ...(boundInstanceId ? { boundInstanceId } : {}),
+      ...(pin ? { pinnedInstanceId: pin.instanceId } : {}),
+      requireChoice: Boolean(agentSession),
+    });
+  }
 
-    // Search by name or ID
-    for (const info of this.instances.values()) {
-      if (info.instanceName === instance || info.instanceId === instance) {
-        return info;
-      }
-    }
-    return null;
+  /**
+   * Install the store of remembered browser choices.
+   *
+   * @param store - The pin store
+   */
+  setPinStore(store: BrowserPinStore): void {
+    this.pinStore = store;
+  }
+
+  /**
+   * The store of remembered browser choices, when wired.
+   *
+   * @returns The pin store, or null
+   */
+  getPinStore(): BrowserPinStore | null {
+    return this.pinStore;
   }
 
   /**
