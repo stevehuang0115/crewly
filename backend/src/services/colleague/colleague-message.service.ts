@@ -228,7 +228,7 @@ export class ColleagueMessageService {
    */
   async receive(payload: unknown): Promise<ColleagueReceiveOutcome> {
     if (!isColleagueWireMessage(payload)) return { handled: false, reason: 'malformed' };
-    const wire = payload;
+    let wire = payload;
     // Only a machine of this account may speak to our agents. The relay already
     // keeps other accounts out of our queue; this keeps a forged sender claim out.
     if (!this.deps.isAccountMachine(wire.from.instanceId)) return { handled: false, reason: 'unknown_machine' };
@@ -242,6 +242,14 @@ export class ColleagueMessageService {
     const me = await this.deps.self();
     if (wire.from.instanceId === me.instanceId) return { handled: true, delivered: false, reason: 'own_message' };
     const text = wire.text.slice(0, MAX_TEXT);
+    // The directory lists each machine's orchestrator as `<session>@<instance id>`
+    // so two machines of one account do not share a name; on its own machine it
+    // is the plain session. Addressed that way to this machine, it is ours.
+    // (Until 2026-11-20 the suffix was looked up as written: every message from
+    // one orchestrator to another was dropped as "no_such_agent", and the
+    // sender had already told the owner it was handed over.)
+    const ownSuffix = `@${me.instanceId}`;
+    if (wire.toSession.endsWith(ownSuffix)) wire = { ...wire, toSession: wire.toSession.slice(0, -ownSuffix.length) };
     const target = await this.deps.describeLocal(wire.toSession);
     if (!target) return { handled: true, delivered: false, reason: 'no_such_agent' };
 
