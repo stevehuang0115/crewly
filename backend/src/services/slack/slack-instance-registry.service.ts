@@ -472,19 +472,87 @@ export class SlackInstanceRegistryService {
   }
 
   /**
-   * Persist the Settings toggle and re-register immediately so Cloud moves
-   * the flag (it clears `primary` on the account's other instances).
+   * Make this machine the account's primary, or stop being it.
    *
-   * @param primary - The new value
+   * The primary is an account setting kept by Cloud: the change is sent to
+   * Cloud (`PUT /primary`), which moves it at once for every machine. Giving
+   * it up returns the account to Cloud's default choice. Against a Cloud that
+   * does not have the setting yet, the old way applies: the flag is kept
+   * locally and declared in the heartbeat.
+   *
+   * @param primary - True to take the role, false to give it up
    */
   async setPrimary(primary: boolean): Promise<void> {
     const settings = await this.loadSettings();
+    const { deviceId } = await this.resolveIdentity();
+    if (await this.putAccountPrimary(primary ? deviceId : null)) {
+      settings.primary = this.accountInstances.find((i) => i.instanceId === deviceId)?.primary === true;
+      delete settings.primaryAuto;
+      await this.saveSettings(settings);
+      return;
+    }
     settings.primary = primary;
     delete settings.primaryAuto;
     this.pendingPrimaryClaim = primary;
-    await fs.mkdir(path.dirname(this.settingsPath), { recursive: true });
-    await atomicWriteJson(this.settingsPath, settings);
+    await this.saveSettings(settings);
     await this.heartbeat();
+  }
+
+  /**
+   * Choose the account's primary machine by name or id (any machine of the
+   * account, not only this one), or clear the choice.
+   *
+   * @param machine - A machine's name or instance id; null lets Cloud pick the default
+   * @returns The account's machines after the change
+   * @throws Error when the machine is not one of the account's, or Cloud does not have the setting yet
+   */
+  async setAccountPrimary(machine: string | null): Promise<AccountInstance[]> {
+    let instanceId: string | null = null;
+    if (machine !== null) {
+      const list = await this.refreshAccountInstances();
+      const wanted = machine.trim().toLowerCase();
+      const short = (name: string): string => name.toLowerCase().replace(/\.(lan|local)$/, '');
+      const found =
+        list.find((i) => i.instanceId === machine.trim()) ??
+        list.find((i) => i.deviceName.toLowerCase() === wanted) ??
+        list.find((i) => short(i.deviceName) === short(wanted));
+      if (!found) {
+        throw new Error(`No machine named "${machine}" on this account. Machines: ${list.map((i) => i.deviceName).join(', ') || 'none'}.`);
+      }
+      instanceId = found.instanceId;
+    }
+    if (!(await this.putAccountPrimary(instanceId))) {
+      throw new Error('Crewly Cloud does not keep the primary machine as an account setting yet; set it on that machine instead.');
+    }
+    const settings = await this.loadSettings();
+    const self = this.instanceId ? this.accountInstances.find((i) => i.instanceId === this.instanceId) : undefined;
+    if (self && settings.primary !== self.primary) {
+      settings.primary = self.primary;
+      delete settings.primaryAuto;
+      await this.saveSettings(settings);
+    }
+    return this.getAccountInstances();
+  }
+
+  /**
+   * `PUT /api/cloud/slack/primary`.
+   *
+   * @param instanceId - The machine to make primary, or null to clear the choice
+   * @returns True when Cloud applied it; false when this Cloud has no such setting (404)
+   * @throws SlackIdentityCloudError on any other failure
+   */
+  private async putAccountPrimary(instanceId: string | null): Promise<boolean> {
+    try {
+      const data = await this.cloudRequest<unknown>('PUT', SLACK_CLOUD_CONSTANTS.PRIMARY_PATH, { instanceId });
+      this.accountInstances = (Array.isArray(data) ? data : [])
+        .map((raw) => toAccountInstance(raw))
+        .filter((i): i is AccountInstance => i !== null);
+      this.logger.info('Account primary machine set through Cloud', { instanceId });
+      return true;
+    } catch (err) {
+      if (err instanceof SlackIdentityCloudError && err.status === 404 && err.code !== 'not_found') return false;
+      throw err;
+    }
   }
 
   /**
@@ -513,9 +581,21 @@ export class SlackInstanceRegistryService {
       });
       return;
     }
+    const settings = await this.loadSettings();
+    // Cloud owns the setting (its list says who set the primary): machines
+    // neither claim it nor give it up. The local file only mirrors Cloud, so
+    // Settings shows the truth.
+    if (list.some((i) => i.primarySetBy !== undefined)) {
+      const mine = list.find((i) => i.instanceId === deviceId)?.primary === true;
+      if (settings.primary !== mine || settings.primaryAuto) {
+        settings.primary = mine;
+        delete settings.primaryAuto;
+        await this.saveSettings(settings);
+      }
+      return;
+    }
     const raw = ((this.deps.env ?? process.env)[SLACK_CLOUD_CONSTANTS.PRIMARY_ENV_VAR] ?? '').trim().toLowerCase();
     if (raw === '1' || raw === 'true') return;
-    const settings = await this.loadSettings();
     if (settings.primary) {
       if (!this.pendingPrimaryClaim && primaryTakenByAnother(list, deviceId)) {
         settings.primary = false;
