@@ -46,7 +46,14 @@ import { StagingArea, walkFiles } from './team-move-fs.js';
 import { collectCarry, describeLeft, resolveCarryLimits, type CarryLimits, type CollectCarryResult, type CollectedCarry } from './team-move-carry.js';
 import { createBundle, estimateRepoBytes, formatBytes, resolveBundleLimits, type BundleLimits, type BundleMode } from './team-move-bundle.js';
 import { describeBlockingRepos, displayRemote, inspectRepo as defaultInspectRepo, readRepoChanges, sanitizeRemote } from './team-move-git.js';
-import { TeamMoveSecretScanError, isSkippableFinding, scanStaging, type SecretFinding } from './team-move-secret-scan.js';
+import {
+  TeamMoveSecretScanError,
+  isRedactableFinding,
+  isSkippableFinding,
+  redactTranscriptInStaging,
+  scanStaging,
+  type SecretFinding,
+} from './team-move-secret-scan.js';
 import {
   identityOf,
   resetWorkItemForTarget,
@@ -637,6 +644,25 @@ export class TeamMoveExporter {
     const known = this.deps.knownSecrets ? await this.deps.knownSecrets() : collectSecretEnvValues(process.env);
     // Bundles are not text-scanned: they are binary packs (history that already lives in git), encrypted for the target.
     const scan = await scanStaging(staging, staging.files(), known, (p) => p.endsWith(`/${C.BUNDLE_FILE}`));
+    // Conversation transcripts are redacted in the package copy rather than
+    // stopping the move: the member resumes on the target with the keys it
+    // had read masked. A transcript that still matches afterwards stays a
+    // finding. Never on a dry run (the preview reports what was found).
+    let redactedFiles = 0;
+    if (!options.dryRun) {
+      const stillFlagged: SecretFinding[] = [];
+      for (const finding of scan.findings) {
+        if (!isRedactableFinding(finding.path)) {
+          stillFlagged.push(finding);
+          continue;
+        }
+        await redactTranscriptInStaging(staging, finding.path, known);
+        const again = await scanStaging(staging, staging.files().filter((f) => f.path === finding.path), known);
+        if (again.findings.length > 0) stillFlagged.push(again.findings[0]!);
+        else redactedFiles += 1;
+      }
+      scan.findings = stillFlagged;
+    }
     const scanFindings = this.labelFindings(scan.findings, projects, carried);
     let excludedFiles = 0;
     if (scan.findings.length > 0 && !options.dryRun) {
@@ -700,7 +726,7 @@ export class TeamMoveExporter {
       // A dry run builds no bundle; its estimate keeps the preflight size honest.
       totalBytes: files.reduce((n, f) => n + f.bytes, 0) + (options.dryRun ? repos.reduce((n, r) => n + (r.bundle && !r.bundle.file ? r.bundle.bytes : 0), 0) : 0),
       noSecrets: true,
-      secretScan: { filesScanned: scan.filesScanned, knownValuesChecked: known.length, findings: 0, excludedFiles },
+      secretScan: { filesScanned: scan.filesScanned, knownValuesChecked: known.length, findings: 0, excludedFiles, ...(redactedFiles > 0 ? { redactedFiles } : {}) },
       notMoved: this.notMovedList(),
     };
     await staging.writeJson('manifest.json', manifest);

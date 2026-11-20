@@ -364,7 +364,8 @@ export interface TeamMoveManifest {
   totalBytes: number;
   /** Always true: the secret scan passed (a package is never built otherwise). */
   noSecrets: true;
-  secretScan: { filesScanned: number; knownValuesChecked: number; findings: 0; excludedFiles: number };
+  /** `redactedFiles`: conversation transcripts whose secrets were masked in the package copy. */
+  secretScan: { filesScanned: number; knownValuesChecked: number; findings: 0; excludedFiles: number; redactedFiles?: number };
   /** Source things that are deliberately not moved (shown to the owner). */
   notMoved: string[];
 }
