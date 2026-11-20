@@ -59,6 +59,8 @@ while [[ $# -gt 0 ]]; do
       KEEP_BECAUSE="$2"; shift 2 ;;
     --tags)
       TAGS="$2"; shift 2 ;;
+    --aliases)
+      ALIASES="$2"; shift 2 ;;
     --visibility)
       VISIBILITY="$2"; shift 2 ;;
     --replace)
@@ -78,7 +80,7 @@ Default target is "llm-curated/log.md" (append-only, no gate). A --target PAGE u
   --title "<page name>"
   --summary "<one line: the CONCLUSION — what this means for us>"
   --keep-because changes_decision | contradicts | hard_fact | reusable_method
-Optional: --tags "a,b"  --visibility "teacher,admin"  --replace (rewrite the page instead of appending)
+Optional: --aliases "Acme,Jane Doe" (entity pages under customers/, people/, projects/, products/: names that make Crewly attach the page to a message mentioning them)  --tags "a,b"  --visibility "teacher,admin"  --replace (rewrite the page instead of appending)
 Default is NOT to keep: without those three the write is refused (422 retention_gate) — append to log.md instead.
 Secrets are always refused; personal data follows the vault's privacy policy. A proposed_only role's page lands in
 llm-curated/_proposed/ until a canonical role accepts it (wiki-review-proposals).
@@ -141,6 +143,7 @@ BODY=$(jq -n '{
 [ -n "$SUMMARY" ] && { export _WI_SUMMARY="$SUMMARY"; BODY=$(echo "$BODY" | jq '. + {summary: env._WI_SUMMARY}'); unset _WI_SUMMARY; }
 [ -n "$KEEP_BECAUSE" ] && { export _WI_KEEP="$KEEP_BECAUSE"; BODY=$(echo "$BODY" | jq '. + {keepBecause: env._WI_KEEP}'); unset _WI_KEEP; }
 [ -n "$TAGS" ] && { export _WI_TAGS="$TAGS"; BODY=$(echo "$BODY" | jq '. + {tags: (env._WI_TAGS | split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(. != "")))}'); unset _WI_TAGS; }
+[ -n "${ALIASES:-}" ] && { export _WI_ALIASES="$ALIASES"; BODY=$(echo "$BODY" | jq '. + {aliases: (env._WI_ALIASES | split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(. != "")))}'); unset _WI_ALIASES; }
 [ -n "$VISIBILITY" ] && { export _WI_VIS="$VISIBILITY"; BODY=$(echo "$BODY" | jq '. + {visibility: (env._WI_VIS | split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(. != "")))}'); unset _WI_VIS; }
 [ -n "$REPLACE" ] && BODY=$(echo "$BODY" | jq '. + {replace: true}')
 unset _WI_VAULT _WI_TYPE _WI_REF _WI_BODY

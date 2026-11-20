@@ -211,6 +211,18 @@ describe('ColleagueMessageService.receive', () => {
     expect(delivered).toHaveLength(1);
   });
 
+  it('delivers a message addressed to this machine by the directory spelling `<session>@<instance id>` (orchestrator to orchestrator)', async () => {
+    const { svc, delivered } = build();
+    expect(await svc.receive(wire({ toSession: 'steamfun-fern@dev-air' }))).toEqual({ handled: true, delivered: true });
+    expect(delivered[0].session).toBe('steamfun-fern');
+  });
+
+  it('does not strip another machine\'s instance id', async () => {
+    const { svc, delivered } = build();
+    expect(await svc.receive(wire({ toSession: 'steamfun-fern@dev-other' }))).toEqual({ handled: true, delivered: false, reason: 'no_such_agent' });
+    expect(delivered).toEqual([]);
+  });
+
   it('does not deliver a message addressed to an agent that is not on this machine', async () => {
     const { svc, delivered } = build();
     expect(await svc.receive(wire({ toSession: 'ghost' }))).toEqual({ handled: true, delivered: false, reason: 'no_such_agent' });

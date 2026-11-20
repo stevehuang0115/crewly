@@ -3158,6 +3158,13 @@ void (async () => {
 					// An owner message that waits for a busy agent goes to the
 					// front of its queue (2026-10-05, D-270: behind 6 reminders).
 					isOwnerMessage: (message) => isOwnerChatTurn(message, getSlackService().getOwnerUserId?.() ?? null),
+					// Records the agent already holds on what the message mentions
+					// (entity pages of its project, team and global vaults).
+					recordsFor: async ({ agentSession, text, ownerOnlyAudience }) => {
+						const { getWikiRecordAttachService, vaultsForAgent } = await import('./services/wiki/wiki-record-attach.wiring.js');
+						const scope = await vaultsForAgent(StorageService.getInstance(), agentSession);
+						return getWikiRecordAttachService().blockFor({ agentSession, text, ownerOnlyAudience, ...scope });
+					},
 					mentionResolver: chatMentionResolver,
 					// Files a colleague on another machine sent land in the
 					// recipient's project inbox before the message is delivered.
