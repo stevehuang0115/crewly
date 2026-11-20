@@ -757,6 +757,22 @@ Available commands:
  * Project-level: project/.crewly/knowledge/
  */
 export const MEMORY_CONSTANTS = {
+	/**
+	 * Recall ranking over an agent's stored knowledge (`memory.json`).
+	 * 2026-11-19: a recall for one customer returned ~80 KB, led by a two-month-old
+	 * handover note: entries were returned whole, any one-letter overlap counted
+	 * as a match, and stored knowledge filled every slot before wiki pages.
+	 */
+	RECALL: {
+		/** Query words shorter than this are ignored (they match almost anything) */
+		MIN_TOKEN_CHARS: 2,
+		/** Characters of a stored entry returned by recall; the rest is clipped */
+		ENTRY_MAX_CHARS: 600,
+		/** Weight of a conversation handover note against ordinary knowledge */
+		HANDOVER_WEIGHT: 0.3,
+		/** Marks an entry written when a conversation was cleared for a new task */
+		HANDOVER_MARKER: /finished its conversation on task|full handover:/i,
+	},
   /**
    * Storage paths for memory files
    */

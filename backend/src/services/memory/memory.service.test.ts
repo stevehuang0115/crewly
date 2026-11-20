@@ -1031,6 +1031,59 @@ describe('MemoryService', () => {
   // fields (supersededBy / ttl) that service.remember() does not yet expose
   // through the high-level API.
   // ---------------------------------------------------------------------------
+  describe('recall ranking of stored knowledge (2026-11-19: 80 KB for one customer, led by an old handover)', () => {
+    beforeEach(async () => {
+      await service.initializeForSession(testAgentId, testRole, testProjectPath);
+    });
+
+    const recallAgent = async (context: string): Promise<string[]> =>
+      (await service.recall({ agentId: testAgentId, context, scope: 'agent' })).agentMemories.filter((m) => !m.startsWith('[wiki:'));
+
+    it('ranks the entry about the subject above a long handover that only shares a common word', async () => {
+      const agentService = service.getAgentMemoryService();
+      await agentService.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: `agent-1 finished its conversation on task t-1; full handover: /tmp/h.md\n\n${'proposal outreach report a - of the '.repeat(120)}`,
+        confidence: 0.9,
+      });
+      await agentService.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'RoboHub: met Xin on 10/9; proposal v5 sent on 10/13',
+        confidence: 0.9,
+      });
+
+      const memories = await recallAgent('RoboHub Xin proposal');
+      expect(memories[0]).toContain('RoboHub: met Xin');
+    });
+
+    it('clips a long entry and says how long it was', async () => {
+      const agentService = service.getAgentMemoryService();
+      await agentService.addRoleKnowledge(testAgentId, { category: 'best-practice', content: `RoboHub ${'x'.repeat(4000)}`, confidence: 0.9 });
+
+      const [memory] = await recallAgent('RoboHub');
+      expect(memory.length).toBeLessThan(700);
+      expect(memory).toContain('clipped, 4008 chars in all');
+    });
+
+    it('does not match on one-letter fragments', async () => {
+      const agentService = service.getAgentMemoryService();
+      await agentService.addRoleKnowledge(testAgentId, { category: 'best-practice', content: 'a - b : unrelated note about lunch', confidence: 0.9 });
+
+      const memories = await recallAgent('RoboHub Xin proposal');
+      expect(memories.join('\n')).not.toContain('lunch');
+    });
+
+    it('between equal matches returns the newer entry first', async () => {
+      const agentService = service.getAgentMemoryService();
+      await agentService.addRoleKnowledge(testAgentId, { category: 'best-practice', content: 'RoboHub older note', confidence: 0.9 });
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      await agentService.addRoleKnowledge(testAgentId, { category: 'best-practice', content: 'RoboHub newer note', confidence: 0.9 });
+
+      const memories = await recallAgent('RoboHub');
+      expect(memories[0]).toContain('newer');
+    });
+  });
+
   describe('M3 recall filtering', () => {
     beforeEach(async () => {
       await service.initializeForSession(testAgentId, testRole, testProjectPath);
