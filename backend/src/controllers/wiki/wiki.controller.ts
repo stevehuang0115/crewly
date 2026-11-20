@@ -120,6 +120,7 @@ export async function ingest(
       summary,
       keepBecause,
       tags,
+      aliases,
       visibility,
       replace,
     } = req.body ?? {};
@@ -165,6 +166,7 @@ export async function ingest(
       ...(typeof summary === 'string' ? { summary } : {}),
       ...(typeof keepBecause === 'string' ? { keepBecause } : {}),
       ...(Array.isArray(tags) ? { tags: tags.filter((t: unknown): t is string => typeof t === 'string') } : {}),
+      ...(Array.isArray(aliases) ? { aliases: aliases.filter((a: unknown): a is string => typeof a === 'string') } : {}),
       ...(Array.isArray(visibility) ? { visibility: visibility.filter((v: unknown): v is string => typeof v === 'string') } : {}),
       ...(replace === true ? { replace: true } : {}),
     });
