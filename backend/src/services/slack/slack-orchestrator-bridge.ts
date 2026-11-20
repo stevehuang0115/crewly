@@ -56,6 +56,8 @@ import { getCrossMachineMessageService } from './cross-machine-message.service.j
 import { getSlackTeamChannelService } from './slack-team-channel.service.js';
 import { getSlackAgentDmService } from './slack-agent-dm.service.js';
 import { contextKindFor, getSlackThreadContextService, renderSlackThreadContext } from './slack-thread-context.service.js';
+import { renderRequestScope, requestScopeOf } from './slack-request-scope.js';
+import { getSlackInstanceRegistryService } from './slack-instance-registry.service.js';
 import {
   getTicketIntakeService,
   suppressTrivialOrShort,
@@ -1513,12 +1515,35 @@ Just type naturally to chat with the orchestrator!`;
    * @returns The rendered block, or ''
    */
   private async orchestratorContextBlock(message: SlackIncomingMessage): Promise<string> {
+    const scopeNote = await this.requestScopeNote(message);
     const ctx = await message.threadContext;
-    if (!ctx) return '';
+    if (!ctx) return scopeNote;
     const botUserId =
       getSlackAgentIdentityService()?.getInstalled(this.config.orchestratorSession)?.botUserId ??
       (await this.slackService.getBotUserId().catch(() => null));
-    return renderSlackThreadContext(ctx, { botUserId });
+    const block = renderSlackThreadContext(ctx, { botUserId });
+    return [scopeNote, block].filter((part) => part.length > 0).join('\n\n');
+  }
+
+  /**
+   * For a DM: whether it came through the account-wide Crewly DM (it may be
+   * about any of the owner's machines) or through this machine's own
+   * orchestrator bot, with the other machines and their teams for the first.
+   *
+   * @param message - The inbound message
+   * @returns The note for the delivered copy, or '' for a channel message
+   */
+  private async requestScopeNote(message: SlackIncomingMessage): Promise<string> {
+    const scope = requestScopeOf(message);
+    if (!scope) return '';
+    try {
+      const registry = getSlackInstanceRegistryService();
+      if (!registry) return '';
+      return renderRequestScope(scope, await registry.describeSelf(), registry.getAccountInstances());
+    } catch (err) {
+      this.logger.debug('Could not build the request-scope note', { error: err instanceof Error ? err.message : String(err) });
+      return '';
+    }
   }
 
   /**
