@@ -105,4 +105,7 @@ BODY=$(jq -n '{agentId: env._RCL_AGENT, context: env._RCL_CTX}')
 
 unset _RCL_AGENT _RCL_CTX
 
-api_call POST "/memory/recall" "$BODY"
+# `combined` repeats agentMemories and projectMemories as one string: printing
+# it doubled every recall. The lists and the other fields carry everything.
+RESPONSE=$(CREWLY_SKILL_FULL_OUTPUT=1 api_call POST "/memory/recall" "$BODY") || { printf '%s\n' "$RESPONSE"; exit 1; }
+printf '%s' "$RESPONSE" | jq -c 'if (.data | type) == "object" then del(.data.combined) else . end' 2>/dev/null || printf '%s\n' "$RESPONSE"

@@ -472,26 +472,46 @@ export class MemoryService implements IMemoryService {
     limit?: number,
     includeHidden = false,
   ): string[] {
-    const contextWords = context.toLowerCase().split(/\s+/);
+    const { MIN_TOKEN_CHARS, ENTRY_MAX_CHARS, HANDOVER_WEIGHT, HANDOVER_MARKER } = MEMORY_CONSTANTS.RECALL;
+    // Distinct query words, split on anything that is not a letter or digit
+    // (so "v5," and "v5" are one word, and a CJK phrase stays whole).
+    const queryWords = [
+      ...new Set(
+        context
+          .toLowerCase()
+          .split(/[^\p{L}\p{N}]+/u)
+          .filter((word) => word.length >= MIN_TOKEN_CHARS),
+      ),
+    ];
+    if (queryWords.length === 0) return [];
 
     const scored = knowledge
       .filter(entry => includeHidden || !isHiddenFromDefaultRecall(entry))
       .map(entry => {
-        const contentWords = entry.content.toLowerCase().split(/\s+/);
-        const matchCount = contextWords.filter(word =>
-          contentWords.some(cw => cw.includes(word) || word.includes(cw))
-        ).length;
+        const content = entry.content.toLowerCase();
+        // A query word counts once, when the entry contains it. (The old test
+        // also counted an entry word contained in a query word, so "a" or "-"
+        // in any entry matched every query.)
+        const matched = queryWords.filter((word) => content.includes(word)).length;
+        const weight = HANDOVER_MARKER.test(entry.content) ? HANDOVER_WEIGHT : 1;
         return {
           entry,
-          score: matchCount * (entry.confidence ?? 0.7),
+          score: (matched / queryWords.length) * (entry.confidence ?? 0.7) * weight,
         };
       });
 
     return scored
       .filter(s => s.score > 0)
-      .sort((a, b) => b.score - a.score)
+      // Best match first; between equal matches the newer entry.
+      .sort((a, b) => b.score - a.score || (b.entry.createdAt ?? '').localeCompare(a.entry.createdAt ?? ''))
       .slice(0, limit || 10)
-      .map(s => `[${s.entry.category}] ${s.entry.content}`);
+      .map(s => {
+        const text = s.entry.content;
+        const clipped = text.length > ENTRY_MAX_CHARS
+          ? `${text.slice(0, ENTRY_MAX_CHARS)} …[clipped, ${text.length} chars in all]`
+          : text;
+        return `[${s.entry.category}] ${clipped}`;
+      });
   }
 
   /**
@@ -689,8 +709,10 @@ export class MemoryService implements IMemoryService {
 
   /**
    * Merge BM25 wiki hits into a base list of memory strings, de-duplicating
-   * and capping the result to `limit`. The base (file-based) memories keep
-   * priority; wiki hits fill any remaining slots.
+   * and capping the result to `limit`. Wiki hits come first: they are ranked
+   * pages (BM25, at most a third of the cap), where the file-based memories
+   * are a loose word match. The memories fill the remaining slots. (They used
+   * to come first, and ten of them left no room for any page.)
    *
    * @param base - File-based memories already collected for this scope.
    * @param extra - BM25 wiki hits to fold in.
@@ -698,12 +720,12 @@ export class MemoryService implements IMemoryService {
    * @returns The merged, de-duplicated, capped list.
    */
   private mergeCapped(base: string[], extra: string[], limit: number): string[] {
-    const merged = [...base];
-    for (const hit of extra) {
+    const merged = [...extra.slice(0, limit)];
+    for (const memory of base) {
       if (merged.length >= limit) break;
-      if (!merged.includes(hit)) merged.push(hit);
+      if (!merged.includes(memory)) merged.push(memory);
     }
-    return merged.length > limit ? merged.slice(0, limit) : merged;
+    return merged;
   }
 
   /**
