@@ -490,30 +490,90 @@ describe('lifecycle', () => {
 });
 
 describe('primary toggle', () => {
-  it('persists the Settings toggle and re-registers immediately with primary:true', async () => {
+  /** A Cloud that keeps the primary as an account setting. */
+  const cloudWithSetting = (machines: () => Array<Record<string, unknown>>, onPut?: (instanceId: string | null) => void) =>
+    jest.fn(async (url: string, init: { method: string; body?: string }) => {
+      if (url.endsWith('/primary') && init.method === 'PUT') {
+        onPut?.(JSON.parse(init.body ?? '{}').instanceId);
+        return jsonResponse({ success: true, data: machines() });
+      }
+      if (init.method === 'GET' && url.endsWith('/instances')) return jsonResponse({ success: true, data: machines() });
+      return jsonResponse({ success: true, data: { installUrls: [] } });
+    });
+
+  it('asks Cloud to make this machine the primary and mirrors the answer locally', async () => {
+    let primary: string | null = 'device-2';
+    fetchMock = cloudWithSetting(
+      () => [
+        { instanceId: 'device-1', deviceName: 'steve-mbp', primary: primary === 'device-1', ...(primary === 'device-1' ? { primarySetBy: 'owner' } : {}), live: true, teams: [] },
+        { instanceId: 'device-2', deviceName: 'mini', primary: primary === 'device-2', ...(primary === 'device-2' ? { primarySetBy: 'default' } : {}), live: true, teams: [] },
+      ],
+      (id) => { primary = id ?? 'device-2'; },
+    );
+    const service = makeService();
+    await service.setPrimary(true);
+    expect(primary).toBe('device-1');
+    expect(await service.isPrimary()).toBe(true);
+    // No heartbeat is needed to move it, and none declares it.
+    expect(calls().filter((c) => c.method === 'PUT' && c.url.includes('/instances/'))).toHaveLength(0);
+
+    await service.setPrimary(false);
+    expect(primary).toBe('device-2');
+    expect(await service.isPrimary()).toBe(false);
+  });
+
+  it('against a Cloud without the setting, keeps the flag locally and declares it in the heartbeat', async () => {
+    fetchMock = jest.fn(async (url: string, init: { method: string }) =>
+      url.endsWith('/primary') ? jsonResponse({ success: false, error: 'Not found' }, 404) : jsonResponse({ success: true, data: { installUrls: [] } }),
+    );
     const service = makeService();
     expect(await service.isPrimary()).toBe(false);
     await service.setPrimary(true);
     expect(await service.isPrimary()).toBe(true);
-    expect(calls()).toHaveLength(1);
-    expect(calls()[0].body.primary).toBe(true);
+    const heartbeat = calls().find((c) => c.method === 'PUT' && c.url.includes('/instances/'));
+    expect(heartbeat?.body.primary).toBe(true);
     const onDisk = JSON.parse(await fs.readFile(path.join(tmpDir, 'slack-instance.json'), 'utf8'));
     expect(onDisk).toEqual({ version: 1, primary: true });
-
-    // Survives a restart.
     expect(await makeService().isPrimary()).toBe(true);
+  });
 
-    await service.setPrimary(false);
-    expect(calls()[1].body.primary).toBe(false);
+  it('sets any machine of the account by name, and refuses an unknown one', async () => {
+    let primary = 'device-1';
+    fetchMock = cloudWithSetting(
+      () => [
+        { instanceId: 'device-1', deviceName: 'steve-mbp', primary: primary === 'device-1', ...(primary === 'device-1' ? { primarySetBy: 'owner' } : {}), live: true, teams: [] },
+        { instanceId: 'device-2', deviceName: 'mac-mini.lan', primary: primary === 'device-2', ...(primary === 'device-2' ? { primarySetBy: 'owner' } : {}), live: true, teams: [] },
+      ],
+      (id) => { primary = id ?? 'device-1'; },
+    );
+    const service = makeService();
+    const machines = await service.setAccountPrimary('Mac-Mini');
+    expect(primary).toBe('device-2');
+    expect(machines.find((m) => m.primary)?.deviceName).toBe('mac-mini.lan');
+    await expect(service.setAccountPrimary('ghost')).rejects.toThrow(/No machine named "ghost".*steve-mbp, mac-mini\.lan/);
+  });
+
+  it('when Cloud owns the setting, a heartbeat neither claims nor keeps a stale local flag', async () => {
+    await fs.writeFile(path.join(tmpDir, 'slack-instance.json'), JSON.stringify({ version: 1, primary: true, primaryAuto: true }));
+    fetchMock = cloudWithSetting(() => [
+      { instanceId: 'device-1', deviceName: 'steve-mbp', primary: false, live: true, crewlyVersion: '1.42.0', teams: [{ name: 'A' }, { name: 'B' }] },
+      { instanceId: 'device-2', deviceName: 'mini', primary: true, primarySetBy: 'default', live: false, crewlyVersion: '1.42.0', teams: [] },
+    ]);
+    const service = makeService();
+    await service.heartbeat();
+    expect(await service.isPrimary()).toBe(false);
+    expect(JSON.parse(await fs.readFile(path.join(tmpDir, 'slack-instance.json'), 'utf8'))).toEqual({ version: 1, primary: false });
   });
 });
 
-describe('default primary (the account has none)', () => {
+describe('default primary against a Cloud without the account-level setting (the account has none)', () => {
   const listed = (over: Array<Record<string, unknown>>) =>
     jest.fn(async (url: string, init: { method: string }) =>
       init.method === 'GET' && url.endsWith('/instances')
         ? jsonResponse({ success: true, data: over })
-        : jsonResponse({ success: true, data: { installUrls: [] } }),
+        : url.endsWith('/primary')
+          ? jsonResponse({ success: false, error: 'Not found' }, 404) // a Cloud without the account-level setting
+          : jsonResponse({ success: true, data: { installUrls: [] } }),
     );
   const me = { instanceId: 'device-1', deviceName: 'steve-mbp', primary: false, live: true, crewlyVersion: '1.40.0', teams: [{ name: 'A' }, { name: 'B' }] };
   const other = { instanceId: 'device-2', deviceName: 'mini', primary: false, live: true, crewlyVersion: '1.40.0', teams: [{ name: 'C' }] };
@@ -555,7 +615,7 @@ describe('default primary (the account has none)', () => {
     fetchMock = listed([me, { ...other, primary: true }]);
     const service = makeService();
     await service.setPrimary(true);
-    expect(calls()[0].body.primary).toBe(true);
+    expect(calls().find((c) => c.method === 'PUT' && c.url.includes('/instances/'))?.body.primary).toBe(true);
     expect(await service.isPrimary()).toBe(true);
   });
 
