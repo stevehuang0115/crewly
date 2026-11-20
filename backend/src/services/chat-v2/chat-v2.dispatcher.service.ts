@@ -226,6 +226,13 @@ export interface ChatV2DispatcherOptions {
    */
   isOwnerMessage?: (message: ChatMessageDTO) => boolean;
   /**
+   * Looks up the wiki records an agent already holds on what a person's
+   * message and its thread mention (`wiki-record-attach.service.ts`). The
+   * result goes on the delivered copy only. Must not throw; '' = nothing.
+   * Without it messages are delivered as before.
+   */
+  recordsFor?: (request: { agentSession: string; text: string; ownerOnlyAudience: boolean }) => Promise<string>;
+  /**
    * Override the prompt formatter for tests / future customization. The
    * default matches the `reply-chat` skill's parser exactly.
    */
@@ -434,6 +441,8 @@ export interface FormatPromptArgs {
   contextOnlyBlock?: string;
   /** The message came from a colleague inside Crewly and never reached Slack (crewly#1340) */
   internalCoordination?: boolean;
+  /** Wiki records on what the conversation mentions, looked up for this agent (delivered copy only) */
+  recordsBlock?: string;
 }
 
 /**
@@ -803,6 +812,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     ``,
     ...(args.contextOnlyBlock ? [args.contextOnlyBlock, ``] : []),
     ...(contextBlock ? [contextBlock, ``] : []),
+    ...(args.recordsBlock ? [args.recordsBlock, ``] : []),
     trimmed,
     ...(args.bareMentionNote ? [args.bareMentionNote] : []),
     ``,
@@ -872,6 +882,7 @@ export class ChatV2DispatcherService {
   private readonly onDispatched?: ChatV2DispatcherOptions['onDispatched'];
   private readonly refuseDelivery?: ChatV2DispatcherOptions['refuseDelivery'];
   private readonly isOwnerMessage?: ChatV2DispatcherOptions['isOwnerMessage'];
+  private readonly recordsFor?: ChatV2DispatcherOptions['recordsFor'];
   /** Room messages queued as context only, shown on each agent's next prompt from the room */
   readonly contextBacklog: RoomContextBacklog;
   private readonly logger: ComponentLogger;
@@ -894,6 +905,7 @@ export class ChatV2DispatcherService {
     this.onDispatched = options.onDispatched;
     this.refuseDelivery = options.refuseDelivery;
     this.isOwnerMessage = options.isOwnerMessage;
+    this.recordsFor = options.recordsFor;
     this.contextBacklog = options.contextBacklog ?? new RoomContextBacklog();
     this.logger = LoggerService.getInstance().createComponentLogger('ChatV2Dispatcher');
   }
@@ -1613,6 +1625,35 @@ export class ChatV2DispatcherService {
   }
 
   /**
+   * The wiki records to attach for one agent, for a message a person wrote.
+   * A colleague's message gets none: the lookup is for what people ask.
+   *
+   * @param agentSession - Receiving agent
+   * @param message - The message being delivered
+   * @param around - Thread text delivered with it (also scanned for names)
+   * @param ownerOnlyAudience - True in a direct conversation with the owner
+   * @returns The block, or undefined
+   */
+  private async recordsBlockFor(
+    agentSession: string,
+    message: ChatMessageDTO,
+    around: readonly string[],
+    ownerOnlyAudience: boolean,
+  ): Promise<string | undefined> {
+    if (!this.recordsFor || message.senderType !== 'user' || agentAuthorOf(message)) return undefined;
+    try {
+      const text = [message.content, ...around].filter((part) => part.length > 0).join('\n');
+      return (await this.recordsFor({ agentSession, text, ownerOnlyAudience })) || undefined;
+    } catch (err) {
+      this.logger.debug('Record lookup failed; delivering without records', {
+        agentSession,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return undefined;
+    }
+  }
+
+  /**
    * Deliver a huddle message to the targets {@link computeHuddleTargets} chose.
    *
    * @param channel - The huddle
@@ -1651,7 +1692,7 @@ export class ChatV2DispatcherService {
     const contextThread =
       options.threadId && options.threadId !== message.id ? options.threadId : (message.threadId ?? undefined);
     const namedExplicitly = new Set(mentioned);
-    const promptFor = (sessionName: string, responseMode: 'required' | 'optional', contextOnlyBlock?: string): string =>
+    const promptFor = (sessionName: string, responseMode: 'required' | 'optional', contextOnlyBlock?: string, recordsBlock?: string): string =>
       this.formatPrompt({
         channelId: channel.id,
         channelName: channel.name,
@@ -1677,6 +1718,7 @@ export class ChatV2DispatcherService {
         ...(options.peopleAddressing ? { peopleAddressing: options.peopleAddressing } : {}),
         ...(options.oneResponder ? { soleResponder: true } : {}),
         ...(contextOnlyBlock ? { contextOnlyBlock } : {}),
+        ...(recordsBlock ? { recordsBlock } : {}),
         ...(message.metadata?.[AGENT_COORDINATION_CONSTANTS.INTERNAL_METADATA_KEY] ? { internalCoordination: true } : {}),
       });
 
@@ -1685,7 +1727,9 @@ export class ChatV2DispatcherService {
     const attempt = async (sessionName: string, responseMode: 'required' | 'optional'): Promise<Attempt> => {
       // What this agent only listened to in the room since its last prompt here.
       const heard = this.contextBacklog.take(sessionName, channel.id, message.id);
-      const prompt = promptFor(sessionName, responseMode, renderContextOnlyBlock(heard));
+      // A room can hold people who may not read a restricted record.
+      const records = await this.recordsBlockFor(sessionName, message, [slackContextOf(options, sessionName) ?? '', renderChatContext(this.contextFor(channel.id, contextThread))], false);
+      const prompt = promptFor(sessionName, responseMode, renderContextOnlyBlock(heard), records);
       try {
         this.noteActingFor(sessionName, message);
         const result = await this.sendToAgent(
@@ -1918,6 +1962,15 @@ export class ChatV2DispatcherService {
       return { dispatched: false, error: 'dedicated to another person' };
     }
 
+    const dmContext = this.contextFor(channel.id, message.threadId ?? undefined);
+    const dmSlackContext = slackContextOf(options, channel.agentSession);
+    // A direct conversation with the owner is the one place a record restricted to people may be shown.
+    const dmRecords = await this.recordsBlockFor(
+      channel.agentSession,
+      message,
+      [dmSlackContext ?? '', renderChatContext(dmContext)],
+      this.isOwnerMessage?.(message) === true,
+    );
     const prompt = this.formatPrompt({
       channelId: channel.id,
       channelName: channel.name,
@@ -1928,8 +1981,9 @@ export class ChatV2DispatcherService {
         typeof message.metadata?.clientMessageId === 'string'
           ? (message.metadata.clientMessageId as string)
           : undefined,
-      context: this.contextFor(channel.id, message.threadId ?? undefined),
-      slackContext: slackContextOf(options, channel.agentSession),
+      context: dmContext,
+      slackContext: dmSlackContext,
+      ...(dmRecords ? { recordsBlock: dmRecords } : {}),
       ticketLine: ticketLineOf(message),
       slackDmChannelId: slackDmChannelOf(message),
       slackThreadKey: slackThreadKeyOf(message),
