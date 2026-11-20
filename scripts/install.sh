@@ -105,7 +105,7 @@ case "$OS" in
     case "$OS" in
       MINGW*|MSYS*|CYGWIN*)
         echo -e "  This installer is for macOS and Linux. On Windows, install with npm:"
-        echo -e "    ${CYAN}npm install -g crewly${NC}  (Crewly 1.39.0 or later)"
+        echo -e "    ${CYAN}npm install -g crewly${NC}  (Crewly 1.39.1 or later)"
         echo -e "  Needs Node.js 22+, Git for Windows (Git Bash) and jq."
         echo -e "  Guide: ${CYAN}https://crewlyai.com/en/blog/install-crewly-on-windows${NC}"
         ;;
