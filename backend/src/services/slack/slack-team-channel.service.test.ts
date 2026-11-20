@@ -885,6 +885,32 @@ describe('adoptMapping (team move, crewly#1189)', () => {
   });
 });
 
+describe('adoptAdhocMapping (team move: a Crewly channel shared with other teams)', () => {
+  const incoming = { teamId: 'adhoc:CSHARED', slackChannelId: 'CSHARED', slackChannelName: 'shared', chatChannelId: 'huddle-src', createdAt: '2026-11-20T00:00:00.000Z', autoCreated: false, members: ['crewly-alpha-sam'] };
+
+  it('adds a channel this machine does not know, as it came', async () => {
+    expect(await service.adoptAdhocMapping(incoming)).toEqual({ chatChannelId: 'huddle-src', added: true });
+    const raw = JSON.parse(await fs.readFile(path.join(tmpDir, 'slack-team-channels.json'), 'utf8')) as { mappings: Array<{ teamId: string; members: string[] }> };
+    expect(raw.mappings.find((m) => m.teamId === 'adhoc:CSHARED')!.members).toEqual(['crewly-alpha-sam']);
+  });
+
+  it('keeps the huddle this machine already has for that Slack channel and adds the arriving agents', async () => {
+    await service.adoptAdhocMapping({ ...incoming, chatChannelId: 'huddle-local', members: ['local-agent'], excluded: ['crewly-alpha-leo'] } as never);
+    const result = await service.adoptAdhocMapping({ ...incoming, members: ['crewly-alpha-sam', 'crewly-alpha-leo', 'local-agent'] });
+    expect(result).toEqual({ chatChannelId: 'huddle-local', added: false });
+    const raw = JSON.parse(await fs.readFile(path.join(tmpDir, 'slack-team-channels.json'), 'utf8')) as { mappings: Array<{ teamId: string; chatChannelId: string; members: string[] }> };
+    const mapping = raw.mappings.find((m) => m.teamId === 'adhoc:CSHARED')!;
+    expect(mapping.chatChannelId).toBe('huddle-local');
+    // Sam joins; Leo was removed here by the owner and stays out; nobody is listed twice.
+    expect(mapping.members).toEqual(['local-agent', 'crewly-alpha-sam']);
+  });
+
+  it('refuses a team mapping and a malformed one', async () => {
+    expect(await service.adoptAdhocMapping({ ...incoming, teamId: 'team-moved' })).toBeNull();
+    expect(await service.adoptAdhocMapping({ teamId: 'adhoc:x' } as never)).toBeNull();
+  });
+});
+
 describe('unlinkTeam', () => {
   it('drops the mapping, archives the huddle, and archives Slack only when asked', async () => {
     await service.ensureTeamChannel(team());

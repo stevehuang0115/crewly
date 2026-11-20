@@ -28,7 +28,7 @@ import type { Project, ScheduledMessage, Team } from '../../types/index.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { atomicWriteFile } from '../../utils/file-io.utils.js';
 import { getCrewlyHomePath, resolveProjectDataDir } from '../core/crewly-home.utils.js';
-import { applyTeamChat, type ApplyChatResult, type ChatRecords } from './team-move-chat.js';
+import { applyTeamChat, remapChatChannels, type ApplyChatResult, type ChatRecords } from './team-move-chat.js';
 import { importAgentTranscript } from './team-move-transcripts.js';
 import { createDecryptStream } from './team-move-crypto.js';
 import { hasTextExtension, looksLikeText, pathExists, rewritePathPrefix, sha256File, slugify, walkFiles, writeFileAtomic } from './team-move-fs.js';
@@ -88,6 +88,12 @@ export interface ImportDeps {
   addDecisions: (decisions: Array<Record<string, unknown>>) => Promise<number>;
   /** Make the Slack channel mapping known before the team exists (no duplicate channel). */
   adoptSlackMapping: (mapping: Record<string, unknown>) => Promise<boolean>;
+  /**
+   * Take over a Crewly channel the team's agents are in. Returns the huddle id
+   * the channel has on this machine (its own when the Slack channel is mapped
+   * here already) and whether the mapping was added.
+   */
+  adoptAdhocMapping?: (mapping: Record<string, unknown>) => Promise<{ chatChannelId: string; added: boolean } | null>;
   /** Add chat channels and members (defaults to writing the chat-v2 database). */
   applyChat?: (records: ChatRecords) => ApplyChatResult;
   /** Claude home the members' conversations are written into (default: the default login's `~/.claude`). */
@@ -651,11 +657,25 @@ export class TeamMoveImporter {
 
     // The Slack mapping first: the team's channel must be known before the team
     // appears, or a second channel would be created for it.
-    const slack = await this.readRecord<{ mapping: Record<string, unknown> | null }>(staging, 'records/slack-team-channel.json', rewrites, { mapping: null });
-    out['slackMappingAdopted'] = slack.mapping && (await this.deps.adoptSlackMapping(slack.mapping)) ? 1 : 0;
+    const slack = await this.readRecord<{ mapping: Record<string, unknown> | null; adhocMappings?: Array<Record<string, unknown>> }>(staging, 'records/slack-team-channel.json', rewrites, { mapping: null });
+    let adopted = slack.mapping && (await this.deps.adoptSlackMapping(slack.mapping)) ? 1 : 0;
 
     const chat = await this.readRecord<ChatRecords>(staging, 'records/chat-channels.json', rewrites, { channels: [], members: [] });
-    const chatResult = (this.deps.applyChat ?? ((r: ChatRecords) => applyTeamChat(this.home, r)))(chat);
+
+    // Crewly channels shared with other teams: the channel keeps the huddle the target already has for
+    // that Slack channel, so its history and roster follow that id.
+    const channelIdMap = new Map<string, string>();
+    for (const m of slack.adhocMappings ?? []) {
+      const result = this.deps.adoptAdhocMapping ? await this.deps.adoptAdhocMapping(m) : null;
+      if (!result) continue;
+      if (result.added) adopted += 1;
+      const from = String(m['chatChannelId'] ?? '');
+      if (from && result.chatChannelId !== from) channelIdMap.set(from, result.chatChannelId);
+    }
+    out['slackMappingAdopted'] = adopted;
+    const remapped = channelIdMap.size === 0 ? chat : remapChatChannels(chat, channelIdMap);
+
+    const chatResult = (this.deps.applyChat ?? ((r: ChatRecords) => applyTeamChat(this.home, r)))(remapped);
     out['chatChannelsAdded'] = chatResult.channelsAdded;
     out['chatChannelsExisting'] = chatResult.channelsExisting;
     if (chatResult.messagesAdded !== undefined) out['chatMessagesAdded'] = chatResult.messagesAdded;

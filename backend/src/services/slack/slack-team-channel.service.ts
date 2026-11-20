@@ -1627,6 +1627,37 @@ export class SlackTeamChannelService {
   }
 
   /**
+   * Take over a Crewly channel (ad-hoc mapping) for the agents of a team that
+   * moved here. A channel this machine does not know is added as it came. One
+   * it already maps (same Slack channel) keeps its own huddle and takes the
+   * arriving agents as members, minus any the owner removed here.
+   *
+   * @param mapping - The ad-hoc mapping, `members` cut to the moved agents
+   * @returns The huddle id the channel has on this machine and whether the mapping was added; null for something that is not an ad-hoc mapping
+   */
+  async adoptAdhocMapping(mapping: SlackTeamChannelMapping): Promise<{ chatChannelId: string; added: boolean } | null> {
+    if (!isMapping(mapping) || !isAdhocMapping(mapping)) return null;
+    return this.serialised(mapping.teamId, async () => {
+      const store = await this.load();
+      const existing = store.mappings.find((m) => m.slackChannelId === mapping.slackChannelId || m.teamId === mapping.teamId);
+      if (!existing) {
+        store.mappings.push({ ...mapping });
+        await this.save();
+        this.logger.info('Crewly channel adopted from another machine', { slackChannel: `#${mapping.slackChannelName}`, members: mapping.members ?? [] });
+        return { chatChannelId: mapping.chatChannelId, added: true };
+      }
+      const held = new Set(existing.members ?? []);
+      const skip = new Set(existing.excluded ?? []);
+      const arriving = (mapping.members ?? []).filter((m) => !held.has(m) && !skip.has(m));
+      if (arriving.length > 0) {
+        existing.members = [...(existing.members ?? []), ...arriving];
+        await this.save();
+      }
+      return { chatChannelId: existing.chatChannelId, added: false };
+    });
+  }
+
+  /**
    * Remove a team's mapping. Optionally archives the Slack channel; the
    * huddle is always archived (it is Crewly's own object).
    *
