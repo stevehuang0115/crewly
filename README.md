@@ -43,7 +43,7 @@ crewly init
 crewly start
 ```
 
-**On Windows?** Run `npm install -g crewly` (version 1.39.0 or later) in a terminal, then `crewly init` and `crewly start`. You need Node.js 22 or later, [Git for Windows](https://gitforwindows.org/) (Git Bash) and `jq`. The `curl` installer is for macOS and Linux. Step by step: [Install Crewly on Windows](https://crewlyai.com/en/blog/install-crewly-on-windows).
+**On Windows?** Run `npm install -g crewly` (version 1.39.1 or later) in a terminal, then `crewly init` and `crewly start`. You need Node.js 22 or later, [Git for Windows](https://gitforwindows.org/) (Git Bash) and `jq`. The `curl` installer is for macOS and Linux. Step by step: [Install Crewly on Windows](https://crewlyai.com/en/blog/install-crewly-on-windows).
 
 **`EACCES: permission denied` from `npm install -g` on Linux?** A system Node (from apt, NodeSource or the official Docker images) keeps its global packages under `/usr/local`, which a normal user cannot write. Do not use `sudo`. Install into your home folder instead, which is what the installer script does, and `crewly upgrade` keeps using that folder:
 
