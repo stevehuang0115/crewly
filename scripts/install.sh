@@ -12,7 +12,7 @@
 #   --cli            Continue setup in this terminal
 #
 # What it does:
-#   1. Detects OS (macOS / Linux only; on Windows it points to the npm install)
+#   1. Detects OS (macOS / Linux only; on Windows it points to install.ps1)
 #   2. Ensures Node.js >= 22 is available (offers nvm install if missing)
 #   3. Installs crewly globally via npm — or, when the global npm folder is
 #      not writable (a system Node on Linux), under ~/.crewly/npm-global, the
@@ -104,9 +104,10 @@ case "$OS" in
   *)
     case "$OS" in
       MINGW*|MSYS*|CYGWIN*)
-        echo -e "  This installer is for macOS and Linux. On Windows, install with npm:"
-        echo -e "    ${CYAN}npm install -g crewly${NC}  (Crewly 1.39.0 or later)"
-        echo -e "  Needs Node.js 22+, Git for Windows (Git Bash) and jq."
+        echo -e "  This installer is for macOS and Linux. On Windows, run this in PowerShell:"
+        echo -e "    ${CYAN}irm https://crewlyai.com/install.ps1 | iex${NC}"
+        echo -e "  Or install by hand with npm:  ${CYAN}npm install -g crewly${NC}  (Crewly 1.39.1 or later)"
+        echo -e "  That needs Node.js 22+, Git for Windows (Git Bash) and jq."
         echo -e "  Guide: ${CYAN}https://crewlyai.com/en/blog/install-crewly-on-windows${NC}"
         ;;
       *)
