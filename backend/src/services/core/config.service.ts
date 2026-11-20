@@ -220,10 +220,9 @@ export class ConfigService {
 		try {
 			const defaultConfig = this.getDefaultConfig();
 
+			// A missing config.json is the normal case (defaults apply), so it is
+			// not reported: the line used to print on every CLI command.
 			if (!existsSync(this.configPath)) {
-				console.log(
-					`No config file found at ${this.configPath}, using default configuration`
-				);
 				return defaultConfig;
 			}
 
