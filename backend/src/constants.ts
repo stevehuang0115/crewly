@@ -10071,6 +10071,14 @@ export const TEAM_MOVE_CONSTANTS = {
 	PACKAGE_KIND: 'crewly-team-move',
 	/** Directory under CREWLY_HOME holding per-move state (journal, keys, archive). */
 	HOME_DIR: 'team-moves',
+	/**
+	 * Paths inside a project's `.crewly` that belong to the machine that holds
+	 * the project. When the target already has the project, a move leaves them
+	 * alone: the ticket backlog (status, assignee, labels, hold, and the
+	 * `.counter.json` that numbers new tickets) and the Request counter. A
+	 * trailing `/` is a folder prefix; anything else is an exact file.
+	 */
+	TARGET_OWNED_PROJECT_PATHS: ['tickets/', 'requests/.ticket-counter'] as readonly string[],
 	/** Upload/download chunk size (matches Cloud's 8 MiB chunks). */
 	TRANSFER_CHUNK_BYTES: 8 * 1024 * 1024,
 	/** Plaintext frame size of the encrypted stream. */
