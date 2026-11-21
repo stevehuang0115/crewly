@@ -235,6 +235,50 @@ describe('WikiWorkItemBridgeService', () => {
   });
 
   describe('migrations', () => {
+    it('scans WITHOUT shared agent memory, so memory-entry items never trigger a run', async () => {
+      const projectRoot = '/Users/me/projects/closie';
+      const { bridge, migrateService } = makeBridge({ projects: [projectRoot] });
+
+      await bridge.tick();
+
+      expect(migrateService.scan).toHaveBeenCalledWith({ projectRoot, includeAgentMemory: false });
+    });
+
+    it('does not queue a migrate WI when the only new items are agent memory-entry pages (real scan)', async () => {
+      // Real WikiMigrateService over a temp home that holds ONLY agent
+      // memory.json files: 25+ no-op bridge runs a day came from exactly this
+      // pool, because the apply skipped memory (--no-memory) but the scan counted it.
+      const { WikiMigrateService } = await import('./wiki-migrate.service.js');
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), 'wb-mem-home-'));
+      const project = await fs.mkdtemp(path.join(os.tmpdir(), 'wb-mem-proj-'));
+      try {
+        const agentDir = path.join(home, '.crewly', 'agents', 'agent-a');
+        await fs.mkdir(agentDir, { recursive: true });
+        await fs.writeFile(
+          path.join(agentDir, 'memory.json'),
+          JSON.stringify({
+            roleKnowledge: [
+              { id: 'm1', category: 'pattern', content: 'Shared pool memory one.' },
+              { id: 'm2', category: 'gotcha', content: 'Shared pool memory two.' },
+            ],
+          }),
+        );
+        WikiMigrateService.resetInstance();
+        const real = WikiMigrateService.getInstance();
+        const migrateScan = (input: { projectRoot: string; includeAgentMemory?: boolean }) =>
+          real.scan({ ...input, homeDir: home });
+        const { bridge, addedItems } = makeBridge({ projects: [project], migrateScan });
+
+        const result = await bridge.tick();
+
+        expect(result.createdForProject).toEqual([]);
+        expect(addedItems).toHaveLength(0);
+      } finally {
+        await fs.rm(home, { recursive: true, force: true });
+        await fs.rm(project, { recursive: true, force: true });
+      }
+    });
+
     it('creates a migrate WI when the scan reports proposed > 0', async () => {
       const projectRoot = '/Users/me/projects/closie';
       const { bridge, addedItems } = makeBridge({

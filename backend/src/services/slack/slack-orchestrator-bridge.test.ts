@@ -3380,3 +3380,55 @@ describe('team pause (specs/2026-10-04-team-pause.md)', () => {
     );
   }, 15000);
 });
+
+describe('wiki records on a message delivered to the orchestrator', () => {
+  const blockFor = jest.fn(async (_request: { ownerOnlyAudience: boolean }) => '[RECORDS] RoboHub');
+
+  /**
+   * A bridge whose owner is U_OWNER, with the record service replaced.
+   *
+   * @returns The bridge's `recordsNote`
+   */
+  async function recordsNoteOf(): Promise<(message: Record<string, unknown>, threadBlock: string) => Promise<string>> {
+    const { setWikiRecordAttachService } = await import('../wiki/wiki-record-attach.wiring.js');
+    setWikiRecordAttachService({ blockFor } as never);
+    const bridge = new SlackOrchestratorBridge();
+    (bridge as unknown as { slackService: { getOwnerUserId: () => string } }).slackService = { getOwnerUserId: () => 'U_OWNER' };
+    return (message, threadBlock) => (bridge as unknown as { recordsNote: (m: unknown, t: string) => Promise<string> }).recordsNote(message, threadBlock);
+  }
+
+  beforeEach(() => blockFor.mockClear());
+
+  afterEach(async () => {
+    const { setWikiRecordAttachService } = await import('../wiki/wiki-record-attach.wiring.js');
+    setWikiRecordAttachService(null);
+  });
+
+  it('attaches what the wiki holds on the names in the message and its thread, as the orchestrator', async () => {
+    const recordsNote = await recordsNoteOf();
+    const note = await recordsNote({ text: 'RoboHub 现在什么情况', channelId: 'D123', userId: 'U_OWNER' }, 'earlier: 刘欣 wrote back');
+
+    expect(note).toBe('[RECORDS] RoboHub');
+    expect(blockFor).toHaveBeenCalledWith(
+      expect.objectContaining({ agentSession: 'crewly-orc', text: 'RoboHub 现在什么情况\nearlier: 刘欣 wrote back', ownerOnlyAudience: true, viewerRole: 'orchestrator' }),
+    );
+  });
+
+  it('does not show people-restricted pages outside the owner\'s own DM', async () => {
+    const recordsNote = await recordsNoteOf();
+    await recordsNote({ text: 'RoboHub?', channelId: 'C900', userId: 'U_OWNER' }, '');
+    await recordsNote({ text: 'RoboHub?', channelId: 'D123', userId: 'U_STAFF' }, '');
+    expect(blockFor.mock.calls.map(([request]) => request.ownerOnlyAudience)).toEqual([false, false]);
+    // Role-restricted pages stay out too: what the orchestrator is handed it may quote.
+    expect(blockFor.mock.calls.map(([request]) => (request as unknown as { viewerRole: string }).viewerRole)).toEqual(['shared-audience', 'shared-audience']);
+  });
+
+  it('attaches nothing to an agent\'s message, and survives a failing lookup', async () => {
+    const recordsNote = await recordsNoteOf();
+    expect(await recordsNote({ text: 'RoboHub?', channelId: 'D123', userId: 'U_BOT', authorAgentSession: 'grace' }, '')).toBe('');
+    expect(blockFor).not.toHaveBeenCalled();
+
+    blockFor.mockRejectedValueOnce(new Error('vault unreadable'));
+    expect(await recordsNote({ text: 'RoboHub?', channelId: 'D123', userId: 'U_OWNER' }, '')).toBe('');
+  });
+});

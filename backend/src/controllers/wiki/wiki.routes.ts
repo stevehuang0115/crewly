@@ -7,6 +7,7 @@
 import { Router } from 'express';
 import {
   ingest,
+  recordSync,
   queryVault,
   queueAdd,
   queueList,
@@ -63,6 +64,8 @@ import {
 export function createWikiRouter(): Router {
   const router = Router();
   router.post('/ingest', ingest);
+  // POST /record-sync — copy listed App records into entity pages now
+  router.post('/record-sync', recordSync);
   router.post('/query', queryVault);
   // Queue routes — order matters for /stats and /claim-next vs /:id paths.
   router.get('/queue/stats', queueStats);

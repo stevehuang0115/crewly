@@ -1307,6 +1307,10 @@ void (async () => {
 				const maintenance = new WikiMaintenanceService({ bootGate: this.bootQuietGate(), gaps });
 				WikiMaintenanceService.setInstance(maintenance);
 				maintenance.start();
+				// Entity pages copied from App records (a vault's
+				// record-sources.json) are kept current.
+				const { startRecordSync } = await import('./services/wiki/wiki-record-sync.wiring.js');
+				startRecordSync();
 			} catch (maintenanceErr) {
 				this.logger.warn('Wiki maintenance failed to start (non-fatal)', {
 					error: (maintenanceErr as Error).message,
@@ -2951,6 +2955,12 @@ void (async () => {
 				const browserBridge = BrowserBridgeService.getInstance();
 				browserBridge.attach(this.httpServer);
 				this.logger.info('Crewly in Chrome WebSocket bridge started');
+
+				// Remembered browser choices (which Chrome each agent drives when
+				// several are connected).
+				const { BrowserPinStore } = await import('./services/browser/browser-target.js');
+				const { BrowserProxyService: PinnedProxy } = await import('./services/browser/browser-proxy.service.js');
+				PinnedProxy.getInstance().setPinStore(BrowserPinStore.inHome(this.config.crewlyHome));
 
 				// Live browser view: make each agent's browser work watchable.
 				// The capturer is injected rather than imported by the session
@@ -4694,6 +4704,9 @@ void (async () => {
 			try {
 				const { startRuntimeConsentRelay } = await import('./services/harness/runtime-consent.relay.js');
 				await startRuntimeConsentRelay(getRuntimeConsentService());
+				// Same for `login`: it is passed to the machine that is signed out.
+				const { startReloginReplyRelay } = await import('./services/harness/relogin-reply.relay.js');
+				await startReloginReplyRelay(getHarnessReloginService());
 			} catch (consentErr) {
 				this.logger.warn('Runtime consent relay not wired (non-critical)', {
 					error: consentErr instanceof Error ? consentErr.message : String(consentErr),
@@ -8321,7 +8334,9 @@ void (async () => {
 		const slack = getSlackService();
 		const viaSlack: Promise<boolean> = slack.isConnected()
 			? slack
-				.sendNotification({ type: 'project_update', title: opts.title, message: text, urgency: 'high', timestamp: new Date().toISOString() })
+				// Name the machine: with several machines on one account the owner
+				// could not tell whose agent the alert was about (2026-11-19).
+				.sendNotification({ type: 'project_update', title: `${opts.title} (machine: ${os.hostname()})`, message: text, urgency: 'high', timestamp: new Date().toISOString() })
 				.then((sent) => sent !== false, () => false)
 			: Promise.resolve(false);
 		void viaSlack.then((sent) => {

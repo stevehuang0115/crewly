@@ -219,7 +219,12 @@ export type MessageType =
   // `accept bypass` / `decline bypass` reached a machine that did not ask, and
   // is passed to the account's other machines; or one of them confirms it took
   // it. `data` is a ConsentWireMessage.
-  | 'owner_consent_reply';
+  | 'owner_consent_reply'
+  // Sign-in across machines (services/harness/relogin-reply.relay.ts): the
+  // owner's `login` reached a machine with nothing signed out and is passed to
+  // the account's other machines; or one of them confirms it took it. `data`
+  // is a ReloginWireMessage.
+  | 'owner_relogin_reply';
 
 /** Valid message type values for runtime validation. */
 export const MESSAGE_TYPES: readonly MessageType[] = [
@@ -246,6 +251,7 @@ export const MESSAGE_TYPES: readonly MessageType[] = [
   'shared_channel_message',
   'shared_channel_revoked',
   'owner_consent_reply',
+  'owner_relogin_reply',
 ] as const;
 
 /**

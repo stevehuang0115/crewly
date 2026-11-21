@@ -1114,22 +1114,64 @@ router.get('/cloud/status', async (req: Request, res: Response, next: NextFuncti
 });
 
 /**
+ * GET /api/slack/cloud/machines
+ *
+ * The account's machines as Cloud lists them, with which one is the primary.
+ */
+router.get('/cloud/machines', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const registry = await ensureSlackInstanceRegistry();
+    const machines = await registry.refreshAccountInstances();
+    res.json({
+      success: true,
+      data: {
+        machines: machines.map((m) => ({
+          deviceName: m.deviceName,
+          primary: m.primary,
+          live: m.live,
+          teams: m.teams.length,
+          ...(m.primarySetBy ? { primarySetBy: m.primarySetBy } : {}),
+          ...(m.crewlyVersion ? { crewlyVersion: m.crewlyVersion } : {}),
+        })),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * PUT /api/slack/cloud/primary
  *
  * Make (or unmake) this instance the account's primary — the one that gets
  * DMs to the master bot and messages in channels no team owns. Persisted
  * locally and pushed to Cloud right away.
  *
- * @body primary - boolean (required)
+ * @body primary - boolean: this machine takes or gives up the role
+ * @body machine - instead of `primary`: the name or id of any machine of the account, or null to let Cloud pick the default
  */
 router.put('/cloud/primary', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { primary } = req.body ?? {};
-    if (typeof primary !== 'boolean') {
-      res.status(400).json({ success: false, error: 'primary (boolean) is required' });
+    const { primary, machine } = req.body ?? {};
+    const registry = await ensureSlackInstanceRegistry();
+    // `machine`: any machine of the account, by name or id (null = let Cloud
+    // pick the default). The primary is an account setting kept by Cloud.
+    if (machine === null || typeof machine === 'string') {
+      try {
+        const machines = await registry.setAccountPrimary(machine);
+        res.json({
+          success: true,
+          data: { machines: machines.map((m) => ({ deviceName: m.deviceName, primary: m.primary, live: m.live, ...(m.primarySetBy ? { primarySetBy: m.primarySetBy } : {}) })) },
+        });
+      } catch (err) {
+        res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+      }
       return;
     }
-    const registry = await ensureSlackInstanceRegistry();
+    if (typeof primary !== 'boolean') {
+      res.status(400).json({ success: false, error: 'primary (boolean) or machine (name, id or null) is required' });
+      return;
+    }
     await registry.setPrimary(primary);
     res.json({
       success: true,

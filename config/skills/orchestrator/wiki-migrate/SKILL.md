@@ -24,11 +24,11 @@ For users who installed Crewly BEFORE the v2.1 LLM-wiki landed (2026-05-22+). Th
 | `<project>/.crewly/docs/*.md` ← **legacy `query-knowledge` storage** | `<project>/.crewly/wiki/llm-curated/docs/<slug>.md` |
 | `<project>/CLAUDE.md` / `AGENTS.md` / `DEPLOYMENT*.md` | `<project>/.crewly/wiki/llm-curated/runbooks/<slug>.md` |
 | `<project>/deploy/*.md`, `<project>/docs/deploy*.md`, `<project>/.claude/commands/deploy*.md` | `<project>/.crewly/wiki/llm-curated/runbooks/<slug>.md` |
-| `~/.crewly/agents/<id>/memory.json roleKnowledge[]` | `<project>/.crewly/wiki/llm-curated/{patterns,decisions}/<date>-<slug>.md` (copy; original retained) |
+| `~/.crewly/agents/<id>/memory.json roleKnowledge[]` — **opt-in only** (`--include-memory`) | `<project>/.crewly/wiki/llm-curated/{patterns,decisions}/<date>-<slug>.md` (copy; original retained) |
 | `<crewly-src>/config/sops/<role>/*.md` (OSS-distributed) | `~/.crewly/global-wiki/llm-curated/sops/<role>/<slug>.md` (via `migrate/oss-sops`) |
 | `<crewly-src>/config/domain-sops/*.sop.md` | `~/.crewly/global-wiki/llm-curated/sops/domain/<slug>.md` |
 
-Per spec §6 the agent's `memory.json` stays put — this skill **copies** its `roleKnowledge` entries to the wiki rather than moving them, so private agent memory keeps working unchanged.
+Agent memory is a shared cross-team pool, so a project vault does NOT receive it by default (scan, apply and the bridge auto-run all skip it). Per spec §6 the agent's `memory.json` stays put — with `--include-memory` this skill **copies** its `roleKnowledge` entries to the wiki rather than moving them, so private agent memory keeps working unchanged.
 
 ## What the legacy stores were (and what replaces them)
 
@@ -63,7 +63,7 @@ Vault picker:
 |---|---|---|---|
 | `--project-root <abs path>` | yes | — | The dir containing `.crewly/`. |
 | `--apply` | no | off | Execute writes. Without this, run a dry-run scan. |
-| `--no-memory` | no | off | Skip the per-agent `memory.json` import. |
+| `--include-memory` | no | off | Also copy the shared per-agent `memory.json` pool into this vault. Off by default: a project vault only gets that project's own sources. (`--no-memory` is accepted and is the default.) |
 | `--full` (or `"full": true`) | no | off | Return the raw backend payload including the full `proposedPages` array. Default output is the compact report below. |
 
 ## Output: compact by default
@@ -116,9 +116,9 @@ bash execute.sh --project-root /Users/me/code/myproject
 bash execute.sh --project-root /Users/me/code/myproject --apply
 ```
 
-**Apply but skip agent memory.json copies:**
+**Apply and also copy shared agent memory.json (opt in):**
 ```bash
-bash execute.sh --project-root /Users/me/code/myproject --no-memory --apply
+bash execute.sh --project-root /Users/me/code/myproject --include-memory --apply
 ```
 
 **Inspect every proposed row (raw payload):**

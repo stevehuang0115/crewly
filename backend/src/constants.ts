@@ -1862,6 +1862,41 @@ export const SLACK_THREAD_KEY_CONSTANTS = {
  * Records attached to a delivered message (`wiki-record-attach.service.ts`):
  * entity pages whose names appear in the message or its thread.
  */
+/** Keeping entity pages in step with the App records they were copied from. */
+export const WIKI_RECORD_SYNC_CONSTANTS = {
+	/** Per-vault list of App collections to copy, at the vault root */
+	SOURCES_FILENAME: 'record-sources.json',
+	/** Documents fetched per request */
+	PAGE_SIZE: 200,
+	/** Documents copied per collection at most */
+	MAX_DOCS: 2000,
+	/** Longest page title */
+	TITLE_MAX_CHARS: 80,
+	/** Longest page summary */
+	SUMMARY_MAX_CHARS: 230,
+	/** A scalar field up to this length is listed inline; a longer one gets its own section */
+	INLINE_FIELD_MAX_CHARS: 120,
+	/** Characters of one field kept */
+	FIELD_MAX_CHARS: 4000,
+	/** Shortest and longest name taken from an alias field */
+	ALIAS_MIN_CHARS: 2,
+	ALIAS_MAX_CHARS: 40,
+	/** Heading under which hand-written notes on a synced page are kept across syncs */
+	NOTES_HEADING: '## Notes',
+	/** Per-vault record of what was last written for each page (content hashes), at the vault root */
+	STATE_FILENAME: '.record-sync-state.json',
+	/** Names taken from one record at most */
+	MAX_ALIASES: 12,
+	/** Characters of the id hash added to a page name that is not the id itself */
+	SLUG_HASH_CHARS: 6,
+	/** Delay after start before the first sync (ms) */
+	FIRST_RUN_DELAY_MS: 5 * 60_000,
+	/** Time between syncs (ms) */
+	INTERVAL_MS: 6 * 60 * 60_000,
+	/** Who the pages are written as */
+	CALLER: 'system/record-sync',
+} as const;
+
 export const WIKI_RECORD_ATTACH_CONSTANTS = {
 	/** Folders under `llm-curated/` whose pages are entities (one page per customer, person, project, product) */
 	ENTITY_FOLDERS: ['customers', 'people', 'projects', 'products'],
@@ -1869,6 +1904,8 @@ export const WIKI_RECORD_ATTACH_CONSTANTS = {
 	MIN_ALIAS_CHARS: 3,
 	/** Shortest CJK name that is matched */
 	MIN_ALIAS_CHARS_CJK: 2,
+	/** Role the orchestrator reads as when the audience is not the owner alone: role-restricted pages stay out */
+	SHARED_AUDIENCE_ROLE: 'shared-audience',
 	/** Pages attached to one message at most */
 	MAX_PAGES: 3,
 	/** Characters of one page body attached; the rest is clipped with the page path */
@@ -2780,6 +2817,8 @@ export const SLACK_CLOUD_CONSTANTS = {
 	SOURCE_PREFERENCE_FILENAME: 'slack-source.json',
 	/** `PUT /instances/:instanceId` — registry heartbeat */
 	INSTANCES_PATH: '/instances',
+	/** `PUT { instanceId | null }` — choose the account's primary machine (Cloud owns the setting) */
+	PRIMARY_PATH: '/primary',
 	/** `POST` — provision per-agent apps for a team roster */
 	AGENTS_SYNC_PATH: '/agents/sync',
 	/** DELETE <AGENTS_PATH>/:agentSession removes one agent's Slack app */
@@ -4289,6 +4328,16 @@ export const BROWSER_OUTBOUND_GUARD = {
  * Owner approval of held browser actions (irreversible clicks): Slack
  * decision cards, persistence across restarts, and the answer deadline.
  */
+/** Choosing which connected Chrome an agent drives. */
+export const BROWSER_TARGET_CONSTANTS = {
+	/** Per-agent and machine-default browser choices under CREWLY_HOME */
+	PIN_STORE_FILENAME: 'browser-pins.json',
+	/** Shortest id prefix accepted when naming a browser by id */
+	MIN_ID_PREFIX_CHARS: 4,
+	/** Id characters shown next to a browser's name */
+	SHORT_ID_CHARS: 8,
+} as const;
+
 export const BROWSER_APPROVAL_CONSTANTS = {
 	/** Pending held actions under CREWLY_HOME */
 	STORE_FILENAME: 'browser-pending-actions.json',
@@ -10691,6 +10740,20 @@ export const OPS_SIDECAR_CONSTANTS = {
  * consent, and answering the screen after they agreed
  * (services/harness/runtime-consent.service.ts).
  */
+/** Passing the owner's `login` reply to the machine that is signed out. */
+export const RELOGIN_RELAY_CONSTANTS = {
+	/** Cloud relay message type (see cloud-sync.types.ts) */
+	RELAY_MESSAGE_TYPE: 'owner_relogin_reply',
+	/** Wire format version */
+	RELAY_WIRE_VERSION: 1,
+	/** How long the machine that heard the reply waits for another to take it (ms) */
+	ACK_WAIT_MS: 8_000,
+	/** How long a login code written in that thread is still passed to the machine that took the request (ms) */
+	CODE_FORWARD_WINDOW_MS: 20 * 60_000,
+	/** Longest text passed on as a login code */
+	CODE_MAX_LENGTH: 512,
+} as const;
+
 export const RUNTIME_CONSENT_CONSTANTS = {
 	/** The Claude Code executable */
 	CLAUDE_BIN: 'claude',

@@ -24,6 +24,12 @@ export interface AccountInstance {
   instanceId: string;
   deviceName: string;
   primary: boolean;
+  /**
+   * On the primary: `owner` when it was chosen, `default` when Cloud picked
+   * it. Present only when Cloud owns the setting (auth with the account-level
+   * primary); machines then neither claim nor give up the flag themselves.
+   */
+  primarySetBy?: 'owner' | 'default';
   /** Heartbeat seen recently enough for Cloud to route to it */
   live: boolean;
   crewlyVersion?: string;
@@ -60,6 +66,7 @@ export function toAccountInstance(raw: unknown): AccountInstance | null {
     instanceId: r['instanceId'],
     deviceName,
     primary: r['primary'] === true,
+    ...(r['primarySetBy'] === 'owner' || r['primarySetBy'] === 'default' ? { primarySetBy: r['primarySetBy'] } : {}),
     live: r['live'] === true,
     ...(typeof r['crewlyVersion'] === 'string' ? { crewlyVersion: r['crewlyVersion'] } : {}),
     teams,

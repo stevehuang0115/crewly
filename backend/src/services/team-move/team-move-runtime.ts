@@ -12,6 +12,7 @@
  * @module services/team-move/team-move-runtime
  */
 
+import { SLACK_TEAM_CHANNEL_CONSTANTS } from '../../constants.js';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
@@ -92,6 +93,36 @@ async function adoptMappingInFile(home: string, mapping: Record<string, unknown>
   await fs.mkdir(home, { recursive: true });
   await atomicWriteJson(file, { version: 1, autoCreate: store.autoCreate !== false, channelPrefix: store.channelPrefix ?? '', ...store, mappings: [...mappings, mapping] });
   return true;
+}
+
+/**
+ * Add a Crewly channel (ad-hoc mapping) to the mapping file when the Slack
+ * service is not running. A Slack channel this machine maps already keeps its
+ * mapping and takes the arriving agents as members.
+ *
+ * @param home - Crewly home
+ * @param mapping - Ad-hoc mapping, `members` cut to the moved agents
+ * @returns The huddle id on this machine and whether the mapping was added; null when it is not an ad-hoc mapping
+ */
+export async function adoptAdhocMappingInFile(home: string, mapping: Record<string, unknown>): Promise<{ chatChannelId: string; added: boolean } | null> {
+  if (typeof mapping['teamId'] !== 'string' || !mapping['teamId'].startsWith(SLACK_TEAM_CHANNEL_CONSTANTS.ADHOC_TEAM_PREFIX)) return null;
+  const file = path.join(home, 'slack-team-channels.json');
+  const store = await safeReadJson<{ version?: number; autoCreate?: boolean; channelPrefix?: string; mappings?: Array<Record<string, unknown>> }>(file, {});
+  const mappings = Array.isArray(store.mappings) ? store.mappings : [];
+  const existing = mappings.find((m) => m['teamId'] === mapping['teamId'] || m['slackChannelId'] === mapping['slackChannelId']);
+  if (!existing) {
+    await fs.mkdir(home, { recursive: true });
+    await atomicWriteJson(file, { version: 1, autoCreate: store.autoCreate !== false, channelPrefix: store.channelPrefix ?? '', ...store, mappings: [...mappings, mapping] });
+    return { chatChannelId: String(mapping['chatChannelId']), added: true };
+  }
+  const held = new Set(Array.isArray(existing['members']) ? (existing['members'] as string[]) : []);
+  const skip = new Set(Array.isArray(existing['excluded']) ? (existing['excluded'] as string[]) : []);
+  const arriving = (Array.isArray(mapping['members']) ? (mapping['members'] as string[]) : []).filter((m) => !held.has(m) && !skip.has(m));
+  if (arriving.length > 0) {
+    existing['members'] = [...held, ...arriving];
+    await atomicWriteJson(file, { ...store, mappings });
+  }
+  return { chatChannelId: String(existing['chatChannelId']), added: false };
 }
 
 /**
@@ -187,6 +218,11 @@ export function createTeamMoveDriver(input: TeamMoveRuntimeInput): TeamMoveDrive
         adoptSlackMapping: async (mapping) => {
           const service = getSlackTeamChannelService();
           return service ? service.adoptMapping(mapping as unknown as SlackTeamChannelMapping) : adoptMappingInFile(home, mapping);
+        },
+        adoptAdhocMapping: async (mapping) => {
+          const service = getSlackTeamChannelService();
+          const m = mapping as unknown as SlackTeamChannelMapping;
+          return service ? service.adoptAdhocMapping(m) : adoptAdhocMappingInFile(home, mapping);
         },
         startTeam: async (teamId) => {
           // A login may have landed since the last look: start from fresh availability,

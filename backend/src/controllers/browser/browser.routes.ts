@@ -39,6 +39,7 @@ import {
 	selectOption,
 	setFileInput,
 	bindTab,
+	pinBrowser,
 	unbindTab,
 	getBindings,
 	listBrowserSessions,
@@ -85,6 +86,8 @@ export function createBrowserRouter(): Router {
 
 	// GET /api/browser/instances — list connected browser instances
 	router.get('/instances', getInstances);
+	// POST /api/browser/pin — remember which browser an agent (or this machine) uses
+	router.post('/pin', pinBrowser);
 
 	// POST /api/browser/proxy/connect — manually connect proxy to Cloud Relay
 	router.post('/proxy/connect', connectProxy);

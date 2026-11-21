@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { openChatDatabase } from '../chat-v2/sqlite/chat-db.js';
-import { applyTeamChat, readTeamChat, setChannelsArchived } from './team-move-chat.js';
+import { applyTeamChat, readTeamChat, remapChatChannels, setChannelsArchived } from './team-move-chat.js';
 import { identityOf } from './team-move-select.js';
 
 describe('team-move-chat', () => {
@@ -87,5 +87,36 @@ describe('team-move-chat', () => {
     expect(readTeamChat(a, id).channels).toHaveLength(3);
     expect(setChannelsArchived(b, ['x'], true)).toBe(0);
     expect(setChannelsArchived(a, [], true)).toBe(0);
+  });
+
+  it('a channel listed in rosterOnlyChannelIds travels with only this team\'s agents as members', () => {
+    const r = readTeamChat(a, id, { includeChannelIds: ['c-mixed'], rosterOnlyChannelIds: ['c-mixed'] });
+    expect(r.channels.map((c) => c['id'])).toContain('c-mixed');
+    expect(r.members.filter((m) => m.channel_id === 'c-mixed').map((m) => m.member_session)).toEqual(['s1']);
+    // Without it the whole roster travels, as before (the team's own Slack room keeps its guests).
+    const all = readTeamChat(a, id, { includeChannelIds: ['c-mixed'] });
+    expect(all.members.filter((m) => m.channel_id === 'c-mixed').map((m) => m.member_session).sort()).toEqual(['outsider', 's1']);
+  });
+
+  it('remapChatChannels moves members and messages to the id the target uses and apply numbers them after its own', () => {
+    const records = readTeamChat(a, id, { includeChannelIds: ['c-mixed'], rosterOnlyChannelIds: ['c-mixed'], messages: { channelIds: ['c-mixed'], perChannel: 50, totalBytes: 1_000_000 } });
+    const remapped = remapChatChannels(records, new Map([['c-mixed', 'target-room']]));
+    expect(remapped.channels.map((c) => c['id'])).not.toContain('c-mixed');
+    expect(remapped.members.filter((m) => m.channel_id === 'target-room').map((m) => m.member_session)).toEqual(['s1']);
+    expect(remapped.messages!.every((m) => m['channel_id'] === 'target-room' && m['seq'] === null)).toBe(true);
+
+    const db = openChatDatabase({ dbPath: path.join(b, 'chat.db'), skipIntegrityCheck: true });
+    db.prepare('INSERT INTO chat_channels (id, agent_session, owner_user_id, name, created_at, type, team_id) VALUES (?,?,?,?,?,?,?)').run('target-room', '', 'o', 'room', 1, 'huddle', null);
+    db.prepare('INSERT INTO chat_messages (id, channel_id, seq, sender_type, sender_id, content, created_at) VALUES (?,?,?,?,?,?,?)').run('t-1', 'target-room', 1, 'user', 'owner', 'local', 1);
+    db.close();
+    const result = applyTeamChat(b, remapped);
+    expect(result.messagesAdded).toBe(5);
+    const check = openChatDatabase({ dbPath: path.join(b, 'chat.db'), skipIntegrityCheck: true });
+    try {
+      expect((check.prepare('SELECT seq FROM chat_messages WHERE channel_id = ? ORDER BY seq').all('target-room') as Array<{ seq: number }>).map((r) => r.seq)).toEqual([1, 2, 3, 4, 5, 6]);
+      expect(check.prepare('SELECT 1 FROM chat_channels WHERE id = ?').get('c-mixed')).toBeUndefined();
+    } finally {
+      check.close();
+    }
   });
 });

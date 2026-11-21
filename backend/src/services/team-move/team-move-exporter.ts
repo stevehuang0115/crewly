@@ -40,13 +40,21 @@ import { safeReadJson } from '../../utils/file-io.utils.js';
 import { collectSecretEnvValues, type SecretEnvValue } from '../../utils/secret-env.js';
 import { PACKAGE_TREE_STORES, getCrewlyHomePath, isInsidePackageTree, resolveProjectDataDir } from '../core/crewly-home.utils.js';
 import { readTeamChat } from './team-move-chat.js';
+import { selectAdhocMappings } from './team-move-select.js';
 import { collectAgentTranscripts } from './team-move-transcripts.js';
 import { createEncryptStream, createHashTap } from './team-move-crypto.js';
 import { StagingArea, walkFiles } from './team-move-fs.js';
 import { collectCarry, describeLeft, resolveCarryLimits, type CarryLimits, type CollectCarryResult, type CollectedCarry } from './team-move-carry.js';
 import { createBundle, estimateRepoBytes, formatBytes, resolveBundleLimits, type BundleLimits, type BundleMode } from './team-move-bundle.js';
 import { describeBlockingRepos, displayRemote, inspectRepo as defaultInspectRepo, readRepoChanges, sanitizeRemote } from './team-move-git.js';
-import { TeamMoveSecretScanError, isSkippableFinding, scanStaging, type SecretFinding } from './team-move-secret-scan.js';
+import {
+  TeamMoveSecretScanError,
+  isRedactableFinding,
+  isSkippableFinding,
+  redactTranscriptInStaging,
+  scanStaging,
+  type SecretFinding,
+} from './team-move-secret-scan.js';
 import {
   identityOf,
   resetWorkItemForTarget,
@@ -637,6 +645,25 @@ export class TeamMoveExporter {
     const known = this.deps.knownSecrets ? await this.deps.knownSecrets() : collectSecretEnvValues(process.env);
     // Bundles are not text-scanned: they are binary packs (history that already lives in git), encrypted for the target.
     const scan = await scanStaging(staging, staging.files(), known, (p) => p.endsWith(`/${C.BUNDLE_FILE}`));
+    // Conversation transcripts are redacted in the package copy rather than
+    // stopping the move: the member resumes on the target with the keys it
+    // had read masked. A transcript that still matches afterwards stays a
+    // finding. Never on a dry run (the preview reports what was found).
+    let redactedFiles = 0;
+    if (!options.dryRun) {
+      const stillFlagged: SecretFinding[] = [];
+      for (const finding of scan.findings) {
+        if (!isRedactableFinding(finding.path)) {
+          stillFlagged.push(finding);
+          continue;
+        }
+        const { residual } = await redactTranscriptInStaging(staging, finding.path, known);
+        // Judged on the parsed strings: the raw JSON text of a masked quoted value still looks like a secret.
+        if (residual > 0) stillFlagged.push({ path: finding.path, matches: residual });
+        else redactedFiles += 1;
+      }
+      scan.findings = stillFlagged;
+    }
     const scanFindings = this.labelFindings(scan.findings, projects, carried);
     let excludedFiles = 0;
     if (scan.findings.length > 0 && !options.dryRun) {
@@ -700,7 +727,7 @@ export class TeamMoveExporter {
       // A dry run builds no bundle; its estimate keeps the preflight size honest.
       totalBytes: files.reduce((n, f) => n + f.bytes, 0) + (options.dryRun ? repos.reduce((n, r) => n + (r.bundle && !r.bundle.file ? r.bundle.bytes : 0), 0) : 0),
       noSecrets: true,
-      secretScan: { filesScanned: scan.filesScanned, knownValuesChecked: known.length, findings: 0, excludedFiles },
+      secretScan: { filesScanned: scan.filesScanned, knownValuesChecked: known.length, findings: 0, excludedFiles, ...(redactedFiles > 0 ? { redactedFiles } : {}) },
       notMoved: this.notMovedList(),
     };
     await staging.writeJson('manifest.json', manifest);
@@ -861,15 +888,22 @@ export class TeamMoveExporter {
 
     // The Slack channel mapping of the team, so the target reuses the same channel.
     const slackFile = await safeReadJson<{ mappings?: Array<Record<string, unknown>> }>(path.join(this.home, 'slack-team-channels.json'), {});
-    const mapping = (Array.isArray(slackFile.mappings) ? slackFile.mappings : []).find((m) => m['teamId'] === team.id) ?? null;
-    await staging.writeJson('records/slack-team-channel.json', { mapping });
-    if (mapping) counts['slackChannelMappings'] = 1;
+    const allMappings = Array.isArray(slackFile.mappings) ? slackFile.mappings : [];
+    const mapping = allMappings.find((m) => m['teamId'] === team.id) ?? null;
+    // Crewly channels (ad-hoc mappings, shared with other teams) the team's agents are in: the moved
+    // agents are carried as members, the other teams' agents stay where they are.
+    const adhocMappings = selectAdhocMappings(allMappings, id);
+    await staging.writeJson('records/slack-team-channel.json', { mapping, adhocMappings });
+    const mappingCount = (mapping ? 1 : 0) + adhocMappings.length;
+    if (mappingCount > 0) counts['slackChannelMappings'] = mappingCount;
 
     // Chat channels, rooms and DMs with their membership — the room behind the
     // Slack mapping always, with its recent messages (crewly#1344).
-    const roomId = typeof mapping?.['chatChannelId'] === 'string' ? [mapping['chatChannelId'] as string] : [];
+    const adhocRoomIds = adhocMappings.map((m) => String(m['chatChannelId'])).filter((c) => c.length > 0);
+    const roomId = [...(typeof mapping?.['chatChannelId'] === 'string' ? [mapping['chatChannelId'] as string] : []), ...adhocRoomIds];
     const chat = readTeamChat(this.home, id, {
       includeChannelIds: roomId,
+      rosterOnlyChannelIds: adhocRoomIds,
       messages: { channelIds: roomId, perChannel: C.CHAT_MESSAGES_PER_CHANNEL, totalBytes: C.CHAT_MESSAGES_MAX_BYTES },
     });
     await staging.writeJson('records/chat-channels.json', chat);
