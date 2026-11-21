@@ -1,0 +1,51 @@
+# scripts/install.ps1 (served as https://crewlyai.com/install.ps1): lint it and
+# run its Pester tests on a real Windows runner, under BOTH Windows PowerShell
+# 5.1 (what a Windows PC has out of the box) and PowerShell 7.
+name: install.ps1
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/install.ps1'
+      - 'scripts/install.Tests.ps1'
+      - '.github/workflows/install-ps1.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/install.ps1'
+      - 'scripts/install.Tests.ps1'
+
+permissions:
+  contents: read
+
+jobs:
+  install-ps1:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: PSScriptAnalyzer (must report 0 warnings and 0 errors)
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $r = @(Invoke-ScriptAnalyzer -Path scripts -Severity Warning, Error)
+          "files analyzed: $((Get-ChildItem scripts -Filter *.ps1).Count), findings: $($r.Count)"
+          $r | Format-List RuleName, ScriptName, Line, Message
+          if ($r.Count -gt 0) { exit 1 }
+
+      - name: Pester under PowerShell 7
+        shell: pwsh
+        run: |
+          Install-Module Pester -RequiredVersion 5.6.1 -Force -SkipPublisherCheck -Scope CurrentUser
+          $res = Invoke-Pester scripts/install.Tests.ps1 -Output Detailed -PassThru
+          if ($res.TotalCount -eq 0 -or $res.FailedCount -gt 0) { exit 1 }
+
+      - name: Pester under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          Install-Module Pester -RequiredVersion 5.6.1 -Force -SkipPublisherCheck -Scope CurrentUser
+          "PowerShell $($PSVersionTable.PSVersion)"
+          $res = Invoke-Pester scripts/install.Tests.ps1 -Output Detailed -PassThru
+          if ($res.TotalCount -eq 0 -or $res.FailedCount -gt 0) { exit 1 }
