@@ -54,6 +54,19 @@ describe('team-move-secret-scan', () => {
     expect((await scanStaging(s, s.files())).findings).toEqual([]);
   });
 
+  it('a transcript with a quoted secret assignment is clean once redacted (the escaped quote is not a new secret)', async () => {
+    const quoted = JSON.stringify({ type: 'assistant', text: 'export ANTHROPIC_API_KEY="abc123def456ghi789" && run' });
+    const s = await stage({ 'transcripts/ryan/q.jsonl': quoted + '\n' + JSON.stringify({ text: `DB_PASSWORD='hunter2hunter2hunter2'` }) });
+    expect((await scanStaging(s, s.files())).findings).toHaveLength(1);
+    const { residual, redactions } = await redactTranscriptInStaging(s, 'transcripts/ryan/q.jsonl');
+    expect(redactions).toBe(2);
+    expect(residual).toBe(0);
+    const text = await fs.readFile(s.abs('transcripts/ryan/q.jsonl'), 'utf8');
+    expect(text).not.toContain('abc123def456ghi789');
+    expect(text).not.toContain('hunter2hunter2hunter2');
+    expect(JSON.parse(text.split('\n')[0]).text).toBe('export ANTHROPIC_API_KEY="[REDACTED]" && run');
+  });
+
   it('only conversation transcripts are redacted in place', () => {
     expect(isRedactableFinding('transcripts/ryan/abc.jsonl')).toBe(true);
     for (const p of ['team/config.json', 'records/task-pool.json', 'transcripts/ryan/notes.md', 'agents/s/memory.json']) expect(isRedactableFinding(p)).toBe(false);
