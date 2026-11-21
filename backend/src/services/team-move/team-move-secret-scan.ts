@@ -161,13 +161,18 @@ function redactJsonValue(value: unknown, known: readonly SecretEnvValue[], tally
  * @param staging - The package being built
  * @param packagePath - A transcript in it
  * @param known - Exact secret values to look for
- * @returns The new file entry and the number of redactions
+ * @returns The new file entry, the number of redactions, and `residual`: what
+ *   a second pass over the written file's strings still finds (0 when clean).
+ *   The raw file cannot be rescanned for this: a masked quoted value is
+ *   written as `NAME=\"[REDACTED]`, and read as raw JSON text the assignment
+ *   rule sees the escape character as a new value, so a clean transcript
+ *   would stay flagged forever (Crewly Support move, 2026-11-20).
  */
 export async function redactTranscriptInStaging(
   staging: StagingArea,
   packagePath: string,
   known: readonly SecretEnvValue[] = [],
-): Promise<{ entry: PackageFileEntry; redactions: number }> {
+): Promise<{ entry: PackageFileEntry; redactions: number; residual: number }> {
   const source = staging.abs(packagePath);
   const temp = `${source}.redacting`;
   const tally = { count: 0 };
@@ -191,7 +196,30 @@ export async function redactTranscriptInStaging(
   out.end();
   await once(out, 'finish');
   await fs.rename(temp, source);
-  return { entry: await staging.adopt(packagePath), redactions: tally.count };
+  const residual = await countStringSecrets(source, known);
+  return { entry: await staging.adopt(packagePath), redactions: tally.count, residual };
+}
+
+/**
+ * Count the secrets left in a JSON Lines file, looking at each line's parsed
+ * strings (what a reader of the transcript sees) instead of its escaped text.
+ *
+ * @param file - Absolute path of the file
+ * @param known - Exact secret values to look for
+ * @returns Number of matches (0 when the strings are clean)
+ */
+async function countStringSecrets(file: string, known: readonly SecretEnvValue[]): Promise<number> {
+  const tally = { count: 0 };
+  const lines = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
+  for await (const line of lines) {
+    if (line.trim().length === 0) continue;
+    try {
+      redactJsonValue(JSON.parse(line), known, tally);
+    } catch {
+      tally.count += redactSecretsWithCount(line, known).count;
+    }
+  }
+  return tally.count;
 }
 
 /**

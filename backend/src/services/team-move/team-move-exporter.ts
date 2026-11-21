@@ -657,9 +657,9 @@ export class TeamMoveExporter {
           stillFlagged.push(finding);
           continue;
         }
-        await redactTranscriptInStaging(staging, finding.path, known);
-        const again = await scanStaging(staging, staging.files().filter((f) => f.path === finding.path), known);
-        if (again.findings.length > 0) stillFlagged.push(again.findings[0]!);
+        const { residual } = await redactTranscriptInStaging(staging, finding.path, known);
+        // Judged on the parsed strings: the raw JSON text of a masked quoted value still looks like a secret.
+        if (residual > 0) stillFlagged.push({ path: finding.path, matches: residual });
         else redactedFiles += 1;
       }
       scan.findings = stillFlagged;
