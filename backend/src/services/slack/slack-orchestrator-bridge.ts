@@ -48,7 +48,7 @@ import type { MessageQueueService } from '../messaging/message-queue.service.js'
 import type { SlackThreadStoreService } from './slack-thread-store.service.js';
 import { getOwnerMessageWatchdog } from '../messaging/owner-message-watchdog.service.js';
 import { isOwnerAuthored } from './slack-auto-working.service.js';
-import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_FILE_FETCH_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS, THREAD_STATUS_CONSTANTS, OWNER_EVIDENCE_METADATA } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_FILE_FETCH_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS, THREAD_STATUS_CONSTANTS, OWNER_EVIDENCE_METADATA, WIKI_RECORD_ATTACH_CONSTANTS } from '../../constants.js';
 import { readFreeBytes } from '../worktree/low-disk-guard.js';
 import { LoggerService } from '../core/logger.service.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
@@ -1517,12 +1517,46 @@ Just type naturally to chat with the orchestrator!`;
   private async orchestratorContextBlock(message: SlackIncomingMessage): Promise<string> {
     const scopeNote = await this.requestScopeNote(message);
     const ctx = await message.threadContext;
-    if (!ctx) return scopeNote;
-    const botUserId =
-      getSlackAgentIdentityService()?.getInstalled(this.config.orchestratorSession)?.botUserId ??
-      (await this.slackService.getBotUserId().catch(() => null));
-    const block = renderSlackThreadContext(ctx, { botUserId });
-    return [scopeNote, block].filter((part) => part.length > 0).join('\n\n');
+    let block = '';
+    if (ctx) {
+      const botUserId =
+        getSlackAgentIdentityService()?.getInstalled(this.config.orchestratorSession)?.botUserId ??
+        (await this.slackService.getBotUserId().catch(() => null));
+      block = renderSlackThreadContext(ctx, { botUserId });
+    }
+    const records = await this.recordsNote(message, block);
+    return [scopeNote, block, records].filter((part) => part.length > 0).join('\n\n');
+  }
+
+  /**
+   * The records the wiki already holds on what a person's message names
+   * (entity pages of every team vault on this machine and the global
+   * vault), so the orchestrator answers from them without having to look.
+   * A page restricted to certain people is shown only in the owner's DM.
+   *
+   * @param message - The inbound message
+   * @param threadBlock - The rendered thread context, scanned for names too
+   * @returns The records block, or '' (an agent's message, no match, any failure)
+   */
+  private async recordsNote(message: SlackIncomingMessage, threadBlock: string): Promise<string> {
+    if (message.authorAgentSession || !message.text) return '';
+    try {
+      const { getWikiRecordAttachService, machineVaults } = await import('../wiki/wiki-record-attach.wiring.js');
+      const ownerUserId = this.slackService.getOwnerUserId?.() ?? null;
+      const ownerOnlyAudience = requestScopeOf(message) !== null && Boolean(ownerUserId) && message.userId === ownerUserId;
+      return await getWikiRecordAttachService().blockFor({
+        agentSession: this.config.orchestratorSession,
+        text: [message.text, threadBlock].filter(Boolean).join('\n'),
+        ownerOnlyAudience,
+        vaultPaths: machineVaults(),
+        // The orchestrator may read every role's pages, but what it is handed
+        // it may quote: outside the owner's own DM, role-restricted pages stay out.
+        viewerRole: ownerOnlyAudience ? 'orchestrator' : WIKI_RECORD_ATTACH_CONSTANTS.SHARED_AUDIENCE_ROLE,
+      });
+    } catch (err) {
+      this.logger.debug('Could not attach wiki records to the orchestrator message', { error: err instanceof Error ? err.message : String(err) });
+      return '';
+    }
   }
 
   /**

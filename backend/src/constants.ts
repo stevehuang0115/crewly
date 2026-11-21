@@ -1862,6 +1862,41 @@ export const SLACK_THREAD_KEY_CONSTANTS = {
  * Records attached to a delivered message (`wiki-record-attach.service.ts`):
  * entity pages whose names appear in the message or its thread.
  */
+/** Keeping entity pages in step with the App records they were copied from. */
+export const WIKI_RECORD_SYNC_CONSTANTS = {
+	/** Per-vault list of App collections to copy, at the vault root */
+	SOURCES_FILENAME: 'record-sources.json',
+	/** Documents fetched per request */
+	PAGE_SIZE: 200,
+	/** Documents copied per collection at most */
+	MAX_DOCS: 2000,
+	/** Longest page title */
+	TITLE_MAX_CHARS: 80,
+	/** Longest page summary */
+	SUMMARY_MAX_CHARS: 230,
+	/** A scalar field up to this length is listed inline; a longer one gets its own section */
+	INLINE_FIELD_MAX_CHARS: 120,
+	/** Characters of one field kept */
+	FIELD_MAX_CHARS: 4000,
+	/** Shortest and longest name taken from an alias field */
+	ALIAS_MIN_CHARS: 2,
+	ALIAS_MAX_CHARS: 40,
+	/** Heading under which hand-written notes on a synced page are kept across syncs */
+	NOTES_HEADING: '## Notes',
+	/** Per-vault record of what was last written for each page (content hashes), at the vault root */
+	STATE_FILENAME: '.record-sync-state.json',
+	/** Names taken from one record at most */
+	MAX_ALIASES: 12,
+	/** Characters of the id hash added to a page name that is not the id itself */
+	SLUG_HASH_CHARS: 6,
+	/** Delay after start before the first sync (ms) */
+	FIRST_RUN_DELAY_MS: 5 * 60_000,
+	/** Time between syncs (ms) */
+	INTERVAL_MS: 6 * 60 * 60_000,
+	/** Who the pages are written as */
+	CALLER: 'system/record-sync',
+} as const;
+
 export const WIKI_RECORD_ATTACH_CONSTANTS = {
 	/** Folders under `llm-curated/` whose pages are entities (one page per customer, person, project, product) */
 	ENTITY_FOLDERS: ['customers', 'people', 'projects', 'products'],
@@ -1869,6 +1904,8 @@ export const WIKI_RECORD_ATTACH_CONSTANTS = {
 	MIN_ALIAS_CHARS: 3,
 	/** Shortest CJK name that is matched */
 	MIN_ALIAS_CHARS_CJK: 2,
+	/** Role the orchestrator reads as when the audience is not the owner alone: role-restricted pages stay out */
+	SHARED_AUDIENCE_ROLE: 'shared-audience',
 	/** Pages attached to one message at most */
 	MAX_PAGES: 3,
 	/** Characters of one page body attached; the rest is clipped with the page path */

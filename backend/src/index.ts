@@ -1307,6 +1307,10 @@ void (async () => {
 				const maintenance = new WikiMaintenanceService({ bootGate: this.bootQuietGate(), gaps });
 				WikiMaintenanceService.setInstance(maintenance);
 				maintenance.start();
+				// Entity pages copied from App records (a vault's
+				// record-sources.json) are kept current.
+				const { startRecordSync } = await import('./services/wiki/wiki-record-sync.wiring.js');
+				startRecordSync();
 			} catch (maintenanceErr) {
 				this.logger.warn('Wiki maintenance failed to start (non-fatal)', {
 					error: (maintenanceErr as Error).message,

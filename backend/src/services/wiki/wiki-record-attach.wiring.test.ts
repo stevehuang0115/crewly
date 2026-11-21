@@ -6,6 +6,7 @@ import { WikiRecordAttachService } from './wiki-record-attach.service.js';
 import {
   getWikiRecordAttachService,
   setWikiRecordAttachService,
+  machineVaults,
   vaultsForAgent,
   type AgentScopeStorage,
 } from './wiki-record-attach.wiring.js';
@@ -59,8 +60,21 @@ describe('vaultsForAgent', () => {
 
   it('an agent on no team reads the global vault only', async () => {
     vault(join(home, 'global-wiki'));
-    const got = await vaultsForAgent(storage(null), 'crewly-orc');
+    const got = await vaultsForAgent(storage(null), 'some-loose-agent');
     expect(got).toEqual({ vaultPaths: [join(home, 'global-wiki')] });
+  });
+
+  it('the orchestrator reads every team vault on the machine and the global vault', async () => {
+    vault(join(home, 'teams', 't2', 'wiki'));
+    vault(join(home, 'teams', 't1', 'wiki'));
+    mkdirSync(join(home, 'teams', 'no-vault'), { recursive: true });
+    vault(join(home, 'global-wiki'));
+    const got = await vaultsForAgent(storage(null), 'crewly-orc');
+    expect(got).toEqual({
+      vaultPaths: [join(home, 'teams', 't1', 'wiki'), join(home, 'teams', 't2', 'wiki'), join(home, 'global-wiki')],
+      viewerRole: 'orchestrator',
+    });
+    expect(machineVaults(join(home, 'nowhere'))).toEqual([]);
   });
 
   it('survives a storage failure', async () => {
