@@ -118,7 +118,21 @@ const TRANSCRIPT_PREFIX = 'transcripts/';
  * @returns True for a transcript
  */
 export function isRedactableFinding(packagePath: string): boolean {
-  return packagePath.startsWith(TRANSCRIPT_PREFIX) && packagePath.endsWith('.jsonl');
+  return (packagePath.startsWith(TRANSCRIPT_PREFIX) && packagePath.endsWith('.jsonl')) || isRedactableRecord(packagePath);
+}
+
+/**
+ * Whether a flagged file is a JSON record (`records/*.json`): the team's chat
+ * channels, task pool, decisions and scheduled messages. They hold free text
+ * people and agents typed, so a key pasted into a chat message is the normal
+ * case, and the target still needs the file (channels, members, tasks), so it
+ * is masked in the package copy rather than dropped or blocking the move.
+ *
+ * @param packagePath - Package path of the flagged file
+ * @returns True for a top-level JSON record
+ */
+export function isRedactableRecord(packagePath: string): boolean {
+  return /^records\/[^/]+\.json$/.test(packagePath);
 }
 
 /**
@@ -198,6 +212,47 @@ export async function redactTranscriptInStaging(
   await fs.rename(temp, source);
   const residual = await countStringSecrets(source, known);
   return { entry: await staging.adopt(packagePath), redactions: tally.count, residual };
+}
+
+/**
+ * Mask the secrets in a JSON record inside the package (see
+ * {@link isRedactableRecord}), leaving the machine's own stores untouched.
+ *
+ * The file is parsed and only its strings (and keys) are redacted, so it stays
+ * the same valid JSON, written with the package's usual indentation. A file
+ * that does not parse is redacted as plain text. `residual` is judged on the
+ * parsed strings of the written file, like a transcript's.
+ *
+ * @param staging - The package being built
+ * @param packagePath - A `records/*.json` file in it
+ * @param known - Exact secret values to look for
+ * @returns The new file entry, the number of redactions, and `residual`
+ *   (secrets a second pass still finds; 0 when clean)
+ */
+export async function redactRecordInStaging(
+  staging: StagingArea,
+  packagePath: string,
+  known: readonly SecretEnvValue[] = [],
+): Promise<{ entry: PackageFileEntry; redactions: number; residual: number }> {
+  const source = staging.abs(packagePath);
+  const raw = await fs.readFile(source, 'utf8');
+  const tally = { count: 0 };
+  let written: string;
+  try {
+    written = JSON.stringify(redactJsonValue(JSON.parse(raw), known, tally), null, 2);
+  } catch {
+    const out = redactSecretsWithCount(raw, known);
+    tally.count += out.count;
+    written = out.text;
+  }
+  await fs.writeFile(source, written, 'utf8');
+  const after = { count: 0 };
+  try {
+    redactJsonValue(JSON.parse(written), known, after);
+  } catch {
+    after.count = redactSecretsWithCount(written, known).count;
+  }
+  return { entry: await staging.adopt(packagePath), redactions: tally.count, residual: after.count };
 }
 
 /**
