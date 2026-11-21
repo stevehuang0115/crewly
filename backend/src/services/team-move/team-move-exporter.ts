@@ -51,6 +51,8 @@ import {
   TeamMoveSecretScanError,
   isRedactableFinding,
   isSkippableFinding,
+  isRedactableRecord,
+  redactRecordInStaging,
   redactTranscriptInStaging,
   scanStaging,
   type SecretFinding,
@@ -645,7 +647,8 @@ export class TeamMoveExporter {
     const known = this.deps.knownSecrets ? await this.deps.knownSecrets() : collectSecretEnvValues(process.env);
     // Bundles are not text-scanned: they are binary packs (history that already lives in git), encrypted for the target.
     const scan = await scanStaging(staging, staging.files(), known, (p) => p.endsWith(`/${C.BUNDLE_FILE}`));
-    // Conversation transcripts are redacted in the package copy rather than
+    // Conversation transcripts and the JSON records (chat channels, tasks,
+    // decisions) are redacted in the package copy rather than
     // stopping the move: the member resumes on the target with the keys it
     // had read masked. A transcript that still matches afterwards stays a
     // finding. Never on a dry run (the preview reports what was found).
@@ -657,7 +660,7 @@ export class TeamMoveExporter {
           stillFlagged.push(finding);
           continue;
         }
-        const { residual } = await redactTranscriptInStaging(staging, finding.path, known);
+        const { residual } = await (isRedactableRecord(finding.path) ? redactRecordInStaging : redactTranscriptInStaging)(staging, finding.path, known);
         // Judged on the parsed strings: the raw JSON text of a masked quoted value still looks like a secret.
         if (residual > 0) stillFlagged.push({ path: finding.path, matches: residual });
         else redactedFiles += 1;

@@ -387,6 +387,23 @@ describe('team move between two homes', () => {
     expect(ok.result.manifest.secretScan.excludedFiles).toBe(1);
   });
 
+  it('masks a key pasted into a chat message in the package copy, so skipFlagged still passes and the channel moves', async () => {
+    const db = openChatDatabase({ dbPath: path.join(fx.home, 'chat.db'), skipIntegrityCheck: true });
+    try {
+      db.prepare("INSERT INTO chat_messages (id, channel_id, seq, sender_type, sender_id, content, content_type, created_at) VALUES ('leak-1', ?, 99, 'user', 'owner', ?, 'text', 1)").run(F.channelId, `here is the key ${FAKE_SLACK} ok`);
+    } finally {
+      db.close();
+    }
+    await expect(exportAndEncrypt()).resolves.toBeDefined();
+    const ok = await exportAndEncrypt({ skipFlagged: true });
+    const text = await fs.readFile(path.join(ok.result.staging.root, 'records/chat-channels.json'), 'utf8');
+    expect(text).not.toContain(FAKE_SLACK);
+    const chat = JSON.parse(text) as { channels: Array<{ id: string }>; members: unknown[] };
+    expect(chat.channels.some((c) => c.id === F.channelId)).toBe(true);
+    expect(ok.result.manifest.secretScan.redactedFiles).toBe(1);
+    expect(ok.result.manifest.secretScan.excludedFiles).toBe(0);
+  });
+
   it('never skips a credential in a core record', async () => {
     const config = JSON.parse(await fs.readFile(path.join(fx.home, 'teams', F.teamId, 'config.json'), 'utf8')) as { members: Array<{ systemPrompt: string }> };
     config.members[0]!.systemPrompt = `use ${FAKE_ANTHROPIC}`;

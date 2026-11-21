@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { StagingArea } from './team-move-fs.js';
-import { TeamMoveSecretScanError, isRedactableFinding, isSkippableFinding, redactTranscriptInStaging, scanStaging } from './team-move-secret-scan.js';
+import { TeamMoveSecretScanError, isRedactableFinding, isRedactableRecord, isSkippableFinding, redactRecordInStaging, redactTranscriptInStaging, scanStaging } from './team-move-secret-scan.js';
 
 // Fake credentials are assembled at run time so secret scanners do not flag this file.
 const FAKE_SLACK = ['xoxb', '123456789012', '123456789012', 'abcdefghijklmnop'].join('-');
@@ -69,7 +69,40 @@ describe('team-move-secret-scan', () => {
 
   it('only conversation transcripts are redacted in place', () => {
     expect(isRedactableFinding('transcripts/ryan/abc.jsonl')).toBe(true);
-    for (const p of ['team/config.json', 'records/task-pool.json', 'transcripts/ryan/notes.md', 'agents/s/memory.json']) expect(isRedactableFinding(p)).toBe(false);
+    for (const p of ['team/config.json', 'transcripts/ryan/notes.md', 'agents/s/memory.json', 'records/nested/x.json', 'records/notes.md']) expect(isRedactableFinding(p)).toBe(false);
+  });
+
+  it('JSON records (chat channels, tasks, decisions) are redacted too, never team/config.json', () => {
+    for (const p of ['records/chat-channels.json', 'records/task-pool.json', 'records/decisions.json']) {
+      expect(isRedactableRecord(p)).toBe(true);
+      expect(isRedactableFinding(p)).toBe(true);
+    }
+    expect(isRedactableRecord('team/config.json')).toBe(false);
+  });
+
+  it('redacts a chat message in records/chat-channels.json: same JSON, channels and members intact, nothing left', async () => {
+    const chat = { channels: [{ id: 'c1', name: 'movers' }], members: [{ channelId: 'c1', session: 'lead' }], messages: [{ id: 'm1', content: `use ${FAKE_ANTHROPIC} now` }, { id: 'm2', content: 'plain "quoted" text' }] };
+    const s = await stage({ 'records/chat-channels.json': JSON.stringify(chat, null, 2) });
+    expect((await scanStaging(s, s.files())).findings).toHaveLength(1);
+    const { entry, redactions, residual } = await redactRecordInStaging(s, 'records/chat-channels.json');
+    expect(redactions).toBe(1);
+    expect(residual).toBe(0);
+    expect(s.files().find((f) => f.path === entry.path)).toEqual(entry);
+    const text = await fs.readFile(s.abs('records/chat-channels.json'), 'utf8');
+    expect(text).not.toContain(FAKE_ANTHROPIC);
+    const out = JSON.parse(text) as typeof chat;
+    expect(out.channels).toEqual(chat.channels);
+    expect(out.members).toEqual(chat.members);
+    expect(out.messages[1]).toEqual(chat.messages[1]);
+    expect(out.messages[0]!.content).toMatch(/^use .* now$/);
+    expect((await scanStaging(s, s.files())).findings).toEqual([]);
+  });
+
+  it('a record that still matches after redaction reports a residual (so the exporter keeps blocking)', async () => {
+    // A known value that the mask text itself contains can never be masked away: the second pass finds it again.
+    const s = await stage({ 'records/x.json': JSON.stringify({ text: 'note REDACTED_x here' }) });
+    const { residual } = await redactRecordInStaging(s, 'records/x.json', [{ name: 'MASK', value: 'REDACTED' }]);
+    expect(residual).toBeGreaterThan(0);
   });
 
   it('finds token shapes, secret assignments and known values, and reports paths only', async () => {
