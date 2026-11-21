@@ -1517,12 +1517,43 @@ Just type naturally to chat with the orchestrator!`;
   private async orchestratorContextBlock(message: SlackIncomingMessage): Promise<string> {
     const scopeNote = await this.requestScopeNote(message);
     const ctx = await message.threadContext;
-    if (!ctx) return scopeNote;
-    const botUserId =
-      getSlackAgentIdentityService()?.getInstalled(this.config.orchestratorSession)?.botUserId ??
-      (await this.slackService.getBotUserId().catch(() => null));
-    const block = renderSlackThreadContext(ctx, { botUserId });
-    return [scopeNote, block].filter((part) => part.length > 0).join('\n\n');
+    let block = '';
+    if (ctx) {
+      const botUserId =
+        getSlackAgentIdentityService()?.getInstalled(this.config.orchestratorSession)?.botUserId ??
+        (await this.slackService.getBotUserId().catch(() => null));
+      block = renderSlackThreadContext(ctx, { botUserId });
+    }
+    const records = await this.recordsNote(message, block);
+    return [scopeNote, block, records].filter((part) => part.length > 0).join('\n\n');
+  }
+
+  /**
+   * The records the wiki already holds on what a person's message names
+   * (entity pages of every team vault on this machine and the global
+   * vault), so the orchestrator answers from them without having to look.
+   * A page restricted to certain people is shown only in the owner's DM.
+   *
+   * @param message - The inbound message
+   * @param threadBlock - The rendered thread context, scanned for names too
+   * @returns The records block, or '' (an agent's message, no match, any failure)
+   */
+  private async recordsNote(message: SlackIncomingMessage, threadBlock: string): Promise<string> {
+    if (message.authorAgentSession || !message.text) return '';
+    try {
+      const { getWikiRecordAttachService, machineVaults } = await import('../wiki/wiki-record-attach.wiring.js');
+      const ownerUserId = this.slackService.getOwnerUserId?.() ?? null;
+      return await getWikiRecordAttachService().blockFor({
+        agentSession: this.config.orchestratorSession,
+        text: [message.text, threadBlock].filter(Boolean).join('\n'),
+        ownerOnlyAudience: requestScopeOf(message) !== null && Boolean(ownerUserId) && message.userId === ownerUserId,
+        vaultPaths: machineVaults(),
+        viewerRole: 'orchestrator',
+      });
+    } catch (err) {
+      this.logger.debug('Could not attach wiki records to the orchestrator message', { error: err instanceof Error ? err.message : String(err) });
+      return '';
+    }
   }
 
   /**

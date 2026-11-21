@@ -1842,3 +1842,28 @@ export async function usageReport(req: Request, res: Response, next: NextFunctio
     next(err);
   }
 }
+
+/**
+ * POST /api/wiki/record-sync
+ *
+ * Copy the App records a vault lists in `record-sources.json` into its
+ * entity pages now, instead of waiting for the periodic run. Body:
+ * `{ vaultPath? }` — omit for every team vault and the global vault.
+ *
+ * @param req - Express request
+ * @param res - Express response
+ * @param next - Express next
+ */
+export async function recordSync(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const vaultPath = (req.body as { vaultPath?: unknown } | undefined)?.vaultPath;
+    if (vaultPath !== undefined && (typeof vaultPath !== 'string' || !vaultPath)) {
+      res.status(400).json({ success: false, error: 'vaultPath must be a path when given' });
+      return;
+    }
+    const { syncRecords } = await import('../../services/wiki/wiki-record-sync.wiring.js');
+    res.json({ success: true, data: { reports: await syncRecords(vaultPath) } });
+  } catch (error) {
+    next(error);
+  }
+}

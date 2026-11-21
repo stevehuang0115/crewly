@@ -534,3 +534,33 @@ write_policy:
     expect(rebuilt.body.result.coverage.missingFromIndex).toEqual([]);
   });
 });
+
+describe('wiki.controller — /api/wiki/record-sync', () => {
+  let app: express.Express;
+
+  beforeEach(() => {
+    app = express();
+    app.use(express.json());
+    app.use('/api/wiki', createWikiRouter());
+  });
+
+  afterEach(async () => {
+    const { setWikiRecordSyncService } = await import('../../services/wiki/wiki-record-sync.wiring.js');
+    setWikiRecordSyncService(null);
+  });
+
+  it('syncs every vault of the machine and returns the reports', async () => {
+    const { setWikiRecordSyncService } = await import('../../services/wiki/wiki-record-sync.wiring.js');
+    const report = { vaultPath: '/v', sources: 1, written: ['llm-curated/customers/a.md'], unchanged: 2, skipped: [], errors: [] };
+    setWikiRecordSyncService({ syncVaults: jest.fn(async () => [report]), syncVault: jest.fn() } as never);
+
+    const res = await request(app).post('/api/wiki/record-sync').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.data.reports).toEqual([report]);
+  });
+
+  it('rejects a vaultPath that is not a path', async () => {
+    const res = await request(app).post('/api/wiki/record-sync').send({ vaultPath: 42 });
+    expect(res.status).toBe(400);
+  });
+});
