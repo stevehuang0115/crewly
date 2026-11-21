@@ -21,7 +21,7 @@
 #   bash execute.sh --project-root /abs/path                       # scan (compact)
 #   bash execute.sh --project-root /abs/path --full                # scan (raw proposedPages)
 #   bash execute.sh --project-root /abs/path --apply               # write
-#   bash execute.sh --project-root /abs/path --no-memory --apply   # skip agent memory.json copies
+#   bash execute.sh --project-root /abs/path --include-memory --apply   # opt in: copy shared agent memory.json (default: skipped)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
@@ -33,7 +33,7 @@ COMPACT_FILTER="${SCRIPT_DIR}/compact.jq"
 INPUT_JSON=""
 PROJECT_ROOT=""
 APPLY="false"
-INCLUDE_MEMORY="true"
+INCLUDE_MEMORY="false"
 # lib.sh sets CREWLY_SKILL_FULL_OUTPUT=1 when --full is anywhere in argv.
 FULL="${CREWLY_SKILL_FULL_OUTPUT:-0}"
 
@@ -45,7 +45,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-root|-p) PROJECT_ROOT="$2"; shift 2 ;;
     --apply|-a)        APPLY="true";     shift   ;;
-    --no-memory)       INCLUDE_MEMORY="false"; shift ;;
+    --no-memory)       INCLUDE_MEMORY="false"; shift ;;   # default; kept for old callers
+    --include-memory)  INCLUDE_MEMORY="true";  shift ;;
     --full|-f)         FULL="1";         shift   ;;
     --json|-j)         INPUT_JSON="$2";  shift 2 ;;
     --help|-h)
@@ -53,8 +54,8 @@ while [[ $# -gt 0 ]]; do
 Usage:
   execute.sh --project-root <abs path>            # scan (dry-run)
   execute.sh --project-root <abs path> --apply    # execute migration
-  execute.sh --project-root <abs path> --no-memory --apply
-                                                  # apply but skip agent memory.json copies
+  execute.sh --project-root <abs path> --include-memory --apply
+                                                  # also copy shared agent memory.json (off by default)
   execute.sh --project-root <abs path> --full     # raw payload incl. full proposedPages
 
 Outputs a compact JSON report (default):
@@ -83,7 +84,7 @@ if [ -n "$INPUT_JSON" ]; then
   INPUT=$(read_json_input "$INPUT_JSON")
   [ -z "$PROJECT_ROOT" ] && PROJECT_ROOT=$(printf '%s' "$INPUT" | jq -r '.projectRoot       // empty')
   if printf '%s' "$INPUT" | jq -e '.apply == true' >/dev/null 2>&1; then APPLY="true"; fi
-  if printf '%s' "$INPUT" | jq -e '.includeAgentMemory == false' >/dev/null 2>&1; then INCLUDE_MEMORY="false"; fi
+  if printf '%s' "$INPUT" | jq -e '.includeAgentMemory == true' >/dev/null 2>&1; then INCLUDE_MEMORY="true"; fi
   if printf '%s' "$INPUT" | jq -e '.full == true' >/dev/null 2>&1; then FULL="1"; fi
 fi
 

@@ -576,7 +576,7 @@ export class WikiWorkItemBridgeService {
           continue;
         }
         try {
-          const scan = await this.migrate.scan({ projectRoot });
+          const scan = await this.migrate.scan({ projectRoot, includeAgentMemory: false });
           if (!scan.ok) continue;
           if (!scan.legacyDetected) continue;
           // Count NET-NEW pages only. A scan keeps already-migrated entries in

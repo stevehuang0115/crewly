@@ -83,8 +83,13 @@ export interface WikiMigrateInput {
    */
   homeDir?: string;
   /**
-   * Override `process.cwd()` semantics for the "current project". Tests
-   * use this; production leaves it undefined.
+   * When true, also copy every agent's `~/.crewly/agents/<id>/memory.json`
+   * into the vault. Defaults to FALSE: agent memory is a shared, cross-team
+   * pool, so a project vault must only receive that project's own sources.
+   * Pulling the whole pool into one project vault put 1723 unrelated pages
+   * into a single project's wiki, and the bridge re-queued a no-op migrate
+   * run every cycle because those items counted as net-new. Only an explicit
+   * `true` restores the old behaviour.
    */
   includeAgentMemory?: boolean;
 }
@@ -544,7 +549,7 @@ export class WikiMigrateService {
     }
 
     const homeDir = input.homeDir ?? os.homedir();
-    const includeMemory = input.includeAgentMemory ?? true;
+    const includeMemory = input.includeAgentMemory ?? false;
     const vaultPath = path.join(projectRoot, '.crewly', 'wiki');
 
     // Bootstrap scoping is needed up-front because we may need to write

@@ -198,7 +198,7 @@ describe('WikiMigrateService.scan', () => {
       }),
       homeDir,
     );
-    const out = await svc.scan({ projectRoot, homeDir });
+    const out = await svc.scan({ projectRoot, homeDir, includeAgentMemory: true });
     expect(out.ok).toBe(true);
     if (!out.ok) return;
     expect(out.summary.memoryEntries).toBe(2);
@@ -233,7 +233,7 @@ describe('WikiMigrateService.scan', () => {
       homeDir,
     );
 
-    const out = await svc.apply({ projectRoot, homeDir });
+    const out = await svc.apply({ projectRoot, homeDir, includeAgentMemory: true });
     expect(out.ok).toBe(true);
     if (!out.ok || !('applied' in out)) return;
 
@@ -255,7 +255,7 @@ describe('WikiMigrateService.scan', () => {
       homeDir,
     );
 
-    const out = await svc.apply({ projectRoot, homeDir });
+    const out = await svc.apply({ projectRoot, homeDir, includeAgentMemory: true });
     expect(out.ok).toBe(true);
     if (!out.ok || !('applied' in out)) return;
 
@@ -297,6 +297,69 @@ describe('WikiMigrateService.scan', () => {
     );
 
     expect(body).toContain('Recorded on Windows.');
+  });
+
+  describe('shared agent memory is excluded from a project vault by default', () => {
+    const memoryJson = JSON.stringify({
+      roleKnowledge: [
+        { id: 'pool-1', category: 'pattern', content: 'Another team memory entry.' },
+        { id: 'pool-2', category: 'gotcha', content: 'Yet another team memory entry.' },
+      ],
+    });
+
+    it('apply with agent memory files present writes 0 memory pages', async () => {
+      await write('.crewly/agents/agent-a/memory.json', memoryJson, homeDir);
+      await write('.crewly/agents/agent-b/memory.json', memoryJson, homeDir);
+
+      const out = await svc.apply({ projectRoot, homeDir });
+
+      expect(out.ok).toBe(true);
+      if (!out.ok || !('applied' in out)) return;
+      expect(out.proposedPages.filter((p) => p.sourceType === 'memory-entry')).toHaveLength(0);
+      expect(out.summary.memoryEntries).toBe(0);
+      const manifest = await fs
+        .readFile(path.join(projectRoot, '.crewly', 'wiki', WIKI_MIGRATE_MANIFEST_FILENAME), 'utf8')
+        .catch(() => '');
+      expect(manifest).not.toContain('memory-entry');
+      const patterns = await fs
+        .readdir(path.join(projectRoot, '.crewly', 'wiki', 'llm-curated', 'patterns'))
+        .catch(() => [] as string[]);
+      expect(patterns.filter((f) => f.endsWith('.md'))).toHaveLength(0);
+    });
+
+    it('a pool whose only items are memory entries has no net-new work', async () => {
+      await write('.crewly/agents/agent-a/memory.json', memoryJson, homeDir);
+
+      const out = await svc.scan({ projectRoot, homeDir });
+
+      expect(out.ok).toBe(true);
+      if (!out.ok) return;
+      expect(out.proposedPages.filter((p) => !p.skipReason)).toHaveLength(0);
+      expect(out.legacyDetected).toBe(false);
+    });
+
+    it('still migrates the project\'s own sources while skipping memory', async () => {
+      await write('.crewly/agents/agent-a/memory.json', memoryJson, homeDir);
+      await write('.crewly/docs/business-model.md', '# Business model\n\nProject own doc body text.\n');
+
+      const out = await svc.apply({ projectRoot, homeDir });
+
+      expect(out.ok).toBe(true);
+      if (!out.ok || !('applied' in out)) return;
+      expect(out.applied).toBeGreaterThan(0);
+      expect(out.proposedPages.some((p) => p.sourceFile === '.crewly/docs/business-model.md' && !p.skipReason)).toBe(true);
+      expect(out.proposedPages.filter((p) => p.sourceType === 'memory-entry')).toHaveLength(0);
+    });
+
+    it('includeAgentMemory=true still opts in explicitly', async () => {
+      await write('.crewly/agents/agent-a/memory.json', memoryJson, homeDir);
+
+      const out = await svc.scan({ projectRoot, homeDir, includeAgentMemory: true });
+
+      expect(out.ok).toBe(true);
+      if (!out.ok) return;
+      expect(out.summary.memoryEntries).toBe(2);
+    });
   });
 
   it('respects includeAgentMemory=false', async () => {

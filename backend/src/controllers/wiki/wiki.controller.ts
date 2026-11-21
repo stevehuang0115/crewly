@@ -1362,7 +1362,7 @@ export async function migrateScan(
     const projectRoot =
       typeof body.projectRoot === 'string' ? body.projectRoot : process.cwd();
     const includeAgentMemory =
-      typeof body.includeAgentMemory === 'boolean' ? body.includeAgentMemory : true;
+      typeof body.includeAgentMemory === 'boolean' ? body.includeAgentMemory : false;
     const outcome = await WikiMigrateService.getInstance().scan({
       projectRoot,
       includeAgentMemory,
@@ -1408,7 +1408,7 @@ export async function migrateApply(
     const projectRoot =
       typeof body.projectRoot === 'string' ? body.projectRoot : process.cwd();
     const includeAgentMemory =
-      typeof body.includeAgentMemory === 'boolean' ? body.includeAgentMemory : true;
+      typeof body.includeAgentMemory === 'boolean' ? body.includeAgentMemory : false;
     const outcome = await WikiMigrateService.getInstance().apply({
       projectRoot,
       includeAgentMemory,
