@@ -15,7 +15,8 @@
  * @module services/wiki/wiki-record-sync.service
  */
 
-import { existsSync, readFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { WIKI_RECORD_ATTACH_CONSTANTS, WIKI_RECORD_SYNC_CONSTANTS } from '../../constants.js';
 import type { WikiIngestInput, WikiIngestOutcome } from './wiki-ingest.service.js';
@@ -184,7 +185,43 @@ function clip(text: string): string {
  * @returns The slug, or '' when nothing usable is left
  */
 function slugOf(id: string): string {
-	return id.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+	const slug = id.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+	// Ids differ in case and punctuation the file name cannot carry ("A1" and
+	// "a1", "x.1" and "x:1"): a short hash of the id keeps their pages apart.
+	return slug && slug !== id ? `${slug}-${hashOf(id).slice(0, WIKI_RECORD_SYNC_CONSTANTS.SLUG_HASH_CHARS)}` : slug;
+}
+
+/**
+ * A stable fingerprint of some text.
+ *
+ * @param text - Text
+ * @returns Hex SHA-1
+ */
+function hashOf(text: string): string {
+	return createHash('sha1').update(text).digest('hex');
+}
+
+/**
+ * A field name as one heading-safe line. A field called "Notes" would read
+ * as the hand-written notes section, so it is told apart.
+ *
+ * @param key - Field name
+ * @returns The label
+ */
+function labelOf(key: string): string {
+	const label = key.replace(/\s+/g, ' ').replace(/[#*`]/g, '').trim() || 'field';
+	return /^notes$/i.test(label) ? `${label} (App field)` : label;
+}
+
+/**
+ * Field text that cannot be read as page structure: a line that starts a
+ * heading is escaped.
+ *
+ * @param text - Field text
+ * @returns The text
+ */
+function plain(text: string): string {
+	return text.replace(/\r\n?/g, '\n').replace(/^(#{1,6}\s)/gm, '\\$1');
 }
 
 /**
@@ -216,21 +253,21 @@ export function renderRecord(source: RecordSource, doc: AppDoc): RenderedRecord 
 	if (!slug || titleParts.length === 0) return null;
 	const title = [...new Set(titleParts)].join(' · ').slice(0, WIKI_RECORD_SYNC_CONSTANTS.TITLE_MAX_CHARS);
 	const summary = (source.summaryFields.map((field) => inline(data[field])).filter(Boolean).join('; ') || title).slice(0, WIKI_RECORD_SYNC_CONSTANTS.SUMMARY_MAX_CHARS);
-	const aliases = [...new Set(source.aliasFields.flatMap((field) => namesIn(data[field])))];
+	const aliases = [...new Set(source.aliasFields.flatMap((field) => namesIn(data[field])))].slice(0, WIKI_RECORD_SYNC_CONSTANTS.MAX_ALIASES);
 
 	const facts: string[] = [];
 	const sections: string[] = [];
 	for (const [key, value] of Object.entries(data)) {
 		if (key.startsWith('_')) continue;
 		if (Array.isArray(value) && value.some((item) => item && typeof item === 'object')) {
-			const items = value.map(listItem).filter(Boolean).map((item) => `- ${clip(item)}`);
-			if (items.length > 0) sections.push(`## ${key}\n${items.join('\n')}`);
+			const items = value.map(listItem).filter(Boolean).map((item) => `- ${clip(plain(item)).replace(/\n+/g, ' ')}`);
+			if (items.length > 0) sections.push(`## ${labelOf(key)}\n${items.join('\n')}`);
 			continue;
 		}
-		const text = clip(inline(value));
+		const text = clip(plain(inline(value)));
 		if (!text) continue;
-		if (text.length <= WIKI_RECORD_SYNC_CONSTANTS.INLINE_FIELD_MAX_CHARS && !text.includes('\n')) facts.push(`- **${key}**: ${text}`);
-		else sections.push(`## ${key}\n${text}`);
+		if (text.length <= WIKI_RECORD_SYNC_CONSTANTS.INLINE_FIELD_MAX_CHARS && !text.includes('\n')) facts.push(`- **${labelOf(key)}**: ${text}`);
+		else sections.push(`## ${labelOf(key)}\n${text}`);
 	}
 	const footer = `_Copied from the App record ${source.appId} / ${source.collection} / ${doc.id}. The App is the record of truth; change it there._`;
 	const body = [facts.join('\n'), ...sections, footer].filter(Boolean).join('\n\n');
@@ -238,16 +275,38 @@ export function renderRecord(source: RecordSource, doc: AppDoc): RenderedRecord 
 }
 
 /**
- * The parts of an existing page this service cares about.
+ * The hand-written notes on an existing page: everything from its
+ * `## Notes` heading on, without the provenance line the wiki appends to a
+ * page (it would otherwise pile up inside the notes on every rewrite).
  *
  * @param file - Absolute page path
- * @returns The body below the front matter and title, and the hand-written notes; null when the page does not exist
+ * @returns The notes ('' for none), or null when the page does not exist
  */
-function readExisting(file: string): { body: string; notes: string } | null {
+function notesOf(file: string): string | null {
 	if (!existsSync(file)) return null;
-	const text = readFileSync(file, 'utf8').replace(/^---\n[\s\S]*?\n---\n/, '');
-	const at = text.search(new RegExp(`^${WIKI_RECORD_SYNC_CONSTANTS.NOTES_HEADING}\\b`, 'm'));
-	return at < 0 ? { body: text, notes: '' } : { body: text.slice(0, at), notes: text.slice(at).trimEnd() };
+	const text = readFileSync(file, 'utf8');
+	const at = text.search(new RegExp(`^${WIKI_RECORD_SYNC_CONSTANTS.NOTES_HEADING}[ \\t]*$`, 'm'));
+	if (at < 0) return '';
+	return text.slice(at).replace(/\n*<sub>[^\n]*<\/sub>\s*$/, '').trimEnd();
+}
+
+/**
+ * What was last written for each page of a vault: `relative path → hash of
+ * the rendered record`. The wiki may store a page differently from what was
+ * rendered (privacy masking, sanitising), so the page itself cannot say
+ * whether the record changed.
+ *
+ * @param vaultPath - Vault root
+ * @returns The record (empty when absent or unreadable)
+ */
+function readState(vaultPath: string): Record<string, string> {
+	try {
+		const raw = JSON.parse(readFileSync(path.join(vaultPath, WIKI_RECORD_SYNC_CONSTANTS.STATE_FILENAME), 'utf8')) as { pages?: unknown };
+		const pages = raw.pages && typeof raw.pages === 'object' ? (raw.pages as Record<string, unknown>) : {};
+		return Object.fromEntries(Object.entries(pages).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+	} catch {
+		return {};
+	}
 }
 
 /** Copies App records into wiki entity pages. */
@@ -301,6 +360,8 @@ export class WikiRecordSyncService {
 			report.errors.push('This vault has no team lead to read App records as; nothing was copied.');
 			return report;
 		}
+		const state = readState(vaultPath);
+		const seen = new Set<string>();
 		for (const source of sources) {
 			const ref = `${source.appId}/${source.collection}`;
 			let docs: AppDoc[];
@@ -316,8 +377,14 @@ export class WikiRecordSyncService {
 					report.skipped.push({ ref: `${ref}/${doc.id}`, reason: 'no id or title' });
 					continue;
 				}
-				const existing = readExisting(path.join(vaultPath, page.relativePath));
-				if (existing?.body.includes(page.body)) {
+				if (seen.has(page.relativePath)) {
+					report.skipped.push({ ref: `${ref}/${doc.id}`, reason: 'another record already has this page name' });
+					continue;
+				}
+				seen.add(page.relativePath);
+				const notes = notesOf(path.join(vaultPath, page.relativePath));
+				const fingerprint = hashOf(`${page.title}\n${page.summary}\n${page.aliases.join('|')}\n${page.body}`);
+				if (notes !== null && state[page.relativePath] === fingerprint) {
 					report.unchanged++;
 					continue;
 				}
@@ -326,7 +393,7 @@ export class WikiRecordSyncService {
 						vaultPath,
 						sourceType: 'spec_file',
 						sourceRef: `app:${ref}/${doc.id}`,
-						sourceBody: existing?.notes ? `${page.body}\n\n${existing.notes}` : page.body,
+						sourceBody: notes ? `${page.body}\n\n${notes}` : page.body,
 						callerSession: WIKI_RECORD_SYNC_CONSTANTS.CALLER,
 						targetRelativePath: page.relativePath,
 						title: page.title,
@@ -336,11 +403,20 @@ export class WikiRecordSyncService {
 						tags: source.tags,
 						replace: true,
 					});
-					if (outcome.ok) report.written.push(page.relativePath);
-					else report.skipped.push({ ref: `${ref}/${doc.id}`, reason: outcome.reason });
+					if (outcome.ok) {
+						report.written.push(page.relativePath);
+						state[page.relativePath] = fingerprint;
+					} else report.skipped.push({ ref: `${ref}/${doc.id}`, reason: outcome.reason });
 				} catch (error) {
 					report.errors.push(`${ref}/${doc.id}: ${error instanceof Error ? error.message : String(error)}`);
 				}
+			}
+		}
+		if (report.written.length > 0) {
+			try {
+				writeFileSync(path.join(vaultPath, WIKI_RECORD_SYNC_CONSTANTS.STATE_FILENAME), `${JSON.stringify({ version: 1, pages: state }, null, 2)}\n`, 'utf8');
+			} catch (error) {
+				report.errors.push(`could not save the sync record: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		}
 		if (report.sources > 0 || report.errors.length > 0) {

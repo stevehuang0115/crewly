@@ -3419,6 +3419,8 @@ describe('wiki records on a message delivered to the orchestrator', () => {
     await recordsNote({ text: 'RoboHub?', channelId: 'C900', userId: 'U_OWNER' }, '');
     await recordsNote({ text: 'RoboHub?', channelId: 'D123', userId: 'U_STAFF' }, '');
     expect(blockFor.mock.calls.map(([request]) => request.ownerOnlyAudience)).toEqual([false, false]);
+    // Role-restricted pages stay out too: what the orchestrator is handed it may quote.
+    expect(blockFor.mock.calls.map(([request]) => (request as unknown as { viewerRole: string }).viewerRole)).toEqual(['shared-audience', 'shared-audience']);
   });
 
   it('attaches nothing to an agent\'s message, and survives a failing lookup', async () => {

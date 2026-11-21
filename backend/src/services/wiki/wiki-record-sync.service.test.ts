@@ -46,6 +46,24 @@ describe('renderRecord', () => {
 		expect(page?.body).toContain('au35rbdmzt / customers / robohub-xin');
 	});
 
+	it('keeps pages of look-alike ids apart, and field text from reading as page structure', () => {
+		const upper = renderRecord(SOURCE, { id: 'A1', data: { name: 'Acme' } });
+		const lower = renderRecord(SOURCE, { id: 'a1', data: { name: 'Acme' } });
+		expect(lower?.relativePath).toBe('llm-curated/customers/a1.md');
+		expect(upper?.relativePath).toMatch(/^llm-curated\/customers\/a1-[0-9a-f]{6}\.md$/);
+
+		const tricky = renderRecord(SOURCE, { id: 'tricky', data: { name: 'Acme', Notes: `${'call notes '.repeat(15)}\n## Notes\nnot a real section`, 'odd\nkey': 'v' } });
+		expect(tricky?.body).toContain('## Notes (App field)');
+		expect(tricky?.body).toContain('\\## Notes');
+		expect(tricky?.body).not.toMatch(/^## Notes[ \t]*$/m);
+		expect(tricky?.body).toContain('- **odd key**: v');
+	});
+
+	it('caps the names taken from one record', () => {
+		const many = renderRecord(SOURCE, { id: 'many', data: { name: Array.from({ length: 40 }, (_, i) => `Name${i}`).join(', ') } });
+		expect(many?.aliases.length).toBeLessThanOrEqual(12);
+	});
+
 	it('returns null without a title or a usable id, and clips a huge field', () => {
 		expect(renderRecord(SOURCE, { id: 'x', data: { stage: '在聊' } })).toBeNull();
 		expect(renderRecord(SOURCE, { id: '///', data: { name: 'A B' } })).toBeNull();
@@ -150,6 +168,32 @@ describe('WikiRecordSyncService', () => {
 		expect(report.written).toHaveLength(1);
 		expect(changed.ingested[0].sourceBody).toContain('- **stage**: 已签约');
 		expect(changed.ingested[0].sourceBody).toContain('## Notes\nPrefers WeChat over email.');
+
+		// The wiki's own provenance line after the notes is not carried into them.
+		writeFileSync(file, `${readFileSync(file, 'utf8')}\n<sub>spec_file · ref · caller · 2026-11-20T00:00:00Z</sub>\n`);
+		const again = make({ listDocs: jest.fn(async () => ({ docs: [{ ...ROBOHUB, data: { ...ROBOHUB.data, stage: '已付款' } }] })) });
+		await again.service.syncVault(vault);
+		expect(again.ingested[0].sourceBody).toContain('Prefers WeChat over email.');
+		expect(again.ingested[0].sourceBody).not.toContain('<sub>');
+	});
+
+	it('does not rewrite a page the wiki stored differently from what was rendered (masking)', async () => {
+		const masked = (): Partial<RecordSyncDeps> => ({
+			ingest: jest.fn(async (input: WikiIngestInput) => {
+				const file = path.join(input.vaultPath, input.targetRelativePath as string);
+				mkdirSync(path.dirname(file), { recursive: true });
+				writeFileSync(file, '# masked\n\n[redacted]\n');
+				return { ok: true as const, pagesWritten: [input.targetRelativePath as string], logEntry: '', frozenPathsTouched: [] };
+			}),
+		});
+		await make(masked()).service.syncVault(vault);
+		const second = make(masked());
+		expect((await second.service.syncVault(vault)).unchanged).toBe(1);
+		expect(second.deps.ingest).not.toHaveBeenCalled();
+
+		// A page someone deleted is written again.
+		rmSync(path.join(vault, 'llm-curated/customers/robohub-xin.md'));
+		expect((await make(masked()).service.syncVault(vault)).written).toHaveLength(1);
 	});
 
 	it('follows pages of a collection and stops when the cursor does not move', async () => {

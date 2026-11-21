@@ -1883,6 +1883,12 @@ export const WIKI_RECORD_SYNC_CONSTANTS = {
 	ALIAS_MAX_CHARS: 40,
 	/** Heading under which hand-written notes on a synced page are kept across syncs */
 	NOTES_HEADING: '## Notes',
+	/** Per-vault record of what was last written for each page (content hashes), at the vault root */
+	STATE_FILENAME: '.record-sync-state.json',
+	/** Names taken from one record at most */
+	MAX_ALIASES: 12,
+	/** Characters of the id hash added to a page name that is not the id itself */
+	SLUG_HASH_CHARS: 6,
 	/** Delay after start before the first sync (ms) */
 	FIRST_RUN_DELAY_MS: 5 * 60_000,
 	/** Time between syncs (ms) */
@@ -1898,6 +1904,8 @@ export const WIKI_RECORD_ATTACH_CONSTANTS = {
 	MIN_ALIAS_CHARS: 3,
 	/** Shortest CJK name that is matched */
 	MIN_ALIAS_CHARS_CJK: 2,
+	/** Role the orchestrator reads as when the audience is not the owner alone: role-restricted pages stay out */
+	SHARED_AUDIENCE_ROLE: 'shared-audience',
 	/** Pages attached to one message at most */
 	MAX_PAGES: 3,
 	/** Characters of one page body attached; the rest is clipped with the page path */
