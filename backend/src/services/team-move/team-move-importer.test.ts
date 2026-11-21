@@ -7,7 +7,7 @@ import type { Team } from '../../types/index.js';
 import { generateTargetKeyPair } from './team-move-crypto.js';
 import { buildEncryptedPackage } from './team-move-exporter.js';
 import { StagingArea } from './team-move-fs.js';
-import { TeamMoveImportError, TeamMoveImporter, projectsRoot, type ImportDeps } from './team-move-importer.js';
+import { TeamMoveImportError, TeamMoveImporter, isTargetOwnedProjectFile, projectsRoot, type ImportDeps } from './team-move-importer.js';
 import type { ImportProgress, TeamMoveManifest } from './team-move.types.js';
 
 let counter = 0;
@@ -16,6 +16,17 @@ describe('projectsRoot', () => {
   it('honours the env override and defaults under the home folder', () => {
     expect(projectsRoot({ CREWLY_PROJECTS_ROOT: '/data/p' }, '/home/u')).toBe('/data/p');
     expect(projectsRoot({}, '/home/u')).toBe(path.join('/home/u', 'crewly-projects'));
+  });
+});
+
+describe('isTargetOwnedProjectFile', () => {
+  it('claims the ticket folder and the request counter, nothing else', () => {
+    expect(isTargetOwnedProjectFile('tickets/CREW-1.md')).toBe(true);
+    expect(isTargetOwnedProjectFile('tickets/.counter.json')).toBe(true);
+    expect(isTargetOwnedProjectFile('requests/.ticket-counter')).toBe(true);
+    expect(isTargetOwnedProjectFile('requests/REQ-1.json')).toBe(false);
+    expect(isTargetOwnedProjectFile('goals/g.md')).toBe(false);
+    expect(isTargetOwnedProjectFile('tickets-archive/x.md')).toBe(false);
   });
 });
 
@@ -145,7 +156,61 @@ describe('TeamMoveImporter', () => {
     const ok = await new TeamMoveImporter(deps({ home: home2, storage: storage2 })).run({ moveId: p.moveId, packageFile: p.file, privateKey: p.key.privateKey });
     expect(restoreCalls).toEqual([]);
     expect(ok.warnings.join(' ')).toMatch(/already exists on this machine/);
-    expect(await fs.readFile(path.join(mine, '.crewly', 'tickets', 'T-1.md'), 'utf8')).toBe(`ticket at ${mine}`);
+    // The project is already here: the source's ticket folder is not copied.
+    await expect(fs.readFile(path.join(mine, '.crewly', 'tickets', 'T-1.md'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  describe('a project this machine already holds keeps its ticket backlog', () => {
+    /** A target that already has project p1 with its own backlog; returns the report and the project folder. */
+    async function moveOntoExisting(mutate?: (s: StagingArea) => Promise<void>) {
+      const home2 = path.join(root, 'home2');
+      await fs.mkdir(home2, { recursive: true });
+      const storage2 = new StorageService(home2);
+      const mine = path.join(root, 'mine');
+      await storage2.saveProject({ id: 'p1', name: 'P One', path: mine, teams: {}, status: 'stopped', createdAt: 'x', updatedAt: 'x' } as never);
+      const tickets = path.join(mine, '.crewly', 'tickets');
+      await fs.mkdir(tickets, { recursive: true });
+      await fs.writeFile(path.join(tickets, 'T-1.md'), '---\nid: T-1\nstatus: backlog\nlabels: [hold]\nassignee: nobody\n---\nheld on the mini\n');
+      await fs.writeFile(path.join(tickets, '.counter.json'), '{"next":58}');
+      const p = await pack(async (m, s) => {
+        await s.writeText('projects/p1/data/tickets/T-2.md', '---\nid: T-2\nstatus: ready\n---\nonly on the source\n');
+        await s.writeText('projects/p1/data/tickets/.counter.json', '{"next":3}');
+        await s.writeText('projects/p1/data/requests/.ticket-counter', '9');
+        await s.writeText('projects/p1/data/goals/g.md', 'goal from the source');
+        await mutate?.(s);
+        m.files = s.files();
+      });
+      const report = await new TeamMoveImporter(deps({ home: home2, storage: storage2 })).run({ moveId: p.moveId, packageFile: p.file, privateKey: p.key.privateKey });
+      return { report, mine, tickets };
+    }
+
+    it('leaves existing tickets, the counter and the hold exactly as they were, with no backup files', async () => {
+      const { tickets, mine } = await moveOntoExisting();
+      expect(await fs.readFile(path.join(tickets, 'T-1.md'), 'utf8')).toBe('---\nid: T-1\nstatus: backlog\nlabels: [hold]\nassignee: nobody\n---\nheld on the mini\n');
+      expect(await fs.readFile(path.join(tickets, '.counter.json'), 'utf8')).toBe('{"next":58}');
+      expect(await fs.readdir(tickets)).not.toEqual(expect.arrayContaining([expect.stringContaining('pre-move')]));
+      // The source's other tickets are not added either: the target owns the folder.
+      await expect(fs.readFile(path.join(tickets, 'T-2.md'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      // The request counter is the target's too.
+      await expect(fs.readFile(path.join(mine, '.crewly', 'requests', '.ticket-counter'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    it('still copies the rest of the project data and says how many tickets were not copied', async () => {
+      const { report, mine } = await moveOntoExisting();
+      expect(await fs.readFile(path.join(mine, '.crewly', 'goals', 'g.md'), 'utf8')).toBe('goal from the source');
+      expect(report.warnings.join(' ')).toMatch(/2 ticket\(s\) from the source were not copied/);
+    });
+  });
+
+  it('gives a project new to this machine its tickets and counters', async () => {
+    const p = await pack(async (m, s) => {
+      await s.writeText('projects/p1/data/tickets/.counter.json', '{"next":3}');
+      m.files = s.files();
+    });
+    await run(p);
+    const [project] = await storage.getProjects();
+    expect(await fs.readFile(path.join(project!.path, '.crewly', 'tickets', 'T-1.md'), 'utf8')).toBe(`ticket at ${project!.path}`);
+    expect(await fs.readFile(path.join(project!.path, '.crewly', 'tickets', '.counter.json'), 'utf8')).toBe('{"next":3}');
   });
 
   it('reports repositories it could not clone and non-git folders separately', async () => {

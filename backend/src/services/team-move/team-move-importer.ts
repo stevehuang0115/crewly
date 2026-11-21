@@ -161,6 +161,18 @@ export function projectsRoot(env: NodeJS.ProcessEnv = process.env, homeDir: stri
   return fromEnv && fromEnv.length > 0 ? path.resolve(fromEnv) : path.join(homeDir, C.DEFAULT_PROJECTS_DIR_NAME);
 }
 
+/**
+ * Whether a path inside a project's `.crewly` belongs to the machine that
+ * already holds the project (its ticket backlog and counters), so a move must
+ * not write it. Compared on the package-relative path with `/` separators.
+ *
+ * @param rel - Path relative to the project's data folder, e.g. `tickets/CREW-1.md`
+ * @returns True when the target's copy must be kept as it is
+ */
+export function isTargetOwnedProjectFile(rel: string): boolean {
+  return C.TARGET_OWNED_PROJECT_PATHS.some((p) => (p.endsWith('/') ? rel.startsWith(p) : rel === p));
+}
+
 /** Record `origin` on a repository built from a bundle (best effort: it may exist already). */
 async function gitRemoteAdd(dest: string, remoteUrl: string): Promise<void> {
   await git(dest, ['remote', 'add', 'origin', remoteUrl]).catch(() => undefined);
@@ -571,11 +583,23 @@ export class TeamMoveImporter {
       total.rewritten += c.rewritten;
     };
 
+    let ticketsKept = 0;
     for (const p of manifest.projects) {
       const mapping = mappings.find((m) => m.projectId === p.id)!;
       const src = path.join(staging, 'projects', p.id, 'data');
       const dest = this.projectDataDir(p, mapping.to);
-      add(await this.copyTree(src, dest, rewrites, tag));
+      // A project this machine already holds keeps its own ticket backlog and
+      // counters: the source's copy would undo holds and status changes made here.
+      let kept = 0;
+      const skip = mapping.existing
+        ? (rel: string): boolean => {
+            const owned = isTargetOwnedProjectFile(rel);
+            if (owned && rel.endsWith('.md')) kept += 1;
+            return owned;
+          }
+        : undefined;
+      add(await this.copyTree(src, dest, rewrites, tag, skip));
+      ticketsKept += kept;
       // Working files of a project that is not a git repository: copied as they are (no path rewriting in user files).
       if (p.work) add(await this.copyTree(path.join(staging, 'projects', p.id, 'files'), mapping.to, [], tag));
     }
@@ -604,7 +628,7 @@ export class TeamMoveImporter {
         // the agent starts from its handover note instead
       }
     }
-    return { filesWritten: total.written, filesUnchanged: total.unchanged, filesReplaced: total.replaced, pathsRewritten: total.rewritten, conversationsResumed: conversations };
+    return { filesWritten: total.written, filesUnchanged: total.unchanged, filesReplaced: total.replaced, pathsRewritten: total.rewritten, conversationsResumed: conversations, ticketsKept };
   }
 
   /**
@@ -902,6 +926,7 @@ export class TeamMoveImporter {
       }
       if (p.sharedWithTeams.length > 0) warnings.push(`${p.name} is also used by ${p.sharedWithTeams.join(', ')}; its Crewly data was copied and stays on the source too.`);
     }
+    if ((data['ticketsKept'] ?? 0) > 0) warnings.push(`${data['ticketsKept']} ticket(s) from the source were not copied: this machine already has the project and keeps its own ticket backlog.`);
     if ((data['filesReplaced'] ?? 0) > 0) warnings.push(`${data['filesReplaced']} existing file(s) were replaced by the moved version; the old copies are next to them as *.pre-move-*.`);
 
     const moved: Record<string, number> = { ...manifest.counts };
