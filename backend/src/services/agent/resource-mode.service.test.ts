@@ -3,7 +3,7 @@ jest.mock('../core/logger.service.js', () => ({
 }));
 jest.mock('../core/system-health.util.js', () => ({ getMemoryStats: () => ({ usedPercent: 10, freeMB: 9000, totalMB: 16384 }) }));
 
-import { RESOURCE_MODE_CONSTANTS, ResourceModeService, memoryIsTightFor, type RunningAgent } from './resource-mode.service.js';
+import { RESOURCE_MODE_CONSTANTS, ResourceModeService, memoryIsTightFor, osPressureCounts, type RunningAgent } from './resource-mode.service.js';
 import { getDefaultSettings } from '../../types/settings.types.js';
 
 const calm = { usedPercent: 40, freeMB: 8000, totalMB: 16384 };
@@ -79,6 +79,20 @@ describe('mode transitions', () => {
 		expect(memoryIsTightFor({ ...swapOnly, freeMB: 2047 })).toBe(true);
 		// The kernel's own flag still wins on its own.
 		expect(memoryIsTightFor({ ...swapOnly, pressureElevated: true })).toBe(true);
+	});
+
+	it('the OS warn level counts only while little is available; critical always (2026-11-21)', () => {
+		const mini = { usedPercent: 78.8, freeMB: 10400, totalMB: 49152, swapUsedPercent: 97.2, pressureElevated: true };
+		expect(osPressureCounts(mini)).toBe(false);
+		expect(memoryIsTightFor(mini)).toBe(false);
+		// Ample = the larger of 8 GB and 15% of physical memory.
+		expect(osPressureCounts({ ...mini, freeMB: 8191 })).toBe(true);
+		expect(osPressureCounts({ ...mini, totalMB: 131072, freeMB: 19000 })).toBe(true);
+		expect(osPressureCounts({ ...mini, totalMB: 131072, freeMB: 20000 })).toBe(false);
+		expect(osPressureCounts({ ...mini, pressureCritical: true })).toBe(true);
+		expect(osPressureCounts({ ...mini, pressureElevated: false })).toBe(false);
+		// No total known: the absolute figure alone.
+		expect(osPressureCounts({ freeMB: 9000, pressureElevated: true })).toBe(false);
 	});
 });
 

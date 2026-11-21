@@ -71,6 +71,15 @@ describe('bootPressureReason', () => {
 		expect(bootPressureReason({ ...calm, osPressure: true }, t)).toMatch(/^OS memory pressure/);
 	});
 
+	it('the OS warn level is not believed while plenty is available: 48 GB Mac, 10 GB available, swap 97% (2026-11-21)', () => {
+		const mini: BootPressureSnapshot = { usedPercent: 78.8, freeMB: 10400, totalMB: 49152, swapUsedPercent: 97.2, osPressure: true, pressureMode: false };
+		expect(bootPressureReason(mini, t)).toBeNull();
+		// Under the ample mark (8 GB here) the flag counts again.
+		expect(bootPressureReason({ ...mini, freeMB: 8000 }, t)).toMatch(/^OS memory pressure/);
+		// The critical level counts whatever is free.
+		expect(bootPressureReason({ ...mini, osPressureCritical: true }, t)).toMatch(/^OS memory pressure/);
+	});
+
 	it('scales the free floor to small machines (8 GB Air)', () => {
 		const air: BootPressureSnapshot = { ...calm, totalMB: 8192, freeMB: 2000, swapUsedPercent: 60 };
 		expect(effectiveMinFreeMB(air, t)).toBe(1638);

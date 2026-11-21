@@ -166,6 +166,7 @@ export function getMemoryStats(): {
   usedPercent: number;
   swapUsedPercent?: number;
   pressureElevated?: boolean;
+  pressureCritical?: boolean;
 } {
   if (cachedTotalMem === 0) return { totalMB: 0, freeMB: 0, usedPercent: 0 };
   const free = getAvailableMemoryBytes();
@@ -179,7 +180,7 @@ export function getMemoryStats(): {
 }
 
 const SWAP_CACHE_TTL_MS = 5_000;
-let swapCache: { value: { swapUsedPercent: number; pressureElevated: boolean } | null; at: number } | null = null;
+let swapCache: { value: { swapUsedPercent: number; pressureElevated: boolean; pressureCritical?: boolean } | null; at: number } | null = null;
 
 /**
  * Swap use and the kernel's own pressure verdict.
@@ -191,12 +192,12 @@ let swapCache: { value: { swapUsedPercent: number; pressureElevated: boolean } |
  * `kern.memorystatus_vm_pressure_level` (1 normal, 2 warn, 4 critical)
  * see that; on Linux, SwapTotal/SwapFree from /proc/meminfo.
  *
- * @returns Swap share in use and whether the OS reports pressure, or null if unreadable
+ * @returns Swap share in use, whether the OS reports pressure (warn or worse) and whether it is critical, or null if unreadable
  */
-export function readSwapPressure(): { swapUsedPercent: number; pressureElevated: boolean } | null {
+export function readSwapPressure(): { swapUsedPercent: number; pressureElevated: boolean; pressureCritical?: boolean } | null {
   const cached = swapCache;
   if (cached && Date.now() - cached.at < SWAP_CACHE_TTL_MS) return cached.value;
-  let value: { swapUsedPercent: number; pressureElevated: boolean } | null = null;
+  let value: { swapUsedPercent: number; pressureElevated: boolean; pressureCritical?: boolean } | null = null;
   try {
     if (isDarwin()) {
       const usage = execSync('sysctl -n vm.swapusage', { timeout: 1_000, encoding: 'utf8' });
@@ -208,7 +209,7 @@ export function readSwapPressure(): { swapUsedPercent: number; pressureElevated:
       } catch {
         // Older macOS without the sysctl: swap alone decides.
       }
-      value = { swapUsedPercent: total > 0 ? Math.round((used / total) * 1000) / 10 : 0, pressureElevated: level >= 2 };
+      value = { swapUsedPercent: total > 0 ? Math.round((used / total) * 1000) / 10 : 0, pressureElevated: level >= 2, pressureCritical: level >= 4 };
     } else if (os.platform() === 'linux') {
       const info = execSync('cat /proc/meminfo', { timeout: 1_000, encoding: 'utf8' });
       const kb = (k: string) => Number(info.match(new RegExp(`${k}:\\s+(\\d+)`))?.[1] ?? 0);

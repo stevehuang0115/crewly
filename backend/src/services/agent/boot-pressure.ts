@@ -14,7 +14,7 @@
 
 import { BOOT_PRESSURE_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
-import { ResourceModeService } from './resource-mode.service.js';
+import { ResourceModeService, osPressureCounts } from './resource-mode.service.js';
 
 /** What the boot looks at before a launch or a maintenance pass. */
 export interface BootPressureSnapshot {
@@ -24,6 +24,8 @@ export interface BootPressureSnapshot {
 	totalMB?: number;
 	swapUsedPercent: number;
 	osPressure: boolean;
+	/** The OS reports its critical level (counts whatever is free) */
+	osPressureCritical?: boolean;
 	/** ResourceModeService is in pressure mode */
 	pressureMode: boolean;
 }
@@ -78,7 +80,8 @@ export function effectiveMinFreeMB(snapshot: BootPressureSnapshot, thresholds: B
 
 /**
  * Why the snapshot is tight for the boot, or null when it is calm. Tight:
- * pressure mode, the OS pressure flag, free memory under the floor, or swap
+ * pressure mode, the OS pressure flag (its warn level only while little
+ * memory is available, see `osPressureCounts`), free memory under the floor, or swap
  * at or above the threshold while free memory is also under twice the
  * floor. Swap fill alone does not count: macOS grows its swap file on
  * demand, so a small swap file sits near full on a healthy machine. An
@@ -97,7 +100,7 @@ export function bootPressureReason(
 	const floor = effectiveMinFreeMB(snapshot, thresholds);
 	const why: string[] = [];
 	if (snapshot.pressureMode) why.push('pressure mode');
-	if (snapshot.osPressure) why.push('OS memory pressure');
+	if (osPressureCounts({ freeMB: snapshot.freeMB, totalMB: snapshot.totalMB, pressureElevated: snapshot.osPressure, pressureCritical: snapshot.osPressureCritical })) why.push('OS memory pressure');
 	if (snapshot.freeMB < floor) why.push(`free ${snapshot.freeMB}MB < ${floor}MB`);
 	else if (snapshot.swapUsedPercent >= thresholds.swapUsedPercent && snapshot.freeMB < floor * 2) {
 		why.push(`swap ${snapshot.swapUsedPercent}% >= ${thresholds.swapUsedPercent}% with free ${snapshot.freeMB}MB < ${floor * 2}MB`);
@@ -123,6 +126,7 @@ export function readBootPressureSnapshot(): BootPressureSnapshot | null {
 			totalMB: mem.totalMB,
 			swapUsedPercent: mem.swapUsedPercent ?? 0,
 			osPressure: mem.pressureElevated === true,
+			osPressureCritical: mem.pressureCritical === true,
 			pressureMode: rm.getMode() === 'pressure',
 		};
 	} catch {

@@ -1204,6 +1204,18 @@ export const AGENT_SUSPEND_CONSTANTS = {
 	IDLE_STOP_SWAP_USED_PERCENT: 75,
 	/** Swap counts only while free memory is under this many times IDLE_STOP_MIN_FREE_MB (2 GB). */
 	IDLE_STOP_SWAP_FREE_FACTOR: 2,
+	/**
+	 * The OS "warn" pressure level is ignored while at least this much memory
+	 * is available (the larger of the absolute figure and the share of physical
+	 * memory). macOS keeps the level at warn for as long as swap stays full,
+	 * hours after the pressure itself has gone: a 48 GB Mac with 10 GB
+	 * available held agents back on it (2026-11-21). The critical level
+	 * always counts. The absolute figure is high on purpose: a 16 GB Mac that
+	 * was swapping itself to a crawl still showed gigabytes of inactive pages
+	 * (2026-09-23), and there the warn level must keep counting.
+	 */
+	OS_PRESSURE_AMPLE_FREE_MB: 8 * 1024,
+	OS_PRESSURE_AMPLE_FREE_FRACTION: 0.15,
 	/** Roles that should never be auto-stopped (always-on) */
 	ALWAYS_ON_ROLES: ['orchestrator', 'auditor'] as const,
 	/** Idle timeout in ms before a worker agent is stopped (default 30 min) */

@@ -178,7 +178,7 @@ Pages purgeable:                             98.
           ? 'total = 12288.00M  used = 10956.00M  free = 1332.00M  (encrypted)'
           : '2\n',
       );
-      expect(readSwapPressure()).toEqual({ swapUsedPercent: 89.2, pressureElevated: true });
+      expect(readSwapPressure()).toEqual({ swapUsedPercent: 89.2, pressureElevated: true, pressureCritical: false });
     });
 
     it('treats level 1 as normal and caches the reading', () => {
@@ -186,7 +186,7 @@ Pages purgeable:                             98.
       mockExecSync.mockImplementation((cmd: string) =>
         cmd.includes('swapusage') ? 'total = 2048.00M  used = 0.00M  free = 2048.00M' : '1\n',
       );
-      expect(readSwapPressure()).toEqual({ swapUsedPercent: 0, pressureElevated: false });
+      expect(readSwapPressure()).toEqual({ swapUsedPercent: 0, pressureElevated: false, pressureCritical: false });
       readSwapPressure();
       expect(mockExecSync).toHaveBeenCalledTimes(2);
     });
