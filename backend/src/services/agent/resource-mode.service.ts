@@ -80,6 +80,28 @@ export interface MemoryReading {
 	totalMB: number;
 	swapUsedPercent?: number;
 	pressureElevated?: boolean;
+	/** The OS reports its critical level (always counts) */
+	pressureCritical?: boolean;
+}
+
+/**
+ * Whether the OS pressure flag should be believed for this reading. The
+ * critical level always is. The warn level is not while plenty of memory is
+ * available: macOS leaves it at warn for as long as swap stays full, hours
+ * after the pressure has gone (2026-11-21: a 48 GB Mac with 10 GB available
+ * and swap 97% full held its agents back at boot and entered pressure mode).
+ *
+ * @param stats - Memory reading (totalMB 0 or absent: only the absolute figure applies)
+ * @returns True when the flag counts as memory pressure
+ */
+export function osPressureCounts(stats: { freeMB: number; totalMB?: number; pressureElevated?: boolean; pressureCritical?: boolean }): boolean {
+	if (stats.pressureCritical === true) return true;
+	if (stats.pressureElevated !== true) return false;
+	const ample = Math.max(
+		AGENT_SUSPEND_CONSTANTS.OS_PRESSURE_AMPLE_FREE_MB,
+		Math.round((stats.totalMB ?? 0) * AGENT_SUSPEND_CONSTANTS.OS_PRESSURE_AMPLE_FREE_FRACTION),
+	);
+	return stats.freeMB < ample;
 }
 
 /**
@@ -93,7 +115,9 @@ export interface MemoryReading {
  * reporting no pressure entered pressure mode 11 times on 2026-10-26 — 18
  * idle stops, 13 starts queued behind the cap, 2 boot restores deferred, for
  * nothing. A machine that is really swapping itself to a crawl still trips
- * the OS pressure flag, the CPU-load rule or the used share.
+ * the OS pressure flag, the CPU-load rule or the used share. The OS flag at
+ * its warn level counts only while little memory is available
+ * ({@link osPressureCounts}).
  *
  * @param stats - Memory reading
  * @returns True when tight
@@ -107,7 +131,7 @@ export function memoryIsTightFor(stats: MemoryReading): boolean {
 		stats.usedPercent >= AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MEMORY_USED_PERCENT ||
 		stats.freeMB < AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MIN_FREE_MB ||
 		swapTight ||
-		stats.pressureElevated === true
+		osPressureCounts(stats)
 	);
 }
 

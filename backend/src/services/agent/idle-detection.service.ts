@@ -285,6 +285,7 @@ export class IdleDetectionService {
 		totalMB: number;
 		swapUsedPercent?: number;
 		pressureElevated?: boolean;
+		pressureCritical?: boolean;
 	} = getMemoryStats;
 
 	/**
