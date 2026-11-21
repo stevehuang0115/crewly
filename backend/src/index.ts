@@ -8334,9 +8334,8 @@ void (async () => {
 		const slack = getSlackService();
 		const viaSlack: Promise<boolean> = slack.isConnected()
 			? slack
-				// Name the machine: with several machines on one account the owner
-				// could not tell whose agent the alert was about (2026-11-19).
-				.sendNotification({ type: 'project_update', title: `${opts.title} (machine: ${os.hostname()})`, message: text, urgency: 'high', timestamp: new Date().toISOString() })
+				// sendNotification names the machine on every owner notice.
+				.sendNotification({ type: 'project_update', title: opts.title, message: text, urgency: 'high', timestamp: new Date().toISOString() })
 				.then((sent) => sent !== false, () => false)
 			: Promise.resolve(false);
 		void viaSlack.then((sent) => {

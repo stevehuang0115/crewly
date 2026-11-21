@@ -11,6 +11,7 @@ import { EventEmitter } from 'events';
 import { localAgentSession } from './slack-team-channel.service.js';
 import { createReadStream } from 'fs';
 import { basename } from 'path';
+import { hostname } from 'os';
 import type {
   SlackConfig,
   SlackIncomingMessage,
@@ -2045,7 +2046,9 @@ export class SlackService extends EventEmitter {
    */
   async sendNotification(notification: SlackNotification): Promise<boolean> {
     const blocks = this.formatNotificationBlocks(notification);
-    const text = `${notification.title}: ${notification.message}`;
+    // The fallback text is what a phone shows on the lock screen: name the
+    // machine there too.
+    const text = `${notification.title} (${hostname()}): ${notification.message}`;
     const explicit = notification.channelId || this.config?.defaultChannelId;
     if (explicit) {
       await this.sendMessage({ channelId: explicit, text, blocks, threadTs: notification.threadTs });
@@ -2127,6 +2130,18 @@ export class SlackService extends EventEmitter {
           text: `${urgencyEmoji[notification.urgency]} ${notification.title}`,
           emoji: true,
         },
+      },
+      // Every machine of an account posts to the same owner DM: without the
+      // name the owner cannot tell which one a notice is about (disk alert,
+      // 2026-11-21). Right under the title, so it shows before a long body.
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `Machine: ${hostname()}`,
+          } as unknown as import('../../types/slack.types.js').SlackElement,
+        ],
       },
       {
         type: 'section',

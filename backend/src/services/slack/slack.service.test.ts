@@ -1419,13 +1419,16 @@ describe('SlackService', () => {
       } as SlackNotification);
 
       // Should have header, section, and context blocks
-      expect(blocks).toHaveLength(3);
+      expect(blocks).toHaveLength(4);
       expect(blocks[0].type).toBe('header');
-      expect(blocks[1].type).toBe('section');
-      expect(blocks[2].type).toBe('context');
+      // The machine is named right under the title, before the body.
+      expect(blocks[1].type).toBe('context');
+      expect(blocks[1].elements[0].text).toBe(`Machine: ${require('os').hostname()}`);
+      expect(blocks[2].type).toBe('section');
+      expect(blocks[3].type).toBe('context');
 
       // Context element should be a text object with type and plain string text
-      const contextElement = blocks[2].elements[0];
+      const contextElement = blocks[3].elements[0];
       expect(contextElement.type).toBe('mrkdwn');
       // text should be a plain string (Slack context element format), not a nested object
       expect(typeof contextElement.text).toBe('string');
