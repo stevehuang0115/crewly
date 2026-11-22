@@ -4,7 +4,9 @@
 
 import {
 	clearOwnerStopped,
+	AGENT_RESTART_WINDOW_MS,
 	isOwnerStopped,
+	isRestartAfterAgentStop,
 	markOwnerStopped,
 	resetOwnerStoppedForTesting,
 	stopSource,
@@ -31,6 +33,15 @@ describe('owner-stopped registry', () => {
 		expect(isOwnerStopped('dev-2')).toBe(true);
 		clearOwnerStopped('dev-2');
 		expect(stopSource('dev-2')).toBeUndefined();
+	});
+
+	it('a start soon after an agent-made stop is a restart; not after an owner stop or once the window passed', () => {
+		markOwnerStopped('dev-1', 'agent');
+		expect(isRestartAfterAgentStop('dev-1')).toBe(true);
+		expect(isRestartAfterAgentStop('dev-1', Date.now() + AGENT_RESTART_WINDOW_MS + 1000)).toBe(false);
+		markOwnerStopped('dev-2');
+		expect(isRestartAfterAgentStop('dev-2')).toBe(false);
+		expect(isRestartAfterAgentStop('dev-3')).toBe(false);
 	});
 
 	it('a deliberate stop drops the start-up block: a stopped agent no longer waits on the user', async () => {

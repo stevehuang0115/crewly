@@ -66,7 +66,7 @@ import { getCallerIdentity, isOwnerCaller, rejectNonOwner, sendOwnerAuthRequired
 import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-runtime.js';
 import { getRuntimeFallbackService } from '../../services/runtime-fallback/runtime-fallback.service.js';
 import { usageLimitedView } from '../../services/runtime-fallback/usage-limit-state.js';
-import { clearOwnerStopped, markOwnerStopped, type StopSource } from '../../services/agent/owner-stopped.registry.js';
+import { clearOwnerStopped, isRestartAfterAgentStop, markOwnerStopped, type StopSource } from '../../services/agent/owner-stopped.registry.js';
 import { isTeamPausedNow, pausedRefusalMessage } from '../../services/team/team-pause.registry.js';
 import { reportOwnerThreadBlocking } from '../../services/messaging/owner-thread-sentinel.service.js';
 import { actorFromRequest, recordActivity, summarizeChange } from '../../services/activity/activity-log.service.js';
@@ -1158,6 +1158,7 @@ async function _stopTeamMemberCore(
       // to start it again (crewly#1014). Marked before terminating, because
       // the session going down is what triggers the queued-message wake-up.
       markOwnerStopped(member.sessionName, by);
+      logger.info('Stopping team member', { sessionName: member.sessionName, stoppedBy: by });
       const stopResult = await context.agentRegistrationService.terminateAgentSession(
         member.sessionName,
         member.role
@@ -2307,7 +2308,20 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
       });
     }
 
-    if (!memberAlreadyActive && !ownerDashboardCall) {
+    // An agent stopped this member moments ago and is starting it again: a
+    // restart, not a wake of a sleeping agent, so the wake and commitment
+    // gates do not apply (the member was running until the stop).
+    const restartAfterAgentStop = !memberAlreadyActive && !ownerDashboardCall && isRestartAfterAgentStop(member.sessionName);
+    if (restartAfterAgentStop) {
+      logger.info('startTeamMember: restart after an agent-made stop — wake and commitment gates do not apply', {
+        teamId,
+        memberId,
+        sessionName: member.sessionName,
+        callerSession: readAgentSessionHeader(req) ?? null,
+      });
+    }
+
+    if (!memberAlreadyActive && !ownerDashboardCall && !restartAfterAgentStop) {
       const gateResult = await checkWakeGate(member.sessionName, req.body);
       if (!gateResult.allowed) {
         logger.warn('startTeamMember rejected by wake gate', {
@@ -2398,7 +2412,7 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
         });
       }
     }
-    if (!memberAlreadyActive && !ownerDashboardCall && isDormantTeam(team) && !scheduledPreAuthorized && !harnessParkedResume) {
+    if (!memberAlreadyActive && !ownerDashboardCall && !restartAfterAgentStop && isDormantTeam(team) && !scheduledPreAuthorized && !harnessParkedResume) {
       let ownerMessages: string[] = [];
       let readOk = true;
       try {

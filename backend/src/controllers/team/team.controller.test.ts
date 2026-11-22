@@ -4840,6 +4840,27 @@ describe('Teams Handlers', () => {
       expect((mockApiContext.agentRegistrationService as any).createAgentSession).not.toHaveBeenCalled();
     });
 
+    // 2026-11-22: the orchestrator restarted the only member of a team (stop, then
+    // start); the start was refused as a cold launch and the member stayed down.
+    it('lets an agent start a member an agent stopped moments ago (a restart), without owner approval', async () => {
+      const registry = await import('../../services/agent/owner-stopped.registry.js');
+      registry.markOwnerStopped('crewly-dormant-sleeper', 'agent');
+
+      await call({ 'x-agent-session': 'crewly-orc' }, 'crewly-dormant-sleeper');
+
+      expect(statuses()).not.toContain(403);
+      expect(statuses()).not.toContain(400);
+    });
+
+    it('still gates an agent start after the owner stopped the member', async () => {
+      const registry = await import('../../services/agent/owner-stopped.registry.js');
+      registry.markOwnerStopped('crewly-dormant-sleeper', 'owner');
+
+      await call({ 'x-agent-session': 'crewly-orc' }, 'crewly-dormant-sleeper');
+
+      expect(statuses().some((code) => code === 400 || code === 403)).toBe(true);
+    });
+
     it('no longer trusts a bare X-Crewly-Caller: dashboard marker (#999) — the wake gate applies', async () => {
       await call({ 'x-crewly-caller': 'dashboard' }, 'crewly-dormant-sleeper');
 
