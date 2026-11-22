@@ -23,22 +23,27 @@
 import { isSessionPaused } from '../team/team-pause.registry.js';
 import { clearStartupBlock } from './startup-block.registry.js';
 
-const stopped = new Set<string>();
+/** Who asked for a stop: the owner (dashboard, phone, owner token) or an agent (a stop-agent skill). */
+export type StopSource = 'owner' | 'agent';
+
+const stopped = new Map<string, StopSource>();
 
 /**
  * Remember that a session was stopped on purpose. Also drops a start-up
  * block on it (startup-block.registry.ts): a stopped agent is not waiting.
  *
  * @param sessionName - Session that was stopped
+ * @param by - Who asked for the stop (defaults to the owner)
  *
  * @example
  * ```ts
  * markOwnerStopped('dev-1');
+ * markOwnerStopped('dev-1', 'agent'); // the lead's stop-agent skill
  * ```
  */
-export function markOwnerStopped(sessionName: string): void {
+export function markOwnerStopped(sessionName: string, by: StopSource = 'owner'): void {
 	if (!sessionName) return;
-	stopped.add(sessionName);
+	stopped.set(sessionName, by);
 	// Stopped by the user: it no longer waits on them to start.
 	clearStartupBlock(sessionName);
 }
@@ -61,6 +66,19 @@ export function clearOwnerStopped(sessionName: string): void {
  */
 export function isOwnerStopped(sessionName: string): boolean {
 	return stopped.has(sessionName) || isSessionPaused(sessionName);
+}
+
+/**
+ * Who stopped a session, when a stop mark stands. A stop an agent asked for
+ * holds ordinary traffic like any other, but it is not the owner's decision:
+ * the owner is never told "you stopped it", and a reminder for the owner's
+ * own unanswered message may start the agent again.
+ *
+ * @param sessionName - Session
+ * @returns The source of the standing stop mark, or undefined without one
+ */
+export function stopSource(sessionName: string): StopSource | undefined {
+	return stopped.get(sessionName);
 }
 
 /** Clear every mark (tests only). */

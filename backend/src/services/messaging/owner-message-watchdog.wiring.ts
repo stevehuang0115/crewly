@@ -33,7 +33,7 @@ import {
   type OwnerMessageTrackInput,
 } from './owner-message-watchdog.service.js';
 
-import { isOwnerStopped } from '../agent/owner-stopped.registry.js';
+import { clearOwnerStopped, isOwnerStopped, stopSource, type StopSource } from '../agent/owner-stopped.registry.js';
 import { withQueueMeta, type QueueMessageMeta } from './queue-priority.js';
 import { pausedTeamOfSession } from '../team/team-pause.registry.js';
 
@@ -237,6 +237,10 @@ export interface OwnerWatchdogWiringDeps {
   noteOriginThread?: (session: string, chatChannelId: string, threadId: string | undefined) => void;
   /** The owner stopped this agent (default: the owner-stopped registry) */
   isOwnerStopped?: (session: string) => boolean;
+  /** Who asked for the standing stop (tests) */
+  stopSource?: (session: string) => StopSource | undefined;
+  /** Drop the stop mark (tests) */
+  clearOwnerStopped?: (session: string) => void;
   /** Why messages to the agent are held (input box unreadable / not ours), if they are */
   inputHeld?: (session: string) => 'unreadable' | 'foreign' | null;
 }
@@ -281,7 +285,13 @@ export async function nudgeAgent(deps: OwnerWatchdogWiringDeps, entry: OwnerMess
     return { outcome: 'blocked', reason: 'asleep', detail: `you paused ${paused.teamName}` };
   }
   if ((deps.isOwnerStopped ?? isOwnerStopped)(session)) {
-    return { outcome: 'blocked', reason: 'asleep', detail: 'you stopped it' };
+    // Stopped by another agent (stop-agent skill), not by the owner: the
+    // owner's unanswered message outranks that stop, so the reminder starts
+    // the agent (2026-11-22: "you stopped it" shown for a stop the owner never made).
+    if ((deps.stopSource ?? stopSource)(session) !== 'agent') {
+      return { outcome: 'blocked', reason: 'asleep', detail: 'you stopped it' };
+    }
+    (deps.clearOwnerStopped ?? clearOwnerStopped)(session);
   }
   // The reminder carries the owner's words: if the agent is busy it waits at
   // the front of its queue, is not added while the original is still queued
