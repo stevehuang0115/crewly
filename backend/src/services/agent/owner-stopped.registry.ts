@@ -26,7 +26,10 @@ import { clearStartupBlock } from './startup-block.registry.js';
 /** Who asked for a stop: the owner (dashboard, phone, owner token) or an agent (a stop-agent skill). */
 export type StopSource = 'owner' | 'agent';
 
-const stopped = new Map<string, StopSource>();
+/** How long after an agent-made stop a start by an agent counts as the second half of a restart. */
+export const AGENT_RESTART_WINDOW_MS = 10 * 60_000;
+
+const stopped = new Map<string, { by: StopSource; at: number }>();
 
 /**
  * Remember that a session was stopped on purpose. Also drops a start-up
@@ -43,7 +46,7 @@ const stopped = new Map<string, StopSource>();
  */
 export function markOwnerStopped(sessionName: string, by: StopSource = 'owner'): void {
 	if (!sessionName) return;
-	stopped.set(sessionName, by);
+	stopped.set(sessionName, { by, at: Date.now() });
 	// Stopped by the user: it no longer waits on them to start.
 	clearStartupBlock(sessionName);
 }
@@ -78,7 +81,23 @@ export function isOwnerStopped(sessionName: string): boolean {
  * @returns The source of the standing stop mark, or undefined without one
  */
 export function stopSource(sessionName: string): StopSource | undefined {
-	return stopped.get(sessionName);
+	return stopped.get(sessionName)?.by;
+}
+
+/**
+ * Whether an agent stopped this session moments ago, so a start now is the
+ * second half of a restart (stop, then start) rather than a wake of a
+ * sleeping agent. Without this an agent restarting the only running member
+ * of a team is refused the start (the team now looks dormant) and the
+ * member stays down (2026-11-22).
+ *
+ * @param sessionName - Session being started
+ * @param now - Clock (tests)
+ * @returns True within {@link AGENT_RESTART_WINDOW_MS} of an agent-made stop
+ */
+export function isRestartAfterAgentStop(sessionName: string, now: number = Date.now()): boolean {
+	const mark = stopped.get(sessionName);
+	return mark?.by === 'agent' && now - mark.at <= AGENT_RESTART_WINDOW_MS;
 }
 
 /** Clear every mark (tests only). */
