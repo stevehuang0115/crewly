@@ -66,7 +66,7 @@ import { getCallerIdentity, isOwnerCaller, rejectNonOwner, sendOwnerAuthRequired
 import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-runtime.js';
 import { getRuntimeFallbackService } from '../../services/runtime-fallback/runtime-fallback.service.js';
 import { usageLimitedView } from '../../services/runtime-fallback/usage-limit-state.js';
-import { clearOwnerStopped, markOwnerStopped } from '../../services/agent/owner-stopped.registry.js';
+import { clearOwnerStopped, markOwnerStopped, type StopSource } from '../../services/agent/owner-stopped.registry.js';
 import { isTeamPausedNow, pausedRefusalMessage } from '../../services/team/team-pause.registry.js';
 import { reportOwnerThreadBlocking } from '../../services/messaging/owner-thread-sentinel.service.js';
 import { actorFromRequest, recordActivity, summarizeChange } from '../../services/activity/activity-log.service.js';
@@ -1127,16 +1127,29 @@ async function retirePreviousMemberSession(
 }
 
 /**
+ * Who asked for a stop: an identified agent (its stop-agent skill), else the
+ * owner. A stop by an agent is not reported to the owner as "you stopped it".
+ *
+ * @param req - The stop request
+ * @returns The stop source
+ */
+function stopSourceOf(req: Pick<Request, 'headers'>): StopSource {
+  return readAgentSessionHeader(req) ? 'agent' : 'owner';
+}
+
+/**
  * Core logic for stopping a single team member
  * @param context - API context with services
  * @param team - The team containing the member
  * @param member - The team member to stop
+ * @param by - Who asked: the owner, or an agent (stop-agent skill)
  * @returns Result of the stop operation
  */
 async function _stopTeamMemberCore(
   context: ApiContext,
   team: Team,
-  member: TeamMember
+  member: TeamMember,
+  by: StopSource = 'owner'
 ): Promise<TeamMemberOperationResult> {
   try {
     // Use the unified agent registration service for team member termination
@@ -1144,7 +1157,7 @@ async function _stopTeamMemberCore(
       // A deliberate stop: messages queued for this agent are held, not used
       // to start it again (crewly#1014). Marked before terminating, because
       // the session going down is what triggers the queued-message wake-up.
-      markOwnerStopped(member.sessionName);
+      markOwnerStopped(member.sessionName, by);
       const stopResult = await context.agentRegistrationService.terminateAgentSession(
         member.sessionName,
         member.role
@@ -1791,7 +1804,7 @@ export async function stopTeam(this: ApiContext, req: Request, res: Response): P
         continue;
       }
 
-      const result = await _stopTeamMemberCore(this, team, member);
+      const result = await _stopTeamMemberCore(this, team, member, stopSourceOf(req));
 
       // Convert internal result to the expected format for the response
       const resultForResponse: TeamMemberOperationResult = {
@@ -2547,7 +2560,7 @@ export async function stopTeamMember(this: ApiContext, req: Request, res: Respon
     }
 
     // Use the internal helper function to stop the team member
-    const result = await _stopTeamMemberCore(this, team, member);
+    const result = await _stopTeamMemberCore(this, team, member, stopSourceOf(req));
 
     // Handle the result and respond appropriately
     if (result.success) {

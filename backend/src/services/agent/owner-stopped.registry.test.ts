@@ -7,6 +7,7 @@ import {
 	isOwnerStopped,
 	markOwnerStopped,
 	resetOwnerStoppedForTesting,
+	stopSource,
 } from './owner-stopped.registry.js';
 
 describe('owner-stopped registry', () => {
@@ -19,6 +20,17 @@ describe('owner-stopped registry', () => {
 		expect(isOwnerStopped('dev-2')).toBe(false);
 		clearOwnerStopped('dev-1');
 		expect(isOwnerStopped('dev-1')).toBe(false);
+	});
+
+	it('records who asked for the stop (owner by default, or an agent)', () => {
+		expect(stopSource('dev-1')).toBeUndefined();
+		markOwnerStopped('dev-1');
+		expect(stopSource('dev-1')).toBe('owner');
+		markOwnerStopped('dev-2', 'agent');
+		expect(stopSource('dev-2')).toBe('agent');
+		expect(isOwnerStopped('dev-2')).toBe(true);
+		clearOwnerStopped('dev-2');
+		expect(stopSource('dev-2')).toBeUndefined();
 	});
 
 	it('a deliberate stop drops the start-up block: a stopped agent no longer waits on the user', async () => {

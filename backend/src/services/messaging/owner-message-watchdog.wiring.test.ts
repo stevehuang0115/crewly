@@ -261,6 +261,20 @@ describe('nudgeAgent', () => {
     expect(d.sent).toHaveLength(0);
   });
 
+  // 2026-11-22: the owner was told "you stopped it" for a stop a teammate's stop-agent skill made.
+  it('an agent another agent stopped is woken for the owner: mark cleared, reminder sent', async () => {
+    const cleared: string[] = [];
+    const d = deps({
+      sessionExists: () => false,
+      isOwnerStopped: (s) => s === 'ella',
+      stopSource: () => 'agent',
+      clearOwnerStopped: (s) => cleared.push(s),
+    });
+    await expect(nudgeAgent(d, entry(), 10)).resolves.toEqual({ outcome: 'sent' });
+    expect(cleared).toEqual(['ella']);
+    expect(d.activations).toEqual(['ella']);
+  });
+
   it('activation refused → blocked (asleep) with the reason', async () => {
     const d = deps({ sessionExists: () => false, activate: async () => ({ success: false, error: 'team is dormant' }) });
     await expect(nudgeAgent(d, entry(), 10)).resolves.toEqual({ outcome: 'blocked', reason: 'asleep', detail: 'team is dormant' });
