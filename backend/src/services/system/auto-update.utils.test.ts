@@ -29,6 +29,7 @@ import {
 	sanitizeNpmOutput,
 	resolveAutoUpdateSwitch,
 	resolveInstallCwd,
+	quoteForWindowsShell,
 	resolveNpmCommand,
 	resolveRunningPackageRoot,
 	writeAutoUpdateState,
@@ -163,6 +164,15 @@ describe('auto-update.utils', () => {
 			expect(resolveNpmCommand(path.join(bin, 'node'), 'linux')).toBe(path.join(bin, 'npm'));
 			expect(resolveNpmCommand(path.join(tmp, 'nothing', 'node'), 'linux')).toBe('npm');
 			expect(resolveNpmCommand(path.join(tmp, 'nothing', 'node.exe'), 'win32')).toBe('npm.cmd');
+		});
+
+		it('quotes words with spaces for the Windows shell (npm under Program Files, 2026-11-22)', () => {
+			expect(quoteForWindowsShell('C:\\Program Files\\nodejs\\npm.cmd')).toBe('"C:\\Program Files\\nodejs\\npm.cmd"');
+			expect(quoteForWindowsShell('C:\\Users\\Jo Doe\\AppData\\Roaming\\npm')).toBe('"C:\\Users\\Jo Doe\\AppData\\Roaming\\npm"');
+			expect(quoteForWindowsShell('crewly@1.44.3')).toBe('crewly@1.44.3');
+			expect(quoteForWindowsShell('install')).toBe('install');
+			expect(quoteForWindowsShell('a&b')).toBe('"a&b"');
+			expect(quoteForWindowsShell('')).toBe('""');
 		});
 	});
 

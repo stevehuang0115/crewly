@@ -63,6 +63,7 @@ import {
 	resolveAutoUpdateSwitch,
 	resolveInstallCwd,
 	sanitizeNpmOutput,
+	quoteForWindowsShell,
 	resolveNpmCommand,
 	resolveRunningPackageRoot,
 	safeProcessCwd,
@@ -800,10 +801,13 @@ export function runNpmInstall(
 ): Promise<InstallRunResult> {
 	return new Promise((resolve) => {
 		let output = '';
-		const child = spawn(command, args, {
+		// npm is npm.cmd on Windows, which needs a shell; the shell splits on spaces, so quote
+		// each word there (`C:\Program Files\nodejs\npm.cmd`). Elsewhere no shell, so paths
+		// with spaces stay one argument.
+		const viaShell = process.platform === 'win32';
+		const child = spawn(viaShell ? quoteForWindowsShell(command) : command, viaShell ? args.map(quoteForWindowsShell) : args, {
 			stdio: ['ignore', 'pipe', 'pipe'],
-			// npm is npm.cmd on Windows; elsewhere no shell so paths with spaces stay one argument.
-			shell: process.platform === 'win32',
+			shell: viaShell,
 			env: process.env,
 			...(cwd ? { cwd } : {}),
 		});

@@ -131,10 +131,12 @@ export async function upgradeCommand(options: UpgradeOptions): Promise<void> {
 	// Upgrade in the prefix the running copy lives in (the user prefix when the
 	// installer could not write the global npm folder).
 	const npmArgs = selfInstallArgs('crewly@latest');
-	const child = spawn('npm', npmArgs, {
+	// npm is npm.cmd on Windows, which needs a shell; the shell splits on spaces, so quote a
+	// prefix path that holds one. Elsewhere no shell, so it stays one argument.
+	const viaShell = process.platform === 'win32';
+	const child = spawn('npm', viaShell ? npmArgs.map((arg) => (/[\s&|<>^()]/.test(arg) ? `"${arg}"` : arg)) : npmArgs, {
 		stdio: 'inherit',
-		// npm is npm.cmd on Windows; elsewhere no shell, so a prefix path with spaces stays one argument.
-		shell: process.platform === 'win32',
+		shell: viaShell,
 	});
 
 	child.on('error', (error) => {
