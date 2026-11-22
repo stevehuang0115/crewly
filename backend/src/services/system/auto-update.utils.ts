@@ -254,6 +254,27 @@ export function resolveNpmCommand(execPath: string = process.execPath, platform:
 }
 
 /**
+ * Quote one word for a `cmd.exe` command line. Node joins command and
+ * arguments with spaces when `shell` is on, so an unquoted
+ * `C:\Program Files\nodejs\npm.cmd` runs `C:\Program` and fails with
+ * "is not recognized as an internal or external command".
+ *
+ * @param word - Command or argument
+ * @returns The word, in double quotes when it holds a space or shell character
+ *
+ * @example
+ * ```ts
+ * quoteForWindowsShell('C:\\Program Files\\nodejs\\npm.cmd');
+ * // '"C:\\Program Files\\nodejs\\npm.cmd"'
+ * ```
+ */
+export function quoteForWindowsShell(word: string): string {
+	if (word === '') return '""';
+	if (!/[\s&|<>^()"]/.test(word)) return word;
+	return `"${word.replace(/"/g, '""')}"`;
+}
+
+/**
  * Version in `<packageRoot>/package.json`, read fresh from disk.
  *
  * @param packageRoot - Package root
