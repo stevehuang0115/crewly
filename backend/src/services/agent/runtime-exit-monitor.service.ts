@@ -481,10 +481,25 @@ export class RuntimeExitMonitorService {
 			// Verify shell prompt is visible (avoids false positives)
 			const shellPromptConfirmed = this.verifyExitWithShellPrompt(sessionName, helper);
 
-			if (!shellPromptConfirmed) {
+			// The shell-prompt patterns are loose (a line ending in `$`, `>` or
+			// `%` is enough), and the exit patterns also match text echoed into
+			// the terminal — a delivered message, the agent's own output. A CLI
+			// whose process is still running has not exited: 2026-11-21, a
+			// Codex agent two seconds into a teacher's request was force-killed
+			// and restarted, and the teacher waited four minutes with no sign.
+			// A live runtime is only recovered for a runtime-specific failure.
+			const runtimeAlive = shellPromptConfirmed && this.runtimeProcessAlive(sessionName);
+
+			if (!shellPromptConfirmed || runtimeAlive) {
 				const runtimeSpecificMatch = await this.checkRuntimeSpecificFailure(sessionName, monitored, helper);
 				if (!runtimeSpecificMatch) {
-					this.logger.debug('Exit pattern matched but shell prompt not confirmed, ignoring', { sessionName });
+					if (runtimeAlive) {
+						this.logger.info('Exit pattern matched but the runtime process is still running, ignoring', { sessionName, runtimeType: monitored.runtimeType });
+						// Drop the text that matched, or every later chunk re-triggers the check.
+						monitored.buffer = '';
+					} else {
+						this.logger.debug('Exit pattern matched but shell prompt not confirmed, ignoring', { sessionName });
+					}
 					return;
 				}
 			}
@@ -1192,6 +1207,22 @@ export class RuntimeExitMonitorService {
 				error: error instanceof Error ? error.message : String(error),
 			});
 		});
+	}
+
+	/**
+	 * Whether the runtime's own process is still running inside the session.
+	 * False when the backend cannot tell (no process check) or the check
+	 * throws: the caller then falls back to the terminal text alone.
+	 *
+	 * @param sessionName - PTY session name
+	 * @returns True only when the backend reports a living child process
+	 */
+	private runtimeProcessAlive(sessionName: string): boolean {
+		try {
+			return getSessionBackendSync()?.isChildProcessAlive?.(sessionName) === true;
+		} catch {
+			return false;
+		}
 	}
 
 	/**

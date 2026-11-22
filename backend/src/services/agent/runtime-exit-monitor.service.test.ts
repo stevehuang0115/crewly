@@ -492,11 +492,20 @@ describe('RuntimeExitMonitorService', () => {
 
 	describe('process-based exit detection', () => {
 		let mockIsChildProcessAlive: jest.Mock;
+		let original: { backend: unknown; helper: unknown };
+
+		afterEach(() => {
+			// Later suites use a backend without a process check.
+			const sessionModule = jest.requireMock('../session/index.js');
+			sessionModule.getSessionBackendSync = original.backend;
+			sessionModule.createSessionCommandHelper = original.helper;
+		});
 
 		beforeEach(() => {
 			mockIsChildProcessAlive = jest.fn().mockReturnValue(true);
 			// Patch the session backend mock to include isChildProcessAlive
 			const sessionModule = jest.requireMock('../session/index.js');
+			original = { backend: sessionModule.getSessionBackendSync, helper: sessionModule.createSessionCommandHelper };
 			sessionModule.getSessionBackendSync = () => ({
 				getSession: mockGetSession,
 				sessionExists: mockSessionExists,
@@ -535,6 +544,32 @@ describe('RuntimeExitMonitorService', () => {
 				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
 				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
+
+			service.stopMonitoring('test-agent');
+			jest.useRealTimers();
+		});
+
+		it('ignores exit text while the runtime process is still running (Codex killed mid-request, 2026-11-21)', async () => {
+			jest.useFakeTimers();
+			// A loose "shell prompt" is on screen, as it usually is in a TUI.
+			mockCapturePane.mockReturnValue('  gpt-5 · 97% context left %\n');
+			mockIsChildProcessAlive.mockReturnValue(true);
+
+			service.startMonitoring('test-agent', RUNTIME_TYPES.CODEX_CLI, 'operations');
+			const onData = mockOnData.mock.calls[mockOnData.mock.calls.length - 1][0] as (data: string) => void;
+			// Text echoed into the terminal that happens to match an exit pattern.
+			onData('the previous Session ended at 5pm, please fill the gallery');
+			await jest.advanceTimersByTimeAsync(RUNTIME_EXIT_CONSTANTS.CONFIRMATION_DELAY_MS + 50);
+
+			expect(mockUpdateAgentStatus).not.toHaveBeenCalled();
+			expect(mockKillSession).not.toHaveBeenCalled();
+
+			// The same text with the process gone is a real exit.
+			mockIsChildProcessAlive.mockReturnValue(false);
+			onData('Session ended');
+			await jest.advanceTimersByTimeAsync(RUNTIME_EXIT_CONSTANTS.CONFIRMATION_DELAY_MS + 50);
+			await jest.runAllTimersAsync();
+			expect(mockUpdateAgentStatus).toHaveBeenCalled();
 
 			service.stopMonitoring('test-agent');
 			jest.useRealTimers();
