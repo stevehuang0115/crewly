@@ -225,6 +225,12 @@ describe('ticket-autopilot-retro', () => {
     expect(durationWords(90 * 60_000)).toBe('1h 30m');
     expect(durationWords(72 * 3_600_000)).toBe('3d');
     expect(statsLines(day)).toHaveLength(6);
+    // The numbers line names the stalled tickets, and the count equals the listed ids (CE retro 2026-10-24).
+    const three = statsLines({ ...day, stalled: 3, stalledTickets: ['CE-1', 'CE-2', 'CE-3'] })[0];
+    expect(three).toContain('3 stalled (CE-1, CE-2, CE-3)');
+    const many = Array.from({ length: 11 }, (_, i) => `CE-${i + 1}`);
+    expect(statsLines({ ...day, stalled: 11, stalledTickets: many })[0]).toContain('11 stalled (CE-1, CE-2, CE-3, CE-4, CE-5, CE-6, CE-7, CE-8, +3 more)');
+    expect(statsLines({ ...day, stalled: 0, stalledTickets: [] })[0]).toMatch(/0 stalled$/);
     const s = { ...day, stalls: { count: 2, totalMs: 3 * 3_600_000, byCause: { ...day.stalls.byCause, waiting_on_owner: { count: 1, ms: 2 * 3_600_000 }, nobody_pushing: { count: 1, ms: 3_600_000 } } } };
     expect(topStallCauses(s)).toEqual(['waiting on the owner: 1 (2h)', 'nobody pushing: 1 (1h)']);
   });
