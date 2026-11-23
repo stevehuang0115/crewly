@@ -29,6 +29,8 @@ export interface AutopilotPeriodStats {
   verified: number;
   sentBack: number;
   stalled: number;
+  /** The tickets behind `stalled` (same length; absent on older servers) */
+  stalledTickets?: string[];
   cycleTime: { toDone: AutopilotCycleStat; toVerified: AutopilotCycleStat };
   ownerTouches: { answered: number; approved: number; sentBack: number; corrected: number; other?: number; total: number };
   stalls: { count: number; totalMs: number; byCause: Record<AutopilotStallCause, { count: number; ms: number }> };

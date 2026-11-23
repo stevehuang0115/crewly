@@ -8704,6 +8704,8 @@ export const TRACE_CONSTANTS = {
 	SUMMARY_EVENT_CHARS: 140,
 	/** Stalls listed in the text summary (the longest first) */
 	SUMMARY_MAX_STALLS: 5,
+	/** Ticket ids named next to a stall count (retro numbers line, trace summary); the rest read "+N more" */
+	STALL_TICKETS_SHOWN: 8,
 	/** Agents / models listed in the text summary (most expensive first) */
 	SUMMARY_MAX_BREAKDOWN: 4,
 	/** Stalls kept in a metrics object (the longest; counts cover all) */
