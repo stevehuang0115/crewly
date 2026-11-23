@@ -158,12 +158,17 @@ install_node_via_nvm() {
     curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
   fi
 
+  # nvm.sh is not nounset-safe (it reads variables such as PROVIDED_VERSION
+  # before they are set), so under `set -u` the script dies right after
+  # "Now using node". Turn nounset off for sourcing and every nvm call.
+  set +u
   # Load nvm
   # shellcheck disable=SC1091
   [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
   nvm install --lts
   nvm use --lts
+  set -u
 
   echo -e "${GREEN}  ✓ Node.js $(node -v) installed via nvm${NC}"
 }
