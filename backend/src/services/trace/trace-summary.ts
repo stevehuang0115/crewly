@@ -8,6 +8,7 @@
  */
 
 import { TRACE_CONSTANTS } from '../../constants.js';
+import { formatIdList, sortIdsNaturally } from '../../utils/id-list.js';
 import { sortTraceEvents, type TraceMetrics, type UsageBreakdown } from './trace-metrics.js';
 import { formatDuration, STALL_CAUSE_LABELS } from './trace-timeline.js';
 import type { TraceEvent, TraceRoot } from './trace.types.js';
@@ -133,9 +134,10 @@ const STATE_LABELS: Record<TraceMetrics['outcome']['state'], string> = {
  * @param root - Root
  * @param m - Metrics
  * @param links - Links
+ * @param events - The trace's events (name the tickets a stall count belongs to)
  * @returns Lines
  */
-function headLines(root: TraceRoot, m: TraceMetrics, links: TraceLinks): { head: string[]; tail: string[] } {
+function headLines(root: TraceRoot, m: TraceMetrics, links: TraceLinks, events: ReadonlyArray<TraceEvent>): { head: string[]; tail: string[] } {
 	const startDay = m.window.start.slice(0, 10);
 	const o = m.outcome;
 	const outcomeBits = [
@@ -162,7 +164,8 @@ function headLines(root: TraceRoot, m: TraceMetrics, links: TraceLinks): { head:
 	const st = m.stalls;
 	if (st.count === 0) head.push(`Stalls (> ${st.thresholdMinutes}m): none`);
 	else {
-		head.push(`Stalls (> ${st.thresholdMinutes}m): ${st.count}, ${formatDuration(st.totalMs)} in total`);
+		const tickets = sortIdsNaturally(events.flatMap((e) => (e.refs.ticketId ? [e.refs.ticketId] : [])));
+		head.push(`Stalls (> ${st.thresholdMinutes}m): ${st.count}, ${formatDuration(st.totalMs)} in total${tickets.length > 0 ? ` · tickets in this trace: ${formatIdList(tickets, TRACE_CONSTANTS.STALL_TICKETS_SHOWN)}` : ''}`);
 		const shown = [...st.items].sort((a, b) => b.ms - a.ms).slice(0, TRACE_CONSTANTS.SUMMARY_MAX_STALLS).sort((a, b) => a.start.localeCompare(b.start));
 		for (const s of shown) {
 			const detail = s.detail.length > TRACE_CONSTANTS.SUMMARY_EVENT_CHARS ? `${s.detail.slice(0, TRACE_CONSTANTS.SUMMARY_EVENT_CHARS - 1)}…` : s.detail;
@@ -204,7 +207,7 @@ function who(e: TraceEvent): string {
 export function buildTraceSummary(root: TraceRoot, events: ReadonlyArray<TraceEvent>, metrics: TraceMetrics, maxChars: number = TRACE_CONSTANTS.READ_DEFAULT_CHARS): TraceSummary {
 	const limit = clampSummaryChars(maxChars);
 	const links = traceLinks(root, events);
-	const { head, tail } = headLines(root, metrics, links);
+	const { head, tail } = headLines(root, metrics, links, events);
 	const startDay = metrics.window.start.slice(0, 10);
 	const timed = sortTraceEvents(events);
 	const candidates = timed

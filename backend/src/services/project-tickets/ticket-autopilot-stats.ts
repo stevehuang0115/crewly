@@ -12,6 +12,7 @@
  * @module services/project-tickets/ticket-autopilot-stats
  */
 
+import { sortIdsNaturally } from '../../utils/id-list.js';
 import { TRACE_CONSTANTS } from '../../constants.js';
 import { computeTraceMetrics, STALL_CAUSES, usageOfEvent, type StallCause, type TraceMetrics } from '../trace/trace-metrics.js';
 import type { TraceEvent, TraceIndexEntry } from '../trace/trace.types.js';
@@ -127,6 +128,8 @@ export interface AutopilotPeriodStats {
   verified: number;
   sentBack: number;
   stalled: number;
+  /** The tickets behind `stalled` (same length, natural order; may hold a trace id when a stall had no ticket) */
+  stalledTickets: string[];
   cycleTime: { toDone: CycleStat; toVerified: CycleStat };
   ownerTouches: OwnerTouchCounts;
   stalls: StallCounts;
@@ -261,6 +264,7 @@ function finish(a: Acc, budget: number, labelled = false): AutopilotPeriodStats 
     verified: a.verified.size,
     sentBack: a.sentBack,
     stalled: a.stalled.size,
+    stalledTickets: sortIdsNaturally(a.stalled),
     cycleTime: { toDone: cycleStat(a.toDone), toVerified: cycleStat(a.toVerified) },
     ownerTouches: { ...a.ownerTouches },
     stalls: { count: a.stalls.count, totalMs: a.stalls.totalMs, byCause: Object.fromEntries(Object.entries(a.stalls.byCause).map(([k, v]) => [k, { ...v }])) as StallCounts['byCause'] },

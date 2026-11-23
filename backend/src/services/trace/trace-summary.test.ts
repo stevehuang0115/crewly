@@ -62,6 +62,17 @@ describe('trace-summary', () => {
 		expect(text).toContain(`Links: UI /tickets/requests/req-1?tab=timeline · API /api/traces/${TRACE}/timeline`);
 	});
 
+	it('names the tickets next to the stall count, capped with "+N more"', () => {
+		const ids = ['CREW-3', 'CREW-1', 'CREW-2'];
+		const events = [...bigTrace(2), ...ids.map((id, i) => ev(5 + i, 'ticket.status', { kind: 'system' }, { refs: { ticketId: id }, data: { from: 'ready', to: 'in_progress' } }))];
+		const m = computeTraceMetrics(root(), events, { now: new Date(T0 + 151 * MIN) });
+		expect(m.stalls.count).toBeGreaterThan(0);
+		expect(buildTraceSummary(root(), events, m, 4000).text).toMatch(/Stalls \(> 30m\): 1, 2h in total · tickets in this trace: CREW-1, CREW-2, CREW-3\n/);
+		const many = Array.from({ length: 11 }, (_, i) => ev(5 + i * 0.1, 'ticket.status', { kind: 'system' }, { refs: { ticketId: `CREW-${i + 1}` }, data: { from: 'ready', to: 'in_progress' } }));
+		const m2 = computeTraceMetrics(root(), [...bigTrace(2), ...many], { now: new Date(T0 + 151 * MIN) });
+		expect(buildTraceSummary(root(), [...bigTrace(2), ...many], m2, 4000).text).toContain('tickets in this trace: CREW-1, CREW-2, CREW-3, CREW-4, CREW-5, CREW-6, CREW-7, CREW-8, +3 more');
+	});
+
 	it('never exceeds maxChars, keeps the most important events and the links', () => {
 		const events = bigTrace(400);
 		// Lots of notable events too.

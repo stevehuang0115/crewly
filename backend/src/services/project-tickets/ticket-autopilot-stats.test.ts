@@ -141,6 +141,8 @@ describe('ticket-autopilot-stats', () => {
     expect(d4.stalls).toMatchObject({ count: 1, totalMs: 2 * H });
     expect(d4.stalls.byCause.waiting_on_owner).toEqual({ count: 1, ms: 2 * H });
     expect(d4.stalled).toBe(1);
+    expect(d4.stalledTickets).toEqual(['CE-1']);
+    expect(d5.stalledTickets).toEqual(['CE-2']);
     expect(d5.stalls.byCause.nobody_pushing).toEqual({ count: 1, ms: H });
     expect(s.total.stalls.count).toBe(2);
 
@@ -162,6 +164,20 @@ describe('ticket-autopilot-stats', () => {
     expect(d3.runTraceId).toBe('tr-run3');
     expect(d4.ticketTraceIds).toEqual(['tr-t2']);
     expect(s.labels).toEqual(['feed', 'web']);
+  });
+
+  it('names the stalled tickets: the count equals the listed ids (CE retro 2026-10-24)', () => {
+    const stalled = ['CE-10', 'CE-2', 'CE-7'].map((id, i): StatsTrace => ({
+      entry: entry(`tr-s${i}`, 'ticket', '2026-10-04', [], id),
+      metrics: metrics({ stalls: [{ start: at(4, 12 + i), end: at(4, 13 + i), ms: H, cause: 'nobody_pushing', detail: 'x' }] }),
+      events: [status(id, 'ready', 'in_progress', at(4, 9))],
+    }));
+    const quiet: StatsTrace = { entry: entry('tr-q', 'ticket', '2026-10-04', [], 'CE-99'), metrics: metrics(), events: [status('CE-99', 'ready', 'in_progress', at(4, 9))] };
+    const s = computeAutopilotStats({ ...base, traces: [...stalled, quiet], ledger: {} });
+    expect(s.total.stalled).toBe(3);
+    expect(s.total.stalledTickets).toEqual(['CE-2', 'CE-7', 'CE-10']);
+    expect(s.total.stalledTickets).toHaveLength(s.total.stalled);
+    expect(s.days[1]!.stalledTickets).toEqual(['CE-2', 'CE-7', 'CE-10']);
   });
 
   it('limits ticket numbers to a label; budget and pauses stay project-wide', () => {
