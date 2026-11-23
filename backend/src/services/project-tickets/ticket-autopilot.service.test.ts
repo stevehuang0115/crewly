@@ -1667,6 +1667,46 @@ describe('TicketAutopilotService', () => {
           delete teams[0].paused;
         });
 
+        it('a system_error stop names the failed work item, its ticket and the error, in the trace, the status and the digest (CREW-1242)', async () => {
+          await enable({ speedMode: 'chill' });
+          await svc.onMemberIdle('ce-dev');
+          replans()[0].status = 'done';
+          advance(HOUR);
+          await svc.tick();
+          const secret = 'correct-horse-battery-staple';
+          await pool.addToPool({
+            ...replans()[0],
+            id: 'wi-boom',
+            status: 'failed',
+            type: 'delegate',
+            error: `Error: spawn failed for target ce-dev token=${secret}\n    at deliver (stack line that must not show)`,
+            result: { code: 'E_SPAWN', payload: { body: 'private payload text' } },
+            metadata: { projectId: 'p-ce', projectTicket: { projectPath: '/x', id: 'CE-7' } },
+            createdAt: clock.toISOString(),
+          });
+          await svc.tick();
+          const st = await svc.getStatus('p-ce', owner);
+          expect(st.stopReason).toBe('system_error');
+          expect(st.stopDetail).toMatchObject({ kind: 'failed', workItemId: 'wi-boom', ticketId: 'CE-7', code: 'E_SPAWN', failedCount: 1 });
+          expect(st.stopDetail?.error).toContain('spawn failed for target ce-dev');
+          expect(st.stopReasonText).toContain('work item wi-boom, ticket CE-7');
+          const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0].traceId;
+          const stopped = (await evts(run)).filter((e) => e.data?.action === 'stopped' && e.data?.reason === 'system_error');
+          expect(stopped).toHaveLength(1);
+          expect(stopped[0].outcome).toBe('blocked');
+          expect(stopped[0].refs).toMatchObject({ workItemId: 'wi-boom', ticketId: 'CE-7' });
+          expect(stopped[0].summary).toContain('spawn failed for target ce-dev');
+          const traced = JSON.stringify(stopped[0]);
+          expect(traced).not.toContain(secret);
+          expect(traced).not.toContain('stack line that must not show');
+          expect(traced).not.toContain('private payload text');
+          await wf.create('p-ce', { title: 'Something changed' }, owner);
+          clock = at(21, 30);
+          await svc.tick();
+          // Hours later the queued replan has never been picked up: stuck delivery outranks the failure, and the digest names it too.
+          expect(notices.find((n) => n.title === 'Tickets today')?.message).toMatch(/Stopped: work failed or was not delivered \(work item \S+: queued for a long time and never picked up/);
+        });
+
         it('switching the mode re-times a waiting retry and is traced; the CE explicit budget stays', async () => {
           await enable({ dailyBudgetTokens: 50_000_000 });
           await svc.onMemberIdle('ce-dev');

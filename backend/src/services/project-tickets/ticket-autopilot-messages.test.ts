@@ -20,6 +20,8 @@ import {
   replanMetricRejection,
   STOP_REASON_WORDS,
   stopReasonText,
+  sanitizeStopError,
+  stopDetailText,
 } from './ticket-autopilot-messages.js';
 
 const NOW = Date.parse('2026-09-30T10:00:00.000Z');
@@ -344,5 +346,28 @@ describe('buildTriageBrief budget section (CREW-149)', () => {
     const { buildTriageBrief } = await import('./ticket-autopilot-messages.js');
     expect(buildTriageBrief({ ...base, budget: { usedTokens: 1000, budgetTokens: null } })).toContain('no limit today');
     expect(buildTriageBrief(base)).not.toContain('Budget today');
+  });
+});
+
+describe('stop detail (CREW-1242)', () => {
+  it('sanitizeStopError keeps one redacted line, capped, and nothing for empty or non-text', () => {
+    expect(sanitizeStopError('Error: boom\n    at x (file.ts:1)')).toBe('Error: boom');
+    expect(sanitizeStopError('failed token=correct-horse-battery-staple')).not.toContain('battery-staple');
+    expect(sanitizeStopError('x'.repeat(500))!.length).toBe(200);
+    expect(sanitizeStopError('  \n ')).toBeUndefined();
+    expect(sanitizeStopError({ message: 'obj' })).toBeUndefined();
+  });
+
+  it('stopDetailText names work item, ticket, error and code; stuck delivery says so; missing error is said', () => {
+    expect(stopDetailText({ kind: 'failed', workItemId: 'wi-1', ticketId: 'T-2', error: 'spawn failed', code: 'E_SPAWN' })).toBe('work item wi-1, ticket T-2: spawn failed (E_SPAWN)');
+    expect(stopDetailText({ kind: 'failed', workItemId: 'wi-1' })).toBe('work item wi-1: no error message was recorded');
+    expect(stopDetailText({ kind: 'stuck_delivery', workItemId: 'wi-3' })).toContain('never picked up');
+  });
+
+  it('stopReasonText adds the detail only for system_error', () => {
+    const detail = { kind: 'failed' as const, workItemId: 'wi-1', error: 'boom' };
+    expect(stopReasonText('system_error', null, detail)).toBe('work failed or was not delivered (work item wi-1: boom)');
+    expect(stopReasonText('system_error')).toBe('work failed or was not delivered');
+    expect(stopReasonText('paused', null, detail)).toBe(STOP_REASON_WORDS.paused);
   });
 });
