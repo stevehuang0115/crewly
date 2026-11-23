@@ -100,6 +100,8 @@ import {
   replanMetricRejection,
   STOP_REASON_WORDS,
   stopReasonText,
+  sanitizeStopError,
+  type StopDetail,
   type DigestProject,
   type SelfReviewRecord,
   type TriageBriefMember,
@@ -419,7 +421,7 @@ interface ProjectState {
   /** Backing off after replans that opened no tickets */
   replanBackoff?: ReplanBackoff;
   /** Why the autopilot stopped (traced on change), and since when (ms) */
-  stop?: { reason: AutopilotStopReason; since: number; /** When it may act again (epoch ms), waiting / cap reasons */ until?: number };
+  stop?: { reason: AutopilotStopReason; since: number; /** When it may act again (epoch ms), waiting / cap reasons */ until?: number; /** What failed behind a system_error */ detail?: StopDetail };
   /** Self-reviews filed (newest last, capped) */
   selfReviews?: SelfReviewRecord[];
   /**
@@ -528,6 +530,8 @@ export interface TicketAutopilotStatus {
   stopReason: AutopilotStopReason | null;
   /** The stop reason in words */
   stopReasonText: string | null;
+  /** For a system_error: the work item, ticket and error behind it */
+  stopDetail: StopDetail | null;
   /** When the next replan may run (ISO), for `waiting_for_replan` / `daily_replan_cap` */
   stopUntil: string | null;
   /** Since when it has been stopped for that reason (ISO) */
@@ -556,6 +560,33 @@ export interface ProjectEvaluation {
   replan?: ReplanDecision;
   /** The triage WorkItem created (decision `triage`), or the replan WorkItem (replan `replan`) */
   workItem?: WorkItem;
+}
+
+/**
+ * What failed behind a `system_error` stop: the stuck autopilot WorkItem when
+ * delivery is stuck (it outranks), else the newest failed project WorkItem.
+ * Only ids, a one-line redacted error message and a short code: never a payload.
+ *
+ * @param stuck - The autopilot WorkItem queued for long while its target sits idle
+ * @param failed - The newest failed project WorkItem in the lookback
+ * @param failedCount - Failed WorkItems of the project in the lookback
+ * @returns The detail, or undefined when no WorkItem is known
+ */
+function systemErrorDetail(stuck: WorkItem | undefined, failed: WorkItem | undefined, failedCount: number): StopDetail | undefined {
+  const wi = stuck ?? failed;
+  if (!wi) return undefined;
+  const ticketId = (wi.metadata?.projectTicket as { id?: unknown } | undefined)?.id;
+  const rawCode = (wi.result as { code?: unknown } | undefined)?.code ?? (wi.metadata as { errorCode?: unknown } | undefined)?.errorCode;
+  const code = typeof rawCode === 'string' && rawCode.length <= 64 && /^[A-Za-z0-9_.:-]+$/.test(rawCode) ? rawCode : undefined;
+  const error = stuck ? undefined : sanitizeStopError(wi.error);
+  return {
+    kind: stuck ? 'stuck_delivery' : 'failed',
+    workItemId: wi.id,
+    ...(typeof ticketId === 'string' && ticketId ? { ticketId } : {}),
+    ...(error ? { error } : {}),
+    ...(code && !stuck ? { code } : {}),
+    ...(!stuck && failedCount > 0 ? { failedCount } : {}),
+  };
 }
 
 /**
@@ -1403,7 +1434,7 @@ export class TicketAutopilotService {
         inProgress: tickets.filter((t) => t.status === 'in_progress'),
         waitingOnOwner,
         ...(links.size > 0 ? { links } : {}),
-        ...(ps?.stop ? { stopReason: ps.stop.reason, stopUntil: ps.stop.until ?? null } : {}),
+        ...(ps?.stop ? { stopReason: ps.stop.reason, stopUntil: ps.stop.until ?? null, stopDetail: ps.stop.detail ?? null } : {}),
         ...(freshReview ? { selfReview: freshReview } : {}),
       });
     }
@@ -2464,7 +2495,7 @@ export class TicketAutopilotService {
    * @param items - The pool's items (read once per pass)
    * @returns The reason, or null while running / between replans
    */
-  private async stopReasonOf(project: Project, ps: ProjectState, items: WorkItem[]): Promise<{ reason: AutopilotStopReason | null; until?: number }> {
+  private async stopReasonOf(project: Project, ps: ProjectState, items: WorkItem[]): Promise<{ reason: AutopilotStopReason | null; until?: number; detail?: StopDetail }> {
     const C = TICKET_AUTOPILOT_CONSTANTS;
     const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
     const now = this.now();
@@ -2481,6 +2512,8 @@ export class TicketAutopilotService {
     let liveAutopilotItem = false;
     let stuckDelivery = false;
     let failedRecently = 0;
+    let stuckItem: WorkItem | undefined;
+    let newestFailed: { wi: WorkItem; at: number } | undefined;
     for (const wi of items) {
       const md = wi.metadata ?? {};
       const link = md.projectTicket as { projectPath?: string } | undefined;
@@ -2492,11 +2525,17 @@ export class TicketAutopilotService {
         const producing = md.kind !== C.SELF_REVIEW_METADATA_KIND;
         if (producing && !(md.kind === C.REPLAN_METADATA_KIND && age >= ttlMs)) liveAutopilotItem = true;
         // Queued for long while its target sits idle: the wake never landed.
-        if (wi.status === 'queued' && age >= C.STOP_STUCK_DELIVERY_MS && !!wi.target && idleSessions.has(wi.target)) stuckDelivery = true;
+        if (wi.status === 'queued' && age >= C.STOP_STUCK_DELIVERY_MS && !!wi.target && idleSessions.has(wi.target)) {
+          stuckDelivery = true;
+          stuckItem ??= wi;
+        }
       }
       if (wi.status === 'failed') {
         const at = Date.parse(wi.statusChangedAt ?? wi.completedAt ?? wi.createdAt) || 0;
-        if (nowMs - at <= C.STOP_SYSTEM_ERROR_LOOKBACK_MS) failedRecently += 1;
+        if (nowMs - at <= C.STOP_SYSTEM_ERROR_LOOKBACK_MS) {
+          failedRecently += 1;
+          if (!newestFailed || at > newestFailed.at) newestFailed = { wi, at };
+        }
       }
     }
     const selection = selectTriageCandidates({ tickets, teams: activeTeams, now: nowMs, listed: ps.listed, skipLabels: settings.skipLabels });
@@ -2551,7 +2590,8 @@ export class TicketAutopilotService {
       replanCapReached: capReached,
       ...(replanWaitUntil !== undefined ? { replanWaitUntil } : {}),
     });
-    return { reason: result.reason, ...(result.until !== undefined ? { until: result.until } : {}) };
+    const detail = result.reason === 'system_error' ? systemErrorDetail(stuckDelivery ? stuckItem : undefined, newestFailed?.wi, failedRecently) : undefined;
+    return { reason: result.reason, ...(result.until !== undefined ? { until: result.until } : {}), ...(detail ? { detail } : {}) };
   }
 
   /**
@@ -2702,8 +2742,9 @@ export class TicketAutopilotService {
       const ps = (state.projects[project.id] ??= {});
       let reason: AutopilotStopReason | null;
       let until: number | undefined;
+      let detail: StopDetail | undefined;
       try {
-        ({ reason, until } = await this.stopReasonOf(project, ps, items));
+        ({ reason, until, detail } = await this.stopReasonOf(project, ps, items));
       } catch (err) {
         this.logger.warn('Could not classify the autopilot stop reason', { projectId: project.id, error: err instanceof Error ? err.message : String(err) });
         continue;
@@ -2716,18 +2757,26 @@ export class TicketAutopilotService {
           else ps.stop.until = until;
           dirty = true;
         }
+        // The failing work item can change while the reason stays: keep the status current (no trace).
+        if (ps.stop && JSON.stringify(ps.stop.detail ?? null) !== JSON.stringify(detail ?? null)) {
+          if (detail) ps.stop.detail = detail;
+          else delete ps.stop.detail;
+          dirty = true;
+        }
         continue;
       }
       dirty = true;
       if (reason) {
-        ps.stop = { reason, since: now.getTime(), ...(until !== undefined ? { until } : {}) };
+        ps.stop = { reason, since: now.getTime(), ...(until !== undefined ? { until } : {}), ...(detail ? { detail } : {}) };
         traceAutopilotAction(project, 'stopped', {
-          summary: `${project.name}: autopilot stopped — ${stopReasonText(reason, until)}`,
+          summary: `${project.name}: autopilot stopped — ${stopReasonText(reason, until, detail)}`,
           outcome: 'blocked',
-          data: { reason, ...(previous ? { previous } : {}) },
+          ...(detail?.workItemId ? { workItemId: detail.workItemId } : {}),
+          ...(detail?.ticketId ? { ticketId: detail.ticketId } : {}),
+          data: { reason, ...(previous ? { previous } : {}), ...(detail ? { detail } : {}) },
           now,
         });
-        this.logger.info('Ticket autopilot stopped', { projectId: project.id, reason });
+        this.logger.info('Ticket autopilot stopped', { projectId: project.id, reason, ...(detail ? { workItemId: detail.workItemId, ticketId: detail.ticketId, error: detail.error } : {}) });
       } else {
         const since = ps.stop?.since;
         delete ps.stop;
@@ -2827,6 +2876,7 @@ export class TicketAutopilotService {
         },
         stopReason,
         stopUntil: ps.stop?.until ?? null,
+        stopDetail: ps.stop?.detail ?? null,
         previous: ps.selfReviews?.[ps.selfReviews.length - 1] ?? null,
       });
       const workItem = createWorkItem({
@@ -2965,7 +3015,8 @@ export class TicketAutopilotService {
       retroOn: await this.retroOn(project),
       speedMode: settings.speedMode,
       stopReason: ps?.stop?.reason ?? null,
-      stopReasonText: ps?.stop ? stopReasonText(ps.stop.reason, ps.stop.until) : null,
+      stopReasonText: ps?.stop ? stopReasonText(ps.stop.reason, ps.stop.until, ps.stop.detail) : null,
+      stopDetail: ps?.stop?.detail ?? null,
       stopUntil: ps?.stop?.until ? new Date(ps.stop.until).toISOString() : null,
       stoppedSince: ps?.stop ? new Date(ps.stop.since).toISOString() : null,
       lastSelfReview: ps?.selfReviews?.[ps.selfReviews.length - 1] ?? null,

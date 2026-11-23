@@ -10,6 +10,7 @@
 
 import { compactTokens, formatTokens } from '../usage/token-format.js';
 import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
+import { redactSecrets } from '../../utils/secret-redactor.js';
 import type { ProjectTicket } from '../../types/project-ticket.types.js';
 import type { AutopilotStopReason, MemberAvailability, TriageCandidate } from './ticket-autopilot-decision.js';
 import type { ReplanExperiment } from './ticket-autopilot-goal.js';
@@ -262,17 +263,66 @@ export const STOP_REASON_WORDS: Readonly<Record<AutopilotStopReason, string>> = 
   waiting_for_replan: 'waiting for the next goal replan',
 };
 
+/** What failed behind a `system_error` stop: the work item, its ticket and the error (CREW-1242). */
+export interface StopDetail {
+  /** `failed`: a project WorkItem failed; `stuck_delivery`: an autopilot WorkItem was never picked up */
+  kind: 'failed' | 'stuck_delivery';
+  /** The WorkItem that failed or was not delivered */
+  workItemId: string;
+  /** The ticket it belongs to, when it has one */
+  ticketId?: string;
+  /** The error message, one line, secrets redacted, capped (never a payload) */
+  error?: string;
+  /** A short error code, when the WorkItem carries one */
+  code?: string;
+  /** Failed WorkItems of the project inside the lookback (the one named is the newest) */
+  failedCount?: number;
+}
+
+/** Longest error message kept in a stop detail. */
+const STOP_ERROR_MAX_CHARS = 200;
+
 /**
- * A stop reason in words, with the time it may run next when known.
+ * An error text made safe to put in a trace and a notice: first line only,
+ * secrets redacted, capped. Returns undefined when nothing is left.
+ *
+ * @param raw - The WorkItem's error text
+ * @returns One-line message, or undefined
+ */
+export function sanitizeStopError(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const line = redactSecrets(raw.split(/\r?\n/).find((l) => l.trim().length > 0) ?? '').replace(/\s+/g, ' ').trim();
+  if (!line) return undefined;
+  return line.length > STOP_ERROR_MAX_CHARS ? `${line.slice(0, STOP_ERROR_MAX_CHARS - 1)}\u2026` : line;
+}
+
+/**
+ * A stop detail in words: which work item and ticket, and the error.
+ *
+ * @param detail - What failed
+ * @returns For example `work item wi-9, ticket CREW-12: spawn failed (E_SPAWN)`
+ */
+export function stopDetailText(detail: StopDetail): string {
+  const who = `work item ${detail.workItemId}${detail.ticketId ? `, ticket ${detail.ticketId}` : ''}`;
+  if (detail.kind === 'stuck_delivery') return `${who}: queued for a long time and never picked up by its idle target`;
+  const what = detail.error ?? 'no error message was recorded';
+  return `${who}: ${what}${detail.code ? ` (${detail.code})` : ''}`;
+}
+
+/**
+ * A stop reason in words, with the time it may run next when known, and for
+ * a `system_error` what failed.
  *
  * @param reason - Stop reason
  * @param until - When the autopilot may act again (epoch ms)
+ * @param detail - What failed behind a `system_error`
  * @returns Text for status and digest
  */
-export function stopReasonText(reason: AutopilotStopReason, until?: number | null): string {
+export function stopReasonText(reason: AutopilotStopReason, until?: number | null, detail?: StopDetail | null): string {
   const base = STOP_REASON_WORDS[reason];
   if (reason === 'waiting_for_replan' && until) return `${base} (may run at ${new Date(until).toISOString()})`;
   if (reason === 'daily_replan_cap' && until) return `${base} (next replan at ${new Date(until).toISOString()})`;
+  if (reason === 'system_error' && detail) return `${base} (${stopDetailText(detail)})`;
   return base;
 }
 
@@ -399,6 +449,8 @@ export interface SelfReviewBriefInput {
   stopReason: AutopilotStopReason | null;
   /** When it may act again (epoch ms), for the waiting / cap reasons */
   stopUntil?: number | null;
+  /** What failed behind a `system_error` stop */
+  stopDetail?: StopDetail | null;
   previous?: SelfReviewRecord | null;
 }
 
@@ -426,7 +478,7 @@ export function buildSelfReviewBrief(input: SelfReviewBriefInput): string {
     '## Since the last review',
     '',
     `- Closed: ${input.closedSince} · ready: ${o.ready} · in progress: ${o.inProgress} · backlog: ${o.backlog} · waiting on the owner: ${o.waitingOnOwner}`,
-    ...(input.stopReason ? [`- Stopped: ${stopReasonText(input.stopReason, input.stopUntil)}`] : []),
+    ...(input.stopReason ? [`- Stopped: ${stopReasonText(input.stopReason, input.stopUntil, input.stopDetail)}`] : []),
     ...(input.previous ? [`- Your last next bet: ${excerpt(input.previous.nextBet, 240)}`] : []),
     '',
     '## File it',
@@ -448,6 +500,8 @@ export interface DigestProject {
   /** Why the autopilot stopped (absent = running) */
   stopReason?: AutopilotStopReason | null;
   stopUntil?: number | null;
+  /** What failed behind a `system_error` stop */
+  stopDetail?: StopDetail | null;
   /** The latest self-review (today's) */
   selfReview?: SelfReviewRecord | null;
 }
@@ -490,7 +544,7 @@ export function buildDigestMessage(projects: DigestProject[], extraBlock?: strin
       digestSection('Done today', p.doneToday, false),
       digestSection('In progress', p.inProgress, true),
       digestSection('Waiting on you', p.waitingOnOwner, false, p.links),
-      p.stopReason ? `Stopped: ${stopReasonText(p.stopReason, p.stopUntil)}` : null,
+      p.stopReason ? `Stopped: ${stopReasonText(p.stopReason, p.stopUntil, p.stopDetail)}` : null,
       p.selfReview ? `Self-review: gap ${excerpt(p.selfReview.gap, 120)}; next bet ${excerpt(p.selfReview.nextBet, 120)}` : null,
     ].filter((r): r is string => r !== null);
     if (rows.length === 0) continue;
