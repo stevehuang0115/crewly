@@ -2117,23 +2117,46 @@ export class TaskPoolService {
    *   the reconciler returns the item to `queued` for the same target once it
    *   has passed (block-task `until`, for work that can only proceed at a
    *   known time). Without it the block waits for an explicit unblock.
-   * @throws Error if not found, the item is not `running` (state machine), or `until` does not parse
+   * @param options.afterWorkItemId - Park the item on another WorkItem instead
+   *   (block-task `afterWorkItemId`, for a brief that says "start after X"):
+   *   the item gets `dependsOn: [afterWorkItemId]` and is NOT marked explicit,
+   *   so the dependency resolver promotes it to `queued` for the same target
+   *   when the upstream item succeeds. Until then it is `blocked`, which the
+   *   stall check and the reconciler leave alone. Cannot be combined with `until`.
+   * @throws Error if not found, the item is not `running` (state machine), `until` does not parse,
+   *   or `afterWorkItemId` is the item itself, unknown, already finished, failed/cancelled, or would form a cycle
    */
   async blockItem(
     workItemId: string,
-    options: { agentId: string; reason?: string; until?: string },
+    options: { agentId: string; reason?: string; until?: string; afterWorkItemId?: string },
   ): Promise<void> {
     const reason = options.reason && options.reason.trim().length > 0 ? options.reason : undefined;
     const until = options.until && options.until.trim().length > 0 ? options.until : undefined;
+    const after = options.afterWorkItemId && options.afterWorkItemId.trim().length > 0
+      ? options.afterWorkItemId.trim()
+      : undefined;
     if (until !== undefined && !Number.isFinite(Date.parse(until))) {
       throw new Error(`Invalid until for WorkItem ${workItemId}: '${until}' is not an ISO 8601 date-time`);
+    }
+    if (after !== undefined) {
+      if (until !== undefined) {
+        throw new Error(`Invalid block for WorkItem ${workItemId}: give either until or afterWorkItemId, not both`);
+      }
+      await this.assertCanWaitFor(workItemId, after);
     }
     const updated = await this.transitionStatus(
       workItemId,
       'blocked',
       'system',
       (wi) => {
-        wi.blockSource = WORK_ITEM_BLOCK_SOURCES.EXPLICIT;
+        if (after) {
+          // A dependency wait, not an explicit block: the resolver (and the
+          // reconciler's dependency rule) promotes it when `after` succeeds.
+          wi.blockSource = undefined;
+          wi.dependsOn = [after];
+        } else {
+          wi.blockSource = WORK_ITEM_BLOCK_SOURCES.EXPLICIT;
+        }
         const metadata: Record<string, unknown> = {
           ...(wi.metadata ?? {}),
           blockedBy: options.agentId,
@@ -2152,14 +2175,17 @@ export class TaskPoolService {
     await this.releaseClaim(workItemId, reason ? `blocked: ${reason}` : 'blocked');
     await this.storage.flush();
     this.logger.info(
-      until
-        ? 'WorkItem explicitly blocked (claim released; returns to queued when its until time passes)'
-        : 'WorkItem explicitly blocked (claim released; stays blocked until unblocked)',
+      after
+        ? 'WorkItem parked on another WorkItem (claim released; returns to queued when it succeeds)'
+        : until
+          ? 'WorkItem explicitly blocked (claim released; returns to queued when its until time passes)'
+          : 'WorkItem explicitly blocked (claim released; stays blocked until unblocked)',
       {
         workItemId,
         agentId: options.agentId,
         reason,
         until,
+        afterWorkItemId: after,
       },
     );
     await this.publishTaskStopped('task:blocked', updated, 'running', reason);
@@ -2173,6 +2199,50 @@ export class TaskPoolService {
         ? { thread: { slackChannelId: origin.slackChannelId, ...(origin.threadTs ? { threadTs: origin.threadTs } : {}) } }
         : {}),
     });
+  }
+
+  /**
+   * Check that a WorkItem can be parked on `afterId` ({@link blockItem}
+   * `afterWorkItemId`). A wait that can never end must be refused up front:
+   * the resolver only promotes when the upstream item SUCCEEDS, so a finished,
+   * failed or unknown upstream would leave the item blocked forever.
+   *
+   * @param workItemId - The item that would wait
+   * @param afterId - The item it would wait for
+   * @throws Error (message starts with "Invalid"/"not found" so it maps to 409/404) when the wait cannot work
+   */
+  private async assertCanWaitFor(workItemId: string, afterId: string): Promise<void> {
+    if (afterId === workItemId) {
+      throw new Error(`Invalid afterWorkItemId for WorkItem ${workItemId}: an item cannot wait for itself`);
+    }
+    const items = await this.storage.getWorkItems();
+    const byId = new Map(items.map((wi) => [wi.id, wi]));
+    const upstream = byId.get(afterId);
+    if (!upstream) {
+      throw new Error(`WorkItem not found: ${afterId} (afterWorkItemId)`);
+    }
+    if (upstream.status === 'done' || upstream.status === 'verified') {
+      throw new Error(
+        `Invalid afterWorkItemId for WorkItem ${workItemId}: ${afterId} is already ${upstream.status}, there is nothing to wait for`,
+      );
+    }
+    if (TERMINAL_WORK_ITEM_STATUSES.has(upstream.status)) {
+      throw new Error(
+        `Invalid afterWorkItemId for WorkItem ${workItemId}: ${afterId} is ${upstream.status} and will never succeed`,
+      );
+    }
+    // Cycle: the upstream (transitively) waits for this item.
+    const seen = new Set<string>();
+    const stack = [afterId];
+    while (stack.length > 0) {
+      const id = stack.pop() as string;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (id === workItemId) {
+        throw new Error(`Invalid afterWorkItemId for WorkItem ${workItemId}: ${afterId} already waits for it (cycle)`);
+      }
+      for (const dep of byId.get(id)?.dependsOn ?? []) stack.push(dep);
+    }
   }
 
   /**

@@ -1,6 +1,6 @@
 ---
 name: Block Task
-description: Mark a task as blocked with a reason and optional questions for the orchestrator; with `until`, park it until a known time.
+description: Mark a task as blocked with a reason and optional questions for the orchestrator; with `until`, park it until a known time; with `afterWorkItemId`, park it until another WorkItem succeeds.
 version: 1.1.0
 category: task-management
 skillType: claude-skill
@@ -39,6 +39,8 @@ execution:
 
 Mark a task as blocked with a reason explaining the blocker. Optionally include questions for the orchestrator and an urgency level.
 
+If the brief says to start **after another job** (a deploy, a merge, another ticket), block it with `afterWorkItemId` instead of holding it `running` while you wait: the stall detector skips a blocked item, and Crewly puts it back in your queue when that job succeeds.
+
 If the task can only proceed at a known time (a report that needs a data window to close, a check after a deploy settles), block it with `until`: you keep nothing `running` while you wait, and the item comes back to you on its own when the time has passed. Do not report such a task done before it is, and do not hold it `running` while waiting.
 
 ## Parameters
@@ -51,6 +53,7 @@ If the task can only proceed at a known time (a report that needs a data window 
 | `questions` | No | Specific questions for the orchestrator to resolve the blocker |
 | `urgency` | No | Urgency level: `low`, `medium`, `high`, `critical` |
 | `until` | No | ISO 8601 time in UTC (`2026-10-27T08:30:00Z`), in the future. The block lifts on its own once it has passed: the item returns to `queued` for you (within about a minute of the time), and you take it before new work. |
+| `afterWorkItemId` | No | Id of another WorkItem this one must wait for (a brief that says "start after X"). The item waits as `blocked` with that item in `dependsOn`; it is not stall-checked or re-delivered, and returns to `queued` for you when that item succeeds. Not combinable with `until`. Refused (409) when that item is already done, cancelled, unknown, or itself waits for this one. If it fails, this item stays blocked until someone unblocks it. |
 
 Only a WorkItem you have claimed (`running`) can be blocked.
 
@@ -80,6 +83,9 @@ Work that can only proceed at a known time:
 
 ```bash
 bash config/skills/agent/core/block-task/execute.sh '{"workItemId":"abc-123","sessionName":"dev-1","reason":"GA4 readout needs the full 7-day window; the data is complete after 08:30Z","until":"2026-10-27T08:30:00Z"}'
+
+# Wait for another WorkItem to succeed
+bash config/skills/agent/core/block-task/execute.sh '{"workItemId":"abc-123","sessionName":"dev-1","reason":"brief says start after the deploy","afterWorkItemId":"def-456"}'
 ```
 
 ## Output

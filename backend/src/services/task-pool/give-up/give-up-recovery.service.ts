@@ -83,7 +83,7 @@ export interface GiveUpPool {
   // path), so it takes the same required actor and passes it straight
   // through.
   completeItem(id: string, result: Record<string, unknown> | undefined, actor: TransitionActorInput): Promise<void>;
-  blockItem(id: string, options: { agentId: string; reason?: string }): Promise<void>;
+  blockItem(id: string, options: { agentId: string; reason?: string; until?: string; afterWorkItemId?: string }): Promise<void>;
   failItem(id: string, error: string): Promise<void>;
   addToPool(wi: WorkItem): Promise<void>;
   transitionStatus(
@@ -175,12 +175,19 @@ export class GiveUpRecoveryService {
    * A worker blocks an item.
    *
    * @param workItemId - The running item
-   * @param options - Who blocked it, why, and (optionally) the ISO time at which the block lifts on its own
+   * @param options - Who blocked it, why, and (optionally) the ISO time at which the block lifts on its own, or the WorkItem it waits for
    * @returns What was done
    */
-  async block(workItemId: string, options: { agentId: string; reason?: string; until?: string }): Promise<StopOutcome> {
+  async block(
+    workItemId: string,
+    options: { agentId: string; reason?: string; until?: string; afterWorkItemId?: string },
+  ): Promise<StopOutcome> {
     const before = await this.pool.findWorkItem(workItemId);
     await this.pool.blockItem(workItemId, options);
+    // Waiting for another job is not giving up: nothing to classify, retry or escalate.
+    if (options.afterWorkItemId) {
+      return { verdict: { decision: 'none', category: 'dependency', rules: ['after_work_item'] }, action: 'none' };
+    }
     const text = options.reason ?? '';
     return this.afterStop(before, workItemId, 'block', classifyStop(text, 'block'), text);
   }

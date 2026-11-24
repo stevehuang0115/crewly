@@ -8,12 +8,19 @@
 #
 # Input shape:
 #   { "workItemId": "abc-123", "sessionName": "dev-1", "reason": "missing creds",
-#     "questions"?: "...", "urgency"?: "...", "until"?: "2026-10-27T08:30:00Z" }
+#     "questions"?: "...", "urgency"?: "...", "until"?: "2026-10-27T08:30:00Z",
+#     "afterWorkItemId"?: "<upstream WorkItem id>" }
 #
 # `until` (ISO 8601, UTC, in the future) makes the block lift on its own: once
 # that time has passed the item returns to `queued` for you. For work that can
 # only proceed at a known time. Without it the block waits for an explicit
 # unblock.
+#
+# `afterWorkItemId` parks the item on another WorkItem (a brief that says "start
+# AFTER X"): it waits as `blocked` with that item in `dependsOn`, is not
+# stall-checked or re-delivered, and returns to `queued` for you when the
+# upstream item succeeds. Not combinable with `until`. Refused when the upstream
+# item is finished, cancelled, unknown or waits for this one.
 #
 # `sessionName` is REQUIRED (sent as `agentId`) — the endpoint 400s without it.
 # `questions`/`urgency` are folded into `reason`; the endpoint has no field for
@@ -36,6 +43,7 @@ REASON=$(printf '%s' "$INPUT" | jq -r '.reason // empty')
 QUESTIONS=$(printf '%s' "$INPUT" | jq -r '.questions // empty')
 URGENCY=$(printf '%s' "$INPUT" | jq -r '.urgency // empty')
 UNTIL=$(printf '%s' "$INPUT" | jq -r '.until // empty')
+AFTER_ID=$(printf '%s' "$INPUT" | jq -r '.afterWorkItemId // empty')
 LEGACY_PATH=$(printf '%s' "$INPUT" | jq -r '.absoluteTaskPath // empty')
 
 if [ -z "$WORK_ITEM_ID" ] && [ -n "$LEGACY_PATH" ]; then
@@ -45,6 +53,9 @@ fi
 
 require_param "workItemId" "$WORK_ITEM_ID"
 require_param "reason" "$REASON"
+if [ -n "$AFTER_ID" ] && [ -n "$UNTIL" ]; then
+  error_exit "Give either until or afterWorkItemId, not both."
+fi
 
 SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // .agentId // empty')
 [ -z "$SESSION_NAME" ] && SESSION_NAME="${CREWLY_SESSION_NAME:-}"
@@ -104,6 +115,7 @@ BODY=$(jq -n \
   --arg agentId "$SESSION_NAME" \
   --arg reason "$REASON" \
   --arg until "$UNTIL" \
-  '{agentId: $agentId, reason: $reason} + (if $until == "" then {} else {until: $until} end)')
+  --arg after "$AFTER_ID" \
+  '{agentId: $agentId, reason: $reason} + (if $until == "" then {} else {until: $until} end) + (if $after == "" then {} else {afterWorkItemId: $after} end)')
 
 api_call POST "/task-pool/block/${WORK_ITEM_ID}" "$BODY"

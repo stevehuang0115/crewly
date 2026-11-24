@@ -1270,8 +1270,14 @@ async function recordBlocked(
   agentId: string,
   reason: string | undefined,
   until?: string,
+  afterWorkItemId?: string,
 ): Promise<StopOutcome> {
-  const outcome = await getGiveUp().block(workItemId, { agentId, reason, ...(until ? { until } : {}) });
+  const outcome = await getGiveUp().block(workItemId, {
+    agentId,
+    reason,
+    ...(until ? { until } : {}),
+    ...(afterWorkItemId ? { afterWorkItemId } : {}),
+  });
 
   // V3.1: Project task blocked
   const projection = getProjection();
@@ -1300,9 +1306,16 @@ async function recordBlocked(
  * deploy settles) — the alternative was holding the item `running` while
  * waiting, or reporting it done before it was.
  *
+ * With `afterWorkItemId` the item instead waits for another WorkItem: it
+ * gets `dependsOn: [afterWorkItemId]` and returns to `queued` for the same
+ * target when that item succeeds. It is not stall-checked or re-delivered
+ * meanwhile. Refused (409) when that item is finished, cancelled, unknown or
+ * would form a cycle.
+ *
  * Request body:
  * ```json
  * { "agentId": "crewly-product-leo-member-n", "reason": "waiting for X", "until": "2026-10-27T08:30:00Z" }
+ * { "agentId": "crewly-product-leo-member-n", "reason": "start after the deploy", "afterWorkItemId": "<upstream id>" }
  * ```
  *
  * @param req - Express request with workItemId param
@@ -1311,7 +1324,12 @@ async function recordBlocked(
 export async function blockItem(req: Request, res: Response): Promise<void> {
   try {
     const { workItemId } = req.params;
-    const { agentId, reason, until } = req.body as { agentId?: string; reason?: string; until?: unknown };
+    const { agentId, reason, until, afterWorkItemId } = req.body as {
+      agentId?: string;
+      reason?: string;
+      until?: unknown;
+      afterWorkItemId?: unknown;
+    };
 
     if (!workItemId) {
       res.status(400).json({ success: false, error: 'workItemId param is required' });
@@ -1320,6 +1338,16 @@ export async function blockItem(req: Request, res: Response): Promise<void> {
     if (!agentId) {
       res.status(400).json({ success: false, error: 'agentId is required' });
       return;
+    }
+    if (afterWorkItemId !== undefined && afterWorkItemId !== null && afterWorkItemId !== '') {
+      if (typeof afterWorkItemId !== 'string') {
+        res.status(400).json({ success: false, error: 'afterWorkItemId must be a WorkItem id string' });
+        return;
+      }
+      if (until !== undefined && until !== null && until !== '') {
+        res.status(400).json({ success: false, error: 'give either until or afterWorkItemId, not both' });
+        return;
+      }
     }
     if (until !== undefined && until !== null && until !== '') {
       const untilMs = typeof until === 'string' ? Date.parse(until) : NaN;
@@ -1338,6 +1366,7 @@ export async function blockItem(req: Request, res: Response): Promise<void> {
       agentId,
       reason,
       typeof until === 'string' && until !== '' ? until : undefined,
+      typeof afterWorkItemId === 'string' && afterWorkItemId !== '' ? afterWorkItemId : undefined,
     );
 
     res.json({ success: true, message: `WorkItem ${workItemId} blocked`, ...giveUpFields(outcome) });
