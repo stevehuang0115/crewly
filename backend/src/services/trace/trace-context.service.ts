@@ -552,8 +552,9 @@ export class TraceContext {
 	}
 
 	/**
-	 * The traces a delivery puts the recipient on. Stricter than
-	 * {@link resolveTracesFromText}, which also serves linking:
+	 * The traces a message puts its recipient on (what it is about, not every id
+	 * it mentions). Used when it is delivered and when an agent's message is
+	 * linked to a trace on its way. Stricter than {@link resolveTracesFromText}:
 	 * - a restart `[SESSION_CONTEXT]` summary names none;
 	 * - `[TRACE:…]` markers win, as before;
 	 * - a dispatch / redelivery goes to the work item it names (a verify or retry
@@ -567,7 +568,7 @@ export class TraceContext {
 	 * @param recipient - Session it went to
 	 * @returns Trace ids, most relevant first
 	 */
-	private resolveDeliveryTraces(text: string, kind: DeliveryKind, recipient: string): string[] {
+	resolveDeliveryTraces(text: string, kind: DeliveryKind, recipient: string): string[] {
 		if (isSessionContextSummary(text)) return [];
 		const store = this.store;
 		const markers = parseTraceMarkers(text).filter((id) => store.has(id));
