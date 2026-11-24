@@ -1525,9 +1525,15 @@ export function detectUnclaimedTasks(
     if (isTeamIdPaused(agent.teamId) || isSessionPaused(agent.sessionName)) continue;
     if (agent.status === 'suspended' || agent.status === 'inactive') {
       wakableAgents.push(agent);
-    } else if (agent.status === 'active' && (agent.activeWorkItemCount ?? 0) === 0 && !agent.waitingOnHumanSince) {
+    } else if (agent.status === 'active' && (agent.activeWorkItemCount ?? 0) === 0 && !agent.waitingOnHumanSince && !agent.midTurn) {
       // Not while it sits on a prompt: a re-pushed brief would be typed into
       // the dialog and could answer it (#815).
+      // Not while it is mid-turn either (CREW-917): an agent can work a
+      // delivered brief without claiming it (CE-520: one 810 s turn, 0 claimed
+      // items), so "no claims" does not mean idle. Re-pushing then lands a
+      // second copy in a busy session. Once the turn ends the agent is idle
+      // again and the brief is re-pushed if it is still queued, so the
+      // dropped-brief safety net (2026-05-20) keeps working.
       activeIdleByTarget.set(agent.sessionName, agent);
     }
   }

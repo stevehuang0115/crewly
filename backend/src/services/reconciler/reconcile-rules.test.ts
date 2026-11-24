@@ -2851,3 +2851,29 @@ describe('decision-card hold on the TTL', () => {
     expect(runPruningPass([asked]).ttlCancelledCount).toBe(1);
   });
 });
+
+describe('detectUnclaimedTasks — never redeliver into a busy turn (CREW-917)', () => {
+  const aged = () => new Date(Date.now() - 7 * 60_000).toISOString();
+  const redelivers = (agents: ReturnType<typeof makeAgentMap>) => {
+    const wi = makeWorkItem({ status: 'queued', createdAt: aged(), target: 'nova' });
+    return detectUnclaimedTasks([wi], agents).wakeActions.filter((a) => a.strategy === 'redeliver');
+  };
+
+  it('an active agent mid-turn with 0 claimed items gets no re-push', () => {
+    expect(redelivers(makeAgentMap([['nova', { status: 'active', activeWorkItemCount: 0, midTurn: true }]]))).toHaveLength(0);
+  });
+
+  it('the same agent idle between turns with an aged queued WorkItem is still re-pushed', () => {
+    expect(redelivers(makeAgentMap([['nova', { status: 'active', activeWorkItemCount: 0, midTurn: false }]]))).toHaveLength(1);
+    expect(redelivers(makeAgentMap([['nova', { status: 'active', activeWorkItemCount: 0 }]]))).toHaveLength(1);
+  });
+
+  it('suspended and inactive agents are woken whether or not midTurn is set', () => {
+    for (const status of ['suspended', 'inactive'] as const) {
+      const wi = makeWorkItem({ status: 'queued', createdAt: aged(), target: 'nova' });
+      const actions = detectUnclaimedTasks([wi], makeAgentMap([['nova', { status, midTurn: true }]])).wakeActions;
+      expect(actions).toHaveLength(1);
+      expect(actions[0].strategy).not.toBe('redeliver');
+    }
+  });
+});
