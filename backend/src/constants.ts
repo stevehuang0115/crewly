@@ -5120,6 +5120,12 @@ export const OWNER_HOOK_MESSAGE_CONSTANTS = {
 	RESURFACE_AFTER_MS: 5 * 60 * 1000,
 	/** Times one message is shown at a tool boundary; after that only the idle delivery remains */
 	MAX_SURFACES: 2,
+	/** Times a decision answer (ref `decision:<id>`) is shown at a tool boundary: once (CREW-883) */
+	DECISION_MAX_SURFACES: 1,
+	/** Ref prefix of an owner's decision answer in the queue */
+	DECISION_REF_PREFIX: 'decision:',
+	/** Idle-delivery prefix for a decision answer the agent was already shown at a tool call */
+	DECISION_ALREADY_SHOWN_TEXT: 'this decision answer was already shown to you during your last turn',
 	/** Ceiling on the whole additionalContext a hook call returns (chars) */
 	MAX_CONTEXT_CHARS: 6000,
 	/** Kill switch: set to this env var's OFF value to never surface at tool boundaries */
@@ -5491,6 +5497,26 @@ export const ROOM_CONTEXT_CONSTANTS = {
  * a human's message does; those rows carry one of the markers below and are
  * never owner evidence.
  */
+/**
+ * An agent's post in a shared Slack room whose thread has agents on ANOTHER
+ * machine (CREW-860). Cloud drops a cross-machine post that @-names nobody (loop
+ * guard, by design), so the harness either adds the @names of the other-machine
+ * agents already in that thread, or tells the author nobody there got it.
+ */
+export const CROSS_MACHINE_MENTION_CONSTANTS = {
+	/** Kill switch: set this env var to the OFF value to stop adding @names (the author is told instead) */
+	AUTO_ADD_ENV: 'CREWLY_CROSS_MACHINE_AUTO_MENTION',
+	AUTO_ADD_OFF_VALUE: 'off',
+	/**
+	 * Agent turns in a row (no human between) after which no @name is added: the
+	 * hand-off is left to the author, well below Cloud's turn cap, so a thread of
+	 * agents cannot keep itself alive through this feature.
+	 */
+	MAX_CONSECUTIVE_AGENT_TURNS: 4,
+	/** Most threads messages read to find who is in the thread */
+	THREAD_READ_LIMIT: 200,
+} as const;
+
 export const OWNER_EVIDENCE_METADATA = {
 	/** Local agent session that authored the row (agent-session API caller, cross-machine Slack post). */
 	AUTHOR_AGENT_SESSION: 'authorAgentSession',

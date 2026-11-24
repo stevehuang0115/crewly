@@ -1485,6 +1485,30 @@ describe('mirrorOutbound', () => {
     expect(await service.linkAgentMentions('no mentions')).toBe('no mentions');
   });
 
+  describe('an agent on another machine with its own bot (CREW-860)', () => {
+    const entry = (name: string, botUserId: string | null, over: Record<string, unknown> = {}) => ({
+      name, mention: null, botUserId, agentSession: `ce-${name.toLowerCase()}-1`, team: 'CE', machine: 'iriss-air',
+      source: 'this-account', inChannel: true, kind: 'agent', ...over,
+    });
+    const withDirectory = (entries: unknown[]) =>
+      setSlackDirectoryService({ list: async () => entries } as unknown as SlackDirectoryService);
+    afterEach(() => setSlackDirectoryService(null));
+
+    it('links a plain @Name to its <@BOTID> although the local identity file does not hold that bot', async () => {
+      identities = new FakeIdentities();
+      service = makeService();
+      withDirectory([entry('Lead', 'ULEAD')]);
+      expect(await service.linkAgentMentions('@Lead can you check this?', 'C0CE')).toBe('<@ULEAD> can you check this?');
+    });
+
+    it('keeps the plain name of an app-less agent (no bot id to link), and ignores an entry not in the channel', async () => {
+      identities = new FakeIdentities();
+      service = makeService();
+      withDirectory([entry('Owen', null), entry('Wren', 'UWREN', { inChannel: false })]);
+      expect(await service.linkAgentMentions('@Owen and @Wren', 'C0CE')).toBe('@Owen and @Wren');
+    });
+  });
+
   it('links a bare @Name to a team-suffixed bot ("Ella (Crewly Marketing)") only when the bare name is unique', async () => {
     const ids = new FakeIdentities();
     identities = ids;

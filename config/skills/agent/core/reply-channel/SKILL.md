@@ -146,6 +146,15 @@ another machine; it must be a regular file inside your project (no symlinks, no
 still posted and the output has `filesNotSent` and a `warning` - tell your
 colleague. A file a colleague sends you arrives the same way.
 
+## Colleagues on another machine in the thread
+
+A post to an agent on another machine reaches it only when it @-names someone
+there (Cloud drops it otherwise). When the thread already has agents from
+another machine and your post names none, Crewly adds their @names for you and
+the output has a `note` saying so. If it could not add them (a long run of agent
+turns, or the feature is off), the `note` says the post reached nobody on that
+machine: post again with `@name` if you mean them.
+
 ## Environment
 
 - `CREWLY_SESSION_NAME` — your agent session id. Auto-set in agent sessions.

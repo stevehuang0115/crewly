@@ -4992,7 +4992,16 @@ export class SlackTeamChannelService {
     // when exactly one agent has it; an ambiguous bare name stays unlinked.
     const bareOwners = new Map<string, Set<string>>();
     const fullNames: Array<{ name: string; id: string }> = [];
-    for (const r of store.identities) {
+    // Agents on OTHER machines of the account with a bot of their own: Cloud
+    // knows them only by <@BOTID>, and the local identity file holds this
+    // machine's bots only. The channel directory names them (CREW-860).
+    const known = new Set(store.identities.map((r) => r.botUserId).filter((id): id is string => !!id));
+    const remote = channelId
+      ? ((await getSlackDirectoryService()?.list(channelId).catch(() => [])) ?? [])
+          .filter((e) => e.kind === 'agent' && e.source === 'this-account' && e.inChannel && !!e.botUserId && !known.has(e.botUserId))
+          .map((e) => ({ status: 'installed' as const, botUserId: e.botUserId, displayName: e.name, agentSession: e.agentSession ?? '' }))
+      : [];
+    for (const r of [...store.identities, ...remote]) {
       if (r.status !== 'installed' || !r.botUserId || !r.displayName) continue;
       const full = r.displayName.trim();
       byName.set(full.toLowerCase(), r.botUserId);
