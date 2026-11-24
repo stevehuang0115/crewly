@@ -143,6 +143,45 @@ export function isProjectTicketStatus(value: unknown): value is ProjectTicketSta
 }
 
 /**
+ * Normalise the reference that says where a ticket was already delivered: a
+ * WorkItem id (uuid, optionally with a `:retry:N` suffix), a GitHub PR URL, a PR
+ * number (`#1632`, `PR #1632`) or a commit sha (7-40 hex). Closing a backlog /
+ * ready ticket as `done` needs one (CREW-942).
+ *
+ * @param value - Raw reference
+ * @returns The trimmed reference, or null when it is none of those
+ *
+ * @example
+ * ```typescript
+ * parseDeliveredBy('PR #1632');                 // '#1632'
+ * parseDeliveredBy('https://github.com/o/r/pull/9'); // same URL
+ * parseDeliveredBy('soon');                     // null
+ * ```
+ */
+export function parseDeliveredBy(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const v = value.trim();
+  if (!v) return null;
+  const pr = /^(?:PR\s*)?#(\d{1,7})$/i.exec(v);
+  if (pr) return `#${pr[1]}`;
+  if (/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:pull|commit)\/[\w]+$/i.test(v)) return v;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?::retry:\d+)?$/i.test(v)) return v;
+  if (/^[0-9a-f]{7,40}$/i.test(v)) return v.toLowerCase();
+  return null;
+}
+
+/**
+ * Whether a ticket may be closed as `done` straight from this status, because
+ * its work was delivered elsewhere (needs {@link parseDeliveredBy}).
+ *
+ * @param from - Current status
+ * @returns True for `backlog` and `ready`
+ */
+export function canCloseAsDelivered(from: ProjectTicketStatus): boolean {
+  return from === 'backlog' || from === 'ready';
+}
+
+/**
  * Whether `from → to` is an allowed transition.
  *
  * @param from - Current status

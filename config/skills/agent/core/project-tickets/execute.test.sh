@@ -110,6 +110,8 @@ run update --project p1 --id APP-1 --hold none >/dev/null
 check "update: hold none lifts it" "$(last '.body | tostring')" '{"hold":null}'
 run update --project p1 --id APP-1 --defer-until none >/dev/null
 check "update: defer-until none clears" "$(last '.body | tostring')" '{"deferUntil":null}'
+run update --project p1 --id APP-1 --status done --delivered-by "#1632" --note shipped >/dev/null
+check "update: delivered-by body" "$(last '.body | tostring')" '{"deliveredBy":"#1632","status":"done","note":"shipped"}'
 run autopilot --project p1 --skip-labels "parked,later" >/dev/null
 check "autopilot: skip-labels body" "$(last '.body | tostring')" '{"skipLabels":"parked,later"}'
 check "update: nothing" "$(run_err update --project p1 --id APP-1 | grep -c 'Nothing to update')" "1"

@@ -438,12 +438,14 @@ export async function updateProjectTicket(req: Request, res: Response): Promise<
       },
       callerOf(req),
       typeof b.note === 'string' ? b.note : undefined,
+      typeof b.deliveredBy === 'string' ? b.deliveredBy : undefined,
     );
   });
 }
 
 /**
- * POST /api/project-tickets/:project/:id/transition — `{ status, note }`.
+ * POST /api/project-tickets/:project/:id/transition — `{ status, note, deliveredBy? }`.
+ * `deliveredBy` (a WorkItem id, PR URL / #number or commit sha) closes a backlog / ready ticket as done in one step.
  *
  * @param req - Request
  * @param res - `{ success, data: ticket }`
@@ -457,6 +459,7 @@ export async function transitionProjectTicket(req: Request, res: Response): Prom
       requireStatus(b.status),
       callerOf(req),
       typeof b.note === 'string' ? b.note : undefined,
+      typeof b.deliveredBy === 'string' ? b.deliveredBy : undefined,
     );
   });
 }
