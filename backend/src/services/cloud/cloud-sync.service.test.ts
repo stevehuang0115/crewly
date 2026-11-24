@@ -1111,8 +1111,26 @@ describe('CloudSyncService', () => {
       }
     };
 
+    /**
+     * Wait for a condition instead of a fixed number of event-loop turns: a
+     * registration attempt reads its id file with real fs, and under load a
+     * read can outlast any fixed count (CREW-1261). Bounded by turns, not by
+     * time, so a condition that never holds fails with its name instead of hanging.
+     */
+    const until = async (cond: () => boolean, what: string): Promise<void> => {
+      for (let i = 0; i < 5000 && !cond(); i++) {
+        await realTick();
+        await flushPromises();
+      }
+      if (!cond()) throw new Error(`never reached: ${what}`);
+    };
+    /** Registration attempts made so far, all of them finished (failure recorded, retry scheduled). */
+    const attemptsDone = (n: number) => () => registerCount() === n && (service.getHealth().relayQueue?.failures ?? 0) === n;
+
     afterEach(async () => {
       service.stop();
+      // Let an attempt that was in flight when the test ended finish before the folder goes.
+      await settle(5);
       await fsp.rm(path.dirname(queueFile), { recursive: true, force: true });
     });
 
@@ -1132,7 +1150,7 @@ describe('CloudSyncService', () => {
         return res as unknown as Response;
       });
       service.start(configWithJwt);
-      await settle();
+      await until(attemptsDone(1), 'the first refused registration');
       const health = service.getHealth().relayQueue!;
       expect(health.queueId).toBeNull();
       expect(health.nextAttemptAt! - Date.now()).toBe(expectedMs);
@@ -1151,7 +1169,7 @@ describe('CloudSyncService', () => {
 
       const t0 = Date.now();
       service.start(configWithJwt);
-      await settle();
+      await until(attemptsDone(1), 'the first refused registration');
 
       expect(registerCount()).toBe(1);
       let health = service.getHealth().relayQueue!;
@@ -1166,10 +1184,10 @@ describe('CloudSyncService', () => {
       // 30 s, then 60 s, then 120 s, then 300 s, then 300 s again.
       for (const [gap, expected] of [[30_000, 2], [60_000, 3], [120_000, 4], [300_000, 5], [300_000, 6]] as const) {
         jest.advanceTimersByTime(gap - 1);
-        await settle();
+        await flushPromises();
         expect(registerCount()).toBe(expected - 1);
         jest.advanceTimersByTime(1);
-        await settle();
+        await until(attemptsDone(expected), `registration attempt ${expected} finished`);
         expect(registerCount()).toBe(expected);
       }
       health = service.getHealth().relayQueue!;
@@ -1178,7 +1196,7 @@ describe('CloudSyncService', () => {
 
       refuse = false;
       jest.advanceTimersByTime(300_000);
-      await settle();
+      await until(() => service.getHealth().relayQueue?.queueId === DEVICE_ID, 'the accepted registration');
 
       expect(registerCount()).toBe(7);
       health = service.getHealth().relayQueue!;
@@ -1188,7 +1206,7 @@ describe('CloudSyncService', () => {
 
       // Polling picks the queue up on its next cycle.
       jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS);
-      await settle();
+      await until(() => pollCount() > 0, 'the first poll');
       expect(pollCount()).toBeGreaterThan(0);
     });
 

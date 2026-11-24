@@ -217,6 +217,8 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	DEFAULT_REPLAN_TTL_HOURS: 4,
 	/** Idle and empty: a replan waits at least this long after the last one (ms; keeps it from looping) */
 	IDLE_REPLAN_DEBOUNCE_MS: 10 * 60 * 1000,
+	/** Dated work (deferred ticket, work blocked until a time) due further ahead than this does not hold a goal replan back (ms) */
+	DATED_WORK_HORIZON_MS: 24 * 60 * 60 * 1000,
 	REPLAN_TTL_HOURS_LIMIT: 48,
 	/** A live replan older than this stops holding triage once there are tickets to triage (ms) */
 	REPLAN_YIELD_AFTER_MS: 60 * 60 * 1000,

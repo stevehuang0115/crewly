@@ -1085,7 +1085,7 @@ describe('TicketAutopilotService', () => {
         return target;
       }
       const replans = () => [...pool.items.values()].filter((w) => w.type === 'goal_replan');
-      const closeTicket = (title: string, status: 'done' | 'cancelled') =>
+      const closeTicket = (title: string, status: 'done' | 'cancelled' | 'ready') =>
         (wf['tickets'] as ProjectTicketService).create(project.path, project.name, { title, status }, 'owner');
 
       beforeEach(() => {
@@ -1183,10 +1183,38 @@ describe('TicketAutopilotService', () => {
         expect(goalReads).toBe(3);
         // Next day, after a new ticket lifts the empty replan's backoff.
         clock = new Date(2026, 9, 1, 10, 0);
-        await closeTicket('Feed card 2', 'done');
+        await closeTicket('Feed card 2', 'ready');
         advance(MIN);
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
         expect(replans()).toHaveLength(3);
+      });
+
+      it('CREW-930: only dated work left (a ticket deferred to a time ahead) → no replan; once it is due the replan runs', async () => {
+        await enable();
+        const soon = new Date(clock.getTime() + 3 * HOUR).toISOString();
+        const tix = wf['tickets'] as ProjectTicketService;
+        const deferred = await tix.create(project.path, project.name, { title: 'Wait for the vendor', status: 'backlog' }, 'owner');
+        await tix.update(project.path, deferred.id, { deferUntil: soon }, 'owner');
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'waiting_on_dated_work' });
+        expect(replans()).toHaveLength(0);
+        advance(4 * HOUR);
+        expect((await svc.onMemberIdle('ce-dev'))[0].decision).not.toEqual({ action: 'skip', reason: 'waiting_on_dated_work' });
+      });
+
+      it('CREW-930: a goal change since the last replan overrides the dated-work wait', async () => {
+        let changedAt: number | null = null;
+        (svc as unknown as { deps: Record<string, unknown> }).deps.goalChangedAt = async () => changedAt;
+        await enable({ replansPerDay: 5 });
+        await svc.onMemberIdle('ce-dev');
+        replans()[0].status = 'done'; // opened nothing
+        advance(HOUR);
+        const tix = wf['tickets'] as ProjectTicketService;
+        const deferred = await tix.create(project.path, project.name, { title: 'Wait for the vendor', status: 'backlog' }, 'owner');
+        await tix.update(project.path, deferred.id, { deferUntil: new Date(clock.getTime() + 6 * HOUR).toISOString() }, 'owner');
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'waiting_on_dated_work' });
+        changedAt = clock.getTime() + 1;
+        advance(MIN);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
       });
 
       it('the daily limit is configurable (0 = off, 2 = twice) and wins over the speed\'s cap', async () => {
@@ -1440,9 +1468,13 @@ describe('TicketAutopilotService', () => {
         replans()[0].status = 'done';
         clock = new Date(2026, 9, 1, 10, 0);
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'backed_off' });
-        // A ticket created (not one to triage) → lifted.
+        // CREW-930: a finished ticket (nothing to plan around) does not lift it ...
         advance(HOUR);
         await closeTicket('Owner shipped something', 'done');
+        advance(MIN);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'backed_off' });
+        // ... a new ready ticket (not one to triage) does.
+        await closeTicket('Owner queued something', 'ready');
         advance(MIN);
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
         // That replan opened nothing → backed off again; a goal change lifts it.

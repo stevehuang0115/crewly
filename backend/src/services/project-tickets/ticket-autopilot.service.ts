@@ -68,6 +68,7 @@ import {
   countReplans,
   replanCeilingReached,
   decideDigest,
+  countDatedWork,
   decideReplan,
   decideSelfReview,
   decideTriage,
@@ -1108,6 +1109,8 @@ export class TicketAutopilotService {
 
     // Cheap gates first (in-memory state only); the goal is read last.
     const gates = {
+      datedWork: 0,
+      goalChangedSinceLastReplan: false,
       enabled: c.settings.enabled,
       driver: c.driver.session,
       maxReplansPerDay: c.settings.replansPerDay,
@@ -1132,6 +1135,13 @@ export class TicketAutopilotService {
       this.logger.debug('Ticket autopilot: no goal replan', { projectId: project.id, trigger: c.trigger, decision: d });
       return { decision: d };
     };
+    // Work only waiting on a time (deferred tickets, blocked-until WorkItems) is busy.
+    const linked = new Set(c.tickets.map((t) => t.workItemId).filter((id): id is string => !!id));
+    const blockedWorkItems = linked.size > 0 ? (await this.deps.pool.getAllItems()).filter((wi) => linked.has(wi.id) && wi.status === 'blocked') : [];
+    gates.datedWork = countDatedWork({ tickets: c.tickets, blockedWorkItems, now: nowMs });
+    // A goal / OKR change since the last replan overrides the dated-work wait (file times only).
+    const changedAt = c.ps.replanBackoff || gates.datedWork > 0 ? (this.deps.goalChangedAt ? await this.deps.goalChangedAt(project).catch(() => null) : null) : null;
+    gates.goalChangedSinceLastReplan = typeof changedAt === 'number' && c.ps.replans?.lastAt !== undefined && changedAt > c.ps.replans.lastAt;
     const pre = decideReplan({ ...gates, backedOff: false, hasGoal: true });
     if (pre.action === 'skip') return skip(pre);
 
@@ -1139,8 +1149,7 @@ export class TicketAutopilotService {
     // change (file times only).
     let backedOff = false;
     if (c.ps.replanBackoff) {
-      const changedAt = this.deps.goalChangedAt ? await this.deps.goalChangedAt(project).catch(() => null) : null;
-      const state = replanBackoffState(c.ps.replanBackoff, { today, tickets: c.tickets, goalChangedAt: changedAt, now: nowMs });
+      const state = replanBackoffState(c.ps.replanBackoff, { today, tickets: c.tickets, goalChangedAt: changedAt, now: nowMs, skipLabels: c.settings.skipLabels });
       if (state === 'lifted') {
         this.logger.info('Goal replan backoff lifted (new ticket or goal change)', { projectId: project.id, streak: c.ps.replanBackoff.streak });
         delete c.ps.replanBackoff;

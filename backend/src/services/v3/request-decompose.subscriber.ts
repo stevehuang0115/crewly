@@ -215,6 +215,8 @@ export class RequestDecomposeSubscriber {
    * `request.workItemIds.length > 0` skip rule in {@link handleRequestCreated}.
    */
   private readonly decomposedRequestIds: Set<string> = new Set();
+  /** Request IDs being decomposed right now (the id is only in the set above once planning is done) */
+  private readonly decomposingRequestIds: Set<string> = new Set();
   /** In-flight async dispatch promises (test affordance). */
   private readonly pendingDispatches: Set<Promise<void>> = new Set();
 
@@ -334,6 +336,29 @@ export class RequestDecomposeSubscriber {
       return;
     }
 
+    // A second event for the same Request that arrives while the first is still
+    // reading it or planning (both awaits, before the id is marked) would
+    // decompose it again: the dedupe set above is only filled after those
+    // awaits. Claim the id for the duration of the run (CREW-1261).
+    if (this.decomposingRequestIds.has(requestId)) {
+      this.logger.debug('request:created is already being auto-decomposed — skip', { requestId });
+      return;
+    }
+    this.decomposingRequestIds.add(requestId);
+    try {
+      await this.decomposeRequest(requestId);
+    } finally {
+      this.decomposingRequestIds.delete(requestId);
+    }
+  };
+
+  /**
+   * Plan one Request and queue a WorkItem for each task (the body of
+   * {@link handleRequestCreated}, run at most once at a time per Request).
+   *
+   * @param requestId - The Request to decompose
+   */
+  private async decomposeRequest(requestId: string): Promise<void> {
     const request = await this.requestService.getById(requestId);
     if (!request) {
       this.logger.warn('request:created references unknown Request', { requestId });
@@ -435,7 +460,7 @@ export class RequestDecomposeSubscriber {
       queuedCount: queuedIds.length,
       queuedIds,
     });
-  };
+  }
 
   /**
    * Filter predicate. Returns true iff the Request should be auto-decomposed.

@@ -160,6 +160,18 @@ describe('RequestService — ticket review gate (ticket-loop Phase 2)', () => {
       service.setTaskPoolService(null);
     });
 
+    it('WorkItems linked at the same moment are all kept (no lost update, CREW-1261)', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const t = await makeTicket();
+      const ids = ['a', 'b', 'c', 'd', 'e'];
+      await Promise.all(ids.map((id) => service.linkWorkItem(t.id, id)));
+      expect((await service.getById(t.id))!.workItemIds.sort()).toEqual(ids);
+      // A link that fails does not block the next one for the same Request.
+      expect(await service.linkWorkItem('missing-request', 'x')).toBeNull();
+      await service.linkWorkItem(t.id, 'f');
+      expect((await service.getById(t.id))!.workItemIds).toContain('f');
+    });
+
     it('dead WorkItems (rejected / failed) do not hold the submit', async () => {
       const service = RequestService.getInstance('/tmp/test-project');
       const t = await makeTicket();

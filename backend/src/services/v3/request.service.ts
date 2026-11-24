@@ -170,6 +170,8 @@ export class RequestService {
    * a ticket changes. Listener errors are swallowed.
    */
   private readonly changeListeners = new Set<(id: string) => void>();
+  /** The latest link in flight per Request, so links of one Request run one after another */
+  private readonly linkQueues = new Map<string, Promise<unknown>>();
 
   /**
    * Creates a new RequestService.
@@ -692,7 +694,29 @@ export class RequestService {
    * @param workItemId - The WorkItem ID to link
    * @returns The updated Request, or null if Request not found
    */
-  public async linkWorkItem(requestId: string, workItemId: string): Promise<Request | null> {
+  public linkWorkItem(requestId: string, workItemId: string): Promise<Request | null> {
+    // One link at a time per Request: it is a read, a push and a write, and the pipeline queues
+    // a Request's WorkItems together, so overlapping calls each read the same list and the last
+    // write dropped the others' ids (CREW-1261). A failed link does not block the next one.
+    const run = (this.linkQueues.get(requestId) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.linkWorkItemNow(requestId, workItemId));
+    this.linkQueues.set(requestId, run);
+    const clear = (): void => {
+      if (this.linkQueues.get(requestId) === run) this.linkQueues.delete(requestId);
+    };
+    run.then(clear, clear);
+    return run;
+  }
+
+  /**
+   * One {@link linkWorkItem}, run alone for its Request.
+   *
+   * @param requestId - The Request ID
+   * @param workItemId - The WorkItem ID to link
+   * @returns The updated Request, or null if Request not found
+   */
+  private async linkWorkItemNow(requestId: string, workItemId: string): Promise<Request | null> {
     const request = await this.load(requestId);
     if (!request) return null;
 
