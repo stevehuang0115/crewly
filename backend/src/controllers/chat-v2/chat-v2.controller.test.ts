@@ -461,6 +461,73 @@ describe('chat-v2 controller (REST)', () => {
     }
   });
 
+  describe('other-machine agents in a Slack room thread (CREW-860)', () => {
+    const ENTRY = (name: string, session: string, source: 'this-account' | 'this-machine' = 'this-account') => ({
+      name, mention: null, botUserId: null, agentSession: session, team: 'CE', machine: source === 'this-account' ? 'iriss-air' : 'this machine',
+      source, inChannel: true, kind: 'agent' as const,
+    });
+    const OWEN_POSTED = { senderType: 'user', senderId: 'u', metadata: { remoteAgentSession: 'ce-owen-1' }, mentions: [] };
+    const HUMAN = { senderType: 'user', senderId: 'owner', metadata: {}, mentions: [] };
+
+    /** Posts as sess-a into a Slack room whose directory holds `entries` and whose thread holds `thread`. */
+    async function post(entries: unknown[], thread: unknown[], content: string, env: Record<string, string> = {}) {
+      const { app, service } = buildApp();
+      const dir = await import('../../services/slack/slack-directory.service.js');
+      const spy = jest.spyOn(dir, 'getSlackDirectoryService').mockReturnValue({ list: async () => entries } as never);
+      jest.spyOn(service, 'listThreadForBridge').mockReturnValue(thread as never);
+      const saved = { ...process.env };
+      Object.assign(process.env, env);
+      try {
+        const created = await request(app).post('/api/chat/channels').send({ agentSession: 'sess-a', name: 'Ch' });
+        const chId = created.body.data.id;
+        const root = await request(app).post(`/api/chat/channels/${chId}/messages`).send({ content: 'q' });
+        mockTeamChannels.current = {
+          findByChatChannelId: jest.fn((id: string) => (id === chId ? { chatChannelId: chId, slackChannelId: 'C0CE', slackChannelName: 'ce' } : null)),
+          heldReplyFor: jest.fn(async () => null),
+        };
+        return await request(app).post(`/api/chat/channels/${chId}/messages`).set('X-Agent-Session', 'sess-a').send({ content, threadId: root.body.data.id });
+      } finally {
+        for (const k of Object.keys(env)) delete process.env[k];
+        Object.assign(process.env, saved);
+        spy.mockRestore();
+        mockTeamChannels.current = null;
+        service.close();
+      }
+    }
+
+    it('(b) a post with no @name gets the @name of the other-machine agent in the thread, and the author is told', async () => {
+      const res = await post([ENTRY('Owen', 'ce-owen-1'), ENTRY('Lead', 'ce-lead-1')], [HUMAN, OWEN_POSTED], 'Here is the enquiry form.');
+      expect(res.status).toBe(201);
+      expect(res.body.data.content).toBe('@Owen Here is the enquiry form.');
+      expect(res.body.crossMachine).toMatchObject({ added: ['Owen'], unreached: [] });
+      expect(res.body.crossMachine.note).toContain('Added @Owen');
+    });
+
+    it('(c) with auto-add off the post goes unchanged and the author is told it reached nobody', async () => {
+      const res = await post([ENTRY('Owen', 'ce-owen-1')], [HUMAN, OWEN_POSTED], 'Here is the form.', { CREWLY_CROSS_MACHINE_AUTO_MENTION: 'off' });
+      expect(res.body.data.content).toBe('Here is the form.');
+      expect(res.body.crossMachine.unreached).toEqual(['Owen']);
+      expect(res.body.crossMachine.note).toContain('reached nobody on iriss-air');
+    });
+
+    it('a post that already names an other-machine agent says nothing new', async () => {
+      const res = await post([ENTRY('Owen', 'ce-owen-1')], [HUMAN, OWEN_POSTED], '@Owen here you go');
+      expect(res.body.data.content).toBe('@Owen here you go');
+      expect(res.body).not.toHaveProperty('crossMachine');
+    });
+
+    it('same-machine posts are unchanged: no other-machine agent in the room', async () => {
+      const res = await post([ENTRY('Pia', 'sess-b', 'this-machine')], [HUMAN, OWEN_POSTED], 'Done.');
+      expect(res.body.data.content).toBe('Done.');
+      expect(res.body).not.toHaveProperty('crossMachine');
+    });
+
+    it('never adds an other-machine agent that is not in the thread', async () => {
+      const res = await post([ENTRY('Owen', 'ce-owen-1'), ENTRY('Lead', 'ce-lead-1')], [HUMAN, OWEN_POSTED], 'Done.');
+      expect(res.body.data.content).not.toContain('Lead');
+    });
+  });
+
   it('POST /api/chat/channels/:id/messages — a reply in a thread a colleague already answered is held (409 already_answered) unless addsNew (specs/2026-10-03-one-responder-per-message.md §2)', async () => {
     const { app, service } = buildApp();
     try {

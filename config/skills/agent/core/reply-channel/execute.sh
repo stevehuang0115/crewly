@@ -307,6 +307,9 @@ if mid:
 else:
     out["raw"] = raw
 out["channelId"] = os.environ["CHANNEL_ID"]
+cm = d.get("crossMachine") or {}
+if cm.get("note"):
+    out["note"] = cm["note"]
 fh = d.get("fileHandoff") or {}
 if fh.get("attached"):
     out["filesSent"] = [a.get("fileName") for a in fh["attached"]]
