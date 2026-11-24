@@ -37,6 +37,8 @@ let workerDown = false;
 let teamsKnown = false;
 /** Extra fields of the stub's /task-pool/add `data`. */
 let addExtra: Record<string, unknown> = {};
+/** Status the stub reports for GET /task-pool/items/<id> (absent id → 404). */
+let upstreamStatus: Record<string, string> = {};
 
 /**
  * Runs the skill with the stub API wired in.
@@ -93,6 +95,18 @@ beforeAll((done) => {
         res.end(JSON.stringify({ success: true, data: path.endsWith('team-1') ? team : [team] }));
         return;
       }
+      const itemMatch = /\/task-pool\/items\/([^/?]+)$/.exec(path);
+      if (itemMatch && req.method === 'GET') {
+        const status = upstreamStatus[itemMatch[1]];
+        if (!status) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'not found' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: { id: itemMatch[1], status } }));
+        return;
+      }
       if (path.includes('/task-pool/add')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, data: { id: 'wi-created-1', ...addExtra } }));
@@ -110,7 +124,7 @@ beforeAll((done) => {
 
 afterAll((done) => { server.close(() => done()); });
 
-beforeEach(() => { captured = []; failDelivery = false; workerDown = false; teamsKnown = false; addExtra = {}; });
+beforeEach(() => { captured = []; failDelivery = false; workerDown = false; teamsKnown = false; addExtra = {}; upstreamStatus = {}; });
 
 /** Index of the first captured call whose path matches, or -1. */
 const indexOf = (needle: string): number =>
@@ -300,5 +314,50 @@ describe('delegate-task says whether the brief was delivered or only queued (202
     // The queued answer is not a failure: no force write, no [UNDELIVERED] note.
     expect(captured.filter((c) => c.path.includes('/deliver'))).toHaveLength(1);
     expect(captured.some((c) => c.path.includes('/notes'))).toBe(false);
+  });
+});
+
+
+describe('delegate-task --after (CREW-733: "start after another job")', () => {
+  const args = ['--to', 'worker-1', '--task', 'start after the deploy', '--project', '/tmp/proj'];
+
+  it('creates the item blocked on the upstream item and delivers nothing', async () => {
+    upstreamStatus = { 'wi-up': 'running' };
+    addExtra = { status: 'blocked' };
+    const r = await runSkill([...args, '--after', 'wi-up']);
+
+    expect(r.code).toBe(0);
+    const add = captured.find((c) => c.path.includes('/task-pool/add'));
+    expect(add).toBeDefined();
+    const body = add!.body as { dependsOn?: string[]; metadata?: Record<string, unknown> };
+    expect(body.dependsOn).toEqual(['wi-up']);
+    // Not marked for direct delivery: the backend delivers it when it is promoted to queued.
+    expect(body.metadata?.directDelivery).toBeUndefined();
+    // Nothing is delivered, subscribed or scheduled while it waits.
+    expect(captured.some((c) => c.path.includes('/deliver'))).toBe(false);
+    expect(captured.some((c) => c.path.includes('/events/subscribe') || c.path.includes('/schedule'))).toBe(false);
+    expect(JSON.parse(r.stdout)).toMatchObject({ success: true, workItemId: 'wi-created-1', after: 'wi-up' });
+  });
+
+  it('without --after the item has no dependsOn and is delivered as before', async () => {
+    await runSkill(args);
+    const body = captured.find((c) => c.path.includes('/task-pool/add'))!.body as { dependsOn?: string[]; metadata?: Record<string, unknown> };
+    expect(body.dependsOn).toBeUndefined();
+    expect(body.metadata?.directDelivery).toBe(true);
+    expect(captured.some((c) => c.path.includes('/deliver'))).toBe(true);
+  });
+
+  it.each([
+    ['an unknown upstream item', {} as Record<string, string>, /no such WorkItem/],
+    ['an upstream item that is already done', { 'wi-up': 'done' }, /nothing to wait for/],
+    ['an upstream item that was cancelled', { 'wi-up': 'cancelled' }, /will never succeed/],
+  ])('refuses %s before creating anything', async (_label, statuses, message) => {
+    upstreamStatus = statuses;
+    const r = await runSkill([...args, '--after', 'wi-up']);
+
+    expect(r.code).not.toBe(0);
+    expect(r.stdout).toMatch(message);
+    expect(captured.some((c) => c.path.includes('/task-pool/add'))).toBe(false);
+    expect(captured.some((c) => c.path.includes('/deliver'))).toBe(false);
   });
 });

@@ -5,6 +5,7 @@ User-visible changes. Newest first.
 ## Unreleased
 
 ### Fixed
+- **Work that a brief says to start after another job now waits for that job.** The stall detector used to re-deliver such a brief while the worker sat idle waiting, and move its ticket back to ready. A team lead delegates with `delegate-task --after <workItemId>`, or a worker who is already running parks the item with `block-task` and `afterWorkItemId`: the item is held as blocked (never stall-checked or re-delivered) and goes to the same worker when the other job succeeds. A wait that could never end (unknown, already finished or cancelled job, or a cycle) is refused up front.
 - **Windows: Crewly can upgrade itself.** Every automatic upgrade on Windows failed with `npm error code EBUSY`: npm replaces a global package by renaming its directory, and Windows refuses that while the backend, its `crewly start` parent or an agent terminal runs from it. On Windows Crewly now stops first: a small helper in the Crewly home waits for Crewly to exit, ends what is left of the old process tree, runs npm (up to four attempts), and starts Crewly again, on the old version if the install did not work. The Upgrade button and remote upgrades take the same path. A machine on an older version needs one manual upgrade to get this: stop Crewly, run `crewly upgrade`, start it again.
 
 ### Added
