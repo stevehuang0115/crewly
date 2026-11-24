@@ -14,7 +14,7 @@ import {
 } from './cross-machine-mention.js';
 
 const owen: RemoteRoomAgent = { name: 'Owen (CE)', agentSession: 'ce-owen-1', botUserId: 'UOWEN', machine: 'iriss-air' };
-const lead: RemoteRoomAgent = { name: 'Lead', agentSession: 'ce-lead-1', botUserId: null, machine: 'iriss-air' };
+const lead: RemoteRoomAgent = { name: 'Lead', agentSession: 'ce-lead-1', botUserId: null, machine: 'iriss-air' }; // app-less
 const wren: RemoteRoomAgent = { name: 'Wren', agentSession: 'ce-wren-1', botUserId: null, machine: 'studio' };
 const ROOM = [owen, lead, wren];
 
@@ -23,12 +23,23 @@ const ours: ThreadTurn = { by: 'agent' };
 const fromOwen: ThreadTurn = { by: 'remote-agent', remoteSession: 'ce-owen-1' };
 
 describe('addresses', () => {
-	it('counts <@bot>, @Name anywhere (full or short) and a leading name', () => {
-		expect(addresses('hi <@UOWEN> look', owen)).toBe(true);
-		expect(addresses('can @owen check', owen)).toBe(true);
-		expect(addresses('Lead, please send it', lead)).toBe(true);
-		expect(addresses('ask Lead later', lead)).toBe(false);
-		expect(addresses('email me at x@owenfoo.com', owen)).toBe(false);
+	it('an agent with a bot is addressed by <@BOTID>, or by a unique @Name (it is linked to the bot)', () => {
+		expect(addresses('hi <@UOWEN> look', owen, ROOM)).toBe(true);
+		expect(addresses('can @owen check', owen, ROOM)).toBe(true);
+		expect(addresses('Owen, please', owen, ROOM)).toBe(false); // an opening bare name is not linked
+		expect(addresses('email me at x@owenfoo.com', owen, ROOM)).toBe(false);
+	});
+
+	it('a plain @Name that is ambiguous in the room will not be linked, so it does not count', () => {
+		const owen2: RemoteRoomAgent = { name: 'Owen (Sales)', agentSession: 'sales-owen-1', botUserId: 'UOWEN2', machine: 'studio' };
+		expect(addresses('@Owen look', owen, [owen, owen2])).toBe(false);
+		expect(addresses('<@UOWEN> look', owen, [owen, owen2])).toBe(true);
+	});
+
+	it('an app-less agent is addressed by its plain name (@Name anywhere, or opening the text)', () => {
+		expect(addresses('Lead, please send it', lead, ROOM)).toBe(true);
+		expect(addresses('can @lead check', lead, ROOM)).toBe(true);
+		expect(addresses('ask Lead later', lead, ROOM)).toBe(false);
 	});
 });
 
@@ -43,9 +54,20 @@ describe('remoteAgentsInThread', () => {
 describe('planCrossMachineMention (b: add the @names)', () => {
 	it('adds the @name of the other-machine agents in the thread to a post that names none', () => {
 		const plan = planCrossMachineMention('Here is the enquiry form.', ROOM, [human, fromOwen]);
-		expect(plan.content).toBe('@Owen Here is the enquiry form.');
+		expect(plan.content).toBe('<@UOWEN> Here is the enquiry form.');
 		expect(plan.added).toEqual([owen]);
-		expect(plan.note).toContain('Added @Owen');
+		expect(plan.note).toContain('Added Owen (CE)');
+	});
+
+	it('adds an app-less agent by its plain name, an agent with a bot by <@BOTID> (never a plain @Name, Cloud drops it)', () => {
+		const plan = planCrossMachineMention('ok', ROOM, [human, fromOwen, { by: 'remote-agent', remoteSession: 'ce-lead-1' }]);
+		expect(plan.content).toBe('<@UOWEN> @Lead ok');
+	});
+
+	it('a plain @Name of an agent with a bot, ambiguous so it will not be linked, still gets the post fixed', () => {
+		const owen2: RemoteRoomAgent = { name: 'Owen (Sales)', agentSession: 'sales-owen-1', botUserId: 'UOWEN2', machine: 'studio' };
+		const plan = planCrossMachineMention('@Owen look', [owen, owen2], [human, fromOwen]);
+		expect(plan.content).toBe('<@UOWEN> @Owen look');
 	});
 
 	it('never adds an agent that is not in the thread', () => {

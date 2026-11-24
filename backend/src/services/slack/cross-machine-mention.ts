@@ -69,15 +69,27 @@ function namesOf(agent: RemoteRoomAgent): string[] {
 }
 
 /**
- * Whether the text addresses the agent the way Cloud counts it.
+ * Whether the text addresses the agent the way Cloud counts it. Cloud knows an
+ * agent WITH its own Slack bot only by `<@BOTID>`; `linkAgentMentions` turns a
+ * typed `@Name` into that mention, but only when the name is unambiguous in the
+ * room, so a plain name counts for a bot agent only then. An app-less agent is
+ * addressed by its plain name (`@Name` anywhere, or the text opening with it).
  *
  * @param text - The post
  * @param agent - The other-machine agent
- * @returns True for `<@bot>`, `@Name` anywhere, or the text opening with the name
+ * @param room - Every other-machine agent in the room (decides whether a short name is unique)
+ * @returns True when Cloud will see the agent addressed
  */
-export function addresses(text: string, agent: RemoteRoomAgent): boolean {
+export function addresses(text: string, agent: RemoteRoomAgent, room: readonly RemoteRoomAgent[] = [agent]): boolean {
 	const body = text.trim();
-	if (agent.botUserId && new RegExp(`<@${escapeRegExp(agent.botUserId)}(?:\\|[^>]*)?>`).test(body)) return true;
+	if (agent.botUserId) {
+		if (new RegExp(`<@${escapeRegExp(agent.botUserId)}(?:\\|[^>]*)?>`).test(body)) return true;
+		const short = namesOf(agent).at(-1) ?? '';
+		const shared = room.some((o) => o !== agent && namesOf(o).some((n) => n.toLowerCase() === short.toLowerCase()));
+		if (shared) return false;
+		// Only `@Name` is linked to the bot, never an opening bare name.
+		return new RegExp(`(?:^|[^\\p{L}\\p{N}_<])@${escapeRegExp(short)}(?![\\p{L}\\p{N}_])`, 'iu').test(body);
+	}
 	for (const n of namesOf(agent)) {
 		const e = escapeRegExp(n);
 		if (new RegExp(`^${e}(?:[,，:：]|\\s|$)`, 'i').test(body)) return true;
@@ -131,7 +143,7 @@ export function planCrossMachineMention(
 	env: NodeJS.ProcessEnv = process.env,
 ): CrossMachinePlan {
 	if (room.length === 0 || !content.trim()) return NO_PLAN(content);
-	if (room.some((a) => addresses(content, a))) return NO_PLAN(content);
+	if (room.some((a) => addresses(content, a, room))) return NO_PLAN(content);
 	const inThread = remoteAgentsInThread(room, turns);
 	if (inThread.length === 0) return NO_PLAN(content);
 
@@ -140,12 +152,13 @@ export function planCrossMachineMention(
 	const autoAdd =
 		env[C.AUTO_ADD_ENV] !== C.AUTO_ADD_OFF_VALUE && trailingAgentTurns(turns) < C.MAX_CONSECUTIVE_AGENT_TURNS;
 	if (autoAdd) {
-		const tags = inThread.map((a) => `@${a.name.replace(/\s*\(.*$/, '').trim() || a.name}`).join(' ');
+		// An agent with its own bot is reached only through `<@BOTID>`; an app-less one by name.
+		const tags = inThread.map((a) => (a.botUserId ? `<@${a.botUserId}>` : `@${a.name.replace(/\s*\(.*$/, '').trim() || a.name}`)).join(' ');
 		return {
 			content: `${tags} ${content}`,
 			added: inThread,
 			unreached: [],
-			note: `Added ${tags} so this reaches ${names(inThread)} on ${where(inThread)}: a post to another machine is dropped unless it @-names someone there.`,
+			note: `Added ${inThread.map((a) => a.name).join(', ')} (${tags}) so this reaches ${names(inThread)} on ${where(inThread)}: a post to another machine is dropped unless it @-names someone there.`,
 		};
 	}
 	return {

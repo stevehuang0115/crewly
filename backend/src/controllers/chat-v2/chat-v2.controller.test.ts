@@ -503,6 +503,12 @@ describe('chat-v2 controller (REST)', () => {
       expect(res.body.crossMachine.note).toContain('Added @Owen');
     });
 
+    it('(b) an other-machine agent with its own bot is added as <@BOTID>, never a plain @Name Cloud would drop', async () => {
+      const bot = { ...ENTRY('Owen', 'ce-owen-1'), botUserId: 'UOWEN' };
+      const res = await post([bot], [HUMAN, OWEN_POSTED], 'Here is the enquiry form.');
+      expect(res.body.data.content).toBe('<@UOWEN> Here is the enquiry form.');
+    });
+
     it('(c) with auto-add off the post goes unchanged and the author is told it reached nobody', async () => {
       const res = await post([ENTRY('Owen', 'ce-owen-1')], [HUMAN, OWEN_POSTED], 'Here is the form.', { CREWLY_CROSS_MACHINE_AUTO_MENTION: 'off' });
       expect(res.body.data.content).toBe('Here is the form.');
