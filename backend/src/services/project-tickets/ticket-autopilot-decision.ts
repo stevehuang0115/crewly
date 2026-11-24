@@ -383,6 +383,11 @@ export interface ReplanDecisionInput {
    * It counts as busy: nothing new could be planned until it is due.
    */
   datedWork?: number;
+  /**
+   * The goal or an OKR changed after the last replan: the plan may differ, so
+   * dated work does not hold the replan back.
+   */
+  goalChangedSinceLastReplan?: boolean;
 }
 
 /** Why the driver is not woken to replan. */
@@ -439,7 +444,7 @@ export function decideReplan(input: ReplanDecisionInput): ReplanDecision {
     const gap = effectiveReplanGapMs(input.minGapMs ?? 0, !!input.idleAndEmpty, input.idleReplanDebounceMs ?? 0);
     if (gap > 0 && input.now - input.lastReplanAt < gap) return { action: 'skip', reason: 'replan_too_soon' };
   }
-  if ((input.datedWork ?? 0) > 0) return { action: 'skip', reason: 'waiting_on_dated_work' };
+  if ((input.datedWork ?? 0) > 0 && !input.goalChangedSinceLastReplan) return { action: 'skip', reason: 'waiting_on_dated_work' };
   if (input.backedOff) return { action: 'skip', reason: 'backed_off' };
   if (!input.hasGoal) return { action: 'skip', reason: 'no_goal' };
   return { action: 'replan' };
@@ -512,12 +517,9 @@ export function nextReplanBackoff(input: {
   return { streak, since: input.now, resumeDay: localDateKey(resume), resumeAt: resume.getTime() };
 }
 
-/** Dated work due further ahead than this does not hold a replan back (ms). */
-export const DATED_WORK_HORIZON_MS = 24 * 60 * 60 * 1000;
-
 /**
  * How many things are only waiting on a time that is still ahead but within
- * {@link DATED_WORK_HORIZON_MS}: open tickets deferred (`deferUntil`) and
+ * {@link TICKET_AUTOPILOT_CONSTANTS.DATED_WORK_HORIZON_MS}: open tickets deferred (`deferUntil`) and
  * WorkItems blocked until a time (`blockedUntil`). Such work is busy: the
  * plan cannot change before it is due, so a goal replan would find nothing
  * new. Work due beyond the horizon is not counted, so a month-long deferral
@@ -532,7 +534,7 @@ export function countDatedWork(input: {
   now: number;
   horizonMs?: number;
 }): number {
-  const limit = input.now + (input.horizonMs ?? DATED_WORK_HORIZON_MS);
+  const limit = input.now + (input.horizonMs ?? TICKET_AUTOPILOT_CONSTANTS.DATED_WORK_HORIZON_MS);
   const waiting = (until: number | null | undefined): boolean => typeof until === 'number' && Number.isFinite(until) && until > input.now && until <= limit;
   let n = 0;
   for (const t of input.tickets) {

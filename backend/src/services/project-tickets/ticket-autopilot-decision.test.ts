@@ -24,7 +24,6 @@ import {
   replanBackoffState,
   countDatedWork,
   liftsReplanBackoff,
-  DATED_WORK_HORIZON_MS,
   hasPossibleTaker,
   inFlightByAssignee,
   isMemberIdle,
@@ -130,6 +129,9 @@ describe('decideReplan (specs/2026-10-04-autopilot-goal-replan.md)', () => {
   it('CREW-930: work only waiting on a time is busy: no replan', () => {
     expect(decideReplan(replan({ datedWork: 2 }))).toEqual({ action: 'skip', reason: 'waiting_on_dated_work' });
     expect(decideReplan(replan({ datedWork: 0 }))).toEqual({ action: 'replan' });
+    // A goal / OKR change since the last replan overrides the wait.
+    expect(decideReplan(replan({ datedWork: 2, goalChangedSinceLastReplan: true }))).toEqual({ action: 'replan' });
+    expect(decideReplan(replan({ datedWork: 2, goalChangedSinceLastReplan: false }))).toEqual({ action: 'skip', reason: 'waiting_on_dated_work' });
   });
 
   it.each([
@@ -679,7 +681,7 @@ describe('CREW-930: countDatedWork', () => {
   });
 
   it('does not count what is not waiting on a time', () => {
-    const far = new Date(NOW + DATED_WORK_HORIZON_MS + HOUR).toISOString();
+    const far = new Date(NOW + C.DATED_WORK_HORIZON_MS + HOUR).toISOString();
     const past = new Date(NOW - HOUR).toISOString();
     expect(countDatedWork({ tickets: [ticket('F', { deferUntil: far }), ticket('P', { deferUntil: past }), ticket('N')], now: NOW })).toBe(0);
     expect(countDatedWork({ tickets: [ticket('X', { deferUntil: soon, status: 'done' })], now: NOW })).toBe(0);

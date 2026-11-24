@@ -1201,6 +1201,22 @@ describe('TicketAutopilotService', () => {
         expect((await svc.onMemberIdle('ce-dev'))[0].decision).not.toEqual({ action: 'skip', reason: 'waiting_on_dated_work' });
       });
 
+      it('CREW-930: a goal change since the last replan overrides the dated-work wait', async () => {
+        let changedAt: number | null = null;
+        (svc as unknown as { deps: Record<string, unknown> }).deps.goalChangedAt = async () => changedAt;
+        await enable({ replansPerDay: 5 });
+        await svc.onMemberIdle('ce-dev');
+        replans()[0].status = 'done'; // opened nothing
+        advance(HOUR);
+        const tix = wf['tickets'] as ProjectTicketService;
+        const deferred = await tix.create(project.path, project.name, { title: 'Wait for the vendor', status: 'backlog' }, 'owner');
+        await tix.update(project.path, deferred.id, { deferUntil: new Date(clock.getTime() + 6 * HOUR).toISOString() }, 'owner');
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'waiting_on_dated_work' });
+        changedAt = clock.getTime() + 1;
+        advance(MIN);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+      });
+
       it('the daily limit is configurable (0 = off, 2 = twice) and wins over the speed\'s cap', async () => {
         await enable({ replansPerDay: 0, speedMode: 'chill' });
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replan_off' });
