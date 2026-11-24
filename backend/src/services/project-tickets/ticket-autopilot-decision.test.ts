@@ -22,6 +22,9 @@ import {
   type SelfReviewDecisionInput,
   type StopReasonInput,
   replanBackoffState,
+  countDatedWork,
+  liftsReplanBackoff,
+  DATED_WORK_HORIZON_MS,
   hasPossibleTaker,
   inFlightByAssignee,
   isMemberIdle,
@@ -122,6 +125,11 @@ describe('decideReplan (specs/2026-10-04-autopilot-goal-replan.md)', () => {
 
   it('replans when on + goal + nothing to triage + someone idle + not replanned today', () => {
     expect(decideReplan(replan())).toEqual({ action: 'replan' });
+  });
+
+  it('CREW-930: work only waiting on a time is busy: no replan', () => {
+    expect(decideReplan(replan({ datedWork: 2 }))).toEqual({ action: 'skip', reason: 'waiting_on_dated_work' });
+    expect(decideReplan(replan({ datedWork: 0 }))).toEqual({ action: 'replan' });
   });
 
   it.each([
@@ -628,5 +636,54 @@ describe('findStalledWork (CE 2026-10-05: in progress, assignee idle, nothing mo
       liveAutopilotItem: false, failedRecently: 0, stuckDelivery: false, waitingOnOwner: 0, emptyReplanBackoff: false, stalledWork: 2,
     });
     expect(r).toEqual({ running: false, reason: 'stalled_work' });
+  });
+});
+
+describe('CREW-930: the replan backoff is lifted only by work the autopilot could plan around', () => {
+  const b = { streak: 1, since: NOW, resumeDay: '2026-10-03', resumeAt: NOW + 24 * HOUR };
+  const after = new Date(NOW + MIN).toISOString();
+  const lifted = (t: ProjectTicket): string => replanBackoffState(b, { today: '2026-10-01', tickets: [t], now: NOW + 2 * MIN });
+
+  it('a new triage-candidate ticket lifts it', () => {
+    expect(lifted(ticket('N1', { createdAt: after }))).toBe('lifted');
+    expect(lifted(ticket('N2', { createdAt: after, status: 'ready' }))).toBe('lifted');
+  });
+
+  it.each([
+    ['retro-pending', { labels: ['retro-pending'] }],
+    ['needs-owner', { labels: ['needs-owner'] }],
+    ['parked label', { labels: ['parked'] }],
+    ['deferred ticket', { deferUntil: new Date(NOW + 5 * HOUR).toISOString() }],
+    ['already in progress', { status: 'in_progress' as const }],
+    ['already done', { status: 'done' as const }],
+  ])('a new ticket that is %s does not lift it', (_name, extra) => {
+    expect(lifted(ticket('N', { createdAt: after, ...extra }))).toBe('holds');
+    expect(liftsReplanBackoff(ticket('N', { createdAt: after, ...extra }), NOW + 2 * MIN)).toBe(false);
+  });
+
+  it('a goal change still lifts it; an empty window behaves as before', () => {
+    expect(replanBackoffState(b, { today: '2026-10-01', tickets: [], goalChangedAt: NOW + MIN, now: NOW + 2 * MIN })).toBe('lifted');
+    expect(replanBackoffState(b, { today: '2026-10-01', tickets: [], now: NOW + 2 * MIN })).toBe('holds');
+    expect(replanBackoffState(b, { today: '2026-10-02', tickets: [], now: NOW + 24 * HOUR })).toBe('elapsed');
+  });
+});
+
+describe('CREW-930: countDatedWork', () => {
+  const soon = new Date(NOW + 3 * HOUR).toISOString();
+  const wi = (status: 'blocked' | 'queued', until?: string) => ({ status, metadata: until ? { blockedUntil: until } : {} });
+
+  it('counts deferred open tickets and blocked-until WorkItems due within the horizon', () => {
+    expect(countDatedWork({ tickets: [ticket('D', { deferUntil: soon })], now: NOW })).toBe(1);
+    expect(countDatedWork({ tickets: [], blockedWorkItems: [wi('blocked', soon)], now: NOW })).toBe(1);
+    expect(countDatedWork({ tickets: [ticket('D', { deferUntil: soon })], blockedWorkItems: [wi('blocked', soon)], now: NOW })).toBe(2);
+  });
+
+  it('does not count what is not waiting on a time', () => {
+    const far = new Date(NOW + DATED_WORK_HORIZON_MS + HOUR).toISOString();
+    const past = new Date(NOW - HOUR).toISOString();
+    expect(countDatedWork({ tickets: [ticket('F', { deferUntil: far }), ticket('P', { deferUntil: past }), ticket('N')], now: NOW })).toBe(0);
+    expect(countDatedWork({ tickets: [ticket('X', { deferUntil: soon, status: 'done' })], now: NOW })).toBe(0);
+    expect(countDatedWork({ tickets: [], blockedWorkItems: [wi('blocked'), wi('queued', soon), wi('blocked', past)], now: NOW })).toBe(0);
+    expect(countDatedWork({ tickets: [], now: NOW })).toBe(0);
   });
 });
