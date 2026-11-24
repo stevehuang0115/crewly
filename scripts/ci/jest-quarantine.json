@@ -9,7 +9,6 @@
     "backend/src/services/board/canvas/canvas-transcript.tail.test.ts",
     "backend/src/services/chat-v2/sqlite/channel.store.test.ts",
     "backend/src/services/core/storage.service.test.ts",
-    "backend/src/services/messaging/message-queue.service.test.ts",
     "backend/src/services/system/scheduled-commands.service.test.ts",
     "backend/src/services/team/team-pause.service.test.ts",
     "backend/src/services/v3/trigger-engine-persistence.integration.test.ts",
