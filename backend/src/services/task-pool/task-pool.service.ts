@@ -39,6 +39,8 @@ import {
   getWorkItemDisposition,
   WORK_ITEM_BLOCK_SOURCES,
   WORK_ITEM_BLOCKED_UNTIL_KEY,
+  WORK_ITEM_BLOCKED_ON_KEY,
+  parseBlockedOn,
   isExplicitlyBlocked,
   TERMINAL_WORK_ITEM_STATUSES,
 } from '../../types/v2/work-item.types.js';
@@ -2032,9 +2034,11 @@ export class TaskPoolService {
       wi.releaseCount = (wi.releaseCount ?? 0) + 1;
       // A timed block's `until` is spent once the item is back in the queue,
       // whether the time passed or someone unblocked it earlier.
-      if (wi.metadata && WORK_ITEM_BLOCKED_UNTIL_KEY in wi.metadata) {
+      // Who it waited on is spent too (CREW-928).
+      if (wi.metadata && (WORK_ITEM_BLOCKED_UNTIL_KEY in wi.metadata || WORK_ITEM_BLOCKED_ON_KEY in wi.metadata)) {
         const metadata: Record<string, unknown> = { ...wi.metadata };
         delete metadata[WORK_ITEM_BLOCKED_UNTIL_KEY];
+        delete metadata[WORK_ITEM_BLOCKED_ON_KEY];
         wi.metadata = metadata;
       }
     });
@@ -2123,18 +2127,25 @@ export class TaskPoolService {
    *   so the dependency resolver promotes it to `queued` for the same target
    *   when the upstream item succeeds. Until then it is `blocked`, which the
    *   stall check and the reconciler leave alone. Cannot be combined with `until`.
-   * @throws Error if not found, the item is not `running` (state machine), `until` does not parse,
+   * @param options.on - Who the block waits on: `owner`, `agent` (default) or
+   *   `external`. Kept in metadata and carried in the status trace event, so
+   *   trace metrics count an owner block as an owner hold (CREW-928).
+   * @throws Error if not found, the item is not `running` (state machine), `until` does not parse, `on` is not one of the three,
    *   or `afterWorkItemId` is the item itself, unknown, already finished, failed/cancelled, or would form a cycle
    */
   async blockItem(
     workItemId: string,
-    options: { agentId: string; reason?: string; until?: string; afterWorkItemId?: string },
+    options: { agentId: string; reason?: string; until?: string; afterWorkItemId?: string; on?: string },
   ): Promise<void> {
     const reason = options.reason && options.reason.trim().length > 0 ? options.reason : undefined;
     const until = options.until && options.until.trim().length > 0 ? options.until : undefined;
     const after = options.afterWorkItemId && options.afterWorkItemId.trim().length > 0
       ? options.afterWorkItemId.trim()
       : undefined;
+    const on = options.on === undefined || options.on === '' ? undefined : parseBlockedOn(options.on);
+    if (options.on !== undefined && options.on !== '' && on === null) {
+      throw new Error(`Invalid block for WorkItem ${workItemId}: on must be owner, agent or external (got '${options.on}')`);
+    }
     if (until !== undefined && !Number.isFinite(Date.parse(until))) {
       throw new Error(`Invalid until for WorkItem ${workItemId}: '${until}' is not an ISO 8601 date-time`);
     }
@@ -2165,6 +2176,9 @@ export class TaskPoolService {
         // A block without `until` must not inherit one from an earlier block.
         if (until) metadata[WORK_ITEM_BLOCKED_UNTIL_KEY] = until;
         else delete metadata[WORK_ITEM_BLOCKED_UNTIL_KEY];
+        // Same for who it waits on: an earlier block's answer does not carry over.
+        if (on) metadata[WORK_ITEM_BLOCKED_ON_KEY] = on;
+        else delete metadata[WORK_ITEM_BLOCKED_ON_KEY];
         wi.metadata = metadata;
       },
       reason,
@@ -2186,6 +2200,7 @@ export class TaskPoolService {
         reason,
         until,
         afterWorkItemId: after,
+        on,
       },
     );
     await this.publishTaskStopped('task:blocked', updated, 'running', reason);

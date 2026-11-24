@@ -502,7 +502,7 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 	const plannedWaits: Interval[] = [];
 	const openDecisions = new Map<string, number>();
 	const requestState = new Map<string, { status: string; since: number; waitsOnOwner?: boolean }>();
-	const workItems = new Map<string, { status: string; since: number; target?: string; open: boolean; waitUntil?: number }>();
+	const workItems = new Map<string, { status: string; since: number; target?: string; open: boolean; waitUntil?: number; blockedOn?: string }>();
 	const pendingMessages: Array<{ target: string; from?: string; since: number }> = [];
 
 	const closeRequest = (id: string, t: number, stillOpen = false): void => {
@@ -527,6 +527,14 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 			return;
 		}
 		if (!wi.open) return;
+		wi.open = false;
+		// Blocked on someone other than an agent (CREW-928): the owner holds the
+		// run; an outside party (a vendor, a build) holds neither side.
+		if (wi.status === 'blocked' && wi.blockedOn === 'owner') {
+			owner.push({ start: wi.since, end: t, label: `Work item${wi.target ? ` for ${wi.target}` : ''} is blocked on the owner`, ...(stillOpen ? { stillOpen } : {}) });
+			return;
+		}
+		if (wi.status === 'blocked' && wi.blockedOn === 'external') return;
 		agent.push({
 			start: wi.since,
 			end: t,
@@ -534,7 +542,6 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 			...(wi.target ? { session: wi.target } : {}),
 			...(stillOpen ? { stillOpen } : {}),
 		});
-		wi.open = false;
 	};
 
 	for (const { e, t } of timed) {
@@ -585,7 +592,7 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 				const bornUntil = status === 'blocked' ? Date.parse(dataStr(e, 'blockedUntil') ?? '') : Number.NaN;
 				const planned = Number.isFinite(bornUntil) && bornUntil > t;
 				const open = !planned && !WORK_ITEM_CLOSED.has(status) && !WORK_ITEM_WAITING_ON_TIME.has(status);
-				workItems.set(id, { status, since: t, open, ...(planned ? { waitUntil: bornUntil } : {}), ...(e.refs.session ? { target: e.refs.session } : {}) });
+				workItems.set(id, { status, since: t, open, ...(planned ? { waitUntil: bornUntil } : {}), ...(status === 'blocked' && dataStr(e, 'blockedOn') ? { blockedOn: dataStr(e, 'blockedOn') } : {}), ...(e.refs.session ? { target: e.refs.session } : {}) });
 				break;
 			}
 			case 'workitem.status': {
@@ -597,6 +604,7 @@ function collectHolds(timed: ReadonlyArray<Timed>, end: number): Holds {
 				closeWorkItem(id, t);
 				wi.status = to;
 				wi.since = t;
+				wi.blockedOn = to === 'blocked' ? dataStr(e, 'blockedOn') : undefined;
 				if (e.refs.session) wi.target = e.refs.session;
 				const until = to === 'blocked' ? Date.parse(dataStr(e, 'blockedUntil') ?? '') : Number.NaN;
 				if (Number.isFinite(until) && until > t) {

@@ -100,3 +100,33 @@ describe('block-task afterWorkItemId', () => {
     expect(blockCall()).toBeUndefined();
   });
 });
+
+describe('block-task on (CREW-928)', () => {
+  const base = { workItemId: 'wi-1', sessionName: 'dev-1', reason: 'needs the owner to sign in' };
+
+  it.each(['owner', 'agent', 'external'])('sends on=%s to the block endpoint', async (on) => {
+    const r = await runSkill({ ...base, on });
+    expect(r.code).toBe(0);
+    expect(blockCall()!.body).toMatchObject({ agentId: 'dev-1', on });
+  });
+
+  it('sends no on when none is given (today\'s behaviour)', async () => {
+    await runSkill(base);
+    expect(blockCall()!.body.on).toBeUndefined();
+  });
+
+  it('refuses an unknown on, sending nothing', async () => {
+    const r = await runSkill({ ...base, on: 'boss' });
+    expect(r.code).not.toBe(0);
+    expect(`${r.stdout}${r.stderr}`).toMatch(/owner, agent or external/);
+    expect(blockCall()).toBeUndefined();
+  });
+
+  it('on works together with until and with afterWorkItemId', async () => {
+    await runSkill({ ...base, on: 'external', until: '2099-01-01T00:00:00Z' });
+    expect(blockCall()!.body).toMatchObject({ on: 'external', until: '2099-01-01T00:00:00Z' });
+    captured = [];
+    await runSkill({ ...base, on: 'agent', afterWorkItemId: 'wi-up' });
+    expect(blockCall()!.body).toMatchObject({ on: 'agent', afterWorkItemId: 'wi-up' });
+  });
+});

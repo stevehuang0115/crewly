@@ -11,7 +11,7 @@
  */
 
 import type { Request } from '../../types/v2/request.types.js';
-import { blockedUntilOf, type WorkItem, type WorkItemStatus } from '../../types/v2/work-item.types.js';
+import { blockedOnOf, blockedUntilOf, type WorkItem, type WorkItemStatus } from '../../types/v2/work-item.types.js';
 import { OPEN_ITEMS_CONSTANTS } from '../../constants.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import { readProjectTicketLink } from '../../types/project-ticket.types.js';
@@ -484,6 +484,17 @@ function plannedWaitUntil(workItem: WorkItem): string | null {
 }
 
 /**
+ * Who a blocked work item waits on, for its trace event (CREW-928).
+ *
+ * @param workItem - The item
+ * @returns `{ blockedOn }` for a blocked item whose block said, else nothing
+ */
+function blockedOnData(workItem: WorkItem): { blockedOn?: string } {
+	const on = workItem.status === 'blocked' ? blockedOnOf(workItem) : null;
+	return on ? { blockedOn: on } : {};
+}
+
+/**
  * A work item entered the pool (PoolStorage.addWorkItem): fill in its trace if
  * the caller did not, and record `workitem.created`. An item born blocked with
  * a planned end to its wait (a commitment follow-up due at a known time)
@@ -513,7 +524,7 @@ export function traceWorkItemCreated(workItem: WorkItem): void {
 				...(ticketId ? { ticketId } : {}),
 				...(workItem.target ? { session: workItem.target } : {}),
 			},
-			data: { type: workItem.type, status: workItem.status, ...(until ? { blockedUntil: until } : {}) },
+			data: { type: workItem.type, status: workItem.status, ...(until ? { blockedUntil: until } : {}), ...blockedOnData(workItem) },
 		});
 	}, undefined);
 }
@@ -557,7 +568,7 @@ export function traceWorkItemStatus(workItem: WorkItem, previous: WorkItemStatus
 			summary: `Work item ${previous} → ${workItem.status}: ${workItem.title}${reason ? ` (${reason})` : ''}${until ? ` until ${until}` : ''}`,
 			outcome: STATUS_OUTCOME[workItem.status] ?? 'info',
 			refs: { workItemId: workItem.id, ...(workItem.target ? { session: workItem.target } : {}) },
-			data: { from: previous, to: workItem.status, retryCount: workItem.retryCount, ...(until ? { blockedUntil: until } : {}) },
+			data: { from: previous, to: workItem.status, retryCount: workItem.retryCount, ...(until ? { blockedUntil: until } : {}), ...blockedOnData(workItem) },
 		});
 		// The work is over for its agent: what it does next is not this run.
 		if (WORK_ENDED_STATUSES.has(workItem.status)) ctx.clearIfCurrent(workItem.target, traceId);
