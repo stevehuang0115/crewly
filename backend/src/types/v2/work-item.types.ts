@@ -387,6 +387,45 @@ export function isExplicitlyBlocked(wi: Pick<WorkItem, 'status' | 'blockSource'>
 export const WORK_ITEM_BLOCKED_UNTIL_KEY = 'blockedUntil';
 
 /**
+ * Metadata key holding who an explicit block waits on (block-task `on`,
+ * CREW-928). Absent means the agent side, as before.
+ */
+export const WORK_ITEM_BLOCKED_ON_KEY = 'blockedOn';
+
+/** Who a blocked WorkItem waits on. */
+export const WORK_ITEM_BLOCKED_ON = {
+  /** The owner (a sign-in, an approval, a decision): the wait counts as an owner hold in trace metrics. */
+  OWNER: 'owner',
+  /** Another agent or the team: the default, counted as waiting on an agent. */
+  AGENT: 'agent',
+  /** Something outside the team (a vendor, a build, an email): counted as neither an owner nor an agent hold. */
+  EXTERNAL: 'external',
+} as const;
+
+/** A value of {@link WORK_ITEM_BLOCKED_ON}. */
+export type WorkItemBlockedOn = (typeof WORK_ITEM_BLOCKED_ON)[keyof typeof WORK_ITEM_BLOCKED_ON];
+
+/**
+ * Parses a `blockedOn` value.
+ *
+ * @param raw - Any value
+ * @returns The value when it is one of {@link WORK_ITEM_BLOCKED_ON}, else null
+ */
+export function parseBlockedOn(raw: unknown): WorkItemBlockedOn | null {
+  return raw === 'owner' || raw === 'agent' || raw === 'external' ? raw : null;
+}
+
+/**
+ * Who a blocked WorkItem waits on, as recorded by its block.
+ *
+ * @param wi - WorkItem (metadata)
+ * @returns The recorded value, or null when the block did not say (read as the agent side)
+ */
+export function blockedOnOf(wi: Pick<WorkItem, 'metadata'>): WorkItemBlockedOn | null {
+  return parseBlockedOn(wi.metadata?.[WORK_ITEM_BLOCKED_ON_KEY]);
+}
+
+/**
  * The time an explicit block lifts on its own, as epoch milliseconds.
  *
  * @param wi - WorkItem (metadata)

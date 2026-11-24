@@ -2906,6 +2906,47 @@ describe('TaskPoolService', () => {
     });
   });
 
+  describe('blockItem on (CREW-928: who the block waits on)', () => {
+    async function running(target: string): Promise<string> {
+      const wi = makeWorkItem({ target, title: 'needs sign-in' });
+      await service.addToPool(wi);
+      await service.claimSpecificItem(target, wi.id);
+      return wi.id;
+    }
+
+    it('stores who the block waits on, and a later block without it does not inherit it', async () => {
+      const id = await running('agent-a');
+      await service.blockItem(id, { agentId: 'agent-a', reason: 'owner sign-in', on: 'owner' });
+      expect((await service.findWorkItem(id))!.metadata?.blockedOn).toBe('owner');
+
+      await service.releaseBack(id, 'owner signed in');
+      expect((await service.findWorkItem(id))!.metadata?.blockedOn).toBeUndefined();
+      await service.claimSpecificItem('agent-a', id);
+      await service.blockItem(id, { agentId: 'agent-a', reason: 'again' });
+      expect((await service.findWorkItem(id))!.metadata?.blockedOn).toBeUndefined();
+    });
+
+    it('works together with until and with afterWorkItemId', async () => {
+      const timed = await running('agent-a');
+      await service.blockItem(timed, { agentId: 'agent-a', until: new Date(Date.now() + 3_600_000).toISOString(), on: 'external' });
+      const t = (await service.findWorkItem(timed))!;
+      expect(t.metadata?.blockedOn).toBe('external');
+      expect(t.metadata?.blockedUntil).toBeDefined();
+
+      const upstream = makeWorkItem({ type: 'cron_run', target: 'agent-up', title: 'deploy' });
+      await service.addToPool(upstream);
+      const after = await running('agent-b');
+      await service.blockItem(after, { agentId: 'agent-b', afterWorkItemId: upstream.id, on: 'agent' });
+      expect((await service.findWorkItem(after))!.dependsOn).toEqual([upstream.id]);
+    });
+
+    it('refuses an unknown value and leaves the item running', async () => {
+      const id = await running('agent-a');
+      await expect(service.blockItem(id, { agentId: 'agent-a', on: 'boss' })).rejects.toThrow(/owner, agent or external/);
+      expect((await service.findWorkItem(id))!.status).toBe('running');
+    });
+  });
+
   describe('blockItem afterWorkItemId (CREW-733: a brief that says "start after X")', () => {
     /** Queue an item for a worker and let it claim it. */
     async function running(target: string, title: string): Promise<string> {

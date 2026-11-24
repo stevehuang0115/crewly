@@ -83,7 +83,7 @@ export interface GiveUpPool {
   // path), so it takes the same required actor and passes it straight
   // through.
   completeItem(id: string, result: Record<string, unknown> | undefined, actor: TransitionActorInput): Promise<void>;
-  blockItem(id: string, options: { agentId: string; reason?: string; until?: string; afterWorkItemId?: string }): Promise<void>;
+  blockItem(id: string, options: { agentId: string; reason?: string; until?: string; afterWorkItemId?: string; on?: string }): Promise<void>;
   failItem(id: string, error: string): Promise<void>;
   addToPool(wi: WorkItem): Promise<void>;
   transitionStatus(
@@ -180,7 +180,7 @@ export class GiveUpRecoveryService {
    */
   async block(
     workItemId: string,
-    options: { agentId: string; reason?: string; until?: string; afterWorkItemId?: string },
+    options: { agentId: string; reason?: string; until?: string; afterWorkItemId?: string; on?: string },
   ): Promise<StopOutcome> {
     const before = await this.pool.findWorkItem(workItemId);
     await this.pool.blockItem(workItemId, options);
