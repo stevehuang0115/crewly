@@ -28,6 +28,7 @@ import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 import { atomicWriteFile } from '../../utils/file-io.utils.js';
 import {
   isValidProjectTicketTransition,
+  canCloseAsDelivered,
   normalizeProjectTicketPriority,
   type InvalidTicketFile,
   type ProjectTicket,
@@ -559,6 +560,8 @@ export class ProjectTicketService {
    * @param actor - Who moves it
    * @param note - Optional reason (goes into the Log line)
    * @param extra - Other owned fields to set in the same write (assignee, workItemId…)
+   * @param deliveredBy - Normalised reference to where the work was already delivered: the only
+   *   way a `backlog` / `ready` ticket goes straight to `done` (CREW-942); recorded in the Log
    * @returns Updated ticket
    * @throws ProjectTicketError(400) for an invalid transition, (404) when missing
    */
@@ -569,13 +572,16 @@ export class ProjectTicketService {
     actor: string,
     note?: string,
     extra: Partial<ProjectTicketFields> = {},
+    deliveredBy?: string,
   ): Promise<ProjectTicket> {
     return this.mutate(projectPath, id, actor, (t) => {
       if (t.status === to) return null;
-      if (!isValidProjectTicketTransition(t.status, to)) {
+      const delivered = !!deliveredBy && to === 'done' && canCloseAsDelivered(t.status);
+      if (!delivered && !isValidProjectTicketTransition(t.status, to)) {
         throw new ProjectTicketError(400, `Cannot move ${t.id} from ${t.status} to ${to}`);
       }
-      return { fields: { ...extra, status: to }, log: [`${t.status} → ${to}${note ? ` — ${note}` : ''}`] };
+      const how = delivered ? ` — delivered by ${deliveredBy}` : '';
+      return { fields: { ...extra, status: to }, log: [`${t.status} → ${to}${how}${note ? ` — ${note}` : ''}`] };
     });
   }
 

@@ -13,6 +13,7 @@
 #                           [--metric "<goal metric> → <expected effect>"]
 #   bash execute.sh update  --project P --id APP-12 [--title …] [--priority …] [--labels …]
 #                           [--description …] [--acceptance "…" …] [--status …] [--note "…"]
+#                           [--delivered-by <WorkItem id | PR url | #123 | sha>]   (with --status done)
 #                           [--defer-until YYYY-MM-DD|none] [--hold "owner's words"|none]
 #   bash execute.sh claim   --project P --id APP-12
 #   bash execute.sh release --project P --id APP-12 [--note "why"]
@@ -55,6 +56,7 @@ Usage:
                                                               a goal replan (refused without it)
   bash execute.sh update  --project P --id APP-12 [--title …] [--priority …] [--labels …]
                           [--description …] [--acceptance "…" …] [--status …] [--note "…"]
+                          [--delivered-by <WorkItem id | PR url | #12 | sha>]  With --status done: close a backlog/ready ticket delivered elsewhere (owner/orc/lead)
                           [--defer-until YYYY-MM-DD|none]   Keep it out of the autopilot's triage until that date
                           [--hold "owner's words"|none]     Put it on hold (e.g. "owner: do not merge PR #12"): its
                                                               PR / branch / worktree may then only be closed; new
@@ -113,7 +115,7 @@ EOF_USAGE
 }
 
 ACTION=""; PROJECT=""; ID=""; TITLE=""; DESCRIPTION=""; PRIORITY=""; LABELS=""; TEAM=""
-STATUS=""; SOURCE=""; REQUEST_ID=""; NOTE=""; OWNER_REVIEW=""; ASSIGNEE=""; START="true"; WORK_ITEM=""
+STATUS=""; SOURCE=""; REQUEST_ID=""; NOTE=""; DELIVERED_BY=""; OWNER_REVIEW=""; ASSIGNEE=""; START="true"; WORK_ITEM=""
 ACCEPTANCE_JSON="null"
 HAS_DESCRIPTION=0
 QUESTION=""; CLEAR=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; AP_ENABLED=""; AP_DRIVER=""; AP_BUDGET=""; AP_MAX=""
@@ -137,6 +139,7 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   SOURCE=$(printf '%s' "$J" | jq -r '.source // empty')
   REQUEST_ID=$(printf '%s' "$J" | jq -r '.requestId // empty')
   NOTE=$(printf '%s' "$J" | jq -r '.note // empty')
+  DELIVERED_BY=$(printf '%s' "$J" | jq -r '.deliveredBy // empty')
   OWNER_REVIEW=$(printf '%s' "$J" | jq -r 'if .ownerReview == true then "true" else empty end')
   ACCEPTANCE_JSON=$(printf '%s' "$J" | jq -c 'if (.acceptance|type) == "array" then .acceptance else null end')
   ASSIGNEE=$(printf '%s' "$J" | jq -r '.to // .assignee // empty')
@@ -188,6 +191,7 @@ while [[ $# -gt 0 ]]; do
     --source)        [ $# -ge 2 ] || error_exit "--source requires a value";      SOURCE="$2"; shift 2 ;;
     --request-id)    [ $# -ge 2 ] || error_exit "--request-id requires a value";  REQUEST_ID="$2"; shift 2 ;;
     --note)          [ $# -ge 2 ] || error_exit "--note requires a value";        NOTE="$2"; shift 2 ;;
+    --delivered-by)  [ $# -ge 2 ] || error_exit "--delivered-by requires a value"; DELIVERED_BY="$2"; shift 2 ;;
     --owner-review)  OWNER_REVIEW="true"; shift ;;
     --to|--assignee) [ $# -ge 2 ] || error_exit "--to requires a value";         ASSIGNEE="$2"; shift 2 ;;
     --no-start)      START="false"; shift ;;
@@ -279,8 +283,9 @@ case "$ACTION" in
     BODY=$(jq -n --arg title "$TITLE" --arg description "$DESCRIPTION" --argjson hasDescription "$HAS_DESCRIPTION" \
       --arg priority "$PRIORITY" --arg labels "$LABELS" --arg team "$TEAM" --arg status "$STATUS" \
       --arg note "$NOTE" --arg ownerReview "$OWNER_REVIEW" --arg deferUntil "$DEFER_UNTIL" --argjson acceptance "$ACCEPTANCE_JSON" \
-      --arg hold "$HOLD" --argjson hasHold "$HAS_HOLD" \
+      --arg hold "$HOLD" --argjson hasHold "$HAS_HOLD" --arg deliveredBy "${DELIVERED_BY:-}" \
       '{}
+       + (if $deliveredBy != "" then {deliveredBy: $deliveredBy} else {} end)
        + (if $deferUntil == "none" or $deferUntil == "clear" then {deferUntil: null} elif $deferUntil != "" then {deferUntil: $deferUntil} else {} end)
        + (if $hasHold != 1 then {} elif $hold == "none" or $hold == "clear" or $hold == "" then {hold: null} else {hold: $hold} end)
        + (if $title != "" then {title: $title} else {} end)

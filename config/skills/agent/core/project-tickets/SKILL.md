@@ -110,9 +110,17 @@ bash execute.sh create --project P --title "Export the report as CSV" \
 
 ## Change a ticket
 
+A ticket whose work was already delivered elsewhere (another WorkItem, a PR, a
+commit) closes in one step from `backlog` or `ready`: `--status done
+--delivered-by <WorkItem id | PR URL | #number | commit sha>`. The reference goes
+into the ticket Log, no WorkItem is created, and only an owner / orchestrator /
+lead may do it. Without `--delivered-by` the old rule stands (claim it, or
+cancel it).
+
 ```bash
 bash execute.sh update --project P --id APP-12 --priority P1 --labels "export,ui" --note "owner asked"
 bash execute.sh update --project P --id APP-12 --status ready          # owner / orc / lead only
+bash execute.sh update --project P --id APP-12 --status done --delivered-by '#1632'   # owner / orc / lead only
 bash execute.sh update --project P --id APP-12 --acceptance "new list item" --acceptance "another"
 ```
 
