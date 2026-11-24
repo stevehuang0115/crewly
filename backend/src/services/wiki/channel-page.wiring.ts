@@ -84,11 +84,17 @@ export async function channelBlockFor(deps: ChannelBlockDeps, channel: { id: str
   try {
     const C = CHANNEL_PAGE_CONSTANTS;
     const now = (deps.now ?? Date.now)();
-    const [page, names] = await Promise.all([readChannelPage(deps.vaultPath ?? channelPageVault(), channel.name), deps.sessionNames()]);
+    const [page, names] = await Promise.all([readChannelPage(deps.vaultPath ?? channelPageVault(), channel), deps.sessionNames()]);
     const rows = deps.listRoomRows(channel.id, now - C.RECENT_WINDOW_MS, C.RECENT_SCAN_MESSAGES);
     const byId = new Map(rows.map((row) => [row.id, row]));
     const recent = recentThreadsOf(rows, (row) => agentNameOfRow(byId.get(row.id) ?? { ...row, author: null }, names));
-    return renderChannelBlock({ channelName: channel.name, page, recent, recordCommand: channelRecordCommand(channel.id) });
+    return renderChannelBlock({
+      channelName: channel.name,
+      page,
+      recent,
+      recordCommand: channelRecordCommand(channel.id),
+      readCommand: `\`bash config/skills/agent/core/channel-notes/execute.sh --channel ${channel.id}\``,
+    });
   } catch {
     return '';
   }

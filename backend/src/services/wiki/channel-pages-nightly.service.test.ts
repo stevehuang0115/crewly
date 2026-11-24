@@ -11,6 +11,7 @@ import {
   buildNightlyBrief,
   ChannelPagesNightlyService,
   localDay,
+  roomStateLines,
   quoteRoomRows,
   type ChannelPagesNightlyDeps,
 } from './channel-pages-nightly.service.js';
@@ -85,13 +86,38 @@ describe('ChannelPagesNightlyService', () => {
     expect(brief).toContain('## #necina — room id `room-1`');
     expect(brief).toContain('lead Atlas');
     expect(brief).toContain('Pia: video');
-    expect(brief).toContain('[clipped; read the full page with channel-notes --channel room-1]');
+    expect(brief).toContain('…[clipped; read the full page with channel-notes --channel room-1]');
     expect(brief).toContain('10:00Z a person: hi');
     expect(brief).toContain('Never infer a lead');
 
     const huge = buildNightlyBrief('2026-11-23', [{ id: 'r', name: '#r', page: null, lines: Array.from({ length: 400 }, () => '频道'.repeat(40)) }]);
     expect(Buffer.byteLength(huge, 'utf8')).toBeLessThanOrEqual(MAX_BRIEF_MARKDOWN_BYTES);
     expect(huge.endsWith('…[clipped]')).toBe(true);
+  });
+
+  it('a long page does not crowd the messages out: its state is clipped and counted in the budget', async () => {
+    const covers = Array.from({ length: 20 }, (_, i) => ({ who: `Agent${i}`, what: '负责'.repeat(90) }));
+    const state = roomStateLines({ id: 'room-1', name: '#necina', page: { channelName: '#necina', covers, notes: 'n'.repeat(2000) } }).join('\n');
+    expect(state.length).toBeLessThan(CHANNEL_PAGE_CONSTANTS.NIGHTLY_COVERS_SHOWN_MAX_CHARS + CHANNEL_PAGE_CONSTANTS.NIGHTLY_NOTES_SHOWN_MAX_CHARS + 400);
+    const tight = roomStateLines({ id: 'room-1', name: '#necina', page: { channelName: '#necina', covers, notes: 'n'.repeat(2000) } }, 600).join('\n');
+    expect(Buffer.byteLength(tight, 'utf8')).toBeLessThan(600 + 500);
+
+    const rooms = Array.from({ length: 6 }, (_, i) => ({ channelId: `room-${i}`, messages: 60 }));
+    const svc = service({
+      listActiveRooms: () => rooms,
+      getRoom: (id) => ({ id, name: `#${id}` }),
+      readPage: async () => ({ channelName: '#x', covers, notes: 'n'.repeat(2000) }),
+      listRoomRows: () => Array.from({ length: 60 }, (_, i) => row(`m${i}`, { content: '消息'.repeat(100) })),
+    });
+    const item = await svc.tick();
+    const brief = item?.briefMarkdown ?? '';
+    expect(Buffer.byteLength(brief, 'utf8')).toBeLessThanOrEqual(MAX_BRIEF_MARKDOWN_BYTES);
+    expect(brief.endsWith('…[clipped]')).toBe(false);
+    for (const room of rooms) {
+      expect(brief).toContain(`room id \`${room.channelId}\`\n`);
+    }
+    // Every room still gets messages.
+    expect(brief.match(/Messages since the last pass:\n\d\d:\d\dZ/g)).toHaveLength(rooms.length);
   });
 
   it('raises one item for the orchestrator per night, for the rooms that were active', async () => {

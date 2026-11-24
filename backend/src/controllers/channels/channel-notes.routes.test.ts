@@ -11,7 +11,10 @@ import express from 'express';
 import request from 'supertest';
 import { createChannelNotesRouter, parseCoverLine, patchFromBody } from './channel-notes.routes.js';
 import { agentAuthHeaders, ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
+import { channelPageRelativePath } from '../../services/wiki/channel-page.js';
 import { parsePage } from '../../services/wiki/wiki-page.js';
+
+const ROOM = { id: 'room-1', name: '#necina' };
 
 describe('/api/channel-notes', () => {
   let vault: string;
@@ -26,7 +29,10 @@ describe('/api/channel-notes', () => {
       '/api/channel-notes',
       createChannelNotesRouter({
         vaultPath: () => vault,
-        findRoom: (ref) => (ref === 'room-1' || ref === '#necina' ? { id: 'room-1', name: '#necina' } : null),
+        findRoom: (ref) => {
+          if (ref === 'boom') throw new Error('chat not ready');
+          return ref === 'room-1' || ref === '#necina' || ref === '#100%-club' ? ROOM : null;
+        },
       }),
     );
   });
@@ -56,7 +62,7 @@ describe('/api/channel-notes', () => {
     const posted = await request(app).post('/api/channel-notes/room-1').set(agentAuthHeaders('flopost-pia-1')).send({ lead: 'Atlas', cover: 'Atlas: the Saturday talk' });
     expect(posted.status).toBe(200);
     expect(posted.body.data.page).toMatchObject({ lead: 'Atlas', covers: [{ who: 'Atlas', what: 'the Saturday talk' }] });
-    const raw = fs.readFileSync(path.join(vault, 'llm-curated/channels/necina.md'), 'utf8');
+    const raw = fs.readFileSync(path.join(vault, channelPageRelativePath(ROOM)), 'utf8');
     expect(parsePage(raw).frontmatter['lead_set_by']).toBe('flopost-pia-1');
 
     const read = await request(app).get(`/api/channel-notes/${encodeURIComponent('#necina')}`);
@@ -69,7 +75,13 @@ describe('/api/channel-notes', () => {
     expect((await request(app).get('/api/channel-notes/room-1')).body.data.page).toBeNull();
     const posted = await request(app).post('/api/channel-notes/room-1').send({ purpose: 'Talk prep' });
     expect(posted.status).toBe(200);
-    expect(parsePage(fs.readFileSync(path.join(vault, 'llm-curated/channels/necina.md'), 'utf8')).frontmatter.caller).toBe('owner');
+    expect(parsePage(fs.readFileSync(path.join(vault, channelPageRelativePath(ROOM)), 'utf8')).frontmatter.caller).toBe('owner');
+  });
+
+  it('a name with a percent sign is not decoded twice; a failing lookup answers 500', async () => {
+    expect((await request(app).get(`/api/channel-notes/${encodeURIComponent('#100%-club')}`)).status).toBe(200);
+    expect((await request(app).get('/api/channel-notes/boom')).status).toBe(500);
+    expect((await request(app).post('/api/channel-notes/boom').send({ lead: 'x' })).status).toBe(500);
   });
 
   it('404 for an unknown room, 400 for a malformed change', async () => {

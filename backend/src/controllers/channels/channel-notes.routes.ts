@@ -74,34 +74,46 @@ export function patchFromBody(body: unknown): { patch: ChannelPagePatch } | { er
 export function createChannelNotesRouter(deps: ChannelNotesRouterDeps): Router {
   const router = Router();
 
-  /** Resolve the room of a request, answering 404 when it is unknown. */
-  const roomOf = (req: Request, res: Response): { id: string; name: string } | null => {
-    const room = deps.findRoom(decodeURIComponent(req.params.ref ?? '').trim());
-    if (!room) res.status(404).json({ success: false, error: 'not_found', message: `No room "${req.params.ref}" on this machine` });
-    return room;
-  };
+  /**
+   * Run a handler for the room of a request: 404 when it is unknown, 500
+   * when anything throws (Express 4 does not catch an async rejection).
+   */
+  const withRoom =
+    (fn: (room: { id: string; name: string }, req: Request, res: Response) => Promise<void>) =>
+    async (req: Request, res: Response): Promise<void> => {
+      try {
+        // Express has already decoded the parameter.
+        const ref = (req.params.ref ?? '').trim();
+        const room = deps.findRoom(ref);
+        if (!room) {
+          res.status(404).json({ success: false, error: 'not_found', message: `No room "${ref}" on this machine` });
+          return;
+        }
+        await fn(room, req, res);
+      } catch (err) {
+        res.status(500).json({ success: false, error: 'internal_error', message: err instanceof Error ? err.message : String(err) });
+      }
+    };
 
-  router.get('/:ref', async (req: Request, res: Response) => {
-    const room = roomOf(req, res);
-    if (!room) return;
-    res.json({ success: true, data: { channel: room, page: await readChannelPage(deps.vaultPath(), room.name) } });
-  });
+  router.get(
+    '/:ref',
+    withRoom(async (room, _req, res) => {
+      res.json({ success: true, data: { channel: room, page: await readChannelPage(deps.vaultPath(), room) } });
+    }),
+  );
 
-  router.post('/:ref', async (req: Request, res: Response) => {
-    const room = roomOf(req, res);
-    if (!room) return;
-    const parsed = patchFromBody(req.body);
-    if ('error' in parsed) {
-      res.status(400).json({ success: false, error: 'invalid', message: parsed.error });
-      return;
-    }
-    try {
+  router.post(
+    '/:ref',
+    withRoom(async (room, req, res) => {
+      const parsed = patchFromBody(req.body);
+      if ('error' in parsed) {
+        res.status(400).json({ success: false, error: 'invalid', message: parsed.error });
+        return;
+      }
       const page = await writeChannelPage(deps.vaultPath(), room, parsed.patch, readAgentSessionHeader(req) ?? 'owner');
       res.json({ success: true, data: { channel: room, page } });
-    } catch (err) {
-      res.status(500).json({ success: false, error: 'write_failed', message: err instanceof Error ? err.message : String(err) });
-    }
-  });
+    }),
+  );
 
   return router;
 }

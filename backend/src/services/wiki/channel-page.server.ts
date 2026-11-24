@@ -73,7 +73,7 @@ export async function startChannelPagesNightly(storage: TeamsStorage): Promise<C
     getRoom: (channelId) => findRoomByRef(channelId),
     listRoomRows: (channelId, sinceMs, limit) => chat.listRoomRows(channelId, sinceMs, limit),
     sessionNames: () => sessionDisplayNames(storage),
-    readPage: (channelName) => readChannelPage(channelPageVault(), channelName),
+    readPage: (room) => readChannelPage(channelPageVault(), room),
     addWorkItem: (item) => pool.addToPool(item),
     isWorkItemOpen: async (workItemId) => {
       const item = await pool.findWorkItem(workItemId);

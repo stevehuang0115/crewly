@@ -1959,9 +1959,15 @@ export const CHANNEL_PAGE_CONSTANTS = {
 	/** Rooms covered by one nightly pass at most (most active first) */
 	NIGHTLY_MAX_ROOMS: 6,
 	/** Bytes of the nightly brief kept for its instructions and the pages' current state */
-	NIGHTLY_BRIEF_OVERHEAD_BYTES: 5 * 1024,
+	NIGHTLY_BRIEF_OVERHEAD_BYTES: 3 * 1024,
+	/** Characters of a page's current cover lines quoted in the nightly brief */
+	NIGHTLY_COVERS_SHOWN_MAX_CHARS: 600,
+	/** Share of a room's part of the nightly brief its page's current state may take */
+	NIGHTLY_STATE_SHARE: 0.4,
+	/** Bytes of a room's headings and clip markers in the nightly brief */
+	NIGHTLY_ROOM_FRAME_BYTES: 400,
 	/** Characters of a page's current notes quoted in the nightly brief */
-	NIGHTLY_NOTES_SHOWN_MAX_CHARS: 500,
+	NIGHTLY_NOTES_SHOWN_MAX_CHARS: 400,
 	/** Messages of one room quoted in the nightly brief */
 	NIGHTLY_MESSAGES_PER_ROOM: 60,
 	/** Characters of one quoted message in the nightly brief */

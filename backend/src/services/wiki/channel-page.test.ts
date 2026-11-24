@@ -8,6 +8,7 @@ import * as path from 'path';
 import { CHANNEL_PAGE_CONSTANTS } from '../../constants.js';
 import {
   applyChannelPagePatch,
+  channelIdTag,
   channelPageRelativePath,
   channelSlug,
   parseChannelPage,
@@ -41,7 +42,9 @@ describe('channel-page', () => {
       expect(channelSlug('#Mini CE')).toBe('mini-ce');
       expect(channelSlug('内容 团队')).toBe('内容-团队');
       expect(channelSlug('###')).toBe('channel');
-      expect(channelPageRelativePath('#necina')).toBe('llm-curated/channels/necina.md');
+      expect(channelPageRelativePath({ name: '#necina' })).toBe('llm-curated/channels/necina.md');
+      expect(channelPageRelativePath({ name: '#necina', id: 'room-1' })).toBe(`llm-curated/channels/necina-${channelIdTag('room-1')}.md`);
+      expect(channelIdTag('room-1')).toMatch(/^[0-9a-f]{6}$/);
     });
   });
 
@@ -76,7 +79,7 @@ describe('channel-page', () => {
 
   describe('read and write', () => {
     it('returns null before the first write', async () => {
-      await expect(readChannelPage(vault, '#necina')).resolves.toBeNull();
+      await expect(readChannelPage(vault, { name: '#necina', id: 'room-1' })).resolves.toBeNull();
     });
 
     it('writes a page that passes the wiki retention gate and reads back the same', async () => {
@@ -84,7 +87,7 @@ describe('channel-page', () => {
       await writeChannelPage(vault, { name: '#necina', id: 'room-1' }, { lead: 'Atlas', purpose: 'NECINA talk prep' }, 'flopost-pia-1', now);
       const written = await writeChannelPage(vault, { name: '#necina', id: 'room-1' }, { cover: { who: 'Pia', what: 'video and editing' }, notes: 'Decided: three parts.' }, 'crewly-orc', new Date(T0 + 1000));
 
-      const raw = fs.readFileSync(path.join(vault, 'llm-curated/channels/necina.md'), 'utf8');
+      const raw = fs.readFileSync(path.join(vault, channelPageRelativePath({ name: '#necina', id: 'room-1' })), 'utf8');
       const { frontmatter, body } = parsePage(raw);
       expect(checkRetention(frontmatter)).toBeNull();
       expect(frontmatter.source).toBe(CHANNEL_PAGE_CONSTANTS.SOURCE);
@@ -93,9 +96,30 @@ describe('channel-page', () => {
       expect(body).toContain('## Lead\nAtlas');
       expect(body).toContain('- Pia: video and editing');
 
-      const read = await readChannelPage(vault, '#necina');
+      const read = await readChannelPage(vault, { name: '#necina', id: 'room-1' });
       expect(read).toEqual(written);
       expect(read).toMatchObject({ channelId: 'room-1', lead: 'Atlas', purpose: 'NECINA talk prep', notes: 'Decided: three parts.' });
+    });
+
+    it('two rooms whose names slug alike keep separate pages; a renamed room keeps its page', async () => {
+      await writeChannelPage(vault, { name: '#a-b', id: 'room-1' }, { lead: 'Atlas' }, 'owner');
+      await writeChannelPage(vault, { name: '#a b', id: 'room-2' }, { lead: 'Pia' }, 'owner');
+      expect((await readChannelPage(vault, { name: '#a-b', id: 'room-1' }))?.lead).toBe('Atlas');
+      expect((await readChannelPage(vault, { name: '#a b', id: 'room-2' }))?.lead).toBe('Pia');
+
+      await writeChannelPage(vault, { name: '#renamed', id: 'room-1' }, { purpose: 'New name' }, 'owner');
+      const renamed = await readChannelPage(vault, { name: '#renamed', id: 'room-1' });
+      expect(renamed).toMatchObject({ channelName: '#renamed', lead: 'Atlas', purpose: 'New name' });
+      expect(fs.readdirSync(path.join(vault, 'llm-curated/channels'))).toHaveLength(2);
+    });
+
+    it('text that reads like the Notes heading does not leak the page into the notes', async () => {
+      const room = { name: '#necina', id: 'room-1' };
+      await writeChannelPage(vault, room, { purpose: 'see the ## Notes', lead: '## Notes', cover: { who: 'Ella', what: 'keeps ## Notes' }, notes: 'Real note.\n## Notes\nstill a note' }, 'owner');
+      const once = await readChannelPage(vault, room);
+      expect(once?.notes).toBe('Real note.\n## Notes\nstill a note');
+      await writeChannelPage(vault, room, { purpose: 'changed' }, 'owner');
+      expect((await readChannelPage(vault, room))?.notes).toBe(once?.notes);
     });
 
     it('parses a page with nothing recorded', () => {
@@ -145,6 +169,7 @@ describe('channel-page', () => {
         page: { channelName: '#necina', lead: 'Atlas', purpose: 'Talk prep', covers: [{ who: 'Pia', what: 'video' }], notes: 'Decided: three parts.' },
         recent: [{ at: T0, opening: 'What goes in the talk?', answeredBy: ['Atlas'] }],
         recordCommand: '`cmd`',
+        readCommand: '`read`',
       });
       expect(block).toContain('Purpose: Talk prep');
       expect(block).toContain('Lead: Atlas');

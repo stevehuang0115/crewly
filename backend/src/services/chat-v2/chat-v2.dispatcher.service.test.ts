@@ -950,8 +950,21 @@ describe('ChatV2DispatcherService', () => {
       expect(prompt).toContain('reply-channel');
       expect(prompt).not.toContain('--thread');
       expect(prompt).toContain('did not @ you');
-      // 2026-11-23: an agent without the context hands the question over instead of answering "I do not have it".
-      expect(prompt).toContain(CHANNEL_HANDOFF_RULE.trim());
+      // 2026-11-23: an agent without the context hands the question over instead of
+      // answering "I do not have it" — said only when the channel notes are attached.
+      expect(prompt).not.toContain(CHANNEL_HANDOFF_RULE.trim());
+      const withNotes = defaultFormatPrompt({
+        channelId: 'huddle-1',
+        channelName: '#team-alpha',
+        agentSession: 'sess-a',
+        senderId: 'U1',
+        content: 'fyi',
+        replyVia: 'reply-channel',
+        responseMode: 'optional',
+        channelNotesBlock: '[CHANNEL NOTES]',
+      });
+      expect(withNotes).toContain(CHANNEL_HANDOFF_RULE.trim());
+      expect(withNotes.indexOf('[CHANNEL NOTES]')).toBeLessThan(withNotes.indexOf(CHANNEL_HANDOFF_RULE.trim()));
     });
 
     it('tells an agent that was only told to announce itself before answering', () => {

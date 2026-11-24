@@ -18,6 +18,7 @@
  * @module services/wiki/channel-page
  */
 
+import { createHash } from 'crypto';
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import { CHANNEL_PAGE_CONSTANTS } from '../../constants.js';
@@ -91,13 +92,48 @@ export function channelSlug(channelName: string): string {
 }
 
 /**
- * Vault-relative path of a room's page.
+ * The part of a page's file name that identifies its room. Names alone are
+ * not enough: `#a-b` and `#a b` slug to the same thing, and a room can be
+ * renamed.
  *
- * @param channelName - Room name
- * @returns e.g. `llm-curated/channels/necina.md`
+ * @param channelId - chat-v2 id of the room
+ * @returns Six hex characters
  */
-export function channelPageRelativePath(channelName: string): string {
-  return `llm-curated/${CHANNEL_PAGE_CONSTANTS.FOLDER}/${channelSlug(channelName)}.md`;
+export function channelIdTag(channelId: string): string {
+  return createHash('sha1').update(channelId).digest('hex').slice(0, 6);
+}
+
+/**
+ * Vault-relative path a room's page is created at.
+ *
+ * @param channel - The room; without an id the name alone decides (tests, old pages)
+ * @returns e.g. `llm-curated/channels/necina-3fa9c1.md`
+ */
+export function channelPageRelativePath(channel: { name: string; id?: string }): string {
+  const tag = channel.id ? `-${channelIdTag(channel.id)}` : '';
+  return `llm-curated/${CHANNEL_PAGE_CONSTANTS.FOLDER}/${channelSlug(channel.name)}${tag}.md`;
+}
+
+/**
+ * The file of a room's page: the one already written for this room id (it
+ * keeps its name when the room is renamed), else where a new one goes.
+ *
+ * @param vaultPath - Global vault root
+ * @param channel - The room
+ * @returns Absolute file path
+ */
+export async function channelPageFile(vaultPath: string, channel: { name: string; id?: string }): Promise<string> {
+  if (channel.id) {
+    const dir = path.join(vaultPath, 'llm-curated', CHANNEL_PAGE_CONSTANTS.FOLDER);
+    const suffix = `-${channelIdTag(channel.id)}.md`;
+    try {
+      const existing = (await fs.readdir(dir)).find((name) => name.endsWith(suffix));
+      if (existing) return path.join(dir, existing);
+    } catch {
+      /* no page written on this machine yet */
+    }
+  }
+  return path.join(vaultPath, channelPageRelativePath(channel));
 }
 
 /**
@@ -120,6 +156,8 @@ function coversOf(raw: unknown): ChannelCover[] {
 
 /** Heading of the free section of a page body. */
 const NOTES_HEADING = '## Notes';
+/** Heading of the cover list, the last generated section before the notes. */
+const COVERS_HEADING = '## Who covers what';
 
 /**
  * Render a page body from its facts.
@@ -131,7 +169,7 @@ export function renderChannelPageBody(page: ChannelPage): string {
   const lines: string[] = [];
   lines.push('## Purpose', page.purpose || '_Not recorded yet._', '');
   lines.push('## Lead', page.lead || '_Nobody named yet. Whoever holds the context answers._', '');
-  lines.push('## Who covers what');
+  lines.push(COVERS_HEADING);
   if (page.covers.length === 0) lines.push('_Not recorded yet._');
   for (const cover of page.covers) lines.push(`- ${cover.who}: ${cover.what}`);
   lines.push('', NOTES_HEADING, page.notes?.trim() || '_None._', '');
@@ -147,8 +185,11 @@ export function renderChannelPageBody(page: ChannelPage): string {
  */
 export function parseChannelPage(raw: string, channelName: string): ChannelPage {
   const { frontmatter: fm, body } = parsePage(raw);
-  const at = body.indexOf(`${NOTES_HEADING}\n`);
-  const notes = at >= 0 ? body.slice(at + NOTES_HEADING.length + 1).trim() : '';
+  // The first Notes heading after the cover list: a purpose or lead line that
+  // reads "## Notes" comes before it, and cover lines start with "- ".
+  const covers = body.indexOf(`\n${COVERS_HEADING}\n`);
+  const at = body.indexOf(`\n${NOTES_HEADING}\n`, Math.max(0, covers));
+  const notes = at >= 0 ? body.slice(at + NOTES_HEADING.length + 2).trim() : '';
   const text = (value: unknown): string | undefined => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
   return {
     channelName: text(fm.title) ?? channelName,
@@ -214,12 +255,12 @@ function summaryOf(page: ChannelPage): string {
  * Read a room's page.
  *
  * @param vaultPath - Global vault root
- * @param channelName - Room name
+ * @param channel - The room
  * @returns The page, or null when none was written yet
  */
-export async function readChannelPage(vaultPath: string, channelName: string): Promise<ChannelPage | null> {
+export async function readChannelPage(vaultPath: string, channel: { name: string; id?: string }): Promise<ChannelPage | null> {
   try {
-    return parseChannelPage(await fs.readFile(path.join(vaultPath, channelPageRelativePath(channelName)), 'utf8'), channelName);
+    return parseChannelPage(await fs.readFile(await channelPageFile(vaultPath, channel), 'utf8'), channel.name);
   } catch {
     return null;
   }
@@ -242,7 +283,7 @@ export async function writeChannelPage(
   by: string,
   now: Date = new Date(),
 ): Promise<ChannelPage> {
-  const file = path.join(vaultPath, channelPageRelativePath(channel.name));
+  const file = await channelPageFile(vaultPath, channel);
   let existing: Partial<WikiPageFrontmatter> = {};
   let current: ChannelPage = { channelName: channel.name, covers: [] };
   try {
@@ -277,7 +318,7 @@ export async function writeChannelPage(
 /**
  * Render the block attached to a message delivered in the room.
  *
- * @param args - The room, its page (if any), its recent threads and how to record a change
+ * @param args - The room, its page (if any), its recent threads, how to record a change and how to read the full page
  * @returns The block; '' when there is neither a page nor a recent thread
  */
 export function renderChannelBlock(args: {
@@ -286,6 +327,8 @@ export function renderChannelBlock(args: {
   recent: readonly RecentThread[];
   /** Command that records who leads or covers what */
   recordCommand?: string;
+  /** Command that prints the whole page (named when the notes are clipped) */
+  readCommand?: string;
 }): string {
   const C = CHANNEL_PAGE_CONSTANTS;
   const { page, recent } = args;
@@ -301,7 +344,7 @@ export function renderChannelBlock(args: {
     for (const cover of page.covers) lines.push(`- ${cover.who}: ${cover.what}`);
   }
   if (page?.notes) {
-    const notes = page.notes.length > C.NOTES_SHOWN_MAX_CHARS ? `${page.notes.slice(0, C.NOTES_SHOWN_MAX_CHARS)} …[clipped; the full page is ${channelPageRelativePath(args.channelName).replace(/^llm-curated\//, '')}]` : page.notes;
+    const notes = page.notes.length > C.NOTES_SHOWN_MAX_CHARS ? `${page.notes.slice(0, C.NOTES_SHOWN_MAX_CHARS)} …[clipped${args.readCommand ? `; read the full page with ${args.readCommand}` : ''}]` : page.notes;
     lines.push('Notes:', notes);
   }
   if (recent.length > 0) {

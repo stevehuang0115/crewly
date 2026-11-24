@@ -44,7 +44,7 @@ export interface ChannelPagesNightlyDeps {
   /** Display names of local agents, by session */
   sessionNames: () => Promise<Map<string, string>>;
   /** The page of a room, if written */
-  readPage: (channelName: string) => Promise<ChannelPage | null>;
+  readPage: (room: { id: string; name: string }) => Promise<ChannelPage | null>;
   /** Queue a work item */
   addWorkItem: (item: WorkItem) => Promise<void>;
   /** Whether a work item is still open (not finished, not gone) */
@@ -60,6 +60,8 @@ export interface NightlyRoom {
   page: ChannelPage | null;
   /** `HH:MM name: text` lines, oldest first */
   lines: string[];
+  /** Bytes the page's current state may take in the brief */
+  stateMax?: number;
 }
 
 /**
@@ -97,6 +99,33 @@ export function quoteRoomRows(rows: readonly AuthoredRoomRow[], names: ReadonlyM
 }
 
 /**
+ * What the brief says about a room before its messages: its id and the
+ * current page, clipped so one long page cannot crowd out the messages.
+ *
+ * @param room - The room and its page
+ * @param maxBytes - Bytes the cover list and the notes may take together
+ * @returns Lines
+ */
+export function roomStateLines(room: Pick<NightlyRoom, 'id' | 'name' | 'page'>, maxBytes: number = Number.MAX_SAFE_INTEGER): string[] {
+  const C = CHANNEL_PAGE_CONSTANTS;
+  const readFull = `read the full page with channel-notes --channel ${room.id}`;
+  // Clipped by characters, then by bytes: a page in CJK takes three bytes a character.
+  const clip = (text: string, maxChars: number): string => {
+    const half = Math.max(0, Math.floor(maxBytes / 2));
+    let kept = text.slice(0, maxChars);
+    while (kept.length > 0 && Buffer.byteLength(kept, 'utf8') > half) kept = kept.slice(0, Math.floor(kept.length * 0.8));
+    return kept.length < text.length ? `${kept} …[clipped; ${readFull}]` : text;
+  };
+  const page = room.page;
+  const lines = [`## ${room.name} — room id \`${room.id}\``, `Current page: lead ${page?.lead ?? '(none)'}; purpose ${page?.purpose ?? '(none)'}.`];
+  if (page && page.covers.length > 0) {
+    lines.push(`Who covers what now: ${clip(page.covers.map((c) => `${c.who}: ${c.what}`).join(' | '), C.NIGHTLY_COVERS_SHOWN_MAX_CHARS)}`);
+  }
+  if (page?.notes) lines.push('Notes now:', clip(page.notes, C.NIGHTLY_NOTES_SHOWN_MAX_CHARS));
+  return lines;
+}
+
+/**
  * The brief handed to the orchestrator.
  *
  * @param day - Local day the pass runs on
@@ -117,17 +146,7 @@ export function buildNightlyBrief(day: string, rooms: readonly NightlyRoom[]): s
     '',
     'The pages are readable by every agent on this machine: no customer details, credentials or personal information in them. Do not reply in the rooms and do not message anyone about this; when all rooms are done, complete this item with one line per room saying what you changed.',
   ];
-  for (const room of rooms) {
-    out.push('', `## ${room.name} — room id \`${room.id}\``);
-    const page = room.page;
-    out.push(`Current page: lead ${page?.lead ?? '(none)'}; purpose ${page?.purpose ?? '(none)'}.`);
-    if (page && page.covers.length > 0) out.push(`Who covers what now: ${page.covers.map((c) => `${c.who}: ${c.what}`).join(' | ')}`);
-    if (page?.notes) {
-      const max = CHANNEL_PAGE_CONSTANTS.NIGHTLY_NOTES_SHOWN_MAX_CHARS;
-      out.push('Notes now:', page.notes.length > max ? `${page.notes.slice(0, max)} …[clipped; read the full page with channel-notes --channel ${room.id}]` : page.notes);
-    }
-    out.push('Messages since the last pass:', ...room.lines);
-  }
+  for (const room of rooms) out.push('', ...roomStateLines(room, room.stateMax), 'Messages since the last pass:', ...room.lines);
   const brief = out.join('\n');
   // A work item refuses a longer brief: cut on a character boundary.
   if (Buffer.byteLength(brief, 'utf8') <= MAX_BRIEF_MARKDOWN_BYTES) return brief;
@@ -229,15 +248,20 @@ export class ChannelPagesNightlyService {
     }
 
     const names = await this.deps.sessionNames();
-    // The brief must fit a work item: the rooms share what the instructions leave.
-    const perRoom = Math.floor((MAX_BRIEF_MARKDOWN_BYTES - C.NIGHTLY_BRIEF_OVERHEAD_BYTES) / active.length);
-    const rooms: NightlyRoom[] = [];
+    // The brief must fit a work item: the rooms' messages share what the
+    // instructions and the pages' current state leave.
+    const found: Array<Pick<NightlyRoom, 'id' | 'name' | 'page'>> = [];
     for (const { channelId } of active) {
       const room = this.deps.getRoom(channelId);
-      if (!room) continue;
-      const lines = quoteRoomRows(this.deps.listRoomRows(channelId, since, C.NIGHTLY_MESSAGES_PER_ROOM), names, perRoom);
-      if (lines.length === 0) continue;
-      rooms.push({ id: room.id, name: room.name, page: await this.deps.readPage(room.name), lines });
+      if (room) found.push({ id: room.id, name: room.name, page: await this.deps.readPage(room) });
+    }
+    const perRoom = Math.floor((MAX_BRIEF_MARKDOWN_BYTES - C.NIGHTLY_BRIEF_OVERHEAD_BYTES) / Math.max(1, found.length));
+    const stateMax = Math.floor(perRoom * C.NIGHTLY_STATE_SHARE);
+    const rooms: NightlyRoom[] = [];
+    for (const room of found) {
+      const stateBytes = Buffer.byteLength(roomStateLines(room, stateMax).join('\n'), 'utf8') + C.NIGHTLY_ROOM_FRAME_BYTES;
+      const lines = quoteRoomRows(this.deps.listRoomRows(room.id, since, C.NIGHTLY_MESSAGES_PER_ROOM), names, Math.max(0, perRoom - stateBytes));
+      if (lines.length > 0) rooms.push({ ...room, lines, stateMax });
     }
     if (rooms.length === 0) {
       this.writeState({ ...state, lastDay: day, coveredUntil: now.getTime() });
