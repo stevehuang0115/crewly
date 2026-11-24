@@ -150,6 +150,11 @@ What a delivery is *about* is narrower than every id it mentions (CREW-1258):
   A later status (a reopened ticket, a retried work item) makes the id live
   again.
 
+The same rule links an agent-to-agent message to a trace on its way
+(`carryAgentMessageTrace`, CREW-1259): `resolveDeliveryTraces` decides, so the
+message is recorded in what it is about and a message that only cites finished
+work rides the sender's own run.
+
 One trace → it becomes the session's current trace. Several → the current
 trace is kept if it is among them, else the first one wins, and the delivery
 is recorded in each. None → the current trace ends: a cron / scheduled

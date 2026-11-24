@@ -16,7 +16,7 @@ import { OPEN_ITEMS_CONSTANTS } from '../../constants.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import { readProjectTicketLink } from '../../types/project-ticket.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
-import { getTraceContext } from './trace-context.service.js';
+import { classifyDelivery, getTraceContext } from './trace-context.service.js';
 import { getTurnTriggerTracker } from './turn-trigger.js';
 import { getAgentAskLedger } from '../messaging/agent-ask-ledger.service.js';
 import { notifyRequest } from '../usage-ledger/ledger-hooks.js';
@@ -594,7 +594,10 @@ export function withWorkItemTraceMarker(message: string, workItem: Pick<WorkItem
 /**
  * One agent messaged another through `/terminal/:to/*`: return the text with
  * a trace appended so the receiving turn joins it, and record `message.agent`.
- * An explicit link in the text (`[TRACE:…]`, work item id, `[TICKET:…]`) wins.
+ * What the text is about wins: a `[TRACE:…]` marker, the work item a dispatch
+ * names (a verify or retry item, its parent's run), else the live tickets, work
+ * items and Requests it mentions. Ids of finished work that it only cites
+ * (CREW-1259, the same rule as a delivery, CREW-1258) do not link it.
  * Otherwise the sender's trace is appended, except when that trace is tagged
  * with an autopilot project none of the recipient's teams works on: an
  * orchestrator relay sent while its turn sat on another project's run would
@@ -615,8 +618,9 @@ export function carryAgentMessageTrace(
 	return safely(() => {
 		if (!sender || sender === target) return text;
 		const ctx = getTraceContext();
-		if (ctx.resolveTracesFromText(text, target).length > 0) {
-			const linked = ctx.resolveTracesFromText(text, target)[0];
+		const named = ctx.resolveDeliveryTraces(text, classifyDelivery(text), target);
+		if (named.length > 0) {
+			const linked = named[0];
 			ctx.record({ traceId: linked, type: 'message.agent', actor: agentActor(sender), summary: `${sender} → ${target}: ${text}`, refs: { session: target } });
 			return text;
 		}

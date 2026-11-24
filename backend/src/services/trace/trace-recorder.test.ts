@@ -425,6 +425,72 @@ describe('trace-recorder', () => {
 				expect((await events(ce)).some((e) => e.type === 'message.agent')).toBe(true);
 			});
 
+			describe('what the message is about, not every id it cites (CREW-1259)', () => {
+				const X = '3c10acb8-2cec-4d4c-b396-f8da9da6ef5b';
+				const status = (traceId: string, type: 'ticket.status' | 'workitem.status', refs: Record<string, string>, to: string, from = 'in_progress'): void => {
+					getTraceContext().record({ traceId, type, actor: { kind: 'system' }, summary: `${from} → ${to}`, refs, data: { from, to } });
+				};
+				const messages = async (traceId: string) => (await events(traceId)).filter((e) => e.type === 'message.agent');
+
+				it('an agent message that only cites a cancelled ticket and a verified work item is not linked to their traces', async () => {
+					const own = startGoalTrace({ kind: 'goal', summary: 'owner request' })!;
+					const oldTicket = startGoalTrace({ kind: 'goal', summary: 'CE-345' })!;
+					const oldItem = startGoalTrace({ kind: 'goal', summary: 'old item' })!;
+					store.linkRef('ticket', 'CE-345', oldTicket);
+					store.linkRef('workItem', WI_ID, oldItem);
+					status(oldTicket, 'ticket.status', { ticketId: 'CE-345' }, 'cancelled');
+					status(oldItem, 'workitem.status', { workItemId: WI_ID }, 'verified', 'done_by_worker');
+					getTraceContext().setCurrent('crewly-orc', own);
+					const text = carryAgentMessageTrace('crewly-orc', 'dev-1', `verify this one; evidence: CE-345 and WorkItem ${WI_ID} were handled earlier`);
+					// It rides the sender's own run instead.
+					expect(text).toBe(`verify this one; evidence: CE-345 and WorkItem ${WI_ID} were handled earlier\n[TRACE:${own}]`);
+					expect(await messages(oldTicket)).toHaveLength(0);
+					expect(await messages(oldItem)).toHaveLength(0);
+					expect(await messages(own)).toHaveLength(1);
+				});
+
+				it('a live dispatched work item is linked, not the live Request or ticket it cites', async () => {
+					const REQ = '9b1f0d1e-0000-4000-8000-000000000001';
+					const dispatched = startGoalTrace({ kind: 'goal', summary: 'dispatched' })!;
+					const citedRequest = startGoalTrace({ kind: 'goal', summary: 'cited request' })!;
+					const citedTicket = startGoalTrace({ kind: 'goal', summary: 'cited ticket' })!;
+					store.linkRef('workItem', X, dispatched);
+					store.linkRef('request', REQ, citedRequest);
+					store.linkRef('ticket', 'CE-9', citedTicket);
+					status(citedTicket, 'ticket.status', { ticketId: 'CE-9' }, 'in_progress', 'ready');
+					// The cited Request is resolved before work items when every id counts equally.
+					const text = `[CREWLY-DISPATCH] WorkItem ${X} queued for you (type=delegate).\n  Evidence: [TICKET:TKT-0001 ${REQ}] and CE-9 are related`;
+					expect(carryAgentMessageTrace('crewly-orc', 'dev-1', text)).toBe(text);
+					expect(await messages(dispatched)).toHaveLength(1);
+					expect(await messages(citedRequest)).toHaveLength(0);
+					expect(await messages(citedTicket)).toHaveLength(0);
+				});
+
+				it('a [TRACE:] marker wins over the ids cited next to it', async () => {
+					const marked = startGoalTrace({ kind: 'goal', summary: 'marked' })!;
+					const cited = startGoalTrace({ kind: 'goal', summary: 'cited' })!;
+					store.linkRef('ticket', 'CE-9', cited);
+					status(cited, 'ticket.status', { ticketId: 'CE-9' }, 'in_progress', 'ready');
+					carryAgentMessageTrace('crewly-orc', 'dev-1', `see CE-9\n[TRACE:${marked}]`);
+					expect(await messages(marked)).toHaveLength(1);
+					expect(await messages(cited)).toHaveLength(0);
+				});
+
+				it('a verify dispatch of an item waiting for its verdict is linked to the run; a live mentioned ticket still links', async () => {
+					const run = startGoalTrace({ kind: 'goal', summary: 'run' })!;
+					store.linkRef('workItem', X, run);
+					status(run, 'workitem.status', { workItemId: X }, 'done_by_worker', 'running');
+					const verify = `[CREWLY-DISPATCH] WorkItem ${X}:verify:${X} queued for you (type=review).`;
+					expect(carryAgentMessageTrace('crewly-orc', 'lead-1', verify)).toBe(verify);
+					expect(await messages(run)).toHaveLength(1);
+					const live = startGoalTrace({ kind: 'goal', summary: 'CE-12' })!;
+					store.linkRef('ticket', 'CE-12', live);
+					status(live, 'ticket.status', { ticketId: 'CE-12' }, 'in_progress', 'ready');
+					expect(carryAgentMessageTrace('crewly-orc', 'dev-1', 'please pick up CE-12')).toBe('please pick up CE-12');
+					expect(await messages(live)).toHaveLength(1);
+				});
+			});
+
 			it('a work item id or a [TICKET:] request marker still joins, even cross-project', () => {
 				const ce = ceTicketTrace();
 				store.linkRef('workItem', WI_ID, ce);
