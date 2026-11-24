@@ -9,7 +9,12 @@
 # Input shape:
 #   { "workItemId": "abc-123", "sessionName": "dev-1", "reason": "missing creds",
 #     "questions"?: "...", "urgency"?: "...", "until"?: "2026-10-27T08:30:00Z",
-#     "afterWorkItemId"?: "<upstream WorkItem id>" }
+#     "afterWorkItemId"?: "<upstream WorkItem id>", "on"?: "owner|agent|external" }
+#
+# `on` says who the block waits on: "owner" (a sign-in, an approval, a decision
+# only the owner can give), "agent" (the default), or "external" (a vendor, a
+# build, an email). Run metrics count an owner block as time waiting on the
+# owner, not on an agent (CREW-928).
 #
 # `until` (ISO 8601, UTC, in the future) makes the block lift on its own: once
 # that time has passed the item returns to `queued` for you. For work that can
@@ -44,6 +49,7 @@ QUESTIONS=$(printf '%s' "$INPUT" | jq -r '.questions // empty')
 URGENCY=$(printf '%s' "$INPUT" | jq -r '.urgency // empty')
 UNTIL=$(printf '%s' "$INPUT" | jq -r '.until // empty')
 AFTER_ID=$(printf '%s' "$INPUT" | jq -r '.afterWorkItemId // empty')
+ON=$(printf '%s' "$INPUT" | jq -r '.on // empty')
 LEGACY_PATH=$(printf '%s' "$INPUT" | jq -r '.absoluteTaskPath // empty')
 
 if [ -z "$WORK_ITEM_ID" ] && [ -n "$LEGACY_PATH" ]; then
@@ -56,6 +62,11 @@ require_param "reason" "$REASON"
 if [ -n "$AFTER_ID" ] && [ -n "$UNTIL" ]; then
   error_exit "Give either until or afterWorkItemId, not both."
 fi
+
+case "$ON" in
+  ""|owner|agent|external) ;;
+  *) error_exit "on must be owner, agent or external (got '${ON}')." ;;
+esac
 
 SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // .agentId // empty')
 [ -z "$SESSION_NAME" ] && SESSION_NAME="${CREWLY_SESSION_NAME:-}"
@@ -116,6 +127,7 @@ BODY=$(jq -n \
   --arg reason "$REASON" \
   --arg until "$UNTIL" \
   --arg after "$AFTER_ID" \
-  '{agentId: $agentId, reason: $reason} + (if $until == "" then {} else {until: $until} end) + (if $after == "" then {} else {afterWorkItemId: $after} end)')
+  --arg on "$ON" \
+  '{agentId: $agentId, reason: $reason} + (if $until == "" then {} else {until: $until} end) + (if $after == "" then {} else {afterWorkItemId: $after} end) + (if $on == "" then {} else {on: $on} end)')
 
 api_call POST "/task-pool/block/${WORK_ITEM_ID}" "$BODY"

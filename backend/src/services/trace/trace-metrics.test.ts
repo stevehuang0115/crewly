@@ -334,6 +334,38 @@ describe('trace-metrics', () => {
 			expect(openEnded.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_agent', start: at(5), end: at(200) })]);
 		});
 
+		it('a block on the owner is an owner hold, not waiting on an agent (CREW-928)', () => {
+			const blockedOn = (m: number, on?: string): TraceEvent =>
+				ev(m, 'workitem.status', system, { refs: { workItemId: 'wi-1', session: 'sam' }, data: { from: 'running', to: 'blocked', retryCount: 0, ...(on ? { blockedOn: on } : {}) } });
+			const run = (on?: string) =>
+				computeTraceMetrics(root(), [wiCreated(0, 'wi-1', 'sam'), wiStatus(1, 'wi-1', 'sam', 'queued', 'running'), blockedOn(5, on), wiStatus(200, 'wi-1', 'sam', 'blocked', 'queued')], { now: atMin(200), stallMinutes: 30 });
+			const owner = run('owner');
+			expect(owner.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_owner', start: at(5), end: at(200) })]);
+			expect(owner.time.waitingOwnerMs).toBeGreaterThan(150 * MIN);
+			expect(owner.time.waitingAgentMs).toBeLessThan(10 * MIN);
+			// No blockedOn, or the agent side: unchanged.
+			for (const on of [undefined, 'agent']) {
+				const m = run(on);
+				expect(m.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_agent', start: at(5), end: at(200) })]);
+				expect(m.time.waitingOwnerMs).toBe(0);
+			}
+			// An outside party holds neither side.
+			const external = run('external');
+			expect(external.time.waitingOwnerMs).toBe(0);
+			expect(external.time.waitingAgentMs).toBeLessThan(10 * MIN);
+			expect(external.stalls.items.every((s) => s.cause !== 'waiting_on_agent')).toBe(true);
+		});
+
+		it('a block with an open decision in the same trace is an owner hold (CREW-928)', () => {
+			const m = computeTraceMetrics(
+				root(),
+				[wiCreated(0, 'wi-1', 'sam'), wiStatus(1, 'wi-1', 'sam', 'queued', 'running'), decisionCreated(4, 'D-9', 'sam'), wiStatus(5, 'wi-1', 'sam', 'running', 'blocked'), decisionStatus(200, 'D-9', 'answered'), wiStatus(201, 'wi-1', 'sam', 'blocked', 'queued')],
+				{ now: atMin(201), stallMinutes: 30 },
+			);
+			expect(m.stalls.items).toEqual([expect.objectContaining({ cause: 'waiting_on_owner' })]);
+			expect(m.time.waitingAgentMs).toBeLessThan(10 * MIN);
+		});
+
 		it('a work item born blocked until a known time (a commitment follow-up) is a planned wait too', () => {
 			const bornBlocked = (m: number, until: number): TraceEvent =>
 				ev(m, 'workitem.created', system, { refs: { workItemId: 'wi-fu', session: 'sam' }, data: { type: 'delegate', status: 'blocked', blockedUntil: at(until) }, outcome: 'queued' });

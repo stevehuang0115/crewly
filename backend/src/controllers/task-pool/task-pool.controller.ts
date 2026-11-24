@@ -31,6 +31,7 @@ import {
   type WorkItem,
   ForbiddenTransitionError,
   WORK_ITEM_REVIEW_CHECKS_KEY,
+  parseBlockedOn,
 } from '../../types/v2/work-item.types.js';
 import { formatError } from '../../utils/format-error.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
@@ -1271,12 +1272,14 @@ async function recordBlocked(
   reason: string | undefined,
   until?: string,
   afterWorkItemId?: string,
+  on?: string,
 ): Promise<StopOutcome> {
   const outcome = await getGiveUp().block(workItemId, {
     agentId,
     reason,
     ...(until ? { until } : {}),
     ...(afterWorkItemId ? { afterWorkItemId } : {}),
+    ...(on ? { on } : {}),
   });
 
   // V3.1: Project task blocked
@@ -1324,11 +1327,12 @@ async function recordBlocked(
 export async function blockItem(req: Request, res: Response): Promise<void> {
   try {
     const { workItemId } = req.params;
-    const { agentId, reason, until, afterWorkItemId } = req.body as {
+    const { agentId, reason, until, afterWorkItemId, on } = req.body as {
       agentId?: string;
       reason?: string;
       until?: unknown;
       afterWorkItemId?: unknown;
+      on?: unknown;
     };
 
     if (!workItemId) {
@@ -1337,6 +1341,10 @@ export async function blockItem(req: Request, res: Response): Promise<void> {
     }
     if (!agentId) {
       res.status(400).json({ success: false, error: 'agentId is required' });
+      return;
+    }
+    if (on !== undefined && on !== null && on !== '' && parseBlockedOn(on) === null) {
+      res.status(400).json({ success: false, error: 'on must be owner, agent or external' });
       return;
     }
     if (afterWorkItemId !== undefined && afterWorkItemId !== null && afterWorkItemId !== '') {
@@ -1367,6 +1375,7 @@ export async function blockItem(req: Request, res: Response): Promise<void> {
       reason,
       typeof until === 'string' && until !== '' ? until : undefined,
       typeof afterWorkItemId === 'string' && afterWorkItemId !== '' ? afterWorkItemId : undefined,
+      typeof on === 'string' && on !== '' ? on : undefined,
     );
 
     res.json({ success: true, message: `WorkItem ${workItemId} blocked`, ...giveUpFields(outcome) });
