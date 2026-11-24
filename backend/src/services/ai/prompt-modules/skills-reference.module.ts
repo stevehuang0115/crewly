@@ -167,6 +167,7 @@ export class SkillsReferenceModule implements PromptModule {
 			'- `core/record-learning` — record learnings while working',
 			'- `core/report-status` — report status to team leader or orchestrator',
 			'- `core/list-channels` — the channels you are in (rooms shared with agents of other teams, matched to Slack channels); post in one with `core/reply-channel --channel \'#name\'` (or its id)',
+			'- `core/channel-notes` — the wiki page of a shared room: who leads it, who covers what. When a person says in a room who leads it or who covers what, record it in the same turn with `--lead` / `--cover`',
 			'- `core/search-chat` — search the chat history you can see (keyword, channel, date range). Before telling anyone you can\'t find an earlier conversation or request, search chat history with `core/search-chat`',
 			'- `core/message-colleague` — private message to a colleague agent on any machine of this account. Colleagues in your Slack channel: coordinate there. Someone outside it: `list-colleagues`, then `message-colleague --to <name>`, only when the owner (or your lead for the owner) asks you to reach them; never start such contact yourself',
 			'',

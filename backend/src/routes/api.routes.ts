@@ -84,6 +84,9 @@ import { createTraceRouter } from '../controllers/trace/trace.controller.js';
 import { traceHttpMiddleware } from '../services/trace/trace-http.middleware.js';
 import { createChatV2Router } from '../controllers/chat-v2/index.js';
 import { createChannelsRouter } from '../controllers/channels/channels.routes.js';
+import { createChannelNotesRouter } from '../controllers/channels/channel-notes.routes.js';
+import { findRoomByRef } from '../services/wiki/channel-page.server.js';
+import { channelPageVault } from '../services/wiki/channel-page.wiring.js';
 import { ChannelComposeService } from '../services/channels/crewly-channel-compose.service.js';
 import {
   CrewlyChannelService,
@@ -439,6 +442,8 @@ export function createApiRoutes(apiController: ApiController): Router {
     return channelCompose;
   };
   router.use('/channels', createChannelsRouter(() => getCrewlyChannelService(), getChannelCompose));
+  // Channel notes: the wiki page of a room (lead, who covers what, notes).
+  router.use('/channel-notes', createChannelNotesRouter({ findRoom: findRoomByRef, vaultPath: () => channelPageVault() }));
 
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here

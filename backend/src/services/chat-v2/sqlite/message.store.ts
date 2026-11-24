@@ -1152,6 +1152,70 @@ export class MessageStore {
   }
 
   /**
+   * The messages of one room since a time, oldest first, capped at the
+   * newest `limit`, with the fields the channel page needs (who wrote each,
+   * in which thread).
+   *
+   * @param channelId - The room
+   * @param sinceMs - Only messages created at or after this (epoch ms)
+   * @param limit - Most rows returned (newest kept)
+   * @returns Rows oldest first; `author` is the agent session recorded on a mirrored agent post
+   */
+  listRoomRows(
+    channelId: string,
+    sinceMs: number,
+    limit: number,
+  ): Array<{ id: string; threadId: string | null; senderType: string; senderId: string; content: string; createdAt: number; author: string | null }> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, thread_id, sender_type, sender_id, content, created_at,
+                COALESCE(json_extract(metadata, '$.authorAgentSession'), json_extract(metadata, '$.remoteAgentSession')) AS author
+         FROM chat_messages
+         WHERE channel_id = ? AND created_at >= ? AND sender_type != 'system'
+         ORDER BY seq DESC
+         LIMIT ?`,
+      )
+      .all(channelId, sinceMs, limit) as Array<{
+      id: string;
+      thread_id: string | null;
+      sender_type: string;
+      sender_id: string;
+      content: string;
+      created_at: number;
+      author: string | null;
+    }>;
+    return rows.reverse().map((r) => ({
+      id: r.id,
+      threadId: r.thread_id,
+      senderType: r.sender_type,
+      senderId: r.sender_id,
+      content: r.content,
+      createdAt: r.created_at,
+      author: typeof r.author === 'string' && r.author.trim() ? r.author.trim() : null,
+    }));
+  }
+
+  /**
+   * Rooms (huddles, not archived) in which a person or an agent wrote since
+   * a time, busiest first.
+   *
+   * @param sinceMs - Epoch ms lower bound
+   * @param limit - Most rooms returned
+   * @returns Room ids with their message counts
+   */
+  listRoomsActiveSince(sinceMs: number, limit: number): Array<{ channelId: string; messages: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT m.channel_id AS channelId, COUNT(*) AS messages
+         FROM chat_messages m JOIN chat_channels c ON c.id = m.channel_id
+         WHERE m.created_at >= ? AND m.sender_type != 'system' AND c.type = 'huddle' AND c.archived_at IS NULL
+         GROUP BY m.channel_id ORDER BY messages DESC LIMIT ?`,
+      )
+      .all(sinceMs, limit) as Array<{ channelId: string; messages: number }>;
+    return rows.map((r) => ({ channelId: r.channelId, messages: Number(r.messages) }));
+  }
+
+  /**
    * Slack channels where an inbound (owner/user) Slack message was stored
    * since `sinceMs`, most recently active first.
    *

@@ -1920,6 +1920,62 @@ export const WIKI_RECORD_ATTACH_CONSTANTS = {
 	USAGE_VIA: 'attach',
 } as const;
 
+/**
+ * Channel pages: one wiki page per shared room saying what the room is for,
+ * who leads it and who covers what, attached to every message a person
+ * writes there (specs/2026-11-23-channel-pages.md).
+ */
+export const CHANNEL_PAGE_CONSTANTS = {
+	/** Folder under `llm-curated/` of the global vault */
+	FOLDER: 'channels',
+	/** `source` front-matter value of a channel page */
+	SOURCE: 'channel-page',
+	/** Characters of the purpose line */
+	PURPOSE_MAX_CHARS: 300,
+	/** Characters of one "who covers what" line */
+	COVER_MAX_CHARS: 200,
+	/** "Who covers what" lines kept on a page */
+	MAX_COVERS: 20,
+	/** Characters of the free notes section (decisions, open items) */
+	NOTES_MAX_CHARS: 2000,
+	/** Characters of the notes shown in the attached block */
+	NOTES_SHOWN_MAX_CHARS: 900,
+	/** Messages of a room read to list its recent threads */
+	RECENT_SCAN_MESSAGES: 300,
+	/** How far back recent threads are read */
+	RECENT_WINDOW_MS: 14 * 24 * 60 * 60 * 1000,
+	/** Recent threads listed in the attached block */
+	RECENT_THREADS_SHOWN: 6,
+	/** Characters of a thread's opening line in the block */
+	THREAD_LINE_MAX_CHARS: 90,
+	/** Characters of the whole attached block */
+	BLOCK_MAX_CHARS: 2400,
+	/** State file (under CREWLY_HOME) of the nightly pass */
+	NIGHTLY_STATE_FILE: 'channel-pages-nightly.json',
+	/** Local hour from which the nightly pass may run */
+	NIGHTLY_HOUR: 3,
+	/** How often the nightly pass checks whether it is due */
+	NIGHTLY_CHECK_INTERVAL_MS: 30 * 60 * 1000,
+	/** Rooms covered by one nightly pass at most (most active first) */
+	NIGHTLY_MAX_ROOMS: 6,
+	/** Bytes of the nightly brief kept for its instructions and the pages' current state */
+	NIGHTLY_BRIEF_OVERHEAD_BYTES: 3 * 1024,
+	/** Characters of a page's current cover lines quoted in the nightly brief */
+	NIGHTLY_COVERS_SHOWN_MAX_CHARS: 600,
+	/** Share of a room's part of the nightly brief its page's current state may take */
+	NIGHTLY_STATE_SHARE: 0.4,
+	/** Bytes of a room's headings and clip markers in the nightly brief */
+	NIGHTLY_ROOM_FRAME_BYTES: 400,
+	/** Characters of a page's current notes quoted in the nightly brief */
+	NIGHTLY_NOTES_SHOWN_MAX_CHARS: 400,
+	/** Messages of one room quoted in the nightly brief */
+	NIGHTLY_MESSAGES_PER_ROOM: 60,
+	/** Characters of one quoted message in the nightly brief */
+	NIGHTLY_MESSAGE_MAX_CHARS: 240,
+	/** `metadata.kind` of the nightly work item */
+	NIGHTLY_METADATA_KIND: 'channel_pages_nightly',
+} as const;
+
 export const WIKI_KB_CONSTANTS = {
 	/** Why a page earns a place in the vault (one is required to create a page). */
 	KEEP_BECAUSE: ['changes_decision', 'contradicts', 'hard_fact', 'reusable_method'] as const,

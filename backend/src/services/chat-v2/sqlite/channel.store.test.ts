@@ -522,4 +522,21 @@ describe('ChannelStore', () => {
       expect(store.getById(row.id)?.last_message_at).toBe(700);
     });
   });
+  describe('findRoomByName', () => {
+    it('finds a live room by name with or without #, ignoring case; not a DM or an archived room', () => {
+      const db2 = openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true });
+      const store = new ChannelStore(db2);
+      const room = store.create({ agentSession: '', ownerUserId: 'u', name: '#Necina', type: 'huddle', nowMs: 100 }).id;
+      store.create({ agentSession: 'necina', ownerUserId: 'u', name: 'necina-dm', nowMs: 100 });
+      const gone = store.create({ agentSession: '', ownerUserId: 'u', name: '#old', type: 'huddle', nowMs: 100 }).id;
+      store.archive(gone, 200);
+
+      expect(store.findRoomByName('#necina')?.id).toBe(room);
+      expect(store.findRoomByName('NECINA')?.id).toBe(room);
+      expect(store.findRoomByName('necina-dm')).toBeNull();
+      expect(store.findRoomByName('#old')).toBeNull();
+      expect(store.findRoomByName('  ')).toBeNull();
+      db2.close();
+    });
+  });
 });

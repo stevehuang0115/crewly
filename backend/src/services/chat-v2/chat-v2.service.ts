@@ -709,6 +709,31 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * The messages of one room since a time (channel pages: recent threads and
+   * the nightly brief). Server-internal, no principal check.
+   *
+   * @param channelId - The room
+   * @param sinceMs - Epoch ms lower bound
+   * @param limit - Most rows returned (newest kept)
+   * @returns Rows oldest first
+   */
+  listRoomRows(channelId: string, sinceMs: number, limit: number): ReturnType<MessageStore['listRoomRows']> {
+    return this.messages.listRoomRows(channelId, sinceMs, limit);
+  }
+
+  /**
+   * Rooms in which someone wrote since a time, busiest first (the nightly
+   * channel-page pass). Server-internal, no principal check.
+   *
+   * @param sinceMs - Epoch ms lower bound
+   * @param limit - Most rooms returned
+   * @returns Room ids with their message counts
+   */
+  listRoomsActiveSince(sinceMs: number, limit: number): Array<{ channelId: string; messages: number }> {
+    return this.messages.listRoomsActiveSince(sinceMs, limit);
+  }
+
+  /**
    * Slack channels with stored inbound messages since `sinceMs` (backfill scope).
    *
    * @param sinceMs - Epoch ms lower bound
@@ -1231,6 +1256,18 @@ export class ChatV2Service extends EventEmitter {
    */
   getChannelForBridge(channelId: string): ChatChannelDTO | null {
     const row = this.channels.getById(channelId);
+    return row ? this.toChannelDTO(row) : null;
+  }
+
+  /**
+   * A room by its name (`#necina` or `necina`), server-internal, no
+   * principal check — for the channel-notes API, which agents call by name.
+   *
+   * @param name - Room name
+   * @returns The DTO, or null when no live room has that name
+   */
+  findRoomByNameForBridge(name: string): ChatChannelDTO | null {
+    const row = this.channels.findRoomByName(name);
     return row ? this.toChannelDTO(row) : null;
   }
 

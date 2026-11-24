@@ -233,6 +233,12 @@ export interface ChatV2DispatcherOptions {
    */
   recordsFor?: (request: { agentSession: string; text: string; ownerOnlyAudience: boolean }) => Promise<string>;
   /**
+   * What is known about a room: who leads it, who covers what, its recent
+   * threads and who answered them (`wiki/channel-page.ts`). Attached to a
+   * person's message delivered in the room. Must not throw; '' = nothing.
+   */
+  channelNotesFor?: (channel: { id: string; name: string }) => Promise<string>;
+  /**
    * Override the prompt formatter for tests / future customization. The
    * default matches the `reply-chat` skill's parser exactly.
    */
@@ -443,6 +449,8 @@ export interface FormatPromptArgs {
   internalCoordination?: boolean;
   /** Wiki records on what the conversation mentions, looked up for this agent (delivered copy only) */
   recordsBlock?: string;
+  /** What is known about this room: lead, who covers what, recent threads (delivered copy only) */
+  channelNotesBlock?: string;
 }
 
 /**
@@ -706,6 +714,17 @@ export function peopleAddressingLine(args: FormatPromptArgs, mode: 'required' | 
 }
 
 /**
+ * What an agent does with a room message it has no context for: hand it to
+ * the colleague who has, never answer "I do not have it" or ask the person
+ * for the material (2026-11-23: an agent without the outline answered first
+ * while the agent that held it stayed quiet).
+ */
+export const CHANNEL_HANDOFF_RULE =
+  ' If the question is a real one for the agents here but you do not hold the context for it: do not answer that you lack it, and do not ask the person to send you the material.' +
+  ' Look at the channel notes above (lead, who covers what, who answered the recent threads) and hand it over: one short reply-channel line @-ing that colleague (e.g. "@name this one is yours"), then stop.' +
+  ' If the notes name a lead and it is not you, the lead answers a question that fits nobody else. Only when no colleague here fits, say so in one line.';
+
+/**
  * Told to the one agent the harness picked to answer a room message
  * (specs/2026-10-03-one-responder-per-message.md).
  */
@@ -761,7 +780,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
       : args.wakeRole === 'team-leader'
         ? `Dispatching this channel's message: the message @-ed nobody and no agent in the channel is awake right now, so you (the channel lead) were woken to decide who should answer. If it should be you: **first** run \`${workingCmd}\`, then reply with the \`reply-channel\` skill (${cmd}). If another member should answer: use reply-channel to post one short line @-ing them (e.g. "@name this one is yours"); they will be woken and take over; do not answer for them. If it is not for anyone, do nothing.`
         : mode === 'optional'
-      ? `Reply to this channel: this message did not @ you; it was forwarded so you can decide whether to reply${args.soleResponder ? '' : ' (every awake agent in the channel receives it and decides for itself)'}. If you are the channel lead (team leader), you answer questions about the team itself (who is responsible, who the members are, what they are working on), based on the member list below and your team context — do not say "no record". If it relates to your work and you have the context or knowledge, and decide to reply: run \`${workingCmd}\` **first** so they see you have picked it up, then reply with the \`reply-channel\` skill (${cmd}). If it is people in the channel talking among themselves, or has nothing to do with you, do nothing — do not reply, do not send --working, and do not start an investigation over it.${args.roomPresence ? wakeColleague : ''}`
+      ? `Reply to this channel: this message did not @ you; it was forwarded so you can decide whether to reply${args.soleResponder ? '' : ' (every awake agent in the channel receives it and decides for itself)'}. If you are the channel lead (team leader), you answer questions about the team itself (who is responsible, who the members are, what they are working on), based on the member list below and your team context — do not say "no record". If it relates to your work and you have the context or knowledge, and decide to reply: run \`${workingCmd}\` **first** so they see you have picked it up, then reply with the \`reply-channel\` skill (${cmd}). If it is people in the channel talking among themselves, or has nothing to do with you, do nothing — do not reply, do not send --working, and do not start an investigation over it.${args.channelNotesBlock ? CHANNEL_HANDOFF_RULE : ''}${args.roomPresence ? wakeColleague : ''}`
       : `Reply to this channel: use the \`reply-channel\` skill (${cmd}) — run the command as given${identity ? ', and keep the leading CREWLY_SESSION_NAME=… — it tells the system it is you replying' : ''}; if reply-channel errors, run the same command again, or fall back to \`reply\` above; do not use any other way to reply (other ways do not reach this thread and the sender will not see them). Your reply is posted to the same Slack thread under your name; later follow-ups in this thread are forwarded straight to you, with no need to be @-ed again. To hand off to a colleague (an agent on this or another machine), write @name in your reply (e.g. "@Owen can you check this?"), or start the reply with their name — it reaches them even when Slack shows it as plain text because they have no Slack app of their own; a name only mentioned mid-sentence does not. Discussions among several agents must converge: each person speaks at most two rounds in the same thread; the team leader (or the first speaker if there is none) summarizes after two rounds and clearly writes "Conclusion"; once the conclusion is posted, nobody else replies unless they clearly disagree and say why. In a thread where the owner is talking with you, agents do not talk to each other: a reply that only @-mentions colleagues is delivered to them privately instead of posted, and the thread gets only the one consolidated answer for the owner. Do not thank each other or restate each other's points out of politeness. To give a colleague on another machine a file, write its path in your reply or add \`--file <path>\` to the command (up to 5 files, inside your project); it arrives in their project inbox automatically, so never ask them to open a path on your machine. A file a colleague sends you shows as \`File from <name>: <path>\` — read it from there.`;
   } else if (args.slackDmChannelId && mode === 'required') {
     const threadKey = parseSlackThreadKey(args.slackThreadKey) ? args.slackThreadKey : undefined;
@@ -813,6 +832,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     ...(args.contextOnlyBlock ? [args.contextOnlyBlock, ``] : []),
     ...(contextBlock ? [contextBlock, ``] : []),
     ...(args.recordsBlock ? [args.recordsBlock, ``] : []),
+    ...(args.channelNotesBlock ? [args.channelNotesBlock, ``] : []),
     trimmed,
     ...(args.bareMentionNote ? [args.bareMentionNote] : []),
     ``,
@@ -883,6 +903,7 @@ export class ChatV2DispatcherService {
   private readonly refuseDelivery?: ChatV2DispatcherOptions['refuseDelivery'];
   private readonly isOwnerMessage?: ChatV2DispatcherOptions['isOwnerMessage'];
   private readonly recordsFor?: ChatV2DispatcherOptions['recordsFor'];
+  private readonly channelNotesFor?: ChatV2DispatcherOptions['channelNotesFor'];
   /** Room messages queued as context only, shown on each agent's next prompt from the room */
   readonly contextBacklog: RoomContextBacklog;
   private readonly logger: ComponentLogger;
@@ -906,6 +927,7 @@ export class ChatV2DispatcherService {
     this.refuseDelivery = options.refuseDelivery;
     this.isOwnerMessage = options.isOwnerMessage;
     this.recordsFor = options.recordsFor;
+    this.channelNotesFor = options.channelNotesFor;
     this.contextBacklog = options.contextBacklog ?? new RoomContextBacklog();
     this.logger = LoggerService.getInstance().createComponentLogger('ChatV2Dispatcher');
   }
@@ -1654,6 +1676,30 @@ export class ChatV2DispatcherService {
   }
 
   /**
+   * What is known about a room, for a message a person wrote there. A
+   * colleague's message gets none: the notes are for deciding who answers a
+   * person.
+   *
+   * @param channel - The room
+   * @param message - The message being delivered
+   * @returns The block, or undefined
+   */
+  private async channelNotesBlockFor(channel: ChatChannelDTO, message: ChatMessageDTO): Promise<string | undefined> {
+    if (!this.channelNotesFor || message.senderType !== 'user' || agentAuthorOf(message)) return undefined;
+    try {
+      const block = await this.channelNotesFor({ id: channel.id, name: channel.name });
+      if (block) this.logger.info('Channel notes attached to a room delivery', { channelId: channel.id, channel: channel.name, chars: block.length });
+      return block || undefined;
+    } catch (err) {
+      this.logger.debug('Channel notes lookup failed; delivering without them', {
+        channelId: channel.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return undefined;
+    }
+  }
+
+  /**
    * Deliver a huddle message to the targets {@link computeHuddleTargets} chose.
    *
    * @param channel - The huddle
@@ -1692,7 +1738,10 @@ export class ChatV2DispatcherService {
     const contextThread =
       options.threadId && options.threadId !== message.id ? options.threadId : (message.threadId ?? undefined);
     const namedExplicitly = new Set(mentioned);
-    const promptFor = (sessionName: string, responseMode: 'required' | 'optional', contextOnlyBlock?: string, recordsBlock?: string): string =>
+    // What is known about the room, read once for every recipient of this message.
+    let channelNotesRead: Promise<string | undefined> | undefined;
+    const channelNotes = (): Promise<string | undefined> => (channelNotesRead ??= this.channelNotesBlockFor(channel, message));
+    const promptFor = (sessionName: string, responseMode: 'required' | 'optional', contextOnlyBlock?: string, recordsBlock?: string, channelNotesBlock?: string): string =>
       this.formatPrompt({
         channelId: channel.id,
         channelName: channel.name,
@@ -1719,6 +1768,7 @@ export class ChatV2DispatcherService {
         ...(options.oneResponder ? { soleResponder: true } : {}),
         ...(contextOnlyBlock ? { contextOnlyBlock } : {}),
         ...(recordsBlock ? { recordsBlock } : {}),
+        ...(channelNotesBlock ? { channelNotesBlock } : {}),
         ...(message.metadata?.[AGENT_COORDINATION_CONSTANTS.INTERNAL_METADATA_KEY] ? { internalCoordination: true } : {}),
       });
 
@@ -1729,7 +1779,7 @@ export class ChatV2DispatcherService {
       const heard = this.contextBacklog.take(sessionName, channel.id, message.id);
       // A room can hold people who may not read a restricted record.
       const records = await this.recordsBlockFor(sessionName, message, [slackContextOf(options, sessionName) ?? '', renderChatContext(this.contextFor(channel.id, contextThread))], false);
-      const prompt = promptFor(sessionName, responseMode, renderContextOnlyBlock(heard), records);
+      const prompt = promptFor(sessionName, responseMode, renderContextOnlyBlock(heard), records, await channelNotes());
       try {
         this.noteActingFor(sessionName, message);
         const result = await this.sendToAgent(

@@ -1272,6 +1272,17 @@ void (async () => {
 				});
 			}
 
+			// Channel pages: once a night the orchestrator brings the wiki page of
+			// every room that was active up to date (who covers what, decisions).
+			try {
+				const { startChannelPagesNightly } = await import('./services/wiki/channel-page.server.js');
+				await startChannelPagesNightly(this.storageService);
+			} catch (channelPagesErr) {
+				this.logger.warn('Nightly channel-page pass failed to start (non-fatal)', {
+					error: (channelPagesErr as Error).message,
+				});
+			}
+
 			// Wiki maintenance (#1345): hourly queue drain into the vault logs
 			// (the bridge below is the LLM path and is usually switched off),
 			// daily log rotation into llm-curated/log-archive/, a weekly
@@ -3174,6 +3185,20 @@ void (async () => {
 						const { getWikiRecordAttachService, vaultsForAgent } = await import('./services/wiki/wiki-record-attach.wiring.js');
 						const scope = await vaultsForAgent(StorageService.getInstance(), agentSession);
 						return getWikiRecordAttachService().blockFor({ agentSession, text, ownerOnlyAudience, ...scope });
+					},
+					// What is known about the room: lead, who covers what, recent
+					// threads and who answered them (the room's wiki page).
+					channelNotesFor: async (channel) => {
+						const [{ channelBlockFor }, { getChatV2Service }, { sessionDisplayNames }] = await Promise.all([
+							import('./services/wiki/channel-page.wiring.js'),
+							import('./services/chat-v2/chat-v2.singleton.js'),
+							import('./services/wiki/channel-page.server.js'),
+						]);
+						const chat = getChatV2Service();
+						return channelBlockFor(
+							{ listRoomRows: (id, since, limit) => chat.listRoomRows(id, since, limit), sessionNames: () => sessionDisplayNames(StorageService.getInstance()) },
+							channel,
+						);
 					},
 					mentionResolver: chatMentionResolver,
 					// Files a colleague on another machine sent land in the
