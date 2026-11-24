@@ -6,6 +6,8 @@ import {
   PROJECT_TICKET_TRANSITIONS,
   isProjectTicketStatus,
   isValidProjectTicketTransition,
+  parseDeliveredBy,
+  canCloseAsDelivered,
   normalizeProjectTicketPriority,
   projectTicketPriorityRank,
   readProjectTicketLink,
@@ -82,5 +84,26 @@ describe('readProjectTicketLink', () => {
 describe('OWNED_TICKET_FIELDS', () => {
   it('starts with id and title', () => {
     expect(OWNED_TICKET_FIELDS.slice(0, 2)).toEqual(['id', 'title']);
+  });
+});
+
+describe('parseDeliveredBy / canCloseAsDelivered (CREW-942)', () => {
+  it('accepts a PR number, a PR or commit URL, a WorkItem id (with retry suffix) and a commit sha', () => {
+    expect(parseDeliveredBy('#1632')).toBe('#1632');
+    expect(parseDeliveredBy('PR #1632')).toBe('#1632');
+    expect(parseDeliveredBy('https://github.com/stevehuang0115/crewly/pull/1632')).toBe('https://github.com/stevehuang0115/crewly/pull/1632');
+    expect(parseDeliveredBy('01d89d86-4aee-4b2b-91eb-95dc4661416a')).toBe('01d89d86-4aee-4b2b-91eb-95dc4661416a');
+    expect(parseDeliveredBy('01d89d86-4aee-4b2b-91eb-95dc4661416a:retry:1')).toBe('01d89d86-4aee-4b2b-91eb-95dc4661416a:retry:1');
+    expect(parseDeliveredBy('5331A0992')).toBe('5331a0992');
+  });
+
+  it('rejects anything else', () => {
+    for (const bad of ['', '  ', 'soon', 'done', '#', 'abc', 'https://example.com/x', 42, null, undefined]) {
+      expect(parseDeliveredBy(bad)).toBeNull();
+    }
+  });
+
+  it('only backlog and ready may be closed as delivered', () => {
+    expect(['backlog', 'ready', 'in_progress', 'review', 'done', 'cancelled'].filter((s) => canCloseAsDelivered(s as never))).toEqual(['backlog', 'ready']);
   });
 });

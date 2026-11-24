@@ -20,6 +20,7 @@ import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, TICKET_AUTOPILOT_C
 import { projectTicketPriorityRank, type ProjectTicket } from '../../types/project-ticket.types.js';
 import type { Team, TeamMember } from '../../types/index.js';
 import { isTeamLead } from '../../utils/team.utils.js';
+import { blockedUntilOf, type WorkItem } from '../../types/v2/work-item.types.js';
 
 /** A member's availability for new work (see {@link memberAvailability}). */
 export type MemberAvailability = 'idle' | 'working' | 'stopped';
@@ -376,6 +377,17 @@ export interface ReplanDecisionInput {
   anyoneIdle: boolean;
   /** An idle member holds fewer in-progress tickets than the per-member cap */
   idleWithRoom: boolean;
+  /**
+   * Work waiting on a time that is not up yet and comes due soon (see
+   * {@link countDatedWork}): deferred tickets and work blocked until a time.
+   * It counts as busy: nothing new could be planned until it is due.
+   */
+  datedWork?: number;
+  /**
+   * The goal or an OKR changed after the last replan: the plan may differ, so
+   * dated work does not hold the replan back.
+   */
+  goalChangedSinceLastReplan?: boolean;
 }
 
 /** Why the driver is not woken to replan. */
@@ -392,6 +404,7 @@ export type ReplanSkipReason =
   | 'at_capacity'
   | 'replanned_today'
   | 'replan_too_soon'
+  | 'waiting_on_dated_work'
   | 'backed_off';
 
 /** Outcome of {@link decideReplan}. */
@@ -404,8 +417,8 @@ export type ReplanDecision = { action: 'replan' } | { action: 'skip'; reason: Re
  * cheapest first: switch off → no driver → replans set to 0 → budget
  * reached → a triage live → a replan live → tickets to triage → nobody idle
  * → every idle member at the in-progress cap → today's replans used up (the
- * mode's hard cap) → too soon after the last one (the mode's gap) → backing
- * off → no goal (the only gate that reads files).
+ * mode's hard cap) → too soon after the last one (the mode's gap) → dated work
+ * still waiting → backing off → no goal (the only gate that reads files).
  *
  * The autopilot only wakes the driver; the driver opens the tickets. It never
  * makes a ticket ready or starts work.
@@ -431,6 +444,7 @@ export function decideReplan(input: ReplanDecisionInput): ReplanDecision {
     const gap = effectiveReplanGapMs(input.minGapMs ?? 0, !!input.idleAndEmpty, input.idleReplanDebounceMs ?? 0);
     if (gap > 0 && input.now - input.lastReplanAt < gap) return { action: 'skip', reason: 'replan_too_soon' };
   }
+  if ((input.datedWork ?? 0) > 0 && !input.goalChangedSinceLastReplan) return { action: 'skip', reason: 'waiting_on_dated_work' };
   if (input.backedOff) return { action: 'skip', reason: 'backed_off' };
   if (!input.hasGoal) return { action: 'skip', reason: 'no_goal' };
   return { action: 'replan' };
@@ -504,9 +518,63 @@ export function nextReplanBackoff(input: {
 }
 
 /**
+ * How many things are only waiting on a time that is still ahead but within
+ * {@link TICKET_AUTOPILOT_CONSTANTS.DATED_WORK_HORIZON_MS}: open tickets deferred (`deferUntil`) and
+ * WorkItems blocked until a time (`blockedUntil`). Such work is busy: the
+ * plan cannot change before it is due, so a goal replan would find nothing
+ * new. Work due beyond the horizon is not counted, so a month-long deferral
+ * never stops replans for good.
+ *
+ * @param input - Tickets, the WorkItems linked to them, clock
+ * @returns Number of dated items still waiting
+ */
+export function countDatedWork(input: {
+  tickets: Array<Pick<ProjectTicket, 'status' | 'deferUntil'>>;
+  blockedWorkItems?: Array<Pick<WorkItem, 'status' | 'metadata'>>;
+  now: number;
+  horizonMs?: number;
+}): number {
+  const limit = input.now + (input.horizonMs ?? TICKET_AUTOPILOT_CONSTANTS.DATED_WORK_HORIZON_MS);
+  const waiting = (until: number | null | undefined): boolean => typeof until === 'number' && Number.isFinite(until) && until > input.now && until <= limit;
+  let n = 0;
+  for (const t of input.tickets) {
+    if (t.status === 'done' || t.status === 'review') continue;
+    if (waiting(t.deferUntil ? Date.parse(t.deferUntil) : null)) n++;
+  }
+  for (const wi of input.blockedWorkItems ?? []) {
+    if (wi.status === 'blocked' && waiting(blockedUntilOf(wi))) n++;
+  }
+  return n;
+}
+
+/**
+ * Whether a ticket created after a backoff started lifts it: only one the
+ * autopilot could triage or plan around (open backlog / ready work that is
+ * not parked, waiting on the owner or held for a retro card). A retro item,
+ * a deferred ticket or a finished one does not.
+ *
+ * @param ticket - The new ticket
+ * @param now - Clock (epoch ms)
+ * @param skipLabels - Labels that park a ticket
+ * @returns True when it lifts the backoff
+ */
+export function liftsReplanBackoff(
+  ticket: Pick<ProjectTicket, 'createdAt'> & Partial<Pick<ProjectTicket, 'status' | 'labels' | 'deferUntil'>>,
+  now: number,
+  skipLabels?: readonly string[],
+): boolean {
+  if (ticket.status !== undefined && ticket.status !== 'backlog' && ticket.status !== 'ready') return false;
+  const labels = ticket.labels ?? [];
+  if (isParkedTicket({ labels, deferUntil: ticket.deferUntil }, now, skipLabels)) return false;
+  if (labels.includes(TICKET_AUTOPILOT_CONSTANTS.RETRO_PENDING_LABEL)) return false;
+  return !hasNeedsOwnerLabel({ labels });
+}
+
+/**
  * Where a stored backoff stands today:
  * - `holds` — skip replans today;
- * - `lifted` — a ticket was created, or the goal / an OKR changed, after it
+ * - `lifted` — a ticket the autopilot could triage was created (see
+ *   {@link liftsReplanBackoff}), or the goal / an OKR changed, after it
  *   started: drop it and its streak;
  * - `elapsed` — its days are over: replans may run again, but the streak is
  *   kept so the next empty replan backs off longer;
@@ -518,10 +586,17 @@ export function nextReplanBackoff(input: {
  */
 export function replanBackoffState(
   backoff: ReplanBackoff | null | undefined,
-  input: { today: string; tickets: Array<Pick<ProjectTicket, 'createdAt'>>; goalChangedAt?: number | null; now?: number },
+  input: {
+    today: string;
+    tickets: Array<Pick<ProjectTicket, 'createdAt'> & Partial<Pick<ProjectTicket, 'status' | 'labels' | 'deferUntil'>>>;
+    goalChangedAt?: number | null;
+    now?: number;
+    skipLabels?: readonly string[];
+  },
 ): 'holds' | 'lifted' | 'elapsed' | 'none' {
   if (!backoff) return 'none';
-  if (input.tickets.some((t) => (Date.parse(t.createdAt) || 0) > backoff.since)) return 'lifted';
+  const clock = input.now ?? Date.now();
+  if (input.tickets.some((t) => (Date.parse(t.createdAt) || 0) > backoff.since && liftsReplanBackoff(t, clock, input.skipLabels))) return 'lifted';
   if (typeof input.goalChangedAt === 'number' && input.goalChangedAt > backoff.since) return 'lifted';
   if (typeof backoff.resumeAt === 'number' && input.now !== undefined) return input.now >= backoff.resumeAt ? 'elapsed' : 'holds';
   return input.today >= backoff.resumeDay ? 'elapsed' : 'holds';

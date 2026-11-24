@@ -32,6 +32,7 @@ import {
 } from '../../types/v2/work-item.types.js';
 import {
   normalizeProjectTicketPriority,
+  parseDeliveredBy,
   projectTicketPriorityRank,
   readProjectTicketLink,
   type ProjectTicket,
@@ -533,14 +534,16 @@ export class ProjectTicketWorkflowService {
     input: UpdateProjectTicketInput & { status?: ProjectTicketStatus },
     caller: ProjectTicketCaller,
     note?: string,
+    deliveredBy?: string,
   ): Promise<ProjectTicket> {
     const project = await this.resolveProject(ref);
     const { access } = await this.accessOf(caller, project);
     this.requireAccess(access, ['owner', 'orchestrator', 'lead', 'member'], 'edit tickets');
+    if (deliveredBy !== undefined && !input.status) throw new ProjectTicketError(400, 'delivered-by only goes with --status done');
     if (input.team !== undefined) await this.assertTeamOnProject(project, input.team);
     const { status, ...fields } = input;
     let ticket = await this.tickets.update(project.path, id, fields, this.actorName(caller), status ? undefined : note);
-    if (status && status !== ticket.status) ticket = await this.transition(project.id, id, status, caller, note);
+    if (status && status !== ticket.status) ticket = await this.transition(project.id, id, status, caller, note, deliveredBy);
     return ticket;
   }
 
@@ -558,9 +561,24 @@ export class ProjectTicketWorkflowService {
    * @returns Updated ticket
    * @throws ProjectTicketError(400/403/404)
    */
-  async transition(ref: string, id: string, to: ProjectTicketStatus, caller: ProjectTicketCaller, note?: string): Promise<ProjectTicket> {
+  async transition(
+    ref: string,
+    id: string,
+    to: ProjectTicketStatus,
+    caller: ProjectTicketCaller,
+    note?: string,
+    deliveredByRaw?: string,
+  ): Promise<ProjectTicket> {
     const project = await this.resolveProject(ref);
     const { access } = await this.accessOf(caller, project);
+    // `deliveredBy` closes a backlog / ready ticket as done in one step (CREW-942): no claim, no WorkItem.
+    let deliveredBy: string | undefined;
+    if (deliveredByRaw !== undefined) {
+      if (to !== 'done') throw new ProjectTicketError(400, 'delivered-by only goes with --status done');
+      const ref2 = parseDeliveredBy(deliveredByRaw);
+      if (!ref2) throw new ProjectTicketError(400, 'delivered-by must be a WorkItem id, a PR URL or #number, or a commit sha');
+      deliveredBy = ref2;
+    }
     if (to === 'in_progress') throw new ProjectTicketError(400, 'Use claim or assign to start work on a ticket');
     const current = await this.tickets.get(project.path, id);
     if (!current) throw new ProjectTicketError(404, `Ticket not found: ${id}`);
@@ -571,7 +589,7 @@ export class ProjectTicketWorkflowService {
     }
     const clearsWork = to === 'ready' || to === 'backlog' || to === 'cancelled';
     const extra: Partial<ProjectTicketFields> = clearsWork ? { assignee: null, workItemId: null } : {};
-    const updated = await this.tickets.transition(project.path, id, to, this.actorName(caller), note, extra);
+    const updated = await this.tickets.transition(project.path, id, to, this.actorName(caller), note, extra, deliveredBy);
     // A person moving the ticket out of in_progress stops the work: a live
     // WorkItem is cancelled (one already submitted for review is left to
     // its reviewer — done_by_worker cannot be cancelled).

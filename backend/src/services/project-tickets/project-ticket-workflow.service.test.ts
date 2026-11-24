@@ -139,6 +139,62 @@ describe('ProjectTicketWorkflowService', () => {
       await expect(wf.create('p1', { title: 'w', team: 't-mkt' }, owner)).rejects.toMatchObject({ status: 400 });
     });
 
+    describe('closing a ticket delivered elsewhere in one step (CREW-942)', () => {
+      it('backlog and ready go to done with --delivered-by, record the ref, and create no WorkItem', async () => {
+        const backlog = await wf.create('p1', { title: 'already shipped' }, dev);
+        const ready = await wf.create('p1', { title: 'also shipped', status: 'ready' }, lead);
+        const before = pool.items.size;
+        const a = await wf.transition('p1', backlog.id, 'done', lead, undefined, '#1632');
+        const b = await wf.transition('p1', ready.id, 'done', { session: 'crewly-orc' }, 'merged', 'https://github.com/o/r/pull/1632');
+        expect([a.status, b.status]).toEqual(['done', 'done']);
+        expect(a.log.at(-1)).toContain('backlog → done — delivered by #1632');
+        expect(b.log.at(-1)).toContain('delivered by https://github.com/o/r/pull/1632');
+        expect(b.log.at(-1)).toContain('merged');
+        expect(a).toMatchObject({ assignee: null, workItemId: null });
+        expect(pool.items.size).toBe(before); // no throwaway WorkItem
+      });
+
+      it('accepts a WorkItem id and a commit sha as the reference', async () => {
+        const t1 = await wf.create('p1', { title: 'one' }, dev);
+        const t2 = await wf.create('p1', { title: 'two' }, dev);
+        expect((await wf.transition('p1', t1.id, 'done', lead, undefined, '01d89d86-4aee-4b2b-91eb-95dc4661416a')).status).toBe('done');
+        expect((await wf.transition('p1', t2.id, 'done', lead, undefined, '5331a0992')).status).toBe('done');
+      });
+
+      it('without the reference it is refused as before', async () => {
+        const t = await wf.create('p1', { title: 'no ref' }, dev);
+        await expect(wf.transition('p1', t.id, 'done', lead)).rejects.toMatchObject({ status: 400 });
+        expect((await wf.get('p1', t.id)).status).toBe('backlog');
+      });
+
+      it('refuses a reference that is none of the accepted kinds, and a reference with another status', async () => {
+        const t = await wf.create('p1', { title: 'bad ref' }, dev);
+        await expect(wf.transition('p1', t.id, 'done', lead, undefined, 'soon')).rejects.toMatchObject({ status: 400 });
+        await expect(wf.transition('p1', t.id, 'ready', lead, undefined, '#1')).rejects.toMatchObject({ status: 400 });
+        expect((await wf.get('p1', t.id)).status).toBe('backlog');
+      });
+
+      it('a worker cannot use it to close a ticket', async () => {
+        const t = await wf.create('p1', { title: 'worker closes' }, dev);
+        await expect(wf.transition('p1', t.id, 'done', dev, undefined, '#1632')).rejects.toMatchObject({ status: 403 });
+        await expect(wf.update('p1', t.id, { status: 'done' }, dev, undefined, '#1632')).rejects.toMatchObject({ status: 403 });
+        expect((await wf.get('p1', t.id)).status).toBe('backlog');
+      });
+
+      it('update --status done --delivered-by closes it in one call', async () => {
+        const t = await wf.create('p1', { title: 'via update' }, dev);
+        const done = await wf.update('p1', t.id, { status: 'done' }, lead, undefined, '#1632');
+        expect(done.status).toBe('done');
+        await expect(wf.update('p1', (await wf.create('p1', { title: 'x' }, dev)).id, { priority: 'P1' }, lead, undefined, '#1')).rejects.toMatchObject({ status: 400 });
+      });
+
+      it('in_progress / review -> done is unchanged (no reference needed)', async () => {
+        const t = await wf.create('p1', { title: 'in flight', status: 'ready' }, lead);
+        await wf.claim('p1', t.id, dev);
+        expect((await wf.transition('p1', t.id, 'done', lead)).status).toBe('done');
+      });
+    });
+
     it('lets only owner / orchestrator / lead make a ticket ready', async () => {
       const t = await wf.create('p1', { title: 'idea' }, dev);
       await expect(wf.transition('p1', t.id, 'ready', dev)).rejects.toMatchObject({ status: 403 });
