@@ -27,6 +27,7 @@
  * @module services/system/auto-update.service
  */
 
+import { cancelDeferredInstall, startDeferredInstall } from './windows-deferred-install.js';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -83,7 +84,7 @@ export interface InstallRunResult {
 
 /** Result of {@link AutoUpdateService.installVersion}. */
 export type InstallAttempt =
-	| { ok: true }
+	| { ok: true; /** Windows: npm runs after the exit ({@link AutoUpdateService.beginDeferredInstall}) */ deferred?: boolean }
 	| { ok: false; outcome: AutoUpdateOutcome; reason: string; details: Record<string, unknown> };
 
 /** What is keeping the machine busy right now. */
@@ -140,6 +141,14 @@ export interface AutoUpdateDeps {
 	notifyOwner: (title: string, message: string) => Promise<unknown>;
 	/** This machine's display name */
 	getDeviceName: () => Promise<string>;
+	/**
+	 * Windows only: hand the install to a helper that runs npm after Crewly
+	 * has exited (npm cannot replace a running copy there). Throws when the
+	 * helper cannot be started. Absent elsewhere: npm runs in place.
+	 */
+	deferInstall?: (version: string, npmArgs: string[]) => void;
+	/** Call a handed-over install off (the restart did not happen) */
+	cancelDeferredInstall?: () => void;
 	/** Called after a successful install, before the restart (e.g. re-anchor the cwd) */
 	afterInstall: (packageRoot: string) => void;
 	/**
@@ -343,6 +352,7 @@ export class AutoUpdateService {
 		// check, not npm.
 		const lastResult = this.getState().lastResult;
 		const blockedBefore = lastResult?.outcome === 'input-guard-blocked' && lastResult.version === latest;
+		let deferred = false;
 		if (blockedBefore && this.getInstalledVersion() === latest) {
 			this.log(`${latest} is already installed (blocked by the input-guard check earlier); re-checking without reinstalling`);
 		} else {
@@ -351,15 +361,25 @@ export class AutoUpdateService {
 				if (attempt.outcome === 'skipped') return { outcome: 'skipped', detail: attempt.reason };
 				return this.recordFailure(attempt.outcome, latest, attempt.reason, attempt.details);
 			}
+			deferred = attempt.deferred === true;
 		}
 
-		const blocked = await this.inputGuardBlock(latest);
+		// A deferred install has no new build on disk to check yet.
+		const blocked = deferred ? null : await this.inputGuardBlock(latest);
 		if (blocked) return blocked;
 
 		this.writeUpgradeMarker(current, latest);
+		if (deferred) {
+			const handed = this.beginDeferredInstall(latest);
+			if (!handed.ok) {
+				this.clearUpgradeMarker();
+				return this.recordFailure('install-failed', latest, handed.reason);
+			}
+		}
 		const restarting = this.deps.requestRestart(`auto-update ${current} -> ${latest}`);
 		if (!restarting) {
 			this.clearUpgradeMarker();
+			if (deferred) this.cancelDeferredInstall();
 			return this.recordFailure('restart-unavailable', latest, 'no graceful restart handler is registered');
 		}
 		this.log(`Restarting into ${latest}`);
@@ -442,6 +462,10 @@ export class AutoUpdateService {
 		if (this.installing) {
 			return { ok: false, outcome: 'skipped', reason: 'another install is already running', details: {} };
 		}
+		if (this.deps.deferInstall) {
+			this.log(`Install of ${AUTO_UPDATE_CONSTANTS.PACKAGE_NAME}@${version} waits until Crewly has exited (npm cannot replace a running copy on Windows)`);
+			return { ok: true, deferred: true };
+		}
 		this.installing = true;
 		try {
 			const args = npmInstallArgs(prefix, version);
@@ -479,6 +503,39 @@ export class AutoUpdateService {
 			return { ok: true };
 		} finally {
 			this.installing = false;
+		}
+	}
+
+	/**
+	 * Windows: start the helper that installs `version` once this process and
+	 * its `crewly start` parent have exited, then starts Crewly again. Call it
+	 * right before the restart; {@link cancelDeferredInstall} when the restart
+	 * does not happen.
+	 *
+	 * @param version - Target version
+	 * @returns Whether the helper was started
+	 */
+	beginDeferredInstall(version: string): { ok: true } | { ok: false; reason: string } {
+		const prefix = this.deps.install.prefix;
+		if (!this.deps.deferInstall || !prefix) return { ok: false, reason: 'no deferred install path on this machine' };
+		try {
+			this.deps.deferInstall(version, npmInstallArgs(prefix, version));
+			this.log(`Handed the install of ${version} to the helper; it runs npm after Crewly exits and starts Crewly again`);
+			return { ok: true };
+		} catch (error) {
+			return { ok: false, reason: `could not start the install helper: ${error instanceof Error ? error.message : String(error)}` };
+		}
+	}
+
+	/**
+	 * Call a handed-over install off. Best-effort.
+	 */
+	cancelDeferredInstall(): void {
+		try {
+			this.deps.cancelDeferredInstall?.();
+			this.log('Restart did not happen; the handed-over install was called off');
+		} catch {
+			// best-effort
 		}
 	}
 
@@ -897,6 +954,14 @@ export function createAutoUpdateService(wiring: AutoUpdateWiring): AutoUpdateSer
 		// npm replaced the package directory (new inode): the old cwd is gone,
 		// and anything calling process.cwd() during shutdown would throw ENOENT.
 		afterInstall: (root) => process.chdir(root),
+		...(process.platform === 'win32' && packageRoot
+			? {
+					deferInstall: (version: string, npmArgs: string[]): void => {
+						startDeferredInstall({ crewlyHome: wiring.crewlyHome, packageRoot, npmCommand: resolveNpmCommand(), npmArgs, version, logFile });
+					},
+					cancelDeferredInstall: (): void => cancelDeferredInstall(wiring.crewlyHome),
+				}
+			: {}),
 		appendLog,
 		logger,
 		now: Date.now,

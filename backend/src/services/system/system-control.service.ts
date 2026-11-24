@@ -161,6 +161,10 @@ export interface UpgradeInstaller {
 	isBusy(): boolean;
 	/** Version of the package on disk (optional: lets a retry skip a repeat npm install) */
 	getInstalledVersion?(): string | null;
+	/** Windows: start the helper that installs after the exit (see AutoUpdateService) */
+	beginDeferredInstall?(version: string): { ok: true } | { ok: false; reason: string };
+	/** Call that helper off when the restart does not happen */
+	cancelDeferredInstall?(): void;
 	appendLogLine(line: string): void;
 }
 
@@ -720,6 +724,7 @@ export class SystemControlService {
 			this.fail('Crewly started shutting down for another reason before the upgrade began.');
 			return;
 		}
+		let deferred = false;
 		try {
 			const onDisk = installer.getInstalledVersion?.() ?? null;
 			if (onDisk === version) {
@@ -732,11 +737,28 @@ export class SystemControlService {
 					this.fail(`Could not install ${version}: ${attempt.reason}. Crewly keeps running ${this.deps.currentVersion}.`);
 					return;
 				}
+				deferred = attempt.deferred === true;
 			}
-			if (!(await this.passesInputGuardGate(version))) return;
+			// A deferred install (Windows) has no new build on disk to check yet.
+			if (!deferred && !(await this.passesInputGuardGate(version))) return;
 			installer.writeUpgradeMarker(this.deps.currentVersion ?? 'unknown', version);
-			const restarted = this.restartNow(`owner upgrade ${this.deps.currentVersion} -> ${version}`, `Installed ${version}. Restarting…`);
-			if (!restarted) installer.clearUpgradeMarker();
+			if (deferred) {
+				const handed = installer.beginDeferredInstall?.(version) ?? { ok: false as const, reason: 'no deferred install path' };
+				if (!handed.ok) {
+					installer.clearUpgradeMarker();
+					this.fail(`Could not install ${version}: ${handed.reason}. Crewly keeps running ${this.deps.currentVersion}.`);
+					return;
+				}
+			}
+			const restarted = this.restartNow(
+				`owner upgrade ${this.deps.currentVersion} -> ${version}`,
+				deferred ? `Stopping to install ${version}; Crewly starts again by itself in a few minutes.` : `Installed ${version}. Restarting…`,
+				deferred ? { helperRelaunches: true } : {},
+			);
+			if (!restarted) {
+				installer.clearUpgradeMarker();
+				if (deferred) installer.cancelDeferredInstall?.();
+			}
 		} finally {
 			this.forceGuard = false;
 		}
@@ -855,10 +877,11 @@ export class SystemControlService {
 	 * @param message - Owner-readable progress
 	 * @returns False when the restart could not be started
 	 */
-	private restartNow(reason: string, message: string, options: { drain?: boolean } = {}): boolean {
+	private restartNow(reason: string, message: string, options: { drain?: boolean; helperRelaunches?: boolean } = {}): boolean {
 		const supervisor = this.deps.getSupervisor();
 		const relaunch = this.relaunchMethod(supervisor);
-		if (relaunch === 'replacement') {
+		// A deferred install's helper starts Crewly again itself: a replacement launcher would race it.
+		if (relaunch === 'replacement' && !options.helperRelaunches) {
 			try {
 				this.deps.spawnReplacement(supervisor.willRelaunch === 'unknown');
 				this.deps.logger.info('Started the replacement launcher; it brings Crewly back after this process exits', {

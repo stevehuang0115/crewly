@@ -115,6 +115,46 @@ describe('AutoUpdateService', () => {
 
 	const markerPath = (): string => path.join(home, AUTO_UPDATE_CONSTANTS.MARKER_FILE);
 
+	describe('deferred install (Windows: npm cannot replace a running copy)', () => {
+		it('does not run npm in place; hands it to the helper right before the restart', async () => {
+			const order: string[] = [];
+			const deferInstall = jest.fn(() => {
+				order.push('helper');
+			});
+			const checkInputGuard = jest.fn(async () => ({ ok: false, checkedAt: '', agents: [] }));
+			const h = makeHarness(home, { deferInstall, checkInputGuard, requestRestart: jest.fn(() => (order.push('restart'), true)) });
+			const result = await h.service.runCycle();
+			expect(result).toEqual({ outcome: 'installed-restarting', version: '1.20.144' });
+			expect(h.deps.runInstall).not.toHaveBeenCalled();
+			expect(checkInputGuard).not.toHaveBeenCalled();
+			expect(deferInstall).toHaveBeenCalledWith('1.20.144', ['install', '-g', '--prefix', '/usr/local', 'crewly@1.20.144']);
+			expect(order).toEqual(['helper', 'restart']);
+			expect(fs.existsSync(markerPath())).toBe(true);
+		});
+
+		it('a helper that cannot start is a failure, with no restart and no marker', async () => {
+			const h = makeHarness(home, {
+				deferInstall: () => {
+					throw new Error('EPERM');
+				},
+			});
+			const result = await h.service.runCycle();
+			expect(result.outcome).toBe('install-failed');
+			expect(h.deps.requestRestart).not.toHaveBeenCalled();
+			expect(fs.existsSync(markerPath())).toBe(false);
+			expect(h.service.getState().consecutiveFailures).toBe(1);
+		});
+
+		it('calls the helper off when the restart does not happen', async () => {
+			const cancelDeferredInstall = jest.fn();
+			const h = makeHarness(home, { deferInstall: jest.fn(), cancelDeferredInstall, requestRestart: jest.fn(() => false) });
+			const result = await h.service.runCycle();
+			expect(result.outcome).toBe('restart-unavailable');
+			expect(cancelDeferredInstall).toHaveBeenCalled();
+			expect(fs.existsSync(markerPath())).toBe(false);
+		});
+	});
+
 	describe('installVersion (shared with the owner Upgrade button)', () => {
 		it('installs into the running prefix from CREWLY_HOME and verifies, without restarting or touching state', async () => {
 			const h = makeHarness(home);

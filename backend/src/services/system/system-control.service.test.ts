@@ -203,6 +203,37 @@ describe('SystemControlService', () => {
 			expect(result).toMatchObject({ ok: false, httpStatus: 502, code: SYSTEM_CONTROL_CONSTANTS.CODES.REGISTRY_UNREACHABLE });
 		});
 
+		it('Windows deferred install: hands npm to the helper right before the restart and skips the build check', async () => {
+			const checkInputGuard = jest.fn(async () => ({ ok: false, checkedAt: '', agents: [] }));
+			const h = makeHarness(home, { checkInputGuard }, { ok: true, deferred: true });
+			const order: string[] = [];
+			h.installer.beginDeferredInstall = jest.fn(() => {
+				order.push('helper');
+				return { ok: true as const };
+			});
+			(h.deps.requestGracefulRestart as jest.Mock).mockImplementation(() => {
+				order.push('restart');
+				return true;
+			});
+			await h.service.requestUpgrade({ when: 'now', actor: 'dashboard' });
+			await flush();
+			expect(checkInputGuard).not.toHaveBeenCalled();
+			expect(h.installer.writeUpgradeMarker).toHaveBeenCalledWith('1.20.174', '1.20.175');
+			expect(order).toEqual(['helper', 'restart']);
+			expect(readActionRecord(h.file)?.message).toContain('starts again by itself');
+		});
+
+		it('Windows deferred install: a helper that cannot start fails the upgrade without restarting', async () => {
+			const h = makeHarness(home, {}, { ok: true, deferred: true });
+			h.installer.beginDeferredInstall = jest.fn(() => ({ ok: false as const, reason: 'could not start the install helper: EPERM' }));
+			await h.service.requestUpgrade({ when: 'now', actor: 'dashboard' });
+			await flush();
+			expect(h.deps.requestGracefulRestart).not.toHaveBeenCalled();
+			expect(h.installer.clearUpgradeMarker).toHaveBeenCalled();
+			expect(readActionRecord(h.file)).toMatchObject({ status: 'failed' });
+			expect(readActionRecord(h.file)?.message).toContain('EPERM');
+		});
+
 		it('"now": installs through the AutoUpdate path, writes the marker, then restarts gracefully', async () => {
 			const h = makeHarness(home);
 			const result = await h.service.requestUpgrade({ when: 'now', actor: 'dashboard from 192.168.1.20' });
