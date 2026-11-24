@@ -324,6 +324,29 @@ export class ChannelStore {
   }
 
   /**
+   * A room (huddle, not archived) by its name, with or without the leading
+   * `#`, ignoring case. The most recently active one wins when several share
+   * the name.
+   *
+   * @param name - Room name as shown in chat
+   * @returns The row, or null
+   */
+  findRoomByName(name: string): ChatChannelRow | null {
+    const bare = name.trim().replace(/^#+/, '').toLowerCase();
+    if (!bare) return null;
+    const row = this.db
+      .prepare(
+        `SELECT ${CHANNEL_SELECT_COLUMNS}
+         FROM chat_channels
+         WHERE type = 'huddle' AND archived_at IS NULL AND LOWER(name) IN (?, ?)
+         ORDER BY COALESCE(last_message_at, created_at) DESC
+         LIMIT 1`,
+      )
+      .get(bare, `#${bare}`) as ChatChannelRow | undefined;
+    return row ?? null;
+  }
+
+  /**
    * Replace a channel's purpose text.
    *
    * @param id - The channel id

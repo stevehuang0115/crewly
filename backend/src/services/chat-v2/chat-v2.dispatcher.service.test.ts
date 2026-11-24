@@ -7,6 +7,7 @@
 import {
   ChatV2DispatcherService,
   agentAuthorOf,
+  CHANNEL_HANDOFF_RULE,
   defaultFormatPrompt,
   isSilentByDefault,
   ownerQueueMeta,
@@ -825,6 +826,40 @@ describe('ChatV2DispatcherService', () => {
       expect(asked[0].text).toContain('THREAD mentions Xin');
     });
 
+    it('channel notes: attached to a person\'s room message, read once for all recipients; none for a colleague\'s message or on failure', async () => {
+      const delivered: Array<{ s: string; m: string }> = [];
+      const asked: Array<{ id: string; name: string }> = [];
+      const options = {
+        agentSink: { sendMessageToAgent: async (s: string, m: string) => { delivered.push({ s, m }); return { success: true }; } },
+        huddleMembersFor: () => ['atlas', 'sam'],
+      };
+      const dispatcher = new ChatV2DispatcherService({
+        ...options,
+        channelNotesFor: async (channel) => {
+          asked.push(channel);
+          return '[CHANNEL NOTES]';
+        },
+      });
+      const room = makeChannel({ id: 'h1', type: 'huddle', agentSession: undefined });
+      await dispatcher.dispatchMessage(room, makeMessage({ channelId: 'h1', mentions: ['atlas', 'sam'], content: 'what is in the talk?' }));
+      expect(asked).toEqual([{ id: 'h1', name: room.name }]);
+      expect(delivered).toHaveLength(2);
+      for (const d of delivered) {
+        expect(d.m.indexOf('[CHANNEL NOTES]')).toBeGreaterThan(-1);
+        expect(d.m.indexOf('[CHANNEL NOTES]')).toBeLessThan(d.m.lastIndexOf('what is in the talk?'));
+      }
+
+      delivered.length = 0;
+      await dispatcher.dispatchMessage(room, makeMessage({ channelId: 'h1', mentions: ['atlas'], metadata: { remoteAgentSession: 'ella-1' } }));
+      expect(delivered[0].m).not.toContain('[CHANNEL NOTES]');
+
+      delivered.length = 0;
+      const broken = new ChatV2DispatcherService({ ...options, channelNotesFor: async () => { throw new Error('boom'); } });
+      const r = await broken.dispatchMessage(room, makeMessage({ channelId: 'h1', mentions: ['atlas'] }));
+      expect(r.dispatched).toBe(true);
+      expect(delivered[0].m).not.toContain('[CHANNEL NOTES]');
+    });
+
     it('wiki records: a direct conversation with the owner may show restricted ones; a failing lookup costs only the block', async () => {
       const asked: boolean[] = [];
       const { sink, calls } = makeSink({ success: true });
@@ -915,6 +950,8 @@ describe('ChatV2DispatcherService', () => {
       expect(prompt).toContain('reply-channel');
       expect(prompt).not.toContain('--thread');
       expect(prompt).toContain('did not @ you');
+      // 2026-11-23: an agent without the context hands the question over instead of answering "I do not have it".
+      expect(prompt).toContain(CHANNEL_HANDOFF_RULE.trim());
     });
 
     it('tells an agent that was only told to announce itself before answering', () => {

@@ -84,6 +84,37 @@ describe('MessageStore', () => {
     });
   });
 
+  describe('room rows (channel pages)', () => {
+    it('listRoomRows returns the newest rows of a room, oldest first, with the agent recorded on a mirrored post', () => {
+      const room = channels.create({ agentSession: '', ownerUserId: 'user-a', name: '#necina', type: 'huddle', nowMs: 100 }).id;
+      const root = messages.insert({ channelId: room, senderType: 'user', senderId: 'U1', content: 'question' }).row;
+      messages.insert({ channelId: room, senderType: 'agent', senderId: 'atlas-1', content: 'answer', threadId: root.id });
+      messages.insert({ channelId: room, senderType: 'user', senderId: 'Ella (agent)', content: 'mine', threadId: root.id, metadata: { remoteAgentSession: 'ella-1' } });
+      messages.insert({ channelId: room, senderType: 'system', senderId: 'system', content: 'note' });
+
+      const rows = messages.listRoomRows(room, 0, 10);
+      expect(rows.map((r) => [r.senderType, r.senderId, r.threadId, r.author])).toEqual([
+        ['user', 'U1', null, null],
+        ['agent', 'atlas-1', root.id, null],
+        ['user', 'Ella (agent)', root.id, 'ella-1'],
+      ]);
+      expect(messages.listRoomRows(room, 0, 2).map((r) => r.content)).toEqual(['answer', 'mine']);
+      expect(messages.listRoomRows(room, Date.now() + 60_000, 10)).toEqual([]);
+    });
+
+    it('listRoomsActiveSince counts rooms only, busiest first', () => {
+      const quiet = channels.create({ agentSession: '', ownerUserId: 'user-a', name: '#quiet', type: 'huddle', nowMs: 100 }).id;
+      const busy = channels.create({ agentSession: '', ownerUserId: 'user-a', name: '#busy', type: 'huddle', nowMs: 100 }).id;
+      messages.insert({ channelId, senderType: 'user', senderId: 'u', content: 'dm' });
+      messages.insert({ channelId: quiet, senderType: 'user', senderId: 'u', content: 'one' });
+      messages.insert({ channelId: busy, senderType: 'user', senderId: 'u', content: 'one' });
+      messages.insert({ channelId: busy, senderType: 'agent', senderId: 'a', content: 'two' });
+      expect(messages.listRoomsActiveSince(0, 10)).toEqual([{ channelId: busy, messages: 2 }, { channelId: quiet, messages: 1 }]);
+      expect(messages.listRoomsActiveSince(0, 1)).toHaveLength(1);
+      expect(messages.listRoomsActiveSince(Date.now() + 60_000, 10)).toEqual([]);
+    });
+  });
+
   describe('updateContent', () => {
     it('replaces the content in place and returns the row', () => {
       const { row } = messages.insert({ channelId, senderType: 'system', senderId: 'system', content: 'before' });
