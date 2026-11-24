@@ -2906,6 +2906,87 @@ describe('TaskPoolService', () => {
     });
   });
 
+  describe('blockItem afterWorkItemId (CREW-733: a brief that says "start after X")', () => {
+    /** Queue an item for a worker and let it claim it. */
+    async function running(target: string, title: string): Promise<string> {
+      const wi = makeWorkItem({ target, title });
+      await service.addToPool(wi);
+      await service.claimSpecificItem(target, wi.id);
+      return wi.id;
+    }
+
+    it('parks a running item on the upstream item, and it returns to queued for the same target when the upstream succeeds', async () => {
+      const upstream = makeWorkItem({ type: 'cron_run', target: 'agent-up', title: 'deploy' });
+      await service.addToPool(upstream);
+      const waiting = await running('agent-down', 'start after the deploy');
+
+      await service.blockItem(waiting, { agentId: 'agent-down', reason: 'start after the deploy', afterWorkItemId: upstream.id });
+
+      const parked = (await service.findWorkItem(waiting))!;
+      expect(parked.status).toBe('blocked');
+      expect(parked.dependsOn).toEqual([upstream.id]);
+      // A dependency wait, not an explicit block: the resolver may promote it.
+      expect(parked.blockSource).toBeUndefined();
+      // Parked: nobody can take it while the upstream runs.
+      expect(await service.claimSpecificItem('agent-down', waiting)).toBeNull();
+
+      await service.claimSpecificItem('agent-up', upstream.id);
+      await service.completeItem(upstream.id, undefined, AGENT_ACTOR);
+
+      const promoted = (await service.findWorkItem(waiting))!;
+      expect(promoted.status).toBe('queued');
+      expect(promoted.target).toBe('agent-down');
+    });
+
+    it('releases the claim, so the waiting agent is free for other work', async () => {
+      const upstream = makeWorkItem({ target: 'agent-up' });
+      await service.addToPool(upstream);
+      const waiting = await running('agent-down', 'waits');
+      await service.blockItem(waiting, { agentId: 'agent-down', afterWorkItemId: upstream.id });
+
+      expect(await service.getActiveClaims()).toEqual([]);
+    });
+
+    it('an explicit block (no afterWorkItemId) is still never promoted by the resolver', async () => {
+      const upstream = makeWorkItem({ target: 'agent-up' });
+      await service.addToPool(upstream);
+      const held = await running('agent-down', 'held for the owner');
+      await service.blockItem(held, { agentId: 'agent-down', reason: 'waiting on the owner' });
+      expect((await service.findWorkItem(held))!.blockSource).toBe('explicit');
+      expect((await service.findWorkItem(held))!.dependsOn).toBeUndefined();
+    });
+
+    it('refuses an upstream that is the item itself, unknown, already done, or cancelled', async () => {
+      const done = makeWorkItem({ type: 'cron_run', target: 'agent-up', title: 'finished' });
+      await service.addToPool(done);
+      await service.claimSpecificItem('agent-up', done.id);
+      await service.completeItem(done.id, undefined, AGENT_ACTOR);
+      const cancelled = makeWorkItem({ target: 'agent-up', title: 'dropped' });
+      await service.addToPool(cancelled);
+      await service.cancelQueued(cancelled.id, 'dropped');
+      const waiting = await running('agent-down', 'waits');
+
+      await expect(service.blockItem(waiting, { agentId: 'a', afterWorkItemId: waiting })).rejects.toThrow(/cannot wait for itself/);
+      await expect(service.blockItem(waiting, { agentId: 'a', afterWorkItemId: 'no-such-id' })).rejects.toThrow(/not found/);
+      await expect(service.blockItem(waiting, { agentId: 'a', afterWorkItemId: done.id })).rejects.toThrow(/nothing to wait for/);
+      await expect(service.blockItem(waiting, { agentId: 'a', afterWorkItemId: cancelled.id })).rejects.toThrow(/never succeed/);
+      // Nothing was changed by the refusals.
+      expect((await service.findWorkItem(waiting))!.status).toBe('running');
+    });
+
+    it('refuses a cycle and a combination with until', async () => {
+      const a = await running('agent-a', 'a');
+      const b = await running('agent-b', 'b');
+      await service.blockItem(a, { agentId: 'agent-a', afterWorkItemId: b });
+
+      await expect(service.blockItem(b, { agentId: 'agent-b', afterWorkItemId: a })).rejects.toThrow(/cycle/);
+      const c = await running('agent-c', 'c');
+      await expect(
+        service.blockItem(c, { agentId: 'agent-c', afterWorkItemId: b, until: '2099-01-01T00:00:00Z' }),
+      ).rejects.toThrow(/not both/);
+    });
+  });
+
   // -----------------------------------------------------------------------
   // cancelQueued (#609 — clean queued/blocked → cancelled transition)
   // -----------------------------------------------------------------------

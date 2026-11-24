@@ -54,6 +54,7 @@ Assigns a task to a worker within the Team Leader's subordinate scope. Validates
 | `--no-member-fits` | `noMemberFits` | No | You keep the work: record what is missing (access, tool, permission, everyone busy). Needs `--task`; nothing is delegated — see No member fits |
 | `--work-item` | `workItemId` | No | With `--no-member-fits`: the WorkItem you keep (gets a `[NO-MEMBER-FITS]` note) |
 | `--progress-check` | `monitor.progressCheckMinutes` | No | Opt in to a recurring "TL progress check" every N minutes for this delegation. Off by default; values under 30 are raised to 30. Legacy JSON `monitor.fallbackCheckMinutes` is read the same way |
+| `--after` | `after` | No | WorkItem id of a job this work must start AFTER (see Start after another job). The new item is created `blocked` on it and delivered when it succeeds |
 | — | `monitor.idleEvent` | No | `false` skips the idle event subscription (default `true`) |
 
 ## Monitoring
@@ -114,6 +115,20 @@ hears. (crewly#1357: a lead's own-initiative delegation inherited an old owner
 DM, and two delegations made while the lead answered the owner in a video
 thread inherited that thread; the members' internal reports landed on the
 owner.)
+
+## Start after another job (`--after`)
+
+When the brief says "start after X" (X is a deploy, a merge, another delegation), pass `--after <X's workItemId>` instead of delegating now and telling the worker to wait. The worker would sit idle, the stall detector would re-deliver the brief and eventually move the ticket back to ready.
+
+```bash
+bash execute.sh --to worker-session --task "..." --ticket APP-12 --after <upstream workItemId>
+```
+
+- The item is created `blocked` with the upstream item in `dependsOn`. Nothing is delivered and no progress check or idle subscription is set up: a blocked item is never stall-checked or re-delivered.
+- When the upstream item succeeds (`done` or `verified`) Crewly promotes it to `queued` for the same worker and it is delivered then, as any queued item is.
+- Refused before anything is created when the upstream id is unknown, already `done`/`verified` (nothing to wait for: delegate without `--after`) or `cancelled` (it will never succeed).
+- If the upstream item fails, the waiting item stays `blocked` until you unblock or cancel it; it shows on the board as blocked.
+- A worker that has already started a brief and finds it must wait uses `block-task` with `afterWorkItemId` instead.
 
 ## No member fits (`--no-member-fits`)
 

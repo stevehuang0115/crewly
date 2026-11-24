@@ -1908,6 +1908,45 @@ describe('TaskPoolController', () => {
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     });
 
+    it('forwards `afterWorkItemId` (block-task afterWorkItemId) to the pool', async () => {
+      mockService.blockItem.mockResolvedValue(undefined);
+      const req = mockReq({
+        params: { workItemId: 'wi-1' } as Record<string, string>,
+        body: { agentId: 'dev-1', reason: 'start after the deploy', afterWorkItemId: 'wi-up' },
+      });
+      const res = mockRes();
+      await blockItem(req, res);
+
+      expect(mockService.blockItem).toHaveBeenCalledWith('wi-1', { agentId: 'dev-1', reason: 'start after the deploy', afterWorkItemId: 'wi-up' });
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
+    it('refuses afterWorkItemId together with until, or a non-string id, with 400 before touching the pool', async () => {
+      const until = new Date(Date.now() + 60 * 60_000).toISOString();
+      for (const body of [
+        { agentId: 'dev-1', afterWorkItemId: 'wi-up', until },
+        { agentId: 'dev-1', afterWorkItemId: 42 },
+      ]) {
+        mockService.blockItem.mockClear();
+        const req = mockReq({ params: { workItemId: 'wi-1' } as Record<string, string>, body });
+        const res = mockRes();
+        await blockItem(req, res);
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(mockService.blockItem).not.toHaveBeenCalled();
+      }
+    });
+
+    it('maps an upstream that is already finished to 409', async () => {
+      mockService.blockItem.mockRejectedValue(new Error('Invalid afterWorkItemId for WorkItem wi-1: wi-up is already done, there is nothing to wait for'));
+      const req = mockReq({
+        params: { workItemId: 'wi-1' } as Record<string, string>,
+        body: { agentId: 'dev-1', afterWorkItemId: 'wi-up' },
+      });
+      const res = mockRes();
+      await blockItem(req, res);
+      expect(res.status).toHaveBeenCalledWith(409);
+    });
+
     it('forwards `until` (block-task until) to the pool', async () => {
       mockService.blockItem.mockResolvedValue(undefined);
       const until = new Date(Date.now() + 60 * 60_000).toISOString();

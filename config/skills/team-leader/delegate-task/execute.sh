@@ -24,6 +24,7 @@ FORCE_AFTER_ANSWER=""
 NO_MEMBER_FITS=""
 KEPT_WORK_ITEM=""
 PROGRESS_CHECK_ARG=""
+AFTER_WORK_ITEM=""
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -50,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --no-member-fits) NO_MEMBER_FITS="$2"; shift 2 ;;
     --work-item)   KEPT_WORK_ITEM="$2"; shift 2 ;;
     --progress-check) PROGRESS_CHECK_ARG="$2"; shift 2 ;;
+    --after)       AFTER_WORK_ITEM="$2"; shift 2 ;;
     --json|-j)     INPUT_JSON="$2";     shift 2 ;;
     --help|-h)
       echo "Usage: execute.sh --to worker-session --task 'implement feature' --priority high --project /path [--team teamId] [--tl-member memberId] [--request-id <ticket id from the [TICKET:TKT-123 <id>] line>] [--ticket <project ticket id, e.g. APP-12>]"
@@ -58,6 +60,7 @@ while [[ $# -gt 0 ]]; do
       echo "A delegation into a --thread another agent already answered (after the owner's last message) is refused and lists the post; add --force-after-answer only when the owner still needs the work."
       echo "Owner request from the Crewly chat: add --conversation <id> (from [CHAT:<id>]). Without --thread/--conversation the result comes back to YOU, never to the owner."
       echo "Optional recurring progress check (off by default; the idle notification already wakes you): --progress-check <minutes, min 30>"
+      echo "Work that must start AFTER another job: add --after <workItemId of that job>. The new item waits (blocked, never stall-checked or delivered) and is delivered when that job succeeds."
       echo "Keeping work yourself because no member fits: execute.sh --no-member-fits '<what is missing: access / tool / permission / everyone busy>' --task '<the work>' [--work-item <id>] [--ticket <ID>]"
       exit 0
       ;;
@@ -100,6 +103,7 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$OWNER_CONVERSATION" ] && OWNER_CONVERSATION=$(printf '%s' "$INPUT" | jq -r '.conversation // .ownerConversation // empty')
   [ -z "$NO_MEMBER_FITS" ] && NO_MEMBER_FITS=$(printf '%s' "$INPUT" | jq -r '.noMemberFits // empty')
   [ -z "$KEPT_WORK_ITEM" ] && KEPT_WORK_ITEM=$(printf '%s' "$INPUT" | jq -r '.workItemId // empty')
+  [ -z "$AFTER_WORK_ITEM" ] && AFTER_WORK_ITEM=$(printf '%s' "$INPUT" | jq -r '.after // .afterWorkItemId // empty')
 fi
 
 # "No member fits" (crewly#1083, specs/2026-10-04-tl-delegation.md §4): the
@@ -285,6 +289,28 @@ esac
 
 WI_TITLE="$(echo "$TASK" | head -c 200)"
 
+# --after <workItemId>: the brief says "start AFTER that job". The item is
+# created `blocked` with that job in `dependsOn`; the stall check and the
+# reconciler leave a blocked item alone, and the dependency resolver promotes
+# it to `queued` (and it is delivered) when the upstream item succeeds. A wait
+# that can never end is refused here, before anything is created: the resolver
+# only promotes on success, so an unknown, finished or cancelled upstream
+# would leave the item blocked forever.
+if [ -n "$AFTER_WORK_ITEM" ]; then
+  AFTER_STATUS=$(api_call GET "/task-pool/items/${AFTER_WORK_ITEM}" 2>/dev/null \
+    | jq -r '(.data // .) | .status // empty' 2>/dev/null || true)
+  case "$AFTER_STATUS" in
+    "")
+      jq -n --arg after "$AFTER_WORK_ITEM" --arg to "$TO" \
+        '{success: false, error: ("--after " + $after + ": no such WorkItem"), to: $to, hint: "Nothing was delegated. Check the id (poll-tasks / get-my-active-work), or delegate without --after."}'
+      exit 1 ;;
+    done|verified|cancelled)
+      jq -n --arg after "$AFTER_WORK_ITEM" --arg status "$AFTER_STATUS" --arg to "$TO" \
+        '{success: false, error: ("--after " + $after + " is already " + $status + (if $status == "cancelled" then " and will never succeed" else ": there is nothing to wait for" end)), to: $to, hint: "Nothing was delegated. Delegate without --after (finished) or fix the plan (cancelled)."}'
+      exit 1 ;;
+  esac
+fi
+
 POOL_BODY=$(jq -n \
   --arg type "delegate" \
   --arg owner "team_lead" \
@@ -300,7 +326,8 @@ POOL_BODY=$(jq -n \
   --arg ownerThread "${OWNER_THREAD:-}" \
   --arg ownerConversation "${OWNER_CONVERSATION:-}" \
   --arg forceAfterAnswer "${FORCE_AFTER_ANSWER:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority, directDelivery: true} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $delegatedBy != "" then {delegatedBy: $delegatedBy} else {} end) + (if $ownerThread != "" then {ownerThread: $ownerThread} else {} end) + (if $ownerConversation != "" then {ownerConversation: $ownerConversation} else {} end) + (if $forceAfterAnswer != "" then {forceAfterAnswer: true} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end) + (if $projectTicketId != "" then {projectTicketId: $projectTicketId} else {} end)')
+  --arg after "${AFTER_WORK_ITEM:-}" \
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $after == "" then {directDelivery: true} else {waitsFor: $after} end) + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $delegatedBy != "" then {delegatedBy: $delegatedBy} else {} end) + (if $ownerThread != "" then {ownerThread: $ownerThread} else {} end) + (if $ownerConversation != "" then {ownerConversation: $ownerConversation} else {} end) + (if $forceAfterAnswer != "" then {forceAfterAnswer: true} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end) + (if $projectTicketId != "" then {projectTicketId: $projectTicketId} else {} end) + (if $after != "" then {dependsOn: [$after]} else {} end)')
 # metadata.directDelivery: this script delivers the brief itself (below), so
 # the backend's workitem:queued push holds off and only fires if that
 # delivery never lands — the task reaches the worker once.
@@ -340,6 +367,20 @@ fi
 TICKET_INFO=$(echo "$POOL_RESULT" | jq -c '.data.projectTicket // empty' 2>/dev/null || true)
 if [ -n "$TICKET_INFO" ]; then
   echo "$TICKET_INFO" | jq -c '{projectTicket: ., info: ("Tracked as project ticket " + .id + " (" + .status + (if .created then ", created for this delegation" else "" end) + ")")}'
+fi
+
+# --after: the item waits as `blocked`. Delivery, the idle subscription and the
+# progress check all happen when it is promoted (the backend delivers a queued
+# item that was not delivered directly), so none of them is attempted now.
+if [ -n "$AFTER_WORK_ITEM" ]; then
+  if [ "$POOL_OK" != "true" ]; then
+    jq -n --arg to "$TO" --arg after "$AFTER_WORK_ITEM" \
+      '{success: false, error: "The WorkItem could not be created, so nothing waits for the upstream job", to: $to, after: $after, hint: "Nothing was delegated. Retry."}'
+    exit 1
+  fi
+  jq -n --arg id "$TASK_ID" --arg to "$TO" --arg after "$AFTER_WORK_ITEM" --arg status "$(echo "$POOL_RESULT" | jq -r '.data.status // "blocked"' 2>/dev/null)" \
+    '{success: true, workItemId: $id, to: $to, status: $status, after: $after, info: ("Waiting for " + $after + " to succeed; delivered to " + $to + " then. Not stall-checked meanwhile.")}'
+  exit 0
 fi
 
 # The delivered text names the WorkItem id: the worker needs it for
