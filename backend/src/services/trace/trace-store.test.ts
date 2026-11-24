@@ -74,9 +74,11 @@ describe('TraceStore', () => {
 		status('ticket.status', { ticketId: 'CE-1' }, 'ready');
 		expect(store.isRefEnded('ticket', 'CE-1')).toBe(false);
 		status('workitem.status', { workItemId: 'wi-1' }, 'done_by_worker');
+		expect(store.isRefEnded('workItem', 'wi-1')).toBe(false);
+		status('workitem.status', { workItemId: 'wi-1' }, 'verified');
 		await settle(store);
 		const reloaded = make();
-		expect(reloaded.getEntry(a)?.refStatus).toMatchObject({ 'ticket:CE-1': 'ready', 'workItem:wi-1': 'done_by_worker' });
+		expect(reloaded.getEntry(a)?.refStatus).toMatchObject({ 'ticket:CE-1': 'ready', 'workItem:wi-1': 'verified' });
 		expect(reloaded.isRefEnded('workItem', 'wi-1')).toBe(true);
 	});
 

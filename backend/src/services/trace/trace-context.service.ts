@@ -154,8 +154,11 @@ export function classifyDelivery(text: string): DeliveryKind {
 /** A restart summary pushed into a fresh session (session-handoff.service). */
 const SESSION_CONTEXT_PREFIX = /^\s*\[SESSION_CONTEXT\]/;
 
-/** The work item a dispatch / redelivery header names: `WorkItem <uuid>`. */
-const DISPATCHED_WORK_ITEM = /\bWorkItem\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
+/**
+ * The work item a dispatch / redelivery header names: `WorkItem <uuid>`, with
+ * the suffix of a derived item (`<uuid>:verify:<uuid>`, `<uuid>:retry:1`).
+ */
+const DISPATCHED_WORK_ITEM = /\bWorkItem\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(:[\w:-]+)?/i;
 
 /**
  * Whether a delivery is the restart summary of the previous session. It
@@ -176,11 +179,24 @@ export function isSessionContextSummary(text: string): boolean {
  *
  * @param text - Delivered text
  * @param kind - How it reached the turn
+ * @returns The parent work item id (lower case) and whether the item is a derived one
+ * (`<id>:verify:<id>`, `<id>:retry:1`: a review or retry of that parent), or null
+ */
+export function dispatchedWorkItem(text: string, kind: DeliveryKind): { id: string; derived: boolean } | null {
+	if (kind !== 'dispatch' && kind !== 'redelivery') return null;
+	const m = DISPATCHED_WORK_ITEM.exec(text);
+	return m ? { id: m[1].toLowerCase(), derived: !!m[2] } : null;
+}
+
+/**
+ * Just the id of {@link dispatchedWorkItem}.
+ *
+ * @param text - Delivered text
+ * @param kind - How it reached the turn
  * @returns Work item id (lower case), or null
  */
 export function dispatchedWorkItemId(text: string, kind: DeliveryKind): string | null {
-	if (kind !== 'dispatch' && kind !== 'redelivery') return null;
-	return DISPATCHED_WORK_ITEM.exec(text)?.[1]?.toLowerCase() ?? null;
+	return dispatchedWorkItem(text, kind)?.id ?? null;
 }
 
 /**
@@ -540,8 +556,9 @@ export class TraceContext {
 	 * {@link resolveTracesFromText}, which also serves linking:
 	 * - a restart `[SESSION_CONTEXT]` summary names none;
 	 * - `[TRACE:…]` markers win, as before;
-	 * - a dispatch / redelivery goes to the work item it names, and the ids it
-	 *   merely cites (an Evidence line, the ticket description) are ignored;
+	 * - a dispatch / redelivery goes to the work item it names (a verify or retry
+	 *   item, to its parent's run), and the ids it merely cites (an Evidence
+	 *   line, the ticket description) are ignored;
 	 * - otherwise the ids the text mentions, minus those whose ticket, Request
 	 *   or work item is finished (a citation, not an assignment).
 	 *
@@ -555,10 +572,13 @@ export class TraceContext {
 		const store = this.store;
 		const markers = parseTraceMarkers(text).filter((id) => store.has(id));
 		if (markers.length > 0) return markers;
-		const dispatched = dispatchedWorkItemId(text, kind);
+		const dispatched = dispatchedWorkItem(text, kind);
 		if (dispatched) {
-			const traceId = store.traceByRef('workItem', dispatched);
-			if (traceId && !store.isRefEnded('workItem', dispatched)) return [traceId];
+			const traceId = store.traceByRef('workItem', dispatched.id);
+			// A review (`<id>:verify:<id>`) or retry of an item is work in that item's
+			// run even while the parent waits for its verdict; a plain dispatch of an
+			// item that has finished is stale.
+			if (traceId && (dispatched.derived || !store.isRefEnded('workItem', dispatched.id))) return [traceId];
 		}
 		const refs = extractTextRefs(text);
 		const out: string[] = [];

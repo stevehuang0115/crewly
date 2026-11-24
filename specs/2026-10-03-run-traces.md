@@ -137,15 +137,18 @@ What a delivery is *about* is narrower than every id it mentions (CREW-1258):
   conversations, so every id in it is history;
 - a dispatch / redelivery goes to the work item its header names
   (`WorkItem <uuid>`); the ids it only cites (an Evidence line, the ticket
-  description) are ignored;
+  description) are ignored. A derived item (`<uuid>:verify:<uuid>`,
+  `<uuid>:retry:1`) goes to its parent's run, whatever the parent's status:
+  the verdict, rework and retry turns belong to the run;
 - an id whose ticket, Request or work item is finished is a citation, not an
   assignment, and is skipped. The index keeps the last status of each entity
   a trace carries (`refStatus`, from its `ticket.status`, `workitem.status`
   and `request.status` events; a trace written before that is read once from
   the tail of its file). Final: ticket / Request `done`, `cancelled`; work
-  item `done`, `done_by_worker`, `verified`, `failed`, `rejected`,
-  `cancelled`. A later status (a reopened ticket, a retried work item) makes
-  the id live again.
+  item `done`, `verified`, `cancelled`. Not `done_by_worker` (waits for its
+  verdict), `rejected` (rework) or `failed` (retry): they go back to `queued`.
+  A later status (a reopened ticket, a retried work item) makes the id live
+  again.
 
 One trace → it becomes the session's current trace. Several → the current
 trace is kept if it is among them, else the first one wins, and the delivery

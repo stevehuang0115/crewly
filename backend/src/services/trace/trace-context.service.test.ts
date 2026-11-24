@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { TraceStore } from './trace-store.js';
-import { TraceContext, classifyDelivery, defaultIdleClearMs, isSessionContextSummary, dispatchedWorkItemId } from './trace-context.service.js';
+import { TraceContext, classifyDelivery, defaultIdleClearMs, isSessionContextSummary, dispatchedWorkItem, dispatchedWorkItemId } from './trace-context.service.js';
 import { parseInboundOrigin } from '../orc/orc-reply-route.service.js';
 import { appendTraceMarker } from './trace-markers.js';
 import { getTurnTriggerTracker } from './turn-trigger.js';
@@ -155,14 +155,14 @@ describe('TraceContext', () => {
 
 		afterEach(() => getTurnTriggerTracker().reset());
 
-		it('a delivery whose only refs are a cancelled ticket and a finished work item does not set the current trace', async () => {
+		it('a delivery whose only refs are a cancelled ticket and a verified work item does not set the current trace', async () => {
 			const work = ctx.startTrace({ kind: 'request', summary: 'real work', actor: { kind: 'owner' }, session: 'orc' })!;
 			const oldTicket = ctx.startTrace({ kind: 'ticket', summary: 'CE-345', actor: { kind: 'system' } })!;
 			const oldItem = ctx.startTrace({ kind: 'ticket', summary: 'old item', actor: { kind: 'system' } })!;
 			store.linkRef('ticket', 'CE-345', oldTicket);
 			store.linkRef('workItem', OTHER_WI, oldItem);
 			status(oldTicket, 'ticket.status', { ticketId: 'CE-345' }, 'cancelled');
-			status(oldItem, 'workitem.status', { workItemId: OTHER_WI }, 'done_by_worker', 'running');
+			status(oldItem, 'workitem.status', { workItemId: OTHER_WI }, 'verified', 'done_by_worker');
 			expect(ctx.currentTrace('orc')).toBe(work);
 
 			expect(ctx.noteTurnDelivery('orc', `[CHAT:c1:abcd1234] <lead (agent)@#ce> verify CE-345 and WorkItem ${OTHER_WI}, evidence below`)).toBeNull();
@@ -212,6 +212,50 @@ describe('TraceContext', () => {
 			expect(await events(dispatched)).toHaveLength(1);
 		});
 
+		it('a verify dispatch of an item that waits for its verdict lands on the item\'s run, and so do rework and retry deliveries', async () => {
+			const run = ctx.startTrace({ kind: 'ticket', summary: 'CREW-1', actor: { kind: 'system' } })!;
+			store.linkRef('workItem', WI, run);
+			store.linkRef('ticket', 'CREW-1', run);
+			status(run, 'ticket.status', { ticketId: 'CREW-1' }, 'in_progress', 'ready');
+			status(run, 'workitem.status', { workItemId: WI }, 'done_by_worker', 'running');
+			const verify = `[CREWLY-DISPATCH] WorkItem ${WI}:verify:${WI} queued for you (type=review).\n  Evidence: CREW-1 shipped\n`;
+			expect(dispatchedWorkItem(verify, 'dispatch')).toEqual({ id: WI, derived: true });
+			expect(ctx.noteTurnDelivery('lead', verify)).toBe(run);
+			expect(ctx.currentTrace('lead')).toBe(run);
+			// Rejected: back for rework. The redelivery names the item and is still the run's.
+			status(run, 'workitem.status', { workItemId: WI }, 'rejected', 'done_by_worker');
+			expect(ctx.noteTurnDelivery('dev-1', `[TASK RE-DELIVERY] WorkItem ${WI} needs rework`)).toBe(run);
+			status(run, 'workitem.status', { workItemId: WI }, 'queued', 'rejected');
+			expect(ctx.noteTurnDelivery('dev-2', `[CREWLY-DISPATCH] WorkItem ${WI} queued for you (type=delegate).`)).toBe(run);
+			// A failed item is retried: the retry item is the run's.
+			status(run, 'workitem.status', { workItemId: WI }, 'failed', 'running');
+			expect(ctx.noteTurnDelivery('dev-3', `[CREWLY-DISPATCH] WorkItem ${WI}:retry:1 queued for you (type=delegate).`)).toBe(run);
+			await store.idle();
+			expect((await events(run)).length).toBe(4);
+		});
+
+		it('a derived item (verify, retry) follows its parent\'s run even when the parent is already verified, a plain dispatch of it does not', () => {
+			const run = ctx.startTrace({ kind: 'ticket', summary: 'x', actor: { kind: 'system' } })!;
+			store.linkRef('workItem', WI, run);
+			status(run, 'workitem.status', { workItemId: WI }, 'verified', 'done_by_worker');
+			expect(ctx.noteTurnDelivery('lead', `[CREWLY-DISPATCH] WorkItem ${WI}:verify:${WI} queued for you (type=review).`)).toBe(run);
+			expect(ctx.noteTurnDelivery('dev-1', `[CREWLY-DISPATCH] WorkItem ${WI}:retry:2 queued for you (type=delegate).`)).toBe(run);
+			expect(ctx.noteTurnDelivery('dev-2', `[CREWLY-DISPATCH] WorkItem ${WI} queued for you (type=delegate).`)).toBeNull();
+		});
+
+		it('only a verified, done or cancelled work item is finished; done_by_worker, rejected and failed are not', () => {
+			const run = ctx.startTrace({ kind: 'ticket', summary: 'x', actor: { kind: 'system' } })!;
+			store.linkRef('workItem', WI, run);
+			for (const to of ['done_by_worker', 'rejected', 'failed']) {
+				status(run, 'workitem.status', { workItemId: WI }, to, 'running');
+				expect(ctx.noteTurnDelivery('dev-1', `Reminder: WorkItem ${WI} is still open`)).toBe(run);
+			}
+			for (const to of ['verified', 'done', 'cancelled']) {
+				status(run, 'workitem.status', { workItemId: WI }, to, 'running');
+				expect(ctx.noteTurnDelivery('dev-1', `Reminder: WorkItem ${WI} is still open`)).toBeNull();
+			}
+		});
+
 		it('a redelivery follows the work item it names too', () => {
 			const dispatched = ctx.startTrace({ kind: 'ticket', summary: 'dispatched', actor: { kind: 'system' } })!;
 			const cited = ctx.startTrace({ kind: 'ticket', summary: 'cited', actor: { kind: 'system' } })!;
@@ -235,6 +279,7 @@ describe('TraceContext', () => {
 			store.linkRef('workItem', WI, dispatched);
 			store.linkRef('ticket', 'CE-10', cited);
 			status(dispatched, 'workitem.status', { workItemId: WI }, 'cancelled', 'queued');
+			// A plain dispatch of a cancelled item is stale; a verify or retry of one would be followed (see above).
 			expect(ctx.noteTurnDelivery('dev-1', `[CREWLY-DISPATCH] WorkItem ${WI} queued for you; CE-10`)).toBe(cited);
 		});
 

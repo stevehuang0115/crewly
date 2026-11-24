@@ -231,8 +231,13 @@ export function traceRefKey(kind: TraceRefKind, id: string): string {
 	return `${kind}:${id}`;
 }
 
-/** Work item statuses after which its agent is no longer working on it. */
-const ENDED_WORK_ITEM_STATUSES: ReadonlySet<string> = new Set(['done', 'done_by_worker', 'verified', 'failed', 'rejected', 'cancelled']);
+/**
+ * Work item statuses after which nothing more happens in its run. Not
+ * `done_by_worker` (waits for its verdict), `rejected` (rework: back to
+ * `queued`) or `failed` (retry: back to `queued`): the review, rework and retry
+ * turns belong to the run (work-item.types.ts transitions).
+ */
+const ENDED_WORK_ITEM_STATUSES: ReadonlySet<string> = new Set(['done', 'verified', 'cancelled']);
 
 /** Ticket / Request statuses that are final. */
 const ENDED_TICKET_STATUSES: ReadonlySet<string> = new Set(['done', 'cancelled']);

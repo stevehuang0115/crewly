@@ -38,8 +38,9 @@ describe('trace.types', () => {
 	});
 
 	it('knows which statuses are final for each entity kind', () => {
-		for (const status of ['done', 'done_by_worker', 'verified', 'failed', 'rejected', 'cancelled']) expect(isEndedRefStatus('workItem', status)).toBe(true);
-		for (const status of ['queued', 'running', 'blocked', 'escalated', 'proposed']) expect(isEndedRefStatus('workItem', status)).toBe(false);
+		for (const status of ['done', 'verified', 'cancelled']) expect(isEndedRefStatus('workItem', status)).toBe(true);
+		// Review, rework and retry still happen in the run.
+		for (const status of ['queued', 'running', 'blocked', 'escalated', 'proposed', 'done_by_worker', 'rejected', 'failed']) expect(isEndedRefStatus('workItem', status)).toBe(false);
 		for (const kind of ['ticket', 'request'] as const) {
 			expect(isEndedRefStatus(kind, 'done')).toBe(true);
 			expect(isEndedRefStatus(kind, 'cancelled')).toBe(true);
