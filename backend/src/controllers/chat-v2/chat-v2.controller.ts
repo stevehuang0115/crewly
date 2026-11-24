@@ -244,7 +244,12 @@ async function applyCrossMachineMention(
         return { by: m.senderType === 'agent' ? 'agent' : 'human', mentions: m.mentions };
       });
     const { planCrossMachineMention } = await import('../../services/slack/cross-machine-mention.js');
-    const plan = planCrossMachineMention(body.content, room, turns);
+    // This machine's bots weigh in on whether a short name is unique (the linker counts them).
+    const { getSlackAgentIdentityService } = await import('../../services/slack/slack-agent-identity.service.js');
+    const localNames = ((await getSlackAgentIdentityService()?.load())?.identities ?? [])
+      .filter((r) => r.status === 'installed' && !!r.botUserId && !!r.displayName)
+      .map((r) => r.displayName as string);
+    const plan = planCrossMachineMention(body.content, room, turns, process.env, localNames);
     if (!plan.note) return null;
     if (plan.added.length > 0) body.content = plan.content;
     return { note: plan.note, added: plan.added.map((a) => a.name), unreached: plan.unreached.map((a) => a.name) };

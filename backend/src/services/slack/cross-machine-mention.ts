@@ -78,14 +78,24 @@ function namesOf(agent: RemoteRoomAgent): string[] {
  * @param text - The post
  * @param agent - The other-machine agent
  * @param room - Every other-machine agent in the room (decides whether a short name is unique)
+ * @param localNames - Display names of the agents with a bot on THIS machine: the linker weighs them
+ *   with the other machines' when it decides whether a short name is unique
  * @returns True when Cloud will see the agent addressed
  */
-export function addresses(text: string, agent: RemoteRoomAgent, room: readonly RemoteRoomAgent[] = [agent]): boolean {
+export function addresses(
+	text: string,
+	agent: RemoteRoomAgent,
+	room: readonly RemoteRoomAgent[] = [agent],
+	localNames: readonly string[] = [],
+): boolean {
 	const body = text.trim();
 	if (agent.botUserId) {
 		if (new RegExp(`<@${escapeRegExp(agent.botUserId)}(?:\\|[^>]*)?>`).test(body)) return true;
 		const short = namesOf(agent).at(-1) ?? '';
-		const shared = room.some((o) => o !== agent && namesOf(o).some((n) => n.toLowerCase() === short.toLowerCase()));
+		const same = (n: string): boolean => n.toLowerCase() === short.toLowerCase();
+		const shared =
+			room.some((o) => o !== agent && namesOf(o).some(same)) ||
+			localNames.some((n) => same(n.replace(/\s*\([^)]*\)\s*$/u, '').trim()));
 		if (shared) return false;
 		// Only `@Name` is linked to the bot, never an opening bare name.
 		return new RegExp(`(?:^|[^\\p{L}\\p{N}_<])@${escapeRegExp(short)}(?![\\p{L}\\p{N}_])`, 'iu').test(body);
@@ -134,6 +144,7 @@ export function trailingAgentTurns(turns: readonly ThreadTurn[]): number {
  * @param room - Other-machine agents in the room (empty: nothing to do)
  * @param turns - The thread's messages as this machine has them
  * @param env - Environment (kill switch)
+ * @param localNames - Display names of this machine's agents with a bot (see {@link addresses})
  * @returns What to post and what to tell the author
  */
 export function planCrossMachineMention(
@@ -141,9 +152,10 @@ export function planCrossMachineMention(
 	room: readonly RemoteRoomAgent[],
 	turns: readonly ThreadTurn[],
 	env: NodeJS.ProcessEnv = process.env,
+	localNames: readonly string[] = [],
 ): CrossMachinePlan {
 	if (room.length === 0 || !content.trim()) return NO_PLAN(content);
-	if (room.some((a) => addresses(content, a, room))) return NO_PLAN(content);
+	if (room.some((a) => addresses(content, a, room, localNames))) return NO_PLAN(content);
 	const inThread = remoteAgentsInThread(room, turns);
 	if (inThread.length === 0) return NO_PLAN(content);
 

@@ -36,6 +36,13 @@ describe('addresses', () => {
 		expect(addresses('<@UOWEN> look', owen, [owen, owen2])).toBe(true);
 	});
 
+	it('a short name shared with a bot agent on THIS machine will not be linked either (two Ellas)', () => {
+		const ella: RemoteRoomAgent = { name: 'Ella (Personal Assistant)', agentSession: 'pa-ella-1', botUserId: 'UELLAPA', machine: 'studio' };
+		expect(addresses('@Ella hi', ella, [ella], ['Ella (Crewly Marketing)'])).toBe(false);
+		expect(addresses('<@UELLAPA> hi', ella, [ella], ['Ella (Crewly Marketing)'])).toBe(true);
+		expect(addresses('@Ella hi', ella, [ella], ['Sam (Crewly Marketing)'])).toBe(true);
+	});
+
 	it('an app-less agent is addressed by its plain name (@Name anywhere, or opening the text)', () => {
 		expect(addresses('Lead, please send it', lead, ROOM)).toBe(true);
 		expect(addresses('can @lead check', lead, ROOM)).toBe(true);
@@ -96,6 +103,19 @@ describe('planCrossMachineMention (c: tell the author)', () => {
 		expect(plan.note).toContain('reached nobody on iriss-air');
 		expect(plan.note).toContain('Owen (CE)');
 		expect(plan.note).toContain('@name');
+	});
+});
+
+describe('two Ellas: local and on another machine', () => {
+	it('a plain @Ella is not addressed, so the post is fixed with <@BOTID> and the author told', () => {
+		const ella: RemoteRoomAgent = { name: 'Ella (Personal Assistant)', agentSession: 'pa-ella-1', botUserId: 'UELLAPA', machine: 'studio' };
+		const turns: ThreadTurn[] = [human, { by: 'remote-agent', remoteSession: 'pa-ella-1' }];
+		const plan = planCrossMachineMention('@Ella please check', [ella], turns, {}, ['Ella (Crewly Marketing)']);
+		expect(plan.content).toBe('<@UELLAPA> @Ella please check');
+		expect(plan.note).toContain('Added @Ella');
+		const off = planCrossMachineMention('@Ella please check', [ella], turns, { [C.AUTO_ADD_ENV]: C.AUTO_ADD_OFF_VALUE }, ['Ella (Crewly Marketing)']);
+		expect(off.unreached).toEqual([ella]);
+		expect(off.note).toContain('reached nobody');
 	});
 });
 
