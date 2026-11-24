@@ -1626,10 +1626,10 @@ describe('TicketAutopilotService', () => {
           for (const m of teams[0].members) m.workingStatus = 'in_progress';
           await svc.tick();
           let st = await svc.getStatus('p-ce', owner);
-          expect(st).toMatchObject({ stopReason: 'waiting_on_owner', stopReasonText: 'waiting on you' });
+          expect(st).toMatchObject({ stopReason: 'waiting_on_owner', stopReasonText: `waiting on you (ticket ${t.id})`, stopDetail: { kind: 'waiting_on_owner', tickets: [t.id] } });
           clock = at(21, 30);
           await svc.tick();
-          expect(notices.find((n) => n.title === 'Tickets today')?.message).toContain('Stopped: waiting on you');
+          expect(notices.find((n) => n.title === 'Tickets today')?.message).toContain(`Stopped: waiting on you (ticket ${t.id})`);
           // Budget reached outranks it.
           spent = 50_000_000;
           await svc.tick();
@@ -1642,6 +1642,8 @@ describe('TicketAutopilotService', () => {
           expect(st.stopReason).toBeNull();
           const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0].traceId;
           const steps = (await evts(run)).filter((e) => e.type === 'autopilot.action' && (e.data?.action === 'stopped' || e.data?.action === 'resumed'));
+          expect(steps[0].summary).toContain(`waiting on you (ticket ${t.id})`);
+          expect(steps[0].data?.tickets).toBe(t.id);
           expect(steps.map((e) => [e.data?.action, e.data?.reason ?? null])).toEqual([
             ['stopped', 'waiting_on_owner'],
             ['stopped', 'budget_reached'],
@@ -1705,6 +1707,24 @@ describe('TicketAutopilotService', () => {
           await svc.tick();
           // Hours later the queued replan has never been picked up: stuck delivery outranks the failure, and the digest names it too.
           expect(notices.find((n) => n.title === 'Tickets today')?.message).toMatch(/Stopped: work failed or was not delivered \(work item \S+: queued for a long time and never picked up/);
+        });
+
+        it('a stalled_work stop names the stalled ticket and its work item in the status and the trace event (CREW-809)', async () => {
+          await enable();
+          const t = await wf.create('p-ce', { title: 'Card share image', status: 'ready' }, owner);
+          const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+          advance(21 * MIN);
+          await svc.tick();
+          const st = await svc.getStatus('p-ce', owner);
+          expect(st.stopReason).toBe('stalled_work');
+          expect(st.stopDetail).toEqual({ kind: 'stalled', tickets: [t.id], workItems: [workItem.id] });
+          expect(st.stopReasonText).toBe(`work in progress has not moved while its assignee sits idle (ticket ${t.id} (work item ${workItem.id}))`);
+          const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0].traceId;
+          const stopped = (await evts(run)).filter((e) => e.data?.action === 'stopped' && e.data?.reason === 'stalled_work');
+          expect(stopped).toHaveLength(1);
+          expect(stopped[0].summary).toContain(t.id);
+          expect(stopped[0].summary).toContain(workItem.id);
+          expect(stopped[0].data?.tickets).toBe(t.id);
         });
 
         it('switching the mode re-times a waiting retry and is traced; the CE explicit budget stays', async () => {

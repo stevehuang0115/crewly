@@ -20,6 +20,7 @@ import {
   replanMetricRejection,
   STOP_REASON_WORDS,
   stopReasonText,
+  ticketsStopDetail,
   sanitizeStopError,
   stopDetailText,
 } from './ticket-autopilot-messages.js';
@@ -362,6 +363,31 @@ describe('stop detail (CREW-1242)', () => {
     expect(stopDetailText({ kind: 'failed', workItemId: 'wi-1', ticketId: 'T-2', error: 'spawn failed', code: 'E_SPAWN' })).toBe('work item wi-1, ticket T-2: spawn failed (E_SPAWN)');
     expect(stopDetailText({ kind: 'failed', workItemId: 'wi-1' })).toBe('work item wi-1: no error message was recorded');
     expect(stopDetailText({ kind: 'stuck_delivery', workItemId: 'wi-3' })).toContain('never picked up');
+  });
+
+  it('ticketsStopDetail names the tickets, caps at 8 with +N more, and is undefined for none (CREW-809)', () => {
+    expect(ticketsStopDetail('stalled', [])).toBeUndefined();
+    const ids = Array.from({ length: 11 }, (_, i) => `CE-${i + 1}`);
+    const wis = ids.map((_, i) => `wi-${i + 1}`);
+    const d = ticketsStopDetail('stalled', ids, wis)!;
+    expect(d.tickets).toEqual(ids.slice(0, 8));
+    expect(d.workItems).toEqual(wis.slice(0, 8));
+    expect(d.more).toBe(3);
+    expect(ticketsStopDetail('waiting_on_owner', ['CE-1'])).toEqual({ kind: 'waiting_on_owner', tickets: ['CE-1'] });
+  });
+
+  it('stopDetailText and stopReasonText name stalled and waiting tickets', () => {
+    const stalled = ticketsStopDetail('stalled', ['CE-1', 'CE-2'], ['wi-1', 'wi-2'])!;
+    expect(stopDetailText(stalled)).toBe('tickets CE-1, CE-2 (work items wi-1, wi-2)');
+    expect(stopReasonText('stalled_work', null, stalled)).toBe(`${STOP_REASON_WORDS.stalled_work} (tickets CE-1, CE-2 (work items wi-1, wi-2))`);
+    const many = ticketsStopDetail('stalled', Array.from({ length: 10 }, (_, i) => `CE-${i + 1}`), Array.from({ length: 10 }, (_, i) => `wi-${i + 1}`))!;
+    expect(stopDetailText(many)).toContain('CE-8, +2 more');
+    expect(stopDetailText(many)).toContain('wi-8, +2 more)');
+    const waiting = ticketsStopDetail('waiting_on_owner', ['CE-5'])!;
+    expect(stopReasonText('waiting_on_owner', null, waiting)).toBe('waiting on you (ticket CE-5)');
+    // A detail of the wrong kind never leaks into another reason.
+    expect(stopReasonText('paused', null, waiting)).toBe(STOP_REASON_WORDS.paused);
+    expect(stopReasonText('waiting_on_owner', null, stalled)).toBe(STOP_REASON_WORDS.waiting_on_owner);
   });
 
   it('stopReasonText adds the detail only for system_error', () => {
