@@ -801,6 +801,10 @@ export function decisionHoldPredicate(holds: readonly DecisionHoldLink[]): (wi: 
  * {@link pickTTLExpiryTarget}, so the correction never fails with
  * `Invalid status transition`.
  *
+ * Also skipped, without any ceiling: an explicit block ({@link isExplicitlyBlocked}) and an
+ * item waiting on an unfinished `dependsOn` ({@link hasUnresolvedDependencies}) — they wait
+ * by design (CREW-929). A system block (no explicit flag) still expires as before.
+ *
  * Two categories are skipped without a correction:
  * 1. Strictly terminal WIs ({@link TERMINAL_WORK_ITEM_STATUSES}) — already done.
  * 2. WIs whose status has NO legal terminal target (picker returns `null`).
@@ -823,9 +827,17 @@ export function detectTTLExpiredWorkItems(
   const corrections: ReconcileCorrection[] = [];
   const expiredIds: string[] = [];
   const now = Date.now();
+  const workItemMap = new Map(workItems.map((w) => [w.id, w]));
 
   for (const wi of workItems) {
     if (TERMINAL_WORK_ITEM_STATUSES.has(wi.status)) continue;
+    // A block the agent set on purpose (block-task, with or without `until`)
+    // and an item waiting for another WorkItem (`--after`) are waiting by
+    // design, not stale. Cancelling them sent the ticket back to ready, idle
+    // auto-claim took it again, it blocked again and was reviewed again, every
+    // 24h (CREW-929). They end by unblock, `until`, the upstream finishing, or
+    // a person cancelling them.
+    if (isExplicitlyBlocked(wi) || hasUnresolvedDependencies(wi, workItemMap)) continue;
 
     // Age is measured from the TTL anchor, not `createdAt`. For an item that
     // has never been requeued these are the same value; for one that HAS been
