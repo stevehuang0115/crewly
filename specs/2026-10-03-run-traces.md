@@ -131,6 +131,25 @@ is resolved in this order:
 3. work item ids, `D-n` decision ids and project ticket ids (`CE-7`, `TKT-12`)
    found in the text and known to the index.
 
+What a delivery is *about* is narrower than every id it mentions (CREW-1258):
+
+- a restart `[SESSION_CONTEXT]` summary names no trace: it recaps old
+  conversations, so every id in it is history;
+- a dispatch / redelivery goes to the work item its header names
+  (`WorkItem <uuid>`); the ids it only cites (an Evidence line, the ticket
+  description) are ignored. A derived item (`<uuid>:verify:<uuid>`,
+  `<uuid>:retry:1`) goes to its parent's run, whatever the parent's status:
+  the verdict, rework and retry turns belong to the run;
+- an id whose ticket, Request or work item is finished is a citation, not an
+  assignment, and is skipped. The index keeps the last status of each entity
+  a trace carries (`refStatus`, from its `ticket.status`, `workitem.status`
+  and `request.status` events; a trace written before that is read once from
+  the tail of its file). Final: ticket / Request `done`, `cancelled`; work
+  item `done`, `verified`, `cancelled`. Not `done_by_worker` (waits for its
+  verdict), `rejected` (rework) or `failed` (retry): they go back to `queued`.
+  A later status (a reopened ticket, a retried work item) makes the id live
+  again.
+
 One trace → it becomes the session's current trace. Several → the current
 trace is kept if it is among them, else the first one wins, and the delivery
 is recorded in each. None → the current trace ends: a cron / scheduled

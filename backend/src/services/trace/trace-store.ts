@@ -19,13 +19,16 @@
  */
 
 import { promises as fsp } from 'fs';
+import * as fsSync from 'fs';
 import { atomicWriteFile, readJsonStoreSync } from '../../utils/file-io.utils.js';
 import * as path from 'path';
 import { TRACE_CONSTANTS } from '../../constants.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import {
+	isEndedRefStatus,
 	isTraceId,
+	refStatusOfEvent,
 	traceRefKey,
 	type TraceEvent,
 	type TraceIndexEntry,
@@ -128,6 +131,7 @@ export interface TraceListFilter {
  */
 function copyEntry(e: TraceIndexEntry): TraceIndexEntry {
 	const out: TraceIndexEntry = { ...e, root: { ...e.root } };
+	if (e.refStatus) out.refStatus = { ...e.refStatus };
 	if (e.tags) {
 		out.tags = {
 			...(e.tags.autopilot ? { autopilot: { ...e.tags.autopilot } } : {}),
@@ -193,6 +197,8 @@ export class TraceStore {
 	private sweepScheduled = false;
 	private sweeping: Promise<void> | null = null;
 	private failures = 0;
+	/** Traces whose ref statuses are known (kept from events, or read from the file once) */
+	private readonly refStatusScanned = new Set<string>();
 
 	/**
 	 * @param options - Folder, clock, limits, file ops
@@ -295,6 +301,7 @@ export class TraceStore {
 			entry.eventCount += 1;
 			entry.bytes += bytes;
 			if (event.ts > entry.updatedAt) entry.updatedAt = event.ts;
+			this.noteRefStatus(entry, event);
 			const file = this.fileOf(event.traceId);
 			this.enqueue(async () => {
 				await this.ensureDir();
@@ -306,6 +313,90 @@ export class TraceStore {
 		} catch (err) {
 			this.noteFailure('append', err);
 			return false;
+		}
+	}
+
+	/**
+	 * Keep the last status of the entity a status event is about, so later
+	 * deliveries can tell a finished ticket / work item from a live one.
+	 *
+	 * @param entry - Index entry of the event's trace
+	 * @param event - The event
+	 */
+	private noteRefStatus(entry: TraceIndexEntry, event: TraceEvent): void {
+		const ref = refStatusOfEvent(event);
+		if (!ref) return;
+		if (!this.refStatusScanned.has(entry.traceId)) this.scanRefStatuses(entry);
+		const map = (entry.refStatus ??= {});
+		const key = traceRefKey(ref.kind, ref.id);
+		delete map[key]; // re-insert last: the oldest keys go first when the cap is hit
+		map[key] = ref.status;
+		const keys = Object.keys(map);
+		for (let i = 0; i < keys.length - TRACE_CONSTANTS.MAX_REF_STATUSES; i += 1) delete map[keys[i]];
+	}
+
+	/**
+	 * Whether the entity's last known status is final. A trace written before
+	 * statuses were kept in the index is read once (its last
+	 * {@link TRACE_CONSTANTS.REF_STATUS_SCAN_BYTES} bytes) to fill them in.
+	 *
+	 * @param kind - Entity kind
+	 * @param id - Entity id
+	 * @returns True only when the status is known and final
+	 */
+	isRefEnded(kind: TraceRefKind, id: string | null | undefined): boolean {
+		try {
+			const traceId = this.traceByRef(kind, id);
+			if (!traceId || !id) return false;
+			const entry = this.loadIndex().traces[traceId];
+			if (!this.refStatusScanned.has(traceId)) this.scanRefStatuses(entry);
+			return isEndedRefStatus(kind, entry.refStatus?.[traceRefKey(kind, id)]);
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Fill in an entry's ref statuses from the tail of its trace file (once
+	 * per trace and process). Synchronous and bounded; a missing or unreadable
+	 * file leaves the statuses unknown.
+	 *
+	 * @param entry - Index entry
+	 */
+	private scanRefStatuses(entry: TraceIndexEntry): void {
+		this.refStatusScanned.add(entry.traceId);
+		let fd: number | null = null;
+		try {
+			fd = fsSync.openSync(this.fileOf(entry.traceId), 'r');
+			const size = fsSync.fstatSync(fd).size;
+			const length = Math.min(size, TRACE_CONSTANTS.REF_STATUS_SCAN_BYTES);
+			const buf = Buffer.alloc(length);
+			fsSync.readSync(fd, buf, 0, length, size - length);
+			const lines = buf.toString('utf8').split('\n');
+			if (size > length) lines.shift(); // the first line of a tail read is cut
+			for (const line of lines) {
+				if (!line.includes('.status"')) continue;
+				try {
+					const ref = refStatusOfEvent(JSON.parse(line) as TraceEvent);
+					if (!ref) continue;
+					const map = (entry.refStatus ??= {});
+					const key = traceRefKey(ref.kind, ref.id);
+					delete map[key];
+					map[key] = ref.status;
+				} catch {
+					/* a damaged line is skipped */
+				}
+			}
+		} catch {
+			/* no file yet: nothing is known */
+		} finally {
+			if (fd !== null) {
+				try {
+					fsSync.closeSync(fd);
+				} catch {
+					/* ignore */
+				}
+			}
 		}
 	}
 

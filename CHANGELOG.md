@@ -5,6 +5,7 @@ User-visible changes. Newest first.
 ## Unreleased
 
 ### Fixed
+- **A session's turns, usage and verdicts are no longer billed to a finished run that a message only mentions.** Any ticket or work item id in a delivered message moved the session onto that run's trace, so an orchestrator that was told "verify CE-345" (cancelled in October) or restarted with a recap naming it kept adding turns and tokens to that old run until November, and the run it was really working on lost them. Now the work item a dispatch names wins over ids it cites, an id whose ticket or work item is finished (done, verified or cancelled) is only a citation, a review, rework or retry of an item stays in its run, and a restart recap names no run at all. A reopened ticket or retried work item counts again.
 - **Windows: Crewly can upgrade itself.** Every automatic upgrade on Windows failed with `npm error code EBUSY`: npm replaces a global package by renaming its directory, and Windows refuses that while the backend, its `crewly start` parent or an agent terminal runs from it. On Windows Crewly now stops first: a small helper in the Crewly home waits for Crewly to exit, ends what is left of the old process tree, runs npm (up to four attempts), and starts Crewly again, on the old version if the install did not work. The Upgrade button and remote upgrades take the same path. A machine on an older version needs one manual upgrade to get this: stop Crewly, run `crewly upgrade`, start it again.
 
 ### Added
