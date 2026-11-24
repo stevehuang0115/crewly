@@ -684,6 +684,43 @@ describe('detectTTLExpiredWorkItems', () => {
     expect(expiredIds).toContain(old.id);
   });
 
+  describe('an item that waits on purpose is not stale (CREW-929)', () => {
+    const OLD = new Date(Date.now() - 30 * 3600 * 1000).toISOString();
+
+    it('does not expire an explicitly blocked item, with or without an until time', () => {
+      const plain = makeWorkItem({ status: 'blocked', blockSource: 'explicit', createdAt: OLD });
+      const until = makeWorkItem({ status: 'blocked', blockSource: 'explicit', createdAt: OLD, metadata: { blockedUntil: new Date(Date.now() + 3600e3).toISOString() } });
+      const { expiredIds, corrections } = detectTTLExpiredWorkItems([plain, until]);
+      expect([plain, until]).toHaveLength(2); // examined two items
+      expect(expiredIds).toEqual([]);
+      expect(corrections).toEqual([]);
+    });
+
+    it('does not expire an item waiting for an unfinished WorkItem (block-task --after)', () => {
+      const upstream = makeWorkItem({ status: 'running' });
+      const waiting = makeWorkItem({ status: 'queued', createdAt: OLD, dependsOn: [upstream.id] });
+      expect(detectTTLExpiredWorkItems([upstream, waiting]).expiredIds).toEqual([]);
+    });
+
+    it('still expires one whose upstream has finished (it is plain stale again)', () => {
+      const waiting = makeWorkItem({ status: 'queued', createdAt: OLD, dependsOn: ['gone-and-done'] });
+      expect(detectTTLExpiredWorkItems([waiting]).expiredIds).toEqual([waiting.id]);
+    });
+
+    it('still cleans up a block with no explicit flag and every other non-terminal state past the TTL', () => {
+      const noSource = makeWorkItem({ status: 'blocked', createdAt: OLD });
+      const queued = makeWorkItem({ status: 'queued', createdAt: OLD });
+      const running = makeWorkItem({ status: 'running', createdAt: OLD });
+      const { expiredIds } = detectTTLExpiredWorkItems([noSource, queued, running]);
+      expect(expiredIds.sort()).toEqual([noSource.id, queued.id, running.id].sort());
+    });
+
+    it('the whole pruning pass leaves an explicitly blocked item alone', () => {
+      const blocked = makeWorkItem({ status: 'blocked', blockSource: 'explicit', createdAt: OLD });
+      expect(runPruningPass([blocked]).totalCorrections).toEqual([]);
+    });
+  });
+
   it('should not flag fresh WorkItems', () => {
     const fresh = makeWorkItem({ status: 'queued' });
     const { expiredIds } = detectTTLExpiredWorkItems([fresh]);
