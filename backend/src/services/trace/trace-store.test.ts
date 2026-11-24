@@ -51,6 +51,71 @@ describe('TraceStore', () => {
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
+	it('keeps the last status of each ticket / work item / Request in the index, across a reload (CREW-1258)', async () => {
+		const store = make();
+		const a = 'tr-20261003-0000000a';
+		store.createRoot(root(a, now));
+		store.linkRef('ticket', 'CE-1', a);
+		store.linkRef('workItem', 'wi-1', a);
+		store.linkRef('request', 'r1', a);
+		const status = (type: TraceEvent['type'], refs: TraceEvent['refs'], to: string): void => {
+			store.append({ ts: now.toISOString(), traceId: a, type, actor: { kind: 'system' }, refs, summary: to, outcome: 'info', data: { from: 'x', to } });
+		};
+		status('ticket.status', { ticketId: 'CE-1', workItemId: 'wi-1' }, 'cancelled');
+		status('workitem.status', { workItemId: 'wi-1' }, 'running');
+		status('request.status', { requestId: 'r1' }, 'awaiting_followup');
+		// The ticket event names the ticket's work item as a ref, but is not that work item's status.
+		expect(store.getEntry(a)?.refStatus).toEqual({ 'ticket:CE-1': 'cancelled', 'workItem:wi-1': 'running', 'request:r1': 'awaiting_followup' });
+		expect(store.isRefEnded('ticket', 'CE-1')).toBe(true);
+		expect(store.isRefEnded('workItem', 'wi-1')).toBe(false);
+		expect(store.isRefEnded('request', 'r1')).toBe(false);
+		expect(store.isRefEnded('ticket', 'CE-404')).toBe(false);
+		// A later status replaces the earlier one (a reopened ticket is live again).
+		status('ticket.status', { ticketId: 'CE-1' }, 'ready');
+		expect(store.isRefEnded('ticket', 'CE-1')).toBe(false);
+		status('workitem.status', { workItemId: 'wi-1' }, 'done_by_worker');
+		expect(store.isRefEnded('workItem', 'wi-1')).toBe(false);
+		status('workitem.status', { workItemId: 'wi-1' }, 'verified');
+		await settle(store);
+		const reloaded = make();
+		expect(reloaded.getEntry(a)?.refStatus).toMatchObject({ 'ticket:CE-1': 'ready', 'workItem:wi-1': 'verified' });
+		expect(reloaded.isRefEnded('workItem', 'wi-1')).toBe(true);
+	});
+
+	it('keeps only the newest MAX_REF_STATUSES statuses of a trace', () => {
+		const store = make();
+		const a = 'tr-20261003-0000000a';
+		store.createRoot(root(a, now));
+		for (let i = 0; i < 45; i += 1) {
+			store.linkRef('ticket', `CE-${i}`, a);
+			store.append({ ts: now.toISOString(), traceId: a, type: 'ticket.status', actor: { kind: 'system' }, refs: { ticketId: `CE-${i}` }, summary: 's', outcome: 'info', data: { to: 'done' } });
+		}
+		const keys = Object.keys(store.getEntry(a)?.refStatus ?? {});
+		expect(keys).toHaveLength(40);
+		expect(keys).not.toContain('ticket:CE-0');
+		expect(keys).toContain('ticket:CE-44');
+	});
+
+	it('reads the statuses of a trace file the index has none for, and treats an unreadable file as unknown', async () => {
+		const first = make();
+		const a = 'tr-20261003-0000000a';
+		const b = 'tr-20261003-0000000b';
+		first.createRoot(root(a, now));
+		first.createRoot(root(b, now));
+		first.linkRef('ticket', 'CE-1', a);
+		first.linkRef('ticket', 'CE-2', b);
+		first.append({ ts: now.toISOString(), traceId: a, type: 'ticket.status', actor: { kind: 'system' }, refs: { ticketId: 'CE-1' }, summary: 's', outcome: 'info', data: { to: 'done' } });
+		await settle(first);
+		first.dispose();
+		const index = JSON.parse(fs.readFileSync(path.join(dir, 'index.json'), 'utf8'));
+		delete index.traces[a].refStatus;
+		fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify(index));
+		fs.rmSync(path.join(dir, `${b}.jsonl`), { force: true });
+		const second = make();
+		expect(second.isRefEnded('ticket', 'CE-1')).toBe(true);
+		expect(second.isRefEnded('ticket', 'CE-2')).toBe(false);
+	});
+
 	it('tags traces (autopilot set once, labels merged) and filters by tag; tags survive a reload', async () => {
 		const store = make();
 		const a = 'tr-20261003-0000000a';
