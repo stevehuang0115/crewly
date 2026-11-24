@@ -52,6 +52,13 @@ export interface QueueMessageMeta {
 	 * agent has answered in its thread.
 	 */
 	reminder?: boolean;
+	/**
+	 * An URGENT message (a hold or a plan change) from the agent's lead or
+	 * delegator, or the orchestrator (CREW-844). A busy agent is handed it at its
+	 * next tool call, once ({@link SubAgentMessageQueue.takeUrgentMessageForHook}).
+	 * Set by the server only after the sender is checked; never taken from the text.
+	 */
+	urgent?: boolean;
 }
 
 /**

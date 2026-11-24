@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { EVENT_DELIVERY_CONSTANTS } from '../../constants.js';
 import { Request, Response } from 'express';
+import { currentQueueMeta } from '../../services/messaging/queue-priority.js';
 import * as terminalController from './terminal.controller.js';
 import { setOfflineAgentWaker, resetOfflineAgentWakes } from '../../services/messaging/offline-agent-message.js';
 import { setSpendCapGate, type SpendStop } from '../../services/spend/spend-cap.gate.js';
@@ -1792,6 +1793,42 @@ describe('TerminalController', () => {
 			expect(mockSession.write).not.toHaveBeenCalled();
 			expect(mockRes.status).toHaveBeenCalledWith(202);
 			expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ queued: true, position: 1, queueSize: 1 }));
+		});
+
+		describe('urgent flag (CREW-844)', () => {
+			/** Queue meta the mid-turn hold sees while it runs (null when none). */
+			let seenMeta: unknown;
+			beforeEach(() => {
+				seenMeta = 'unset';
+				ctx.agentRegistrationService.holdIfMidTurn.mockImplementation(async (session: string, data: string) => {
+					seenMeta = currentQueueMeta(session, data) ?? null;
+					return { position: 1, queueSize: 1 };
+				});
+			});
+			const write = (sender: string, extra: Record<string, unknown>) => {
+				mockReq = {
+					params: { sessionName: 'test-session' } as any,
+					headers: { 'x-agent-session': sender },
+					body: { data: 'HOLD: brief changed', mode: 'message', ...extra },
+				};
+				return terminalController.writeToSession.call(ctx, mockReq as Request, mockRes as Response);
+			};
+
+			it('marks the queued message urgent when the orchestrator asks', async () => {
+				await write('crewly-orc', { urgent: true });
+				expect(seenMeta).toEqual({ urgent: true });
+			});
+
+			it('ignores the flag from a sender with no authority over the target', async () => {
+				await write('stranger-agent', { urgent: true });
+				expect(seenMeta).toBeNull();
+				expect(mockRes.status).toHaveBeenCalledWith(202);
+			});
+
+			it('queues a message without the flag as before, even from the orchestrator', async () => {
+				await write('crewly-orc', {});
+				expect(seenMeta).toBeNull();
+			});
 		});
 
 		it('/write: an idle recipient gets the message typed in as before', async () => {

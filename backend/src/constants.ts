@@ -5122,6 +5122,8 @@ export const OWNER_HOOK_MESSAGE_CONSTANTS = {
 	OVERFLOW_DIR: 'runtime/owner-messages',
 	/** Characters of an overflowing owner message quoted in the note before the pointer */
 	OVERFLOW_PREVIEW_CHARS: 600,
+	/** Tag that opens an urgent lead/delegator note (CREW-844) */
+	URGENT_TAG: '[URGENT MESSAGE]',
 } as const;
 
 /**

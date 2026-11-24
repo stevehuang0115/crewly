@@ -24,6 +24,8 @@ Options:
   --to       | -t   Target agent session name (required)
   --message  | -m   Message text (required unless piped via stdin)
   --message-file    Read message from file path
+  --urgent          Hold / plan change for a BUSY agent: shown at its next tool call
+                    (honoured only from its lead, its delegator or the orchestrator)
   --json     | -j   Raw JSON payload (same as legacy)
   --help     | -h   Show this help
 EOF_USAGE
@@ -32,6 +34,7 @@ EOF_USAGE
 INPUT_JSON=""
 TO=""
 MESSAGE=""
+URGENT="false"
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -73,6 +76,10 @@ while [[ $# -gt 0 ]]; do
       INPUT_JSON="$2"
       shift 2
       ;;
+    --urgent)
+      URGENT="true"
+      shift
+      ;;
     --help|-h)
       print_usage
       exit 0
@@ -112,7 +119,8 @@ fi
 require_param "to (--to)" "$TO"
 require_param "message (--message)" "$MESSAGE"
 
-BODY=$(jq -n --arg data "$MESSAGE" --arg mode "message" '{data: $data, mode: $mode}')
+BODY=$(jq -n --arg data "$MESSAGE" --arg mode "message" --arg urgent "$URGENT" \
+  '{data: $data, mode: $mode} + (if $urgent == "true" then {urgent: true} else {} end)')
 
 RESP=$(api_call POST "/terminal/${TO}/write" "$BODY")
 

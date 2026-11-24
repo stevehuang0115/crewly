@@ -20,6 +20,8 @@ import {
 } from '../../utils/security.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { SubAgentMessageQueue } from '../../services/messaging/sub-agent-message-queue.service.js';
+import { withQueueMeta } from '../../services/messaging/queue-priority.js';
+import { isUrgentSender } from '../../services/messaging/urgent-message.js';
 import {
 	queueForOfflineAgent,
 	getOfflineAgentWaker,
@@ -400,6 +402,30 @@ async function agentMessageSenderOf(target: string, req: Request): Promise<Agent
 	} catch {
 		// The header is a courtesy: never block the delivery over it.
 		return null;
+	}
+}
+
+/**
+ * Whether the caller of a write may mark it urgent for `target` (CREW-844): the
+ * orchestrator, the target's lead, or the agent that delegated one of its open
+ * WorkItems. The sender comes from the verified agent header, never the body.
+ *
+ * @param target - Receiving session
+ * @param req - The request (caller identity)
+ * @returns True when the urgent flag is honoured
+ */
+async function isUrgentSenderOf(target: string, req: Request): Promise<boolean> {
+	try {
+		if (isOwnerCaller(req)) return false;
+		const sender = readAgentSessionHeader(req);
+		if (!sender) return false;
+		const { TaskPoolService } = await import('../../services/task-pool/task-pool.service.js');
+		return await isUrgentSender(sender, target, {
+			findMember: (session) => StorageService.getInstance().findMemberBySessionName(session),
+			workItemsFor: async (session) => (await TaskPoolService.getInstance().getAllItems()).filter((wi) => wi.target === session),
+		});
+	} catch {
+		return false;
 	}
 }
 
@@ -810,7 +836,13 @@ export async function writeToSession(this: unknown, req: Request, res: Response)
 			// (2026-10-05). A WorkItem hand-over keeps its own dispatch path.
 			const registration = (this as Partial<ApiContext> | undefined)?.agentRegistrationService;
 			if (registration && !req.body?.workItemId && (readAgentSessionHeader(req) || fromScheduler)) {
-				const held = await registration.holdIfMidTurn(sessionName, dataStr);
+				// An urgent message from the target's lead, its delegator or the
+				// orchestrator is marked, so the busy agent is handed it at its next tool
+				// call (CREW-844). Anyone else's `urgent` flag is ignored.
+				const urgent = req.body?.urgent === true && (await isUrgentSenderOf(sessionName, req));
+				const held = urgent
+					? await withQueueMeta(sessionName, dataStr, { urgent: true }, () => registration.holdIfMidTurn(sessionName, dataStr))
+					: await registration.holdIfMidTurn(sessionName, dataStr);
 				if (held) {
 					logger.info('Recipient mid-turn — message queued, sender not kept waiting', { sessionName, ...held });
 					res.status(202).json({
