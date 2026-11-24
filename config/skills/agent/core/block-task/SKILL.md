@@ -53,6 +53,7 @@ If the task can only proceed at a known time (a report that needs a data window 
 | `questions` | No | Specific questions for the orchestrator to resolve the blocker |
 | `urgency` | No | Urgency level: `low`, `medium`, `high`, `critical` |
 | `until` | No | ISO 8601 time in UTC (`2026-10-27T08:30:00Z`), in the future. The block lifts on its own once it has passed: the item returns to `queued` for you (within about a minute of the time), and you take it before new work. |
+| `on` | No | Who the block waits on: `owner` (a sign-in, an approval, a decision only the owner can give), `agent` (default: today's behaviour) or `external` (a vendor, a build, an email). Run metrics count `owner` as time waiting on the owner instead of on an agent, and leave `external` out of both. Use `owner` whenever the blocker is the owner. |
 | `afterWorkItemId` | No | Id of another WorkItem this one must wait for (a brief that says "start after X"). The item waits as `blocked` with that item in `dependsOn`; it is not stall-checked or re-delivered, and returns to `queued` for you when that item succeeds. Not combinable with `until`. Refused (409) when that item is already done, cancelled, unknown, or itself waits for this one. If it fails, this item stays blocked until someone unblocks it. |
 
 Only a WorkItem you have claimed (`running`) can be blocked.
@@ -83,6 +84,9 @@ Work that can only proceed at a known time:
 
 ```bash
 bash config/skills/agent/core/block-task/execute.sh '{"workItemId":"abc-123","sessionName":"dev-1","reason":"GA4 readout needs the full 7-day window; the data is complete after 08:30Z","until":"2026-10-27T08:30:00Z"}'
+
+# Blocked on the owner (counted as owner wait time, not agent wait)
+bash config/skills/agent/core/block-task/execute.sh '{"workItemId":"abc-123","sessionName":"dev-1","reason":"needs the owner to sign in to the vendor dashboard","on":"owner"}'
 
 # Wait for another WorkItem to succeed
 bash config/skills/agent/core/block-task/execute.sh '{"workItemId":"abc-123","sessionName":"dev-1","reason":"brief says start after the deploy","afterWorkItemId":"def-456"}'

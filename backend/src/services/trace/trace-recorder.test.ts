@@ -297,6 +297,20 @@ describe('trace-recorder', () => {
 			expect(evs[1]?.data).not.toHaveProperty('blockedUntil');
 		});
 
+		it('a block says who it waits on, only when blocked and only for a known value (CREW-928)', async () => {
+			const id = startGoalTrace({ kind: 'goal', summary: 'g' })!;
+			const wi = workItem({ traceId: id });
+			traceWorkItemCreated(wi);
+			traceWorkItemStatus({ ...wi, status: 'running' }, 'queued');
+			traceWorkItemStatus({ ...wi, status: 'blocked', blockSource: 'explicit', metadata: { blockedOn: 'owner' } }, 'running');
+			traceWorkItemStatus({ ...wi, status: 'blocked', blockSource: 'explicit', metadata: { blockedOn: 'boss' } }, 'running');
+			traceWorkItemStatus({ ...wi, status: 'queued', metadata: { blockedOn: 'owner' } }, 'blocked');
+			const evs = (await events(id)).filter((e) => e.type === 'workitem.status');
+			expect(evs.filter((e) => e.data?.to === 'blocked')[0]?.data?.blockedOn).toBe('owner');
+			expect(evs.filter((e) => e.data?.to === 'blocked')[1]?.data).not.toHaveProperty('blockedOn');
+			expect(evs.find((e) => e.data?.to === 'queued')?.data).not.toHaveProperty('blockedOn');
+		});
+
 		it('a commitment follow-up born blocked carries its due time as the planned wait', async () => {
 			const id = startGoalTrace({ kind: 'goal', summary: 'g' })!;
 			const followUp: WorkItem = { ...workItem({ traceId: id, metadata: { openItemFollowUp: { requestId: 'r1', itemId: 'c-1' }, dueAt: '2026-10-28T01:00:00.000Z' } }), status: 'blocked', blockSource: 'explicit' };
