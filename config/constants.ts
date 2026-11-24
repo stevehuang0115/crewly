@@ -1377,6 +1377,22 @@ export const AUTO_UPDATE_CONSTANTS = {
 	MARKER_FILE: 'auto-update-pending.json',
 	/** npm package name */
 	PACKAGE_NAME: 'crewly',
+	/** Windows: helper script that installs after Crewly has exited, in the Crewly home */
+	DEFERRED_HELPER_FILE: 'crewly-deferred-upgrade.cjs',
+	/** Windows: the helper's plan, in `<crewlyHome>/run` */
+	DEFERRED_PLAN_FILE: 'deferred-upgrade.json',
+	/** Windows: how long the helper waits for Crewly to exit (ms) */
+	DEFERRED_EXIT_WAIT_MS: 15 * 60 * 1000,
+	/** Windows: npm attempts the helper makes */
+	DEFERRED_ATTEMPTS: 4,
+	/** Windows: wait between the helper's npm attempts (ms) */
+	DEFERRED_RETRY_DELAY_MS: 15 * 1000,
+	/** Windows service launcher in the Crewly home (written by `crewly service install`) */
+	WINDOWS_LAUNCHER_FILE: 'crewly-start.vbs',
+	/** Windows service supervisor in the Crewly home (written by `crewly service install`) */
+	WINDOWS_SUPERVISOR_FILE: 'crewly-supervisor.cjs',
+	/** CLI entry inside the package */
+	CLI_ENTRY: 'dist/cli/cli/src/index.js',
 } as const;
 
 // ========================= MARKETPLACE CONSTANTS =========================
