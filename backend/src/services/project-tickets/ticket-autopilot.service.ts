@@ -100,6 +100,7 @@ import {
   replanMetricRejection,
   STOP_REASON_WORDS,
   stopReasonText,
+  ticketsStopDetail,
   sanitizeStopError,
   type StopDetail,
   type DigestProject,
@@ -107,6 +108,7 @@ import {
   type TriageBriefMember,
 } from './ticket-autopilot-messages.js';
 import type { ProjectGoal, ReplanExperiment, RetroMilestone } from './ticket-autopilot-goal.js';
+import { sortIdsNaturally } from '../../utils/id-list.js';
 import { autopilotRunTrace, startReplanTrace, startTriageTrace, traceAutopilotAction, type AutopilotTicketChange, createAutopilotTicketListener } from './ticket-autopilot-trace.js';
 import {
   computeAutopilotStats,
@@ -2540,7 +2542,7 @@ export class TicketAutopilotService {
     }
     const selection = selectTriageCandidates({ tickets, teams: activeTeams, now: nowMs, listed: ps.listed, skipLabels: settings.skipLabels });
     // Stalled work ignores the autopilot's own re-deliveries: only the assignee moving clears it.
-    const stalledWork = findStalledWork({
+    const stalledList = findStalledWork({
       tickets,
       members,
       items: new Map(items.map((wi) => [wi.id, wi])),
@@ -2548,12 +2550,14 @@ export class TicketAutopilotService {
       stallAfterMs: C.SPEED_MODES[settings.speedMode].stallAfterMs,
       maxRedeliveries: C.STALL_MAX_REDELIVERIES,
       skipLabels: settings.skipLabels,
-    }).length;
-    const waitingOnOwner = tickets.filter(
+    });
+    const stalledWork = stalledList.length;
+    const waitingList = tickets.filter(
       (t) =>
         t.status === 'review' ||
         (OPEN_TICKET_STATUSES.has(t.status) && (hasNeedsOwnerLabel(t) || t.labels.includes(C.RETRO_PENDING_LABEL))),
-    ).length;
+    );
+    const waitingOnOwner = waitingList.length;
     // Replan timing: the daily cap, and the gap (the mode's while work is in flight, the debounce once idle and empty).
     const today = localDateKey(now);
     const cap = settings.replansPerDay;
@@ -2590,7 +2594,11 @@ export class TicketAutopilotService {
       replanCapReached: capReached,
       ...(replanWaitUntil !== undefined ? { replanWaitUntil } : {}),
     });
-    const detail = result.reason === 'system_error' ? systemErrorDetail(stuckDelivery ? stuckItem : undefined, newestFailed?.wi, failedRecently) : undefined;
+    // What the stop is about, so the lead can act from the event (CREW-809).
+    let detail: StopDetail | undefined;
+    if (result.reason === 'system_error') detail = systemErrorDetail(stuckDelivery ? stuckItem : undefined, newestFailed?.wi, failedRecently);
+    else if (result.reason === 'stalled_work') detail = ticketsStopDetail('stalled', stalledList.map((s) => s.ticketId), stalledList.map((s) => s.workItemId));
+    else if (result.reason === 'waiting_on_owner') detail = ticketsStopDetail('waiting_on_owner', sortIdsNaturally(waitingList.map((t) => t.id)));
     return { reason: result.reason, ...(result.until !== undefined ? { until: result.until } : {}), ...(detail ? { detail } : {}) };
   }
 
@@ -2773,10 +2781,11 @@ export class TicketAutopilotService {
           outcome: 'blocked',
           ...(detail?.workItemId ? { workItemId: detail.workItemId } : {}),
           ...(detail?.ticketId ? { ticketId: detail.ticketId } : {}),
-          data: { reason, ...(previous ? { previous } : {}), ...(detail ? { detail } : {}) },
+          // Trace data is flat (nested objects are dropped), so the tickets go in as one string; the summary names them too.
+          data: { reason, ...(previous ? { previous } : {}), ...(detail ? { detail } : {}), ...(detail?.tickets?.length ? { tickets: `${detail.tickets.join(', ')}${detail.more ? `, +${detail.more} more` : ''}` } : {}) },
           now,
         });
-        this.logger.info('Ticket autopilot stopped', { projectId: project.id, reason, ...(detail ? { workItemId: detail.workItemId, ticketId: detail.ticketId, error: detail.error } : {}) });
+        this.logger.info('Ticket autopilot stopped', { projectId: project.id, reason, ...(detail ? { workItemId: detail.workItemId, ticketId: detail.ticketId, error: detail.error, tickets: detail.tickets, more: detail.more } : {}) });
       } else {
         const since = ps.stop?.since;
         delete ps.stop;
