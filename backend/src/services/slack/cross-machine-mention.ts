@@ -158,7 +158,7 @@ export function planCrossMachineMention(
 			content: `${tags} ${content}`,
 			added: inThread,
 			unreached: [],
-			note: `Added ${inThread.map((a) => a.name).join(', ')} (${tags}) so this reaches ${names(inThread)} on ${where(inThread)}: a post to another machine is dropped unless it @-names someone there.`,
+			note: `Added ${inThread.map((a) => `@${a.name.replace(/\s*\(.*$/, '').trim() || a.name}`).join(' ')} so this reaches ${names(inThread)} on ${where(inThread)}: a post to another machine is dropped unless it @-names someone there.`,
 		};
 	}
 	return {

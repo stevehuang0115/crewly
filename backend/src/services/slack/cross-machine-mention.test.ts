@@ -56,7 +56,7 @@ describe('planCrossMachineMention (b: add the @names)', () => {
 		const plan = planCrossMachineMention('Here is the enquiry form.', ROOM, [human, fromOwen]);
 		expect(plan.content).toBe('<@UOWEN> Here is the enquiry form.');
 		expect(plan.added).toEqual([owen]);
-		expect(plan.note).toContain('Added Owen (CE)');
+		expect(plan.note).toContain('Added @Owen so this reaches Owen (CE)');
 	});
 
 	it('adds an app-less agent by its plain name, an agent with a bot by <@BOTID> (never a plain @Name, Cloud drops it)', () => {
