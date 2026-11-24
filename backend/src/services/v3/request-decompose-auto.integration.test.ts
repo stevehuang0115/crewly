@@ -167,6 +167,9 @@ async function buildFixture(): Promise<IntegrationFixture> {
   }
 }
 
+/** Polls of {@link waitFor} for chains that must finish (10 ms each, so 10 s at most; a pass returns at once). */
+const WAIT_ATTEMPTS = 1000;
+
 /**
  * Idle-loop the event loop until a predicate becomes true or attempts run
  * out. The dispatch chain through the bus is async (microtasks +
@@ -228,13 +231,17 @@ describe('Request auto-decompose pipeline (Option C subscriber, end-to-end)', ()
       intentCategory: 'code_change' as IntentCategory,
     });
 
-    // Loop multiple flush rounds — both subscribers may schedule more
-    // work in response to each other's events.
-    for (let i = 0; i < 5; i++) {
+    // Both subscribers schedule more work in response to each other's events,
+    // so wait for the result itself (the SLA item plus at least 2 decomposition
+    // items linked) rather than for a fixed number of 50 ms rounds, which a
+    // loaded machine does not always finish inside (CREW-1261).
+    const slaItem = `request:${created.id}:respond_to_user`;
+    await waitFor(async () => {
       await fx.decomposeSubscriber.flushPending();
       await fx.slaSubscriber.flushPending();
-      await new Promise((r) => setTimeout(r, 50));
-    }
+      const r = await fx.requestService.getById(created.id);
+      return (r?.workItemIds.filter((id) => id !== slaItem).length ?? 0) >= 2;
+    }, WAIT_ATTEMPTS);
 
     // Confirm decompose actually ran. If this fails, the bug isn't the
     // SLA-WI gate — it's something earlier in the subscriber chain.
@@ -277,7 +284,7 @@ describe('Request auto-decompose pipeline (Option C subscriber, end-to-end)', ()
     await waitFor(async () => {
       const r = await fx.requestService.getById(created.id);
       return (r?.workItemIds.length ?? 0) > 0;
-    });
+    }, WAIT_ATTEMPTS);
 
     const refreshed = await fx.requestService.getById(created.id);
     expect(refreshed).not.toBeNull();
@@ -372,7 +379,7 @@ describe('Request auto-decompose pipeline (Option C subscriber, end-to-end)', ()
     await waitFor(async () => {
       const r = await fx.requestService.getById(created.id);
       return (r?.workItemIds.length ?? 0) > 0;
-    });
+    }, WAIT_ATTEMPTS);
     const firstPassCount = (await fx.requestService.getById(created.id))!.workItemIds.length;
     expect(firstPassCount).toBeGreaterThan(0);
 
@@ -459,7 +466,7 @@ describe('Request auto-decompose pipeline (Option C subscriber, end-to-end)', ()
     await waitFor(async () => {
       const r = await fx.requestService.getById(created.id);
       return (r?.workItemIds.length ?? 0) > 0;
-    });
+    }, WAIT_ATTEMPTS);
 
     const refreshed = await fx.requestService.getById(created.id);
     expect(refreshed).not.toBeNull();
@@ -514,10 +521,13 @@ describe('Request auto-decompose pipeline (Option C subscriber, end-to-end)', ()
 
     await fx.decomposeSubscriber.flushPending();
     await fx.slaSubscriber.flushPending();
+    // Every item the pool holds for the Request is linked: nothing is still on its way
+    // (a second decomposition would add more), so the count below is final.
     await waitFor(async () => {
       const r = await fx.requestService.getById(created.id);
-      return (r?.workItemIds.length ?? 0) > 0;
-    });
+      const queued = (await fx.taskPool.getAllItems()).filter((wi) => wi.requestId === created.id);
+      return (r?.workItemIds.length ?? 0) > 0 && r!.workItemIds.length === queued.length;
+    }, WAIT_ATTEMPTS);
 
     // The post-decompose Request has the plan-task-count of WIs, NOT 2x.
     // Sanity gate: we don't pin the exact count (planning heuristic may
