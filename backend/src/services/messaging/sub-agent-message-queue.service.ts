@@ -139,7 +139,7 @@ export function withSurfacedNotice(m: QueuedAgentMessage): string {
 	if (m.surfacedAt === undefined) return m.data;
 	const at = new Date(m.surfacedAt).toISOString();
 	if (m.meta?.urgent === true) {
-		return `[Crewly: this urgent message was already shown to you during your last turn (at ${at}). If you already acted on it, do not act on it again.]\n${m.data}`;
+		return `[Crewly: ${OWNER_HOOK_MESSAGE_CONSTANTS.URGENT_ALREADY_SHOWN_TEXT} (at ${at}). If you already acted on it, do not act on it again.]\n${m.data}`;
 	}
 	return `[Crewly: this owner message was already shown to you during your last turn (at ${at}). If you already answered it, do not answer again.]\n${m.data}`;
 }

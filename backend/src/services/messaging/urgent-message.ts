@@ -94,9 +94,7 @@ export function buildUrgentHookNote(
 	maxChars: number = OWNER_HOOK_MESSAGE_CONSTANTS.MAX_CONTEXT_CHARS,
 	overflow?: OwnerMessageOverflowWriter,
 ): string {
-	const head =
-		`${OWNER_HOOK_MESSAGE_CONSTANTS.URGENT_TAG} Crewly handed you this urgent message from your lead or delegator while you were working. ` +
-		'It may change or stop your current work: read it now and act on it before your next step, then carry on if it still applies.';
+	const head = `${OWNER_HOOK_MESSAGE_CONSTANTS.URGENT_TAG} ${OWNER_HOOK_MESSAGE_CONSTANTS.URGENT_NOTE_TEXT}`;
 	const sep = '\n\n';
 	return `${head}${sep}${fitKeepingNewest(message.data, maxChars - head.length - sep.length, overflow)}`;
 }
