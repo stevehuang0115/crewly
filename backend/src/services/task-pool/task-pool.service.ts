@@ -3526,6 +3526,23 @@ export class TaskPoolService {
   }
 
   /**
+   * The retries of a rejected WorkItem that can still be worked: items named
+   * `<id>:retry:<n>` (the bridge's naming) in a status a worker can complete
+   * from. A retry already submitted for review, failed, rejected or finished
+   * is not live (CREW-947).
+   *
+   * @param workItemId - The rejected original
+   * @returns Its live retries, oldest first
+   */
+  async findLiveRetries(workItemId: string): Promise<WorkItem[]> {
+    const prefix = `${workItemId}:retry:`;
+    const live: ReadonlySet<string> = new Set(['queued', 'scheduled', 'running', 'blocked']);
+    return (await this.storage.getWorkItems())
+      .filter((wi) => wi.id.startsWith(prefix) && !wi.id.slice(prefix.length).includes(':') && live.has(wi.status))
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }
+
+  /**
    * Returns all work items in the pool (all statuses).
    *
    * @returns Array of all WorkItems

@@ -1087,6 +1087,37 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // CREW-947: a rejected item cannot be completed (rejected -> queued is its
+    // only edge); its work moved to a retry. Say which one instead of the
+    // state machine's bare "invalid status transition". Never redirects: the
+    // retry carries the reviewer's feedback and the worker must see it, and a
+    // completion filed under the wrong id would not carry the right evidence.
+    if (existing?.status === 'rejected') {
+      const retries = await getService().findLiveRetries(workItemId);
+      if (retries.length === 0) {
+        res.status(409).json({
+          success: false,
+          error:
+            `WorkItem ${workItemId} was rejected and has no live retry, so there is nothing to complete. ` +
+            `Ask your team lead whether it will be retried or closed; do not report this item done.`,
+          code: 'rejected_no_retry',
+        });
+        return;
+      }
+      const list = retries.map((r) => `${r.id}${r.target ? ` (for ${r.target})` : ''}`).join(', ');
+      res.status(409).json({
+        success: false,
+        error:
+          `WorkItem ${workItemId} was rejected by its reviewer and its work moved to a retry. ` +
+          (retries.length === 1
+            ? `Complete ${retries[0].id} instead${retries[0].target ? ` (it is assigned to ${retries[0].target})` : ''}; its brief carries the reviewer's feedback.`
+            : `Live retries: ${list}. Complete the one assigned to you instead; its brief carries the reviewer's feedback.`),
+        code: 'rejected_has_retry',
+        retryWorkItemIds: retries.map((r) => r.id),
+      });
+      return;
+    }
+
     // #873: evidence contract. Decided before anything is written, so a
     // rejected completion leaves the WorkItem exactly as it was.
     const evidenceMode = resolveEvidenceEnforcementMode();
