@@ -429,6 +429,53 @@ describe('RequestDecomposeSubscriber', () => {
       expect((taskPool as unknown as { addMock: jest.Mock }).addMock).toHaveBeenCalledTimes(2);
     });
 
+    it('does not decompose twice when a second event arrives while the first is still reading the Request (CREW-1261)', async () => {
+      const r = makeRequest();
+      seed.set(r.id, r);
+      // Hold the first read open: the second event is delivered inside the window where the
+      // Request is neither marked decomposed nor planned yet.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const realGet = requestService.getById.bind(requestService);
+      let reads = 0;
+      (requestService as unknown as { getById: (id: string) => Promise<Request | null> }).getById = async (id: string) => {
+        reads += 1;
+        if (reads === 1) await gate;
+        return realGet(id);
+      };
+      subscriber.start();
+      const first = deliverRequestCreated(bus, r.id);
+      const second = deliverRequestCreated(bus, r.id);
+      release();
+      await Promise.all([first, second]);
+      await subscriber.flushPending();
+
+      expect((requestService as unknown as { planMock: jest.Mock }).planMock).toHaveBeenCalledTimes(1);
+      expect((taskPool as unknown as { addMock: jest.Mock }).addMock).toHaveBeenCalledTimes(2);
+      expect(subscriber.getDecomposedRequestIdsSnapshot().has(r.id)).toBe(true);
+    });
+
+    it('releases the claim when the run throws, so a later event can decompose the Request', async () => {
+      const r = makeRequest();
+      seed.set(r.id, r);
+      const realGet = requestService.getById.bind(requestService);
+      let failNext = true;
+      (requestService as unknown as { getById: (id: string) => Promise<Request | null> }).getById = async (id: string) => {
+        if (failNext) {
+          failNext = false;
+          throw new Error('storage unavailable');
+        }
+        return realGet(id);
+      };
+      subscriber.start();
+      await deliverRequestCreated(bus, r.id);
+      await subscriber.flushPending();
+      expect(subscriber.getDecomposedRequestIdsSnapshot().has(r.id)).toBe(false);
+      await deliverRequestCreated(bus, r.id);
+      await subscriber.flushPending();
+      expect(subscriber.getDecomposedRequestIdsSnapshot().has(r.id)).toBe(true);
+    });
+
     it('marks even no-op (empty plan) Requests as processed so redelivery does not re-attempt plan()', async () => {
       const r = makeRequest({ description: 'short' });
       seed.set(r.id, r);
