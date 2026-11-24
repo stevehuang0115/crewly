@@ -8770,6 +8770,10 @@ export const TRACE_CONSTANTS = {
 	SUBAGENT_SENDBACK_HOOK_EVENT: 'SubagentSendBack',
 	/** Most ticket labels kept in a trace's tags (specs/2026-10-03-autopilot-experiments.md) */
 	MAX_TAG_LABELS: 20,
+	/** Ticket / work item / Request statuses kept in a trace's index entry (the oldest go first) */
+	MAX_REF_STATUSES: 40,
+	/** Bytes read from the end of a trace file to learn the statuses of a trace that has none in the index */
+	REF_STATUS_SCAN_BYTES: 128 * 1024,
 } as const;
 /**
  * Stall watcher (crewly#1363, crewly#1362, specs/2026-10-17-stall-watcher.md):

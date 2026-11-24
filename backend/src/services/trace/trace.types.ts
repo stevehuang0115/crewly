@@ -149,6 +149,13 @@ export interface TraceIndexEntry {
 	truncated: boolean;
 	/** Autopilot / label tags (specs/2026-10-03-autopilot-experiments.md) */
 	tags?: TraceTags;
+	/**
+	 * Last status seen for the entities this trace carries (`<kind>:<id>` →
+	 * status), from its `ticket.status`, `workitem.status` and `request.status`
+	 * events. A delivery that only names an entity whose last status is final
+	 * does not move a session onto the trace (CREW-1258).
+	 */
+	refStatus?: Record<string, string>;
 }
 
 /** Entity kinds the index can resolve a trace from. */
@@ -222,4 +229,41 @@ export function isTraceRootKind(value: unknown): value is TraceRootKind {
  */
 export function traceRefKey(kind: TraceRefKind, id: string): string {
 	return `${kind}:${id}`;
+}
+
+/** Work item statuses after which its agent is no longer working on it. */
+const ENDED_WORK_ITEM_STATUSES: ReadonlySet<string> = new Set(['done', 'done_by_worker', 'verified', 'failed', 'rejected', 'cancelled']);
+
+/** Ticket / Request statuses that are final. */
+const ENDED_TICKET_STATUSES: ReadonlySet<string> = new Set(['done', 'cancelled']);
+
+/**
+ * Whether a status is final for an entity kind (nobody is working on it
+ * any more). Decisions, experiments and run keys have no such status.
+ *
+ * @param kind - Entity kind
+ * @param status - Its status
+ * @returns True when final
+ */
+export function isEndedRefStatus(kind: TraceRefKind, status: string | null | undefined): boolean {
+	if (!status) return false;
+	if (kind === 'workItem') return ENDED_WORK_ITEM_STATUSES.has(status);
+	if (kind === 'ticket' || kind === 'request') return ENDED_TICKET_STATUSES.has(status);
+	return false;
+}
+
+/**
+ * The index key a status event updates: `ticket.status` → the ticket,
+ * `workitem.status` → the work item, `request.status` → the Request.
+ *
+ * @param event - A trace event
+ * @returns Kind, id and the new status, or null when the event carries none
+ */
+export function refStatusOfEvent(event: Pick<TraceEvent, 'type' | 'refs' | 'data'>): { kind: TraceRefKind; id: string; status: string } | null {
+	const to = event.data?.to;
+	if (typeof to !== 'string' || !to) return null;
+	if (event.type === 'ticket.status' && event.refs.ticketId) return { kind: 'ticket', id: event.refs.ticketId, status: to };
+	if (event.type === 'workitem.status' && event.refs.workItemId) return { kind: 'workItem', id: event.refs.workItemId, status: to };
+	if (event.type === 'request.status' && event.refs.requestId) return { kind: 'request', id: event.refs.requestId, status: to };
+	return null;
 }
