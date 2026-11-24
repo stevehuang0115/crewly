@@ -342,7 +342,8 @@ api_call POST "/chat/agent-response" "$BODY"
 #
 # Resolution order for which WorkItem to complete:
 #   1. `workItemId` in input — explicit, always wins. PASS THIS.
-#   2. Exactly one running WI for this session — inferred, and the resolved id
+#   2. Exactly one running WI for this session AND the report names it (its id,
+#      8-char prefix, or linked ticket id; CREW-790) — inferred, and the resolved id
 #      is echoed so the caller can see what was closed.
 #   3. More than one running WI — REFUSED. The candidates are named and the
 #      caller must pass `workItemId`.
@@ -376,6 +377,25 @@ if [ "$STATUS" = "done" ]; then
 
     TARGET_WI_ID=$(printf '%s' "$RUNNING_IDS" | head -1)
     WI_RESOLUTION="inferred"
+
+    # CREW-790: one running item is still only a GUESS. A report about other
+    # work (CE-305 card pulls) closed the one running CE-388 item. Only
+    # complete it when the report names it: its id (full or 8-char prefix) or
+    # its linked ticket id. Otherwise refuse and show how to pass workItemId.
+    if [ -n "$TARGET_WI_ID" ]; then
+      WI_TICKET=$(printf '%s' "$POOL_RESP" | jq -r --arg id "$TARGET_WI_ID" \
+        '((.workItems // .data // []) | map(select(.id == $id)) | .[0] // {}) | (.metadata.projectTicket.id // .ticketId // empty)' 2>/dev/null || true)
+      WI_SHORT="${TARGET_WI_ID:0:8}"
+      WI_NAMED="no"
+      case "$SUMMARY" in *"$TARGET_WI_ID"*|*"$WI_SHORT"*) WI_NAMED="yes" ;; esac
+      if [ "$WI_NAMED" = "no" ] && [ -n "$WI_TICKET" ]; then
+        # Ticket ids match as whole tokens, so CREW-79 does not match CREW-790.
+        if printf '%s' "$SUMMARY" | grep -qiE "(^|[^A-Za-z0-9-])${WI_TICKET}([^A-Za-z0-9]|$)"; then WI_NAMED="yes"; fi
+      fi
+      if [ "$WI_NAMED" = "no" ]; then
+        error_exit "report-status refuses to complete the only running WorkItem ${TARGET_WI_ID}${WI_TICKET:+ (ticket ${WI_TICKET})}: this done report does not name it. If it is about that item, re-run with workItemId \"${TARGET_WI_ID}\" (--work-item-id ${TARGET_WI_ID}); otherwise this report is about other work and nothing was completed."
+      fi
+    fi
   fi
 
   if [ -n "$TARGET_WI_ID" ]; then
