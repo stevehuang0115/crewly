@@ -110,6 +110,10 @@ passes. Leave a field out when there is nothing to say; an empty list is fine.
 "assumptions":["The relay runs 1.5.24 in production (checked the compose file, not the container)"]
 ```
 
+## If the WorkItem was rejected
+
+A reviewer who rejects a WorkItem sends it back and Crewly queues a retry (`<id>:retry:<n>`) with the reviewer's feedback in its brief. Complete the **retry**, not the original: completing the original answers 409 `rejected_has_retry` and names the retry id ("Complete `<id>:retry:1` instead"). With no live retry you get 409 `rejected_no_retry`; ask your team lead rather than reporting it done. Nothing is completed or written in either case.
+
 ## Example
 
 ```bash

@@ -87,6 +87,7 @@ const mockService = {
   removeFromPool: jest.fn(),
   completeItem: jest.fn(),
   findWorkItem: jest.fn(),
+  findLiveRetries: jest.fn(),
   setOutput: jest.fn(),
   appendNote: jest.fn(),
   patchMetadata: jest.fn(),
@@ -982,6 +983,64 @@ describe('TaskPoolController', () => {
       );
       expect(mockService.setOutput).not.toHaveBeenCalled();
       expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+  });
+
+  // CREW-947: completing a rejected original used to fail with a bare
+  // "invalid status transition rejected -> done_by_worker".
+  describe('completeItem on a rejected item (CREW-947)', () => {
+    const complete = async (extra: Record<string, unknown> = {}) => {
+      mockService.setOutput.mockReset();
+      mockService.completeItem.mockReset();
+      const res = mockRes();
+      await completeItem(mockReq({ params: { workItemId: 'wi-r' }, body: { agentId: 'dev-1', result: { summary: 'redone', ...extra } } }), res);
+      return res;
+    };
+
+    it('with one live retry: 409 naming it and its target, nothing written or completed', async () => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-r', type: 'delegate', status: 'rejected' });
+      mockService.findLiveRetries.mockResolvedValue([{ id: 'wi-r:retry:1', target: 'dev-1', status: 'queued' }]);
+      const res = await complete();
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        code: 'rejected_has_retry',
+        retryWorkItemIds: ['wi-r:retry:1'],
+        error: expect.stringContaining('Complete wi-r:retry:1 instead'),
+      }));
+      expect(mockService.setOutput).not.toHaveBeenCalled();
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('a retry assigned to someone else is named but never completed through the original', async () => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-r', type: 'delegate', status: 'rejected' });
+      mockService.findLiveRetries.mockResolvedValue([{ id: 'wi-r:retry:1', target: 'dev-2', status: 'queued' }]);
+      const res = await complete();
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringContaining('assigned to dev-2') }));
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('with several live retries: 409 listing all of them', async () => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-r', type: 'delegate', status: 'rejected' });
+      mockService.findLiveRetries.mockResolvedValue([{ id: 'wi-r:retry:1', target: 'a' }, { id: 'wi-r:retry:2', target: 'b' }]);
+      const res = await complete();
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'rejected_has_retry', retryWorkItemIds: ['wi-r:retry:1', 'wi-r:retry:2'] }));
+    });
+
+    it('with no live retry: 409 saying it was rejected and has no retry', async () => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-r', type: 'delegate', status: 'rejected' });
+      mockService.findLiveRetries.mockResolvedValue([]);
+      const res = await complete();
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'rejected_no_retry', error: expect.stringContaining('rejected and has no live retry') }));
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('any other status goes on as before and never looks for retries', async () => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-r', type: 'delegate', status: 'running' });
+      mockService.findLiveRetries.mockReset();
+      await complete();
+      expect(mockService.findLiveRetries).not.toHaveBeenCalled();
     });
   });
 

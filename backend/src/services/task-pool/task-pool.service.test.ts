@@ -2906,6 +2906,24 @@ describe('TaskPoolService', () => {
     });
   });
 
+  describe('findLiveRetries (CREW-947)', () => {
+    it('lists only retries of that item a worker can still complete', async () => {
+      const add = async (id: string, end?: 'running' | 'cancelled') => {
+        await service.addToPool(makeWorkItem({ id, target: 'agent-a' }));
+        if (end === 'running') await service.claimSpecificItem('agent-a', id);
+        if (end === 'cancelled') await service.transitionStatus(id, 'cancelled', 'system');
+      };
+      await add('wi-1:retry:1', 'cancelled'); // finished: not live
+      await add('wi-1:retry:2');
+      await add('wi-1:retry:4', 'running');
+      await add('wi-1:retry:2:retry:1'); // a retry of the retry belongs to that one
+      await add('wi-1:verify:wi-1');
+      await add('wi-10:retry:1'); // another item whose id starts the same
+      expect((await service.findLiveRetries('wi-1')).map((w) => w.id).sort()).toEqual(['wi-1:retry:2', 'wi-1:retry:4']);
+      expect(await service.findLiveRetries('nothing')).toEqual([]);
+    });
+  });
+
   describe('blockItem on (CREW-928: who the block waits on)', () => {
     async function running(target: string): Promise<string> {
       const wi = makeWorkItem({ target, title: 'needs sign-in' });
