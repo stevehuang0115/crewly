@@ -9,7 +9,7 @@
  */
 
 import { compactTokens, formatTokens } from '../usage/token-format.js';
-import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
+import { TICKET_AUTOPILOT_CONSTANTS, TRACE_CONSTANTS } from '../../constants.js';
 import { redactSecrets } from '../../utils/secret-redactor.js';
 import type { ProjectTicket } from '../../types/project-ticket.types.js';
 import type { AutopilotStopReason, MemberAvailability, TriageCandidate } from './ticket-autopilot-decision.js';
@@ -263,12 +263,19 @@ export const STOP_REASON_WORDS: Readonly<Record<AutopilotStopReason, string>> = 
   waiting_for_replan: 'waiting for the next goal replan',
 };
 
-/** What failed behind a `system_error` stop: the work item, its ticket and the error (CREW-1242). */
+/**
+ * What a stop is about: for `system_error` the work item that failed and its
+ * ticket (CREW-1242); for `stalled_work` and `waiting_on_owner` the tickets
+ * (and work items) behind it (CREW-809), so the lead can act from the event.
+ */
 export interface StopDetail {
-  /** `failed`: a project WorkItem failed; `stuck_delivery`: an autopilot WorkItem was never picked up */
-  kind: 'failed' | 'stuck_delivery';
-  /** The WorkItem that failed or was not delivered */
-  workItemId: string;
+  /**
+   * `failed`: a project WorkItem failed; `stuck_delivery`: an autopilot WorkItem was never picked up;
+   * `stalled`: in-progress tickets nobody is working on; `waiting_on_owner`: tickets waiting on the owner
+   */
+  kind: 'failed' | 'stuck_delivery' | 'stalled' | 'waiting_on_owner';
+  /** The WorkItem that failed or was not delivered (`failed`, `stuck_delivery`) */
+  workItemId?: string;
   /** The ticket it belongs to, when it has one */
   ticketId?: string;
   /** The error message, one line, secrets redacted, capped (never a payload) */
@@ -277,6 +284,12 @@ export interface StopDetail {
   code?: string;
   /** Failed WorkItems of the project inside the lookback (the one named is the newest) */
   failedCount?: number;
+  /** `stalled`, `waiting_on_owner`: the tickets, at most {@link TRACE_CONSTANTS.STALL_TICKETS_SHOWN} */
+  tickets?: string[];
+  /** `stalled`: the work items of those tickets, in the same order */
+  workItems?: string[];
+  /** `stalled`, `waiting_on_owner`: how many more tickets there are beyond the ones named */
+  more?: number;
 }
 
 /** Longest error message kept in a stop detail. */
@@ -297,12 +310,41 @@ export function sanitizeStopError(raw: unknown): string | undefined {
 }
 
 /**
- * A stop detail in words: which work item and ticket, and the error.
+ * The tickets (and work items) of a `stalled_work` / `waiting_on_owner` stop,
+ * capped like the retro line (8, then `+N more`).
  *
- * @param detail - What failed
- * @returns For example `work item wi-9, ticket CREW-12: spawn failed (E_SPAWN)`
+ * @param kind - Which stop
+ * @param tickets - Every ticket behind it, in the order to show
+ * @param workItems - Their work items (`stalled`), same order
+ * @returns The detail, or undefined when there is no ticket
+ */
+export function ticketsStopDetail(kind: 'stalled' | 'waiting_on_owner', tickets: string[], workItems: string[] = []): StopDetail | undefined {
+  if (tickets.length === 0) return undefined;
+  const shown = TRACE_CONSTANTS.STALL_TICKETS_SHOWN;
+  const more = Math.max(0, tickets.length - shown);
+  return {
+    kind,
+    tickets: tickets.slice(0, shown),
+    ...(workItems.length > 0 ? { workItems: workItems.slice(0, shown) } : {}),
+    ...(more > 0 ? { more } : {}),
+  };
+}
+
+/**
+ * A stop detail in words: which work item and ticket, and the error; or which
+ * tickets (and work items) are stalled or waiting on the owner.
+ *
+ * @param detail - What the stop is about
+ * @returns For example `work item wi-9, ticket CREW-12: spawn failed (E_SPAWN)`, or `tickets CREW-1, CREW-2, +3 more (work items wi-1, wi-2, +3 more)`
  */
 export function stopDetailText(detail: StopDetail): string {
+  if (detail.kind === 'stalled' || detail.kind === 'waiting_on_owner') {
+    const tickets = detail.tickets ?? [];
+    const more = detail.more ?? 0;
+    const list = (ids: string[]): string => `${ids.join(', ')}${more > 0 ? `, +${more} more` : ''}`;
+    const items = detail.workItems && detail.workItems.length > 0 ? ` (work item${detail.workItems.length + more === 1 ? '' : 's'} ${list(detail.workItems)})` : '';
+    return `ticket${tickets.length + more === 1 ? '' : 's'} ${list(tickets)}${items}`;
+  }
   const who = `work item ${detail.workItemId}${detail.ticketId ? `, ticket ${detail.ticketId}` : ''}`;
   if (detail.kind === 'stuck_delivery') return `${who}: queued for a long time and never picked up by its idle target`;
   const what = detail.error ?? 'no error message was recorded';
@@ -311,18 +353,20 @@ export function stopDetailText(detail: StopDetail): string {
 
 /**
  * A stop reason in words, with the time it may run next when known, and for
- * a `system_error` what failed.
+ * a `system_error`, `stalled_work` or `waiting_on_owner` what it is about.
  *
  * @param reason - Stop reason
  * @param until - When the autopilot may act again (epoch ms)
- * @param detail - What failed behind a `system_error`
+ * @param detail - What the stop is about
  * @returns Text for status and digest
  */
 export function stopReasonText(reason: AutopilotStopReason, until?: number | null, detail?: StopDetail | null): string {
   const base = STOP_REASON_WORDS[reason];
   if (reason === 'waiting_for_replan' && until) return `${base} (may run at ${new Date(until).toISOString()})`;
   if (reason === 'daily_replan_cap' && until) return `${base} (next replan at ${new Date(until).toISOString()})`;
-  if (reason === 'system_error' && detail) return `${base} (${stopDetailText(detail)})`;
+  if (detail && ((reason === 'system_error' && (detail.kind === 'failed' || detail.kind === 'stuck_delivery')) || (reason === 'stalled_work' && detail.kind === 'stalled') || (reason === 'waiting_on_owner' && detail.kind === 'waiting_on_owner'))) {
+    return `${base} (${stopDetailText(detail)})`;
+  }
   return base;
 }
 

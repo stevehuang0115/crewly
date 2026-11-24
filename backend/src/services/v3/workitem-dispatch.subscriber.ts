@@ -153,6 +153,37 @@ export function dispatchNoticeWorkItemIds(message: string): string[] | null {
 }
 
 /**
+ * WorkItem statuses after which a queued DIRECT brief (team-leader
+ * `delegate-task`) is no longer wanted: finished or abandoned like a notice's
+ * (`FINISHED_WORK_ITEM_STATUSES`), plus `blocked` (CREW-843: Nova blocked WI
+ * 19826009 on a stopped team, and the stale brief was started on wake).
+ */
+const UNWANTED_DIRECT_BRIEF_STATUSES: ReadonlySet<string> = new Set([...FINISHED_WORK_ITEM_STATUSES, 'blocked']);
+
+/**
+ * Whether a queued direct hand-over brief names a WorkItem that was
+ * cancelled, finished or blocked while the brief waited for its agent to wake
+ * (CREW-843). The brief is then DROPPED from the queue, not delivered; the
+ * delegator already got the queued-not-delivered note and the work's status
+ * change, so no replacement note is sent. A brief whose WorkItem is still
+ * queued or running, whose WorkItem is not in the pool, or that is not a
+ * direct brief at all (no WorkItem id) is delivered as before.
+ *
+ * @param message - Queued message text
+ * @param findWorkItem - Looks up a WorkItem's current state by id
+ * @returns True when the brief should be dropped instead of delivered
+ */
+async function isStaleDirectBrief(
+  message: string,
+  findWorkItem: (id: string) => Promise<Pick<WorkItem, 'status'> | null>,
+): Promise<boolean> {
+  const id = directBriefWorkItemId(message);
+  if (!id) return false;
+  const current = await findWorkItem(id);
+  return current !== null && UNWANTED_DIRECT_BRIEF_STATUSES.has(current.status);
+}
+
+/**
  * Whether a dispatch notice no longer announces any work: every WorkItem it
  * names is finished (done, verified, cancelled, failed) or gone from the pool.
  *
@@ -167,6 +198,9 @@ export function dispatchNoticeWorkItemIds(message: string): string[] | null {
  * brief and this notice, and delivering both would brief the agent twice
  * (crewly#1015 follow-up re-review).
  *
+ * Also covers a queued direct `delegate-task` brief whose WorkItem was
+ * cancelled, finished or blocked meanwhile (CREW-843, see {@link isStaleDirectBrief}).
+ *
  * @param message - Queued message text
  * @param findWorkItem - Looks up a WorkItem's current state by id
  * @param isDelivered - Whether a WorkItem was already delivered to the notice's target
@@ -178,7 +212,7 @@ export async function isStaleDispatchNotice(
   isDelivered?: (workItemId: string) => boolean,
 ): Promise<boolean> {
   const ids = dispatchNoticeWorkItemIds(message);
-  if (!ids) return false;
+  if (!ids) return isStaleDirectBrief(message, findWorkItem);
   for (const id of ids) {
     if (isDelivered?.(id)) continue;
     const current = await findWorkItem(id);
