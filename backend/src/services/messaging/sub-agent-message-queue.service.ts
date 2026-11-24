@@ -128,6 +128,18 @@ function isSurfaceable(m: QueuedAgentMessage): boolean {
 }
 
 /**
+ * Whether a queued message is the owner's answer to a decision. Unlike a chat
+ * question, nothing the agent posts "answers" it (it acts on it), so it can
+ * never be seen as answered and must be handed over only once (CREW-883).
+ *
+ * @param m - Queued message
+ * @returns True for a decision answer
+ */
+function isDecisionAnswer(m: QueuedAgentMessage): boolean {
+	return m.meta?.ref?.startsWith(OWNER_HOOK_MESSAGE_CONSTANTS.DECISION_REF_PREFIX) === true;
+}
+
+/**
  * The text an idle delivery writes: an owner message the agent was already
  * shown at a tool boundary (and has not answered in its conversation) gets
  * a one-line notice, so an agent that did answer elsewhere does not answer twice.
@@ -140,6 +152,9 @@ export function withSurfacedNotice(m: QueuedAgentMessage): string {
 	const at = new Date(m.surfacedAt).toISOString();
 	if (m.meta?.urgent === true) {
 		return `[Crewly: ${OWNER_HOOK_MESSAGE_CONSTANTS.URGENT_ALREADY_SHOWN_TEXT} (at ${at}). If you already acted on it, do not act on it again.]\n${m.data}`;
+	}
+	if (isDecisionAnswer(m)) {
+		return `[Crewly: ${OWNER_HOOK_MESSAGE_CONSTANTS.DECISION_ALREADY_SHOWN_TEXT} (at ${at}). If you already acted on it, do not act on it again.]\n${m.data}`;
 	}
 	return `[Crewly: this owner message was already shown to you during your last turn (at ${at}). If you already answered it, do not answer again.]\n${m.data}`;
 }
@@ -970,7 +985,7 @@ export class SubAgentMessageQueue {
 		const next = current.find(
 			(m) =>
 				isSurfaceable(m) &&
-				(m.surfaceCount ?? 0) < C.MAX_SURFACES &&
+				(m.surfaceCount ?? 0) < (isDecisionAnswer(m) ? C.DECISION_MAX_SURFACES : C.MAX_SURFACES) &&
 				(m.surfacedAt === undefined || now - m.surfacedAt >= C.RESURFACE_AFTER_MS),
 		);
 		if (!next) {

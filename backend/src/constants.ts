@@ -5120,6 +5120,12 @@ export const OWNER_HOOK_MESSAGE_CONSTANTS = {
 	RESURFACE_AFTER_MS: 5 * 60 * 1000,
 	/** Times one message is shown at a tool boundary; after that only the idle delivery remains */
 	MAX_SURFACES: 2,
+	/** Times a decision answer (ref `decision:<id>`) is shown at a tool boundary: once (CREW-883) */
+	DECISION_MAX_SURFACES: 1,
+	/** Ref prefix of an owner's decision answer in the queue */
+	DECISION_REF_PREFIX: 'decision:',
+	/** Idle-delivery prefix for a decision answer the agent was already shown at a tool call */
+	DECISION_ALREADY_SHOWN_TEXT: 'this decision answer was already shown to you during your last turn',
 	/** Ceiling on the whole additionalContext a hook call returns (chars) */
 	MAX_CONTEXT_CHARS: 6000,
 	/** Kill switch: set to this env var's OFF value to never surface at tool boundaries */

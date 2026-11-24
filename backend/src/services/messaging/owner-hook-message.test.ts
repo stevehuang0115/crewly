@@ -47,6 +47,41 @@ describe('owner message at the next tool boundary', () => {
 	});
 
 	describe('takeOwnerMessageForHook', () => {
+		describe('a decision answer is handed over once (CREW-883)', () => {
+			const DECISION: QueueMessageMeta = {
+				owner: true,
+				ref: 'decision:D-34',
+				where: { slackChannelId: 'C1', threadTs: '1001.0' },
+			};
+
+			it('is not handed to the hook a second time after RESURFACE_AFTER_MS', () => {
+				queue.enqueue(AGENT, '[DECISION D-34] The owner chose A', { queueMeta: DECISION });
+				expect(queue.takeOwnerMessageForHook(AGENT, now)?.surfaceCount).toBe(1);
+				expect(queue.takeOwnerMessageForHook(AGENT, now + C.RESURFACE_AFTER_MS)).toBeNull();
+				expect(queue.takeOwnerMessageForHook(AGENT, now + 10 * C.RESURFACE_AFTER_MS)).toBeNull();
+			});
+
+			it('a decision answer not yet seen is still handed over', () => {
+				queue.enqueue(AGENT, '[DECISION D-35] The owner chose B', { queueMeta: { ...DECISION, ref: 'decision:D-35' } });
+				expect(queue.takeOwnerMessageForHook(AGENT, now)).toMatchObject({ data: '[DECISION D-35] The owner chose B', surfaceCount: 1 });
+			});
+
+			it('stays queued, and the idle delivery says it was already shown', () => {
+				queue.enqueue(AGENT, '[DECISION D-34] The owner chose A', { queueMeta: DECISION });
+				queue.takeOwnerMessageForHook(AGENT, now);
+				expect(queue.getQueueSize(AGENT)).toBe(1);
+				const text = withSurfacedNotice(queue.peek(AGENT)[0]);
+				expect(text).toContain('decision answer was already shown');
+				expect(text).toContain('[DECISION D-34]');
+			});
+
+			it('chat owner messages still re-surface once, as before', () => {
+				queue.enqueue(AGENT, 'owner chat', { queueMeta: DM });
+				queue.takeOwnerMessageForHook(AGENT, now);
+				expect(queue.takeOwnerMessageForHook(AGENT, now + C.RESURFACE_AFTER_MS)?.surfaceCount).toBe(2);
+			});
+		});
+
 		it('hands over the owner message but keeps it queued, marked surfaced', () => {
 			queue.enqueue(AGENT, '[CHAT:dm-1] owner: what is the codeword?', { queueMeta: DM });
 			const got = queue.takeOwnerMessageForHook(AGENT, now);
