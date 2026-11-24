@@ -5134,6 +5134,14 @@ export const OWNER_HOOK_MESSAGE_CONSTANTS = {
 	OVERFLOW_DIR: 'runtime/owner-messages',
 	/** Characters of an overflowing owner message quoted in the note before the pointer */
 	OVERFLOW_PREVIEW_CHARS: 600,
+	/** Tag that opens an urgent lead/delegator note (CREW-844) */
+	URGENT_TAG: '[URGENT MESSAGE]',
+	/** What an urgent note tells the agent (CREW-844); follows {@link URGENT_TAG} */
+	/** Idle-delivery prefix for an urgent message the agent was already shown at a tool call (CREW-844) */
+	URGENT_ALREADY_SHOWN_TEXT: 'this urgent message was already shown to you during your last turn',
+	URGENT_NOTE_TEXT:
+		'Crewly handed you this urgent message from your lead or delegator while you were working. ' +
+		'It may change or stop your current work: read it now and act on it before your next step, then carry on if it still applies.',
 } as const;
 
 /**

@@ -9,6 +9,7 @@ import * as recorder from '../../services/trace/trace-recorder.js';
 import { AgentTurnStateService } from '../../services/monitoring/agent-turn-state.js';
 import { CredentialGuardAlertService } from '../../services/monitoring/credential-guard-alerts.js';
 import { ownerHookNoteFor } from '../../services/messaging/owner-hook-message.js';
+import { urgentHookNoteFor } from '../../services/messaging/urgent-message.js';
 import { WindDownService } from '../../services/system/wind-down.service.js';
 import { BoardActivityTracker, getBoardActivity } from '../../services/board/board-activity.tracker.js';
 import { setRuntimeFallbackHooks, type RuntimeFallbackHooks } from '../../services/runtime-fallback/effective-runtime.js';
@@ -22,6 +23,12 @@ jest.mock('../../services/messaging/owner-hook-message.js', () => ({
 	ownerHookNoteFor: jest.fn(() => null),
 }));
 const ownerNote = ownerHookNoteFor as jest.MockedFunction<typeof ownerHookNoteFor>;
+// Same for the urgent lead/delegator note (CREW-844).
+jest.mock('../../services/messaging/urgent-message.js', () => ({
+	...jest.requireActual('../../services/messaging/urgent-message.js'),
+	urgentHookNoteFor: jest.fn(() => null),
+}));
+const urgentNote = urgentHookNoteFor as jest.MockedFunction<typeof urgentHookNoteFor>;
 
 /**
  * Build a request/response pair and run the handler.
@@ -223,7 +230,10 @@ describe('receiveAgentHook — team-lead execution nudge (crewly#1083)', () => {
 	});
 
 	describe('owner message at the tool boundary', () => {
-		afterEach(() => ownerNote.mockReset().mockReturnValue(null));
+		afterEach(() => {
+			ownerNote.mockReset().mockReturnValue(null);
+			urgentNote.mockReset().mockReturnValue(null);
+		});
 
 		it('returns the waiting owner message as additionalContext', async () => {
 			observe.mockResolvedValue(null);
@@ -242,6 +252,33 @@ describe('receiveAgentHook — team-lead execution nudge (crewly#1083)', () => {
 			ownerNote.mockReturnValue('[OWNER MESSAGE] owner: hi');
 			const r = await callAsync(SESSION, { event: 'PostToolUse', toolName: 'Edit' });
 			expect(r.json.additionalContext).toBe('[OWNER MESSAGE] owner: hi\n\n[CREWLY-NUDGE] delegate this');
+		});
+
+		it('hands a busy agent an urgent lead/delegator message at its next tool call (CREW-844)', async () => {
+			observe.mockResolvedValue(null);
+			urgentNote.mockReturnValue('[URGENT MESSAGE] HOLD: do not render');
+			const r = await callAsync(SESSION, { event: 'PostToolUse', toolName: 'Bash' });
+			expect(r.json).toMatchObject({ success: true, additionalContext: '[URGENT MESSAGE] HOLD: do not render' });
+		});
+
+		it('gives no urgent note when none is waiting, and a waiting owner message goes first, one message per call', async () => {
+			observe.mockResolvedValue(null);
+			expect((await callAsync(SESSION, { event: 'PostToolUse', toolName: 'Bash' })).json).not.toHaveProperty('additionalContext');
+			ownerNote.mockReturnValue('[OWNER MESSAGE] owner: hi');
+			urgentNote.mockReturnValue('[URGENT MESSAGE] HOLD');
+			urgentNote.mockClear();
+			const r = await callAsync(SESSION, { event: 'PostToolUse', toolName: 'Bash' });
+			expect(r.json.additionalContext).toBe('[OWNER MESSAGE] owner: hi');
+			expect(urgentNote).not.toHaveBeenCalled();
+		});
+
+		it("never hands an urgent message to a subagent's tool call", async () => {
+			observe.mockResolvedValue(null);
+			urgentNote.mockReturnValue('[URGENT MESSAGE] HOLD');
+			urgentNote.mockClear();
+			const r = await callAsync(SESSION, { event: 'PostToolUse', toolName: 'Bash', agentId: 'aec1310fcf3b9c9e3' });
+			expect(r.json).not.toHaveProperty('additionalContext');
+			expect(urgentNote).not.toHaveBeenCalled();
 		});
 
 		it("never hands it to a subagent's tool call", async () => {

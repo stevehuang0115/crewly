@@ -70,6 +70,18 @@ OUT=$(bash "$RUN" --to dana-1 --message "hi" 2>/dev/null)
 check "other queue: reported as not delivered" "$OUT" '"delivered":false'
 check "other queue: generic note" "$OUT" 'Your message is queued'
 
+> "$CALL_LOG"
+echo '{"success":true,"message":"Data written successfully"}' > "$RESP_FILE"
+bash "$RUN" --to qa-1 --urgent --message "Hold: brief changed" >/dev/null 2>&1
+check "--urgent sends urgent:true" "$(cat "$CALL_LOG")" '"urgent":true'
+> "$CALL_LOG"
+bash "$RUN" --to qa-1 --message "plain" >/dev/null 2>&1
+if grep -qF 'urgent' "$CALL_LOG"; then
+  echo "  FAIL: a plain message must not carry urgent"; FAIL=$((FAIL + 1))
+else
+  echo "  PASS: a plain message carries no urgent flag"; PASS=$((PASS + 1))
+fi
+
 echo 'FAIL' > "$RESP_FILE"
 if bash "$RUN" --to ghost --message "hi" >/dev/null 2>&1; then
   echo "  FAIL: an HTTP error must fail the skill"; FAIL=$((FAIL + 1))

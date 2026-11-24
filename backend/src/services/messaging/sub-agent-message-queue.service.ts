@@ -138,6 +138,9 @@ function isSurfaceable(m: QueuedAgentMessage): boolean {
 export function withSurfacedNotice(m: QueuedAgentMessage): string {
 	if (m.surfacedAt === undefined) return m.data;
 	const at = new Date(m.surfacedAt).toISOString();
+	if (m.meta?.urgent === true) {
+		return `[Crewly: ${OWNER_HOOK_MESSAGE_CONSTANTS.URGENT_ALREADY_SHOWN_TEXT} (at ${at}). If you already acted on it, do not act on it again.]\n${m.data}`;
+	}
 	return `[Crewly: this owner message was already shown to you during your last turn (at ${at}). If you already answered it, do not answer again.]\n${m.data}`;
 }
 
@@ -984,6 +987,34 @@ export class SubAgentMessageQueue {
 			...(next.meta?.ref ? { ref: next.meta.ref } : {}),
 		});
 		return { data: next.data, queuedAt: next.queuedAt, surfaceCount: next.surfaceCount };
+	}
+
+	/**
+	 * Hand the next URGENT message (a hold or plan change from the agent's
+	 * lead or delegator, CREW-844) waiting for a busy agent to its PostToolUse
+	 * hook, so it reaches the agent at the next tool call. At most one per call
+	 * and each only once: unlike an owner message there is no conversation whose
+	 * answer proves it was seen, so it is not shown again.
+	 *
+	 * The message is NOT removed (the hook response could be lost): it is marked
+	 * surfaced, and the idle delivery then prefixes it with an "already shown"
+	 * line ({@link withSurfacedNotice}), so it is not acted on twice.
+	 *
+	 * @param sessionName - The agent whose hook is asking
+	 * @param now - Clock
+	 * @returns The message to show, or null
+	 */
+	takeUrgentMessageForHook(sessionName: string, now: number = Date.now()): SurfacedOwnerMessage | null {
+		const next = (this.pendingMessages.get(sessionName) ?? []).find((m) => m.meta?.urgent === true && m.surfacedAt === undefined);
+		if (!next) return null;
+		next.surfacedAt = now;
+		next.surfaceCount = 1;
+		this.save();
+		this.logger.info('Urgent message handed to the busy agent at a tool boundary', {
+			sessionName,
+			queuedAt: new Date(next.queuedAt).toISOString(),
+		});
+		return { data: next.data, queuedAt: next.queuedAt, surfaceCount: 1 };
 	}
 
 	/**

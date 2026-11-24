@@ -53,6 +53,7 @@ Send a direct message to another agent's terminal session. The message is writte
 | `--to` / `-t` | `to` | Yes | Target agent's PTY session name |
 | `--message` / `-m` | `message` | Yes | Message text (or pipe via stdin) |
 | `--message-file` | — | No | Read message from a file path |
+| `--urgent` | — | No | A hold or plan change for an agent that is **busy**: it is handed to the agent at its next tool call instead of after its turn. Honoured only when you are the agent's team lead, the agent that delegated one of its open WorkItems, or the orchestrator; from anyone else the flag is ignored and the message queues as usual. Shown once; the idle delivery then says it was already shown. Use it for "stop" or "change course", not for ordinary updates. |
 
 ## Examples — CLI Flags (preferred)
 
@@ -65,6 +66,9 @@ echo "PR #42 is ready for review. It's passing all tests." | bash execute.sh --t
 
 # Message from file
 bash execute.sh --to qa-1 --message-file /tmp/task-details.txt
+
+# Hold a busy worker you delegated to
+bash execute.sh --to qa-1 --urgent --message "Hold: do not render, the brief changed"
 ```
 
 ## Examples — Legacy JSON (backward compatible)
