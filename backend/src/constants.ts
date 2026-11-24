@@ -4995,6 +4995,18 @@ export const RUNTIME_TERMS_CONSTANTS = {
 } as const;
 
 /**
+ * Re-pushing a WorkItem brief that was already delivered (CREW-821). Several
+ * callers re-push on their own clocks (reconciler, autopilot stall check,
+ * ticket nudge, auto-claim); after one write landed, another one wrote the
+ * same brief to the same agent about a minute later. One shared window,
+ * kept by `WorkItemDispatchSubscriber.redispatchOutcome`.
+ */
+export const REDISPATCH_CONSTANTS = {
+	/** After a re-push write landed, any other re-push of the same WorkItem to the same agent waits this long and gets `waiting` (ms) */
+	COOLDOWN_MS: 5 * 60 * 1000,
+} as const;
+
+/**
  * Timing for delivering the registration instruction to a freshly booted
  * runtime and re-delivering it once when no registration arrives.
  */
