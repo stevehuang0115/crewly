@@ -90,9 +90,10 @@ because too many callers reference it.
 **Pass `workItemId` whenever you report done.** Resolution order:
 
 1. **`workItemId` given** — that item is completed. Always prefer this.
-2. **Omitted, exactly one WorkItem running for your session** — that one is
+2. **Omitted, exactly one WorkItem running for your session, and the summary names it** (its id, the 8-char id prefix, or its linked ticket id such as `CREW-790`) — that one is
    completed, and the resolved id is echoed so you can see what closed.
-3. **Omitted, more than one running** — the skill **refuses** and names the
+3. **Omitted, one item running but the summary does not name it or its ticket** — the skill **refuses**, completes nothing, and prints the candidate id and how to pass `workItemId` (CREW-790: a report about CE-305 once closed the only running CE-388 item).
+4. **Omitted, more than one running** — the skill **refuses** and names the
    candidates. It will not guess.
 
 Case 3 exists because guessing destroyed real work: on 2026-08-21 the skill
