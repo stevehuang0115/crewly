@@ -12,8 +12,11 @@ import type { EnqueueMessageInput, QueuedMessage, PersistedQueueState } from '..
 import { PERSISTED_QUEUE_VERSION } from '../../types/messaging.types.js';
 import { MESSAGE_QUEUE_CONSTANTS } from '../../constants.js';
 
-// Mock constants
+// Mock constants. Keep the real exports and override only what the suite needs:
+// the logger imports app-open-link, which reads CREWLY_APPS_CONSTANTS at load
+// (CREW-1260: without the real module the suite failed to load, 0 tests).
 jest.mock('../../constants.js', () => ({
+  ...jest.requireActual('../../constants.js'),
   MESSAGE_SOURCES: {
     SLACK: 'slack',
     WEB_CHAT: 'web_chat',
