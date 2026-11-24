@@ -53,7 +53,7 @@ import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import type { TeamBudgetGateService } from '../budget/team-budget-gate.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
-import { DIRECT_DELIVERY_CONSTANTS, ORCHESTRATOR_SESSION_NAME, TUI_INPUT_GUARD } from '../../constants.js';
+import { DIRECT_DELIVERY_CONSTANTS, ORCHESTRATOR_SESSION_NAME, REDISPATCH_CONSTANTS, TUI_INPUT_GUARD } from '../../constants.js';
 import { spendCapStopOf } from '../spend/spend-cap.gate.js';
 import { usageLimitOf } from '../runtime-fallback/usage-limit-state.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
@@ -388,6 +388,13 @@ export class WorkItemDispatchSubscriber {
 
   /** Keys whose dispatch notice is waiting on the agent's message queue (`202 queued`) */
   private readonly pendingQueued = new Set<string>();
+
+  /**
+   * When each key's brief was last re-pushed successfully (epoch ms), for the
+   * shared re-push cooldown of {@link redispatchOutcome} (CREW-821). Entries
+   * older than the window are dropped as new ones are written.
+   */
+  private readonly lastRepushAt = new Map<string, number>();
 
   /** Pending direct-delivery grace timers, keyed like {@link dispatched} */
   private readonly graceTimers = new Map<string, NodeJS.Timeout>();
@@ -945,12 +952,30 @@ export class WorkItemDispatchSubscriber {
    * failed-wake series on 2026-10-08/09 began with a push held this way,
    * and each later check then reported "redelivery not delivered").
    *
+   * One cooldown is shared by every caller (CREW-821): the reconciler, the
+   * autopilot stall check, the ticket nudge and auto-claim each re-push on
+   * their own clock, so after one write landed another wrote the same brief
+   * to the same agent a minute later. A re-push within
+   * {@link REDISPATCH_CONSTANTS.COOLDOWN_MS} of the last successful one gets
+   * `waiting` and writes nothing. No caller bypasses it: a first delivery
+   * ({@link dispatchOutcome}) is not a re-push and is never held by it, and
+   * the reconciler keeps its own, longer per-item backoff on top.
+   *
    * @param workItem - WorkItem whose brief should be re-pushed
    * @returns The outcome (see {@link DispatchOutcome})
    */
   async redispatchOutcome(workItem: WorkItem): Promise<DispatchOutcome> {
     if (!workItem.target) return { status: 'held', reason: 'no target' };
     const key = this.dispatchKey(workItem.id, workItem.target);
+    const lastRepush = this.lastRepushAt.get(key);
+    if (lastRepush !== undefined && Date.now() - lastRepush < REDISPATCH_CONSTANTS.COOLDOWN_MS) {
+      this.logger.info('Redispatch skipped — the brief was re-pushed moments ago', {
+        workItemId: workItem.id,
+        target: workItem.target,
+        msSinceLastRepush: Date.now() - lastRepush,
+      });
+      return { status: 'waiting', reason: 're-pushed to the agent moments ago; not pushed again so soon' };
+    }
     // Its notice still waits on the agent's queue: it goes out when the agent
     // is active; a second one would brief it twice.
     if (this.pendingQueued.has(key) && this.noticeStillQueued(workItem.id, workItem.target)) {
@@ -970,6 +995,13 @@ export class WorkItemDispatchSubscriber {
     this.dispatched.delete(key);
     const outcome = await this.dispatchOutcome(workItem);
     const reached = dispatchWrote(outcome);
+    if (reached) {
+      const now = Date.now();
+      for (const [k, at] of this.lastRepushAt) {
+        if (now - at >= REDISPATCH_CONSTANTS.COOLDOWN_MS) this.lastRepushAt.delete(k);
+      }
+      this.lastRepushAt.set(key, now);
+    }
     traceHarness('harness.redelivery', {
       workItem,
       session: workItem.target,
