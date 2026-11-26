@@ -35,6 +35,7 @@ export const TICKET_AUTOPILOT_ASSIGNMENT_GUIDANCE: readonly string[] = [
   'Role is a preference, not a limit: every member can code, write and research. Any member can take any ticket that needs no special account, tool or permission. Prefer an idle member; a stopped member is available too — assigning starts them.',
   'Take a ticket yourself only for lead-level work (review, decisions, owner communication, cross-team coordination), when every member is already working, or when it truly needs your own judgment. "No member fits" is rare — record what is missing: delegate-task --no-member-fits "<what is missing>" --task "<the ticket>".',
   'A split written in an old ticket (e.g. "Owen writes, Nova does the images") is only a hint: decide by availability. Split a mixed ticket so the parts run in parallel.',
+  'Not enough hands: when every member is already working, add a temporary member with add-temp-member (within the team\'s temporary headcount) and assign to it; when the headcount is used up or the same need keeps coming back, ask the owner for a permanent seat with request-seat. Do not quietly do it all yourself.',
 ];
 
 /** Label of each availability in the triage brief. */

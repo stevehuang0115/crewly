@@ -60,6 +60,8 @@ export interface TeamMember {
   tier?: ModelTier;
   /** Slack user id of the one person this agent works for; others get a polite decline (issue #968). '' clears. */
   dedicatedTo?: string;
+  /** Set on a temporary member a team lead added; it is removed automatically when its work is accepted or it sits unused */
+  temporary?: { createdBy: string; createdAt: string; reason: string; workItemId?: string; expiresAt: string };
   skillOverrides?: string[]; // Additional skill IDs beyond what the role provides
   excludedRoleSkills?: string[]; // Role skills to exclude for this specific member
   currentTickets?: string[];
@@ -201,6 +203,15 @@ export interface Team {
   pauseLabel?: string;
   /** "Optimize usage": the lead reviews usage weekly and proposes tier changes the owner approves (crewly#1173) */
   optimizeUsage?: boolean;
+  /** Temporary agent headcount: temporary members the lead may have at the same time (unset = 2, 0 = none) */
+  tempHeadcount?: number;
+}
+
+/** GET /api/teams/:id/temp-members. */
+export interface TeamTempMembers {
+  teamId: string;
+  headcount: { used: number; limit: number };
+  members: Array<{ id: string; name: string; role: string; sessionName: string; temporary: { createdBy: string; createdAt: string; reason: string; workItemId?: string; expiresAt: string } }>;
 }
 
 /** Model tiers, strongest first (crewly#1173). */

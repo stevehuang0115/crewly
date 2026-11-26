@@ -14,6 +14,8 @@ export interface LeadShareDigestDeps {
   teams: () => Promise<Team[]>;
   forEachEvent: LedgerVisitor;
   delegation: Pick<TlDelegationService, 'nudgeCounts' | 'keptWorkSince'>;
+  /** Temporary members opened / removed per team since a time (absent = no line) */
+  tempCounts?: (sinceMs: number) => Promise<Map<string, { opened: number; removed: number }>>;
 }
 
 /**
@@ -28,10 +30,12 @@ export async function leadShareDigestFor(now: Date, deps: LeadShareDigestDeps): 
   const rows = computeLeadShares(teams, deps.forEachEvent, now);
   const dayStart = startOfLocalDay(now).getTime();
   const extras = new Map<string, LeadDigestExtras>();
+  const temps = (await deps.tempCounts?.(dayStart).catch(() => null)) ?? new Map<string, { opened: number; removed: number }>();
   for (const r of rows) {
     const nudges = deps.delegation.nudgeCounts(r.leadSessions, now.getTime()).day;
     const kept = deps.delegation.keptWorkSince(dayStart, { teamId: r.teamId, sessions: r.leadSessions }).map((k) => k.reason);
-    extras.set(r.teamId, { nudges, keptReasons: kept });
+    const temp = temps.get(r.teamId);
+    extras.set(r.teamId, { nudges, keptReasons: kept, ...(temp ? { temp } : {}) });
   }
   return buildLeadShareDigest(rows, extras);
 }
@@ -44,15 +48,19 @@ export async function leadShareDigestFor(now: Date, deps: LeadShareDigestDeps): 
  * @returns Block text, or null
  */
 export async function defaultLeadShareDigest(now: Date): Promise<string | null> {
-  const [{ StorageService }, { TokenUsageService }, { TlDelegationService }] = await Promise.all([
+  const [{ StorageService }, { TokenUsageService }, { TlDelegationService }, { TempMemberStore }, { tempCountsByTeam }, { getCrewlyHomePath }] = await Promise.all([
     import('../core/storage.service.js'),
     import('../monitoring/token-usage.service.js'),
     import('./tl-delegation.service.js'),
+    import('../temp-members/temp-member.store.js'),
+    import('../temp-members/temp-member.service.js'),
+    import('../core/crewly-home.utils.js'),
   ]);
   const usage = TokenUsageService.getInstance();
   return leadShareDigestFor(now, {
     teams: () => StorageService.getInstance().getTeams(),
     forEachEvent: (visit, since) => usage.forEachEvent(visit, since),
     delegation: TlDelegationService.getInstance(),
+    tempCounts: async (sinceMs) => tempCountsByTeam(await TempMemberStore.inHome(getCrewlyHomePath()).events(sinceMs), sinceMs),
   });
 }

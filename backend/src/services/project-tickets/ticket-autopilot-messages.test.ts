@@ -264,6 +264,22 @@ describe('team-leader prompt', () => {
     expect(text).not.toContain('whose role fits the work');
   });
 
+  it.each(['config/roles/team-leader/prompt.md', 'config/roles/team-leader/tl-addon.md'])('%s carries the "Not enough hands" rule (temporary member, then a permanent seat)', (rel) => {
+    const text = fs.readFileSync(path.resolve(__dirname, '../../../..', rel), 'utf8');
+    expect(text).toContain('**Not enough hands.**');
+    expect(text).toContain('add a temporary member with `add-temp-member');
+    expect(text).toContain("within the team's temporary headcount");
+    expect(text).toContain('ask the owner for a permanent seat with `request-seat');
+    expect(text).toContain('Do not quietly do it all yourself');
+  });
+
+  it.each(['config/roles/team-leader/role-boundaries.md', 'config/roles/team-leader/fragments/role-boundary.md'])('%s names both ways out of a team short of hands', (rel) => {
+    const text = fs.readFileSync(path.resolve(__dirname, '../../../..', rel), 'utf8');
+    expect(text).toContain('add-temp-member');
+    expect(text).toContain('request-seat');
+    expect(text).toMatch(/quietly do(es)? it all/);
+  });
+
   it.each(['config/roles/team-leader/prompt.md', 'config/roles/team-leader/tl-addon.md'])('%s hands owner Slack requests over with --thread (crewly#1083)', (rel) => {
     const text = fs.readFileSync(path.resolve(__dirname, '../../../..', rel), 'utf8');
     expect(text).toContain('--thread <key>');
@@ -275,6 +291,8 @@ describe('team-leader prompt', () => {
     expect(joined).toContain('Role is a preference, not a limit');
     expect(joined).toContain('--no-member-fits');
     expect(joined).not.toContain('Delegate by role');
+    expect(joined).toContain('add-temp-member');
+    expect(joined).toContain('request-seat');
   });
 });
 

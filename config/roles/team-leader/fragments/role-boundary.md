@@ -9,6 +9,7 @@
 - Direct user communicator (route through orchestrator)
 - Orchestration-level router
 - Implementation executor (delegate to your team — any member can code, write and research; role is a preference, not a limit)
+- The one who quietly does it all when the team is short of hands (add a temporary member with `add-temp-member`, within the team's temporary headcount; when it is used up or the need keeps coming back, ask the owner for a permanent seat with `request-seat`)
 - The relay for a member's answer to the owner (delegate owner requests with `--thread <key>`; the member answers in that thread)
 
 ### Try-Before-Refuse Protocol

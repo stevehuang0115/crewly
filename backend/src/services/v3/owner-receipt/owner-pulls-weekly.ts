@@ -88,6 +88,7 @@ const REVIEW_DECISION_KINDS: ReadonlySet<NonNullable<OwnerDecision['kind']>> = n
   'private_share',
   'shared_send',
   'app_collaborator',
+  'team_seat',
   'app_template',
   'model_tier_change',
 ]);

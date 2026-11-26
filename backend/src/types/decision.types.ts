@@ -38,8 +38,10 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  *   specs/2026-11-10-shared-channel-send.md)
  * - `team_lead`: a team of two or more members has no lead — who should lead
  *   it, or not now (specs/2026-10-04-tl-delegation.md §6)
+ * - `team_seat`: a team lead asks for a permanent member of a role — approve,
+ *   or not now (specs/2026-11-26-temp-members-seat-requests.md)
  */
-export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator' | 'app_template' | 'model_tier_change' | 'gmail_send' | 'private_share' | 'shared_send' | 'team_lead';
+export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator' | 'app_template' | 'model_tier_change' | 'gmail_send' | 'private_share' | 'shared_send' | 'team_lead' | 'team_seat';
 
 /** How a decision came to be: asked live, or carded by the open-items backfill. */
 export type DecisionSource = 'live' | 'backfill';

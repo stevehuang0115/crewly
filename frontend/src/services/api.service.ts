@@ -6,7 +6,7 @@
  */
 
 import axios from 'axios';
-import { Project, Team, ModelTier, TierChangeMode, TeamModelTierSettings, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, CloudStatus, CloudConnectResult, SessionUsageSummary, TaskUsageSummary, ExpertSummary } from '../types';
+import { Project, Team, ModelTier, TierChangeMode, TeamModelTierSettings, TeamTempMembers, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, CloudStatus, CloudConnectResult, SessionUsageSummary, TaskUsageSummary, ExpertSummary } from '../types';
 import type { CronTask, CreateCronTaskRequest, UpdateCronTaskRequest, TeamAgentStatusFile } from '../types/cron-task.types';
 import type { AuthTokenResponse, UserProfile, LicenseStatus } from '../types/auth.types';
 import type {
@@ -265,6 +265,38 @@ class ApiService {
       this.invalidateTeamsCache();
       if (!response.data.success || !response.data.data) throw new Error(response.data.error || 'Could not save');
       return response.data.data;
+    } catch (error) {
+      const serverError = axios.isAxiosError(error) ? (error.response?.data as ApiResponse<unknown> | undefined)?.error : undefined;
+      throw serverError ? new Error(serverError) : error;
+    }
+  }
+
+  /**
+   * A team's temporary agent headcount and the temporary members using it.
+   *
+   * @param teamId - Team id
+   * @returns Headcount (used / limit) and temporary members
+   */
+  async getTeamTempMembers(teamId: string): Promise<TeamTempMembers> {
+    const response = await axios.get<ApiResponse<TeamTempMembers>>(`${API_BASE}/teams/${encodeURIComponent(teamId)}/temp-members`);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Temporary members unavailable');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Set a team's temporary agent headcount (owner only; 0 = the lead cannot add temporary members).
+   *
+   * @param teamId - Team id
+   * @param tempHeadcount - Whole number from 0 to 10
+   * @throws Error with the server's message when refused
+   */
+  async setTeamTempHeadcount(teamId: string, tempHeadcount: number): Promise<void> {
+    try {
+      const response = await axios.put<ApiResponse<Team>>(`${API_BASE}/teams/${encodeURIComponent(teamId)}`, { tempHeadcount });
+      this.invalidateTeamsCache();
+      if (!response.data.success) throw new Error(response.data.error || 'Could not save');
     } catch (error) {
       const serverError = axios.isAxiosError(error) ? (error.response?.data as ApiResponse<unknown> | undefined)?.error : undefined;
       throw serverError ? new Error(serverError) : error;

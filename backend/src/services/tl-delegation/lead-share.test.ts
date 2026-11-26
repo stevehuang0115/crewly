@@ -135,4 +135,13 @@ describe('buildLeadShareDigest', () => {
     const quiet = { ...row, today: sharePeriod(0, 0) };
     expect(buildLeadShareDigest([quiet])).toBeNull();
   });
+
+  it('adds one line for temporary members opened / removed that day', () => {
+    const text = buildLeadShareDigest([row], new Map([['t-think', { temp: { opened: 2, removed: 1 } }]]));
+    expect(text).toContain('  temporary members: 2 opened, 1 removed');
+    expect(buildLeadShareDigest([row], new Map([['t-think', { temp: { opened: 0, removed: 0 } }]]))).not.toContain('temporary members');
+    // A team with no tokens today is still listed when it opened or removed one.
+    const quiet = { ...row, today: sharePeriod(0, 0) };
+    expect(buildLeadShareDigest([quiet], new Map([['t-think', { temp: { opened: 0, removed: 1 } }]]))).toContain('temporary members: 0 opened, 1 removed');
+  });
 });

@@ -150,9 +150,9 @@ keep their query string (OAuth returns).
 ### Team detail (`/teams/:id`)
 
 - **Reach**: a Teams row.
-- **Expected**: members with their status and a per-member start / stop / runtime switch, the lead, sub-teams, a hierarchy view (tree or flat; config mode picks leaders), the project link, and the execution feed (live over the WebSocket, clearable). "⋯" holds edit / export / delete.
-- **Elements**: `team-members`, `team-project`, `team-more`, `sub-team-${id}`, `hierarchy-view`, `hierarchy-dashboard`, `hierarchy-mode-config`, `leader-select`, `leader-toggle-${id}`, `tree-node-${id}`, `flat-member-${id}`, `task-node-${id}`, `no-leaders-message`, `stats-row`, `execution-feed`, `feed-entry`, `feed-clear`.
-- **Backend**: `GET/PUT/DELETE /api/teams/:id`, `PUT /api/teams/:id/lead`, `POST /api/teams/:id/start|stop`, `/api/teams/:id/members[/:memberId[/start|stop|runtime|session]]`, `GET /api/terminal/sessions`, `POST /api/orchestrator/stop`, `GET /api/projects`, `GET /api/directories`.
+- **Expected**: members with their status and a per-member start / stop / runtime switch, the lead, sub-teams, a hierarchy view (tree or flat; config mode picks leaders), the project link, and the execution feed (live over the WebSocket, clearable). Under "More": the temporary agent headcount (0-10, saved on change) with the temporary members now on the team and why each was added. "⋯" holds edit / export / delete.
+- **Elements**: `team-members`, `team-project`, `team-more`, `team-temp-headcount`, `temp-headcount-select`, `sub-team-${id}`, `hierarchy-view`, `hierarchy-dashboard`, `hierarchy-mode-config`, `leader-select`, `leader-toggle-${id}`, `tree-node-${id}`, `flat-member-${id}`, `task-node-${id}`, `no-leaders-message`, `stats-row`, `execution-feed`, `feed-entry`, `feed-clear`.
+- **Backend**: `GET/PUT/DELETE /api/teams/:id`, `PUT /api/teams/:id/lead`, `GET /api/teams/:id/temp-members`, `POST /api/teams/:id/start|stop`, `/api/teams/:id/members[/:memberId[/start|stop|runtime|session]]`, `GET /api/terminal/sessions`, `POST /api/orchestrator/stop`, `GET /api/projects`, `GET /api/directories`.
 - **Source**: `src/pages/TeamDetail.tsx`, `src/components/TeamDetail/`, `src/components/Hierarchy/`, `src/components/ExecutionFeed/`, `src/components/Teams/`.
 
 ### Goal detail (`/teams/goals/:id`)

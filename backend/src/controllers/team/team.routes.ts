@@ -33,6 +33,7 @@ import { exportTeam, importTeam } from './team-export.controller.js';
 import { getTeamLeadShare, recordLeadSelfWork } from './team-lead-share.controller.js';
 import { getTeamModelTiers, proposeTierChange, startTeamModelTierReview, updateTeamModelTiers } from './team-model-tiers.controller.js';
 import { hidePausedTeamsFromAgents, pauseTeamHandler, resumeTeamHandler } from './team-pause.controller.js';
+import { addTeamTempMember, getTeamTempMembers, removeTeamTempMember, requestTeamSeat } from './team-temp-members.controller.js';
 
 /**
  * Creates team router with all team-related endpoints
@@ -75,6 +76,11 @@ export function createTeamRouter(context: ApiContext): Router {
   router.put('/:id/model-tiers', invalidateCache(teamsCacheKeys), updateTeamModelTiers);
   router.post('/:id/model-tiers/review', startTeamModelTierReview);
   router.post('/model-tiers/proposals', proposeTierChange);
+  // Temporary members + permanent seat requests, by the team's lead (specs/2026-11-26-temp-members-seat-requests.md)
+  router.get('/:id/temp-members', getTeamTempMembers);
+  router.post('/:id/temp-members', invalidateCache(teamsCacheKeys), addTeamTempMember);
+  router.delete('/:id/temp-members/:member', invalidateCache(teamsCacheKeys), removeTeamTempMember);
+  router.post('/:id/seat-requests', requestTeamSeat);
 
   // Team member management
   router.post('/:id/members', invalidateCache(teamsCacheKeys), addTeamMember.bind(context));

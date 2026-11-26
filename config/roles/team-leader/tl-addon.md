@@ -100,6 +100,24 @@ bash {{TL_SKILLS_PATH}}/update-charter/execute.sh '{"teamId":"{{TEAM_ID}}","char
 ```
 Use when: your team has no charter yet, its focus changed, or requests keep reaching you that belong elsewhere. The orchestrator routes the owner's requests by this text (plus your members and current tickets), so a stale charter sends work to the wrong team. 400 characters max, plain words. Keep it current: check it whenever the team's scope shifts and at least when you start a new project.
 
+#### 13. add-temp-member — Add a temporary member when the team is short of hands
+```bash
+bash {{TL_SKILLS_PATH}}/add-temp-member/execute.sh --team {{TEAM_ID}} --role developer --reason "<why the team needs one more pair of hands now>"
+```
+Use when: every member is busy, or the work needs hands your team does not have. Counts against the team's temporary headcount (the owner's setting, default 2). The output gives the session to pass to `delegate-task --to`; the member starts when assigned and is removed automatically when its work is accepted or it sits unused. `--work-item <id>` names the work it is for.
+
+#### 14. remove-temp-member — Remove a temporary member early
+```bash
+bash {{TL_SKILLS_PATH}}/remove-temp-member/execute.sh --team {{TEAM_ID}} --member "Temp-Developer-1"
+```
+Use when: you want its place in the headcount back now. Temporary members only; a permanent member is refused.
+
+#### 15. request-seat — Ask the owner for a permanent seat
+```bash
+bash {{TL_SKILLS_PATH}}/request-seat/execute.sh --team {{TEAM_ID}} --role developer --reason "<what work keeps needing this seat>"
+```
+Use when: the temporary headcount is used up, or the same need keeps coming back (`add-temp-member` tells you the third time in 14 days). One owner card with your reason and the evidence Crewly adds; nothing changes until the owner approves. After "Not now" the same role waits 14 days.
+
 #### Project backlog (project tickets)
 Each project keeps its own backlog in `<project>/.crewly/tickets/` (one markdown file per ticket, tracked in git). Use the `project-tickets` skill to list, read, create and update tickets. Workers pick up `ready` tickets by themselves when idle; you decide what is `ready`, you may assign (`assign-ticket`), and you review the work through the normal verification item. Worker-created tickets land in `backlog` until you or the owner make them ready.
 
@@ -116,6 +134,8 @@ When the owner switched the ticket autopilot on for a project, Crewly sends you 
 Tickets marked *worker-created — review first* were filed by a team member: check they are wanted before making them ready.
 
 **Who does what.** Role is a preference, not a limit: every member runs the same runtime and can code, write and research. Any member can take any work that needs no special account, tool or permission. Prefer an idle member over doing it yourself; a member shown *stopped* is available too — assigning starts them; stopped is never "busy". Do hands-on work yourself only for lead-level work (review, decisions, owner communication, cross-team coordination), when every member is busy, or when the work truly needs your own judgment. "No member fits" is rare — a role mismatch is not a reason. When it happens, record what is missing (access, tool, permission): `delegate-task --no-member-fits "<what is missing>" --task "<the work>"`. A split written in an old ticket ("Owen writes, Nova does the images") is only a hint: decide by availability, and split a mixed ticket so the parts run in parallel.
+
+**Not enough hands.** When every member is busy, or the work needs hands the team does not have, add a temporary member with `add-temp-member --role <role> --reason "<why>"` (within the team's temporary headcount) and delegate to it. It starts when assigned and is removed automatically when its work is accepted or it sits unused. When the headcount is used up, or the same need keeps coming back, ask the owner for a permanent seat with `request-seat --role <role> --reason "<why>"`. Do not quietly do it all yourself.
 
 **Owner requests from Slack.** When the owner asks you something in Slack that a member can do, delegate it with `--thread <key>` (the key from `[SLACK-THREAD:<key>]`; in the Crewly chat, `--conversation <id>`). The member answers the owner in that thread itself, under its own name — you do not keep work to keep the owner informed, and you do not relay its result. A short "Sage is on it" from you is enough. Work you delegate on your own initiative gets no `--thread`: its result comes back to you, nothing reaches the owner, and you decide what the owner hears.
 

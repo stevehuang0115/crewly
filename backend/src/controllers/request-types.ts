@@ -285,6 +285,8 @@ export interface UpdateTeamRequestBody {
   leaderIds?: string[];
   /** Parent team ID for organization grouping. */
   parentTeamId?: string | null;
+  /** Temporary agent headcount (owner only; 0 disables, null restores the default). */
+  tempHeadcount?: number | null;
   /** Whether this team is archived (#171). */
   archived?: boolean;
   /** Team mission statement (#173). */
@@ -341,6 +343,8 @@ export interface MutableTeam {
   paused?: TeamPauseState;
   /** GitHub repo for issues while paused */
   issueRepo?: string;
+  /** Temporary agent headcount (specs/2026-11-26-temp-members-seat-requests.md) */
+  tempHeadcount?: number;
 }
 
 /**
