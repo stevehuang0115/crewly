@@ -29,7 +29,8 @@ import {
   RUNTIME_STARTUP_CONSTANTS,
 } from '../../constants.js';
 import type { RuntimeType } from '../../constants.js';
-import { CREWLY_CONSTANTS, AGENT_TIMEOUTS, AGENT_WAKE_ERROR_CODES, TEAM_LEAD_CONSTANTS, TEAM_PAUSE_CONSTANTS, STALLED_AGENT_RECOVERY_CONSTANTS } from '../../constants.js';
+import { CREWLY_CONSTANTS, AGENT_TIMEOUTS, AGENT_WAKE_ERROR_CODES, TEAM_LEAD_CONSTANTS, TEAM_PAUSE_CONSTANTS, STALLED_AGENT_RECOVERY_CONSTANTS, TEMP_MEMBER_CONSTANTS } from '../../constants.js';
+import { parseTempHeadcount } from '../../services/temp-members/temp-member.service.js';
 import { updateAgentHeartbeat } from '../../services/agent/agent-heartbeat.service.js';
 import { getSessionBackendSync, getSessionStatePersistence } from '../../services/session/index.js';
 import { removeCrewlyAgentFile } from '../../services/session/session-binding.js';
@@ -1955,6 +1956,86 @@ export async function getTeamMemberSession(this: ApiContext, req: Request, res: 
   }
 }
 
+/** A member to add to a team ({@link addMemberToTeam}). */
+export interface NewTeamMemberInput {
+  name: string;
+  role: string;
+  avatar?: string;
+  /** Present for a temporary member a lead added (specs/2026-11-26-temp-members-seat-requests.md) */
+  temporary?: TeamMember['temporary'];
+  /** The lead it reports to, on a team that uses the hierarchy fields */
+  parentMemberId?: string;
+}
+
+/**
+ * Add a member to a team and save the team — THE add-member path. The
+ * dashboard's `POST /api/teams/:id/members` and a lead's temporary member /
+ * an approved permanent seat all create members here. The member gets the
+ * default runtime and no model of its own, so the default member model
+ * applies at launch (`utils/member-default-model.utils`).
+ *
+ * @param context - Storage
+ * @param team - The team (mutated and saved)
+ * @param input - Name, role and optional fields
+ * @returns The new member
+ */
+export async function addMemberToTeam(context: Pick<ApiContext, 'storageService'>, team: Team, input: NewTeamMemberInput): Promise<TeamMember> {
+  const now = new Date().toISOString();
+  const newMember: TeamMember = {
+    id: `member-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    name: String(input.name).trim(),
+    sessionName: '',
+    role: input.role,
+    avatar: input.avatar,
+    systemPrompt: `You are ${input.name}, a ${input.role} on the ${team.name} team.`,
+    agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+    workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE,
+    runtimeType: await getDefaultRuntime(),
+    createdAt: now,
+    updatedAt: now,
+    ...(input.temporary ? { temporary: input.temporary } : {}),
+  } as TeamMember;
+  const parent = input.parentMemberId ? team.members.find((m) => m.id === input.parentMemberId) : undefined;
+  if (parent) {
+    const child = newMember as MutableTeamMember;
+    child.parentMemberId = parent.id;
+    child.hierarchyLevel = (parent.hierarchyLevel ?? 1) + 1;
+    child.canDelegate = false;
+    if (Array.isArray(parent.subordinateIds)) (parent as MutableTeamMember).subordinateIds = [...parent.subordinateIds, newMember.id];
+  }
+  (team as MutableTeam).members.push(newMember as MutableTeamMember);
+  (team as MutableTeam).updatedAt = now;
+  await context.storageService.saveTeam(team);
+  return newMember;
+}
+
+/**
+ * Remove a member from a team and save the team — THE remove-member path
+ * (the dashboard's `DELETE /api/teams/:teamId/members/:memberId` and the
+ * removal of a temporary member). A session still running is killed.
+ *
+ * @param context - Storage and the session backend
+ * @param team - The team (mutated and saved)
+ * @param memberId - Member to remove
+ * @returns The removed member, or null when the team has no such member
+ */
+export async function removeMemberFromTeam(context: Pick<ApiContext, 'storageService' | 'tmuxService'>, team: Team, memberId: string): Promise<TeamMember | null> {
+  const mutable = team as MutableTeam;
+  const memberIndex = mutable.members.findIndex(m => m.id === memberId);
+  if (memberIndex === -1) return null;
+  const member = mutable.members[memberIndex];
+  if (member.sessionName) {
+    try { await context.tmuxService.killSession(member.sessionName); } catch (error) { logger.warn('Failed to kill tmux session', { sessionName: member.sessionName, error: error instanceof Error ? error.message : String(error) }); }
+  }
+  mutable.members.splice(memberIndex, 1);
+  for (const m of mutable.members) {
+    if (Array.isArray(m.subordinateIds) && m.subordinateIds.includes(memberId)) m.subordinateIds = m.subordinateIds.filter((id) => id !== memberId);
+  }
+  mutable.updatedAt = new Date().toISOString();
+  await context.storageService.saveTeam(team);
+  return member;
+}
+
 export async function addTeamMember(this: ApiContext, req: Request, res: Response): Promise<void> {
   try {
     const { id } = req.params;
@@ -1963,22 +2044,7 @@ export async function addTeamMember(this: ApiContext, req: Request, res: Respons
     const teams = await this.storageService.getTeams();
     const team = teams.find(t => t.id === id) as MutableTeam | undefined;
     if (!team) { res.status(404).json({ success: false, error: 'Team not found' } as ApiResponse); return; }
-    const newMember: TeamMember = {
-      id: `member-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      name: String(name).trim(),
-      sessionName: '',
-      role: role,
-      avatar: avatar,
-      systemPrompt: `You are ${name}, a ${role} on the ${team.name} team.`,
-      agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
-      workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE,
-      runtimeType: await getDefaultRuntime(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    team.members.push(newMember as MutableTeamMember);
-    team.updatedAt = new Date().toISOString();
-    await this.storageService.saveTeam(team);
+    const newMember = await addMemberToTeam(this, team, { name, role, avatar });
     recordActivity({
       actor: actorFromRequest(req),
       action: 'team.member.added',
@@ -2013,6 +2079,10 @@ export async function updateTeamMember(this: ApiContext, req: Request, res: Resp
       if (rejectNonOwner(req, res, { success: false, error: 'Only the owner sets a member\'s tier. A team lead proposes it with propose-tier-change.' })) return;
       if (updates.tier && !isModelTier(updates.tier)) { res.status(400).json({ success: false, error: 'tier must be strong, mid or weak (or empty to clear)' } as ApiResponse); return; }
     }
+    // Whether a member is temporary is set by add-temp-member and cleared by the owner's seat approval, never by an agent's edit.
+    if ('temporary' in updates) {
+      if (rejectNonOwner(req, res, { success: false, error: 'Only the owner makes a temporary member permanent. A team lead asks with request-seat.' })) return;
+    }
     // An empty string clears the per-agent model / effort override.
     const modelUpdates = pickModelFields(updates);
     const updatedMember: MutableTeamMember = { ...team.members[memberIndex], ...updates, ...modelUpdates, updatedAt: new Date().toISOString() } as MutableTeamMember;
@@ -2020,6 +2090,7 @@ export async function updateTeamMember(this: ApiContext, req: Request, res: Resp
     if (updates.reasoningEffort === '') delete updatedMember.reasoningEffort;
     if ('dedicatedTo' in updates && !updates.dedicatedTo) delete updatedMember.dedicatedTo;
     if ('tier' in updates && !updates.tier) delete updatedMember.tier;
+    if ('temporary' in updates && !(updates as { temporary?: unknown }).temporary) delete updatedMember.temporary;
     const memberBefore = team.members[memberIndex] as unknown as Record<string, unknown>;
     team.members[memberIndex] = updatedMember;
     team.updatedAt = new Date().toISOString();
@@ -2043,15 +2114,8 @@ export async function deleteTeamMember(this: ApiContext, req: Request, res: Resp
     const teams = await this.storageService.getTeams();
     const team = teams.find(t => t.id === teamId) as MutableTeam | undefined;
     if (!team) { res.status(404).json({ success: false, error: 'Team not found' } as ApiResponse); return; }
-    const memberIndex = team.members.findIndex(m => m.id === memberId);
-    if (memberIndex === -1) { res.status(404).json({ success: false, error: 'Team member not found' } as ApiResponse); return; }
-    const member = team.members[memberIndex];
-    if (member.sessionName) {
-      try { await this.tmuxService.killSession(member.sessionName); } catch (error) { logger.warn('Failed to kill tmux session', { sessionName: member.sessionName, error: error instanceof Error ? error.message : String(error) }); }
-    }
-    team.members.splice(memberIndex, 1);
-    team.updatedAt = new Date().toISOString();
-    await this.storageService.saveTeam(team);
+    const member = await removeMemberFromTeam(this, team, memberId);
+    if (!member) { res.status(404).json({ success: false, error: 'Team member not found' } as ApiResponse); return; }
     recordActivity({
       actor: actorFromRequest(req),
       action: 'team.member.removed',
@@ -3373,6 +3437,15 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
     }
     if (updates.description !== undefined) {
       team.description = updates.description;
+    }
+    // Temporary agent headcount: the owner's call, never an agent's
+    // (specs/2026-11-26-temp-members-seat-requests.md).
+    if (updates.tempHeadcount !== undefined) {
+      if (rejectNonOwner(req, res, { success: false, error: 'Only the owner sets a team\'s temporary headcount. A team lead asks for a permanent seat with request-seat.', code: TEMP_MEMBER_CONSTANTS.ERRORS.INVALID_HEADCOUNT })) return;
+      const parsed = parseTempHeadcount(updates.tempHeadcount);
+      if (!parsed.ok) { res.status(400).json({ success: false, error: parsed.error, code: TEMP_MEMBER_CONSTANTS.ERRORS.INVALID_HEADCOUNT } as ApiResponse); return; }
+      if (parsed.value === undefined) delete team.tempHeadcount;
+      else team.tempHeadcount = parsed.value;
     }
     if (updates.hierarchical !== undefined) {
       const wasHierarchical = team.hierarchical === true;

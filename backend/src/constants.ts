@@ -4274,6 +4274,81 @@ export const MODEL_TIER_CONSTANTS = {
 	GUARD_MAX_DAYS: 30,
 } as const;
 
+/**
+ * Temporary members and permanent seat requests
+ * (specs/2026-11-26-temp-members-seat-requests.md): a team lead adds a
+ * temporary member within the team's temporary headcount, or asks the owner
+ * for a permanent seat.
+ */
+export const TEMP_MEMBER_CONSTANTS = {
+	/** Temporary members a team may have at the same time when `Team.tempHeadcount` is unset */
+	DEFAULT_HEADCOUNT: 2,
+	/** Largest headcount the owner can set */
+	MAX_HEADCOUNT: 10,
+	/** History + seat-request file, under CREWLY_HOME */
+	STORE_FILE: 'temp-members.json',
+	/** History events kept (oldest dropped) */
+	MAX_EVENTS: 1000,
+	/** Seat requests kept (oldest settled dropped) */
+	MAX_SEAT_REQUESTS: 200,
+	/** How often temporary members are checked for removal */
+	TICK_MS: 10 * 60 * 1000,
+	/** Bound work item finished: removed after this long idle */
+	DONE_IDLE_MS: 30 * 60 * 1000,
+	/** Removed after this long without live work */
+	UNUSED_MS: 6 * 60 * 60 * 1000,
+	/** Hard age limit of a temporary member (`temporary.expiresAt`) */
+	MAX_AGE_MS: 3 * 24 * 60 * 60 * 1000,
+	/** Work-item statuses that mean a member still holds work (never removed then) */
+	LIVE_WORK_STATUSES: ['queued', 'scheduled', 'proposed', 'accepted', 'running', 'blocked', 'escalated'],
+	/** Work-item statuses that mean the bound work was accepted or closed */
+	SETTLED_WORK_STATUSES: ['done', 'verified', 'cancelled'],
+	/** Window of the "this need keeps coming back" hint and of the seat-request evidence (days) */
+	EVIDENCE_WINDOW_DAYS: 14,
+	/** Same role opened this many times in the window: the lead is told to request a seat */
+	REPEAT_THRESHOLD: 3,
+	/** Decision kind of the seat-request card */
+	DECISION_KIND: 'team_seat',
+	/** How long a seat-request card waits for the owner (default = Not now) */
+	DECISION_DEADLINE_MS: 7 * 24 * 60 * 60 * 1000,
+	/** After "Not now" / expiry the same team + role cannot be requested again for this long */
+	DECLINE_COOLDOWN_MS: 14 * 24 * 60 * 60 * 1000,
+	/** Card option keys */
+	APPROVE_KEY: 'a',
+	DECLINE_KEY: 'b',
+	/** Max characters of a reason */
+	MAX_REASON_CHARS: 300,
+	/** Max characters of a member name */
+	MAX_NAME_CHARS: 40,
+	/** Name prefix of a temporary member (`Temp-Developer-1`) */
+	NAME_PREFIX: 'Temp',
+	/** Roles a temporary member or a requested seat can never have */
+	REFUSED_ROLES: ['orchestrator', 'team-leader', 'tech-lead'],
+	/** Tag that opens notes to the lead */
+	NOTE_TAG: '[TEMP MEMBER]',
+	/** Tag that opens seat-request notes to the lead */
+	SEAT_NOTE_TAG: '[SEAT REQUEST]',
+	/** Error codes the lead's skills get */
+	ERRORS: {
+		NOT_LEAD: 'not_team_lead',
+		UNKNOWN_ROLE: 'unknown_role',
+		ROLE_NOT_ALLOWED: 'role_not_allowed',
+		REASON_REQUIRED: 'reason_required',
+		NAME_TAKEN: 'name_taken',
+		HEADCOUNT_DISABLED: 'temp_headcount_disabled',
+		HEADCOUNT_FULL: 'temp_headcount_full',
+		MEMORY_PRESSURE: 'memory_pressure',
+		NOT_TEMPORARY: 'not_temporary',
+		MEMBER_BUSY: 'member_busy',
+		MEMBER_NOT_FOUND: 'member_not_found',
+		TEAM_NOT_FOUND: 'team_not_found',
+		SEAT_REQUEST_OPEN: 'seat_request_open',
+		SEAT_RECENTLY_DECLINED: 'seat_recently_declined',
+		CARDS_UNAVAILABLE: 'decision_cards_unavailable',
+		INVALID_HEADCOUNT: 'invalid_temp_headcount',
+	},
+} as const;
+
 export const CHAT_CONTEXT_CONSTANTS = {
 	/** Whether preceding messages are included at all */
 	ENABLED: true,

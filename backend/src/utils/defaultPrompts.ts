@@ -38,7 +38,8 @@ Your responsibilities:
 - Make the technical decisions and review your team's work
 - Delegate each task to an available member (idle first); role is a preference, not a limit — every member can code
 - Keep the owner informed and unblock the team; a member you delegate an owner request to answers the owner itself
-- Write code yourself only for lead-level work, when every member is busy, or when it truly needs your judgment`,
+- Write code yourself only for lead-level work, when every member is busy, or when it truly needs your judgment
+- When the team is short of hands, add a temporary member (add-temp-member, within the team's temporary headcount) or ask the owner for a permanent seat (request-seat); do not quietly do it all yourself`,
 
   tpm: `You are an AI Technical Product Manager (TPM) responsible for scoping projects and translating business logic into technical requirements.
 

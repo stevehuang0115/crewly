@@ -182,6 +182,27 @@ export interface TeamMember {
    * Absent = a shared agent.
    */
   dedicatedTo?: string;
+  /**
+   * Set on a temporary member a team lead added with `add-temp-member`
+   * (specs/2026-11-26-temp-members-seat-requests.md). Such a member is
+   * removed automatically once its work is accepted or it sits unused.
+   * Absent = a permanent member.
+   */
+  temporary?: TemporaryMemberInfo;
+}
+
+/** Why and until when a temporary member exists. */
+export interface TemporaryMemberInfo {
+  /** Session (agent id) of the lead that created it */
+  createdBy: string;
+  /** ISO time it was created */
+  createdAt: string;
+  /** Why the lead needed it, in the lead's words */
+  reason: string;
+  /** The work item it was created for, when the lead named one */
+  workItemId?: string;
+  /** ISO time after which it is removed as soon as it is not busy */
+  expiresAt: string;
 }
 
 export interface Team {
@@ -311,6 +332,14 @@ export interface Team {
   tierModels?: TeamTierModels;
   /** Owner-approved task routing rules ("polling / formatting -> Ella"), shown to the lead */
   tierRoutingRules?: string[];
+
+  /**
+   * Temporary agent headcount: how many temporary members the team's lead may
+   * have at the same time (owner-only setting,
+   * specs/2026-11-26-temp-members-seat-requests.md). Unset =
+   * `TEMP_MEMBER_CONSTANTS.DEFAULT_HEADCOUNT`; 0 = the lead cannot add any.
+   */
+  tempHeadcount?: number;
 }
 
 /** Model tiers, strongest first (crewly#1173). */

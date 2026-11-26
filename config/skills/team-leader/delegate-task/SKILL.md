@@ -86,6 +86,12 @@ yourself. Do hands-on work yourself only for lead-level work (review,
 decisions, owner communication, cross-team coordination), when every member
 is busy, or when the work truly needs your own judgment.
 
+Not enough hands: when every member is busy, or the work needs hands the team
+does not have, add a temporary member with `add-temp-member` (within the
+team's temporary headcount) and delegate to the session it returns. When the
+headcount is used up or the same need keeps coming back, ask the owner for a
+permanent seat with `request-seat`. Do not quietly do it all yourself.
+
 ## Owner requests (`--thread` / `--conversation`)
 
 When the owner asked in Slack, pass the thread key from the owner message's

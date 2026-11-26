@@ -7689,6 +7689,20 @@ void (async () => {
 					}),
 				)
 				.catch((err) => this.logger.warn('Model tier reviews not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }));
+			// Temporary members + permanent seat requests: a lead adds a temporary
+			// member within the team's headcount, or asks the owner for a seat
+			// (specs/2026-11-26-temp-members-seat-requests.md).
+			await import('./services/temp-members/temp-member.wiring.js')
+				.then((m) =>
+					m.startTempMembers({
+						crewlyHome: this.config.crewlyHome,
+						decisions,
+						sendToAgent,
+						packageRoot: findPackageRoot(__dirname),
+						apiContext: () => this.apiController,
+					}),
+				)
+				.catch((err) => this.logger.warn('Temporary members not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }));
 			decisions.start();
 			this.logger.info('Decision cards started');
 			// Google reconnect cards: a Gmail/Drive call that fails for a missing

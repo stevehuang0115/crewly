@@ -541,6 +541,114 @@ describe('Teams Handlers', () => {
       expect(responseMock.status).toHaveBeenCalledWith(403);
       mockRequest.headers = {};
     });
+
+    // specs/2026-11-26-temp-members-seat-requests.md
+    describe('temporary members and the temporary headcount', () => {
+      const tempInfo = { createdBy: 'lead', createdAt: '2026-11-26T00:00:00.000Z', reason: 'busy week', expiresAt: '2026-11-29T00:00:00.000Z' };
+      const makeTeam = (): Team => ({
+        id: 'team-1', name: 'T', members: [
+          { id: 'lead', name: 'Lea', sessionName: 'lea', role: 'team-leader', systemPrompt: 'p', runtimeType: 'claude-code', agentStatus: 'inactive', workingStatus: 'idle', subordinateIds: ['m1'], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+          { id: 'm1', name: 'Pia', sessionName: '', role: 'developer', systemPrompt: 'p', runtimeType: 'claude-code', agentStatus: 'inactive', workingStatus: 'idle', parentMemberId: 'lead', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+        ], projectIds: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      } as unknown as Team);
+
+      it('addMemberToTeam adds a temporary member under its lead, with no model of its own, and saves', async () => {
+        const team = makeTeam();
+        const added = await teamsHandlers.addMemberToTeam(mockApiContext, team, { name: 'Temp-Developer-1', role: 'developer', temporary: tempInfo, parentMemberId: 'lead' });
+        expect(added).toMatchObject({ name: 'Temp-Developer-1', role: 'developer', sessionName: '', temporary: tempInfo, parentMemberId: 'lead', hierarchyLevel: 2, canDelegate: false });
+        expect(added.modelId).toBeUndefined();
+        expect(team.members).toHaveLength(3);
+        expect(team.members[0].subordinateIds).toEqual(['m1', added.id]);
+        expect(mockStorageService.saveTeam).toHaveBeenCalledWith(team);
+      });
+
+      it('addMemberToTeam without the optional fields adds a plain permanent member', async () => {
+        const team = makeTeam();
+        const added = await teamsHandlers.addMemberToTeam(mockApiContext, team, { name: 'Kai', role: 'qa' });
+        expect(added.temporary).toBeUndefined();
+        expect(added.parentMemberId).toBeUndefined();
+        expect(team.members[0].subordinateIds).toEqual(['m1']);
+      });
+
+      it('removeMemberFromTeam removes the member, drops it from its lead, and answers null for an unknown id', async () => {
+        const team = makeTeam();
+        const removed = await teamsHandlers.removeMemberFromTeam(mockApiContext, team, 'm1');
+        expect(removed).toMatchObject({ id: 'm1' });
+        expect(team.members.map((m) => m.id)).toEqual(['lead']);
+        expect(team.members[0].subordinateIds).toEqual([]);
+        expect(mockStorageService.saveTeam).toHaveBeenCalledWith(team);
+        expect(await teamsHandlers.removeMemberFromTeam(mockApiContext, team, 'nope')).toBeNull();
+      });
+
+      it('updateTeam sets, clears and validates the temporary headcount for the owner only', async () => {
+        const team = makeTeam();
+        mockStorageService.getTeams.mockResolvedValue([team]);
+        mockRequest.params = { id: 'team-1' };
+        mockRequest.headers = ownerAuthHeaders();
+
+        mockRequest.body = { tempHeadcount: 4 };
+        await teamsHandlers.updateTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+        let saved = (mockStorageService.saveTeam as jest.Mock).mock.calls.at(-1)![0] as Team;
+        expect(saved.tempHeadcount).toBe(4);
+
+        mockRequest.body = { tempHeadcount: 0 };
+        await teamsHandlers.updateTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+        saved = (mockStorageService.saveTeam as jest.Mock).mock.calls.at(-1)![0] as Team;
+        expect(saved.tempHeadcount).toBe(0);
+
+        mockRequest.body = { tempHeadcount: null };
+        await teamsHandlers.updateTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+        saved = (mockStorageService.saveTeam as jest.Mock).mock.calls.at(-1)![0] as Team;
+        expect(saved.tempHeadcount).toBeUndefined();
+
+        for (const bad of [-1, 1.5, 99, '3']) {
+          (responseMock.status as jest.Mock).mockClear();
+          (mockStorageService.saveTeam as jest.Mock).mockClear();
+          mockRequest.body = { tempHeadcount: bad };
+          await teamsHandlers.updateTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+          expect(responseMock.status).toHaveBeenCalledWith(400);
+          expect(mockStorageService.saveTeam).not.toHaveBeenCalled();
+        }
+
+        // An agent (the lead included) cannot raise its own headcount.
+        (responseMock.status as jest.Mock).mockClear();
+        mockRequest.headers = { 'x-agent-session': 'lea' };
+        mockRequest.body = { tempHeadcount: 9 };
+        await teamsHandlers.updateTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+        expect(responseMock.status).toHaveBeenCalledWith(403);
+        expect(mockStorageService.saveTeam).not.toHaveBeenCalled();
+        expect(team.tempHeadcount).toBeUndefined();
+        mockRequest.headers = {};
+      });
+
+      it('updateTeamMember does not let an agent make a temporary member permanent', async () => {
+        const team = makeTeam();
+        (team.members[1] as TeamMember).temporary = tempInfo;
+        mockStorageService.getTeams.mockResolvedValue([team]);
+        mockRequest.params = { teamId: 'team-1', memberId: 'm1' };
+        (mockStorageService.saveTeam as jest.Mock).mockClear();
+        (responseMock.status as jest.Mock).mockClear();
+        mockRequest.headers = { 'x-agent-session': 'lea' };
+        mockRequest.body = { temporary: null };
+        await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+        expect(responseMock.status).toHaveBeenCalledWith(403);
+        expect(mockStorageService.saveTeam).not.toHaveBeenCalled();
+
+        // Any other edit keeps the record.
+        mockRequest.headers = ownerAuthHeaders();
+        mockRequest.body = { name: 'Pia 2' };
+        await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+        let saved = (mockStorageService.saveTeam as jest.Mock).mock.calls.at(-1)![0] as Team;
+        expect(saved.members[1].temporary).toEqual(tempInfo);
+
+        // The owner can make it permanent by hand.
+        mockRequest.body = { temporary: null };
+        await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+        saved = (mockStorageService.saveTeam as jest.Mock).mock.calls.at(-1)![0] as Team;
+        expect(saved.members[1].temporary).toBeUndefined();
+        mockRequest.headers = {};
+      });
+    });
   });
 
   describe('getTeams', () => {

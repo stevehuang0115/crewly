@@ -33,6 +33,8 @@ import {
   WHATSAPP_CONSTANTS,
   WORKTREE_JANITOR_CONSTANTS,
   WAITING_SYNC_CONSTANTS,
+  TEMP_MEMBER_CONSTANTS,
+  TEAM_LEAD_CONSTANTS,
   CREWLY_CHANNEL_CONSTANTS,
   STALL_WATCHER_CONSTANTS,
   VERIFIED_SPOT_CHECK_CONSTANTS,
@@ -632,6 +634,35 @@ describe('VERIFIED_SPOT_CHECK_CONSTANTS (crewly#1315)', () => {
     expect(VERIFIED_SPOT_CHECK_CONSTANTS.STATE_FILE).toMatch(/\.json$/);
     expect(VERIFIED_SPOT_CHECK_CONSTANTS.MAX_LISTED_DISCREPANCIES).toBeGreaterThan(0);
     expect(VERIFIED_SPOT_CHECK_CONSTANTS.ENV_SWITCH).toBe('CREWLY_VERIFIED_SPOT_CHECK');
+  });
+});
+
+describe('TEMP_MEMBER_CONSTANTS (temporary members and seat requests)', () => {
+  it('defaults to a headcount of 2 and removes on the stated clocks', () => {
+    expect(TEMP_MEMBER_CONSTANTS.DEFAULT_HEADCOUNT).toBe(2);
+    expect(TEMP_MEMBER_CONSTANTS.TICK_MS).toBe(10 * 60 * 1000);
+    expect(TEMP_MEMBER_CONSTANTS.DONE_IDLE_MS).toBe(30 * 60 * 1000);
+    expect(TEMP_MEMBER_CONSTANTS.UNUSED_MS).toBe(6 * 60 * 60 * 1000);
+    expect(TEMP_MEMBER_CONSTANTS.MAX_AGE_MS).toBe(3 * 24 * 60 * 60 * 1000);
+    expect(TEMP_MEMBER_CONSTANTS.STORE_FILE).toBe('temp-members.json');
+  });
+
+  it('never removes a member holding queued, accepted, running or blocked work', () => {
+    for (const status of ['queued', 'accepted', 'running', 'blocked']) expect(TEMP_MEMBER_CONSTANTS.LIVE_WORK_STATUSES).toContain(status);
+    for (const status of TEMP_MEMBER_CONSTANTS.SETTLED_WORK_STATUSES) expect(TEMP_MEMBER_CONSTANTS.LIVE_WORK_STATUSES).not.toContain(status);
+  });
+
+  it('asks the owner with a 7-day card, and waits 14 days after "Not now"', () => {
+    expect(TEMP_MEMBER_CONSTANTS.DECISION_KIND).toBe('team_seat');
+    expect(TEMP_MEMBER_CONSTANTS.DECISION_DEADLINE_MS).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(TEMP_MEMBER_CONSTANTS.DECLINE_COOLDOWN_MS).toBe(14 * 24 * 60 * 60 * 1000);
+    expect(TEMP_MEMBER_CONSTANTS.EVIDENCE_WINDOW_DAYS).toBe(14);
+    expect(TEMP_MEMBER_CONSTANTS.REPEAT_THRESHOLD).toBe(3);
+    expect(TEMP_MEMBER_CONSTANTS.APPROVE_KEY).not.toBe(TEMP_MEMBER_CONSTANTS.DECLINE_KEY);
+  });
+
+  it('never lets a lead add a lead or an orchestrator', () => {
+    expect(TEMP_MEMBER_CONSTANTS.REFUSED_ROLES).toEqual(expect.arrayContaining(['orchestrator', ...TEAM_LEAD_CONSTANTS.LEAD_ROLES]));
   });
 });
 
