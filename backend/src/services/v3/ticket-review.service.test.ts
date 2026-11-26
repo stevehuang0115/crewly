@@ -390,10 +390,12 @@ describe('auto-accept: the owner moved on in the thread', () => {
     const b = await submitted(2);
     await requests.update(b.id, { openItems: [card('q-b', '打回 少了截图', after(b))] });
     const c = await submitted(3);
-    await requests.update(c.id, { openItems: [card('q-c', '对的', new Date(Date.parse(c.submittedAt!) - 60_000).toISOString())] });
+    // Before the reply under review: it answered an earlier one.
+    await requests.update(c.id, { openItems: [card('q-c', '对的', new Date(Date.parse(c.reply!.at) - 60_000).toISOString())] });
     expect((await review.sweep()).autoAccepted).toBe(1);
     expect((await requests.getById(a.id))?.status).toBe('done');
-    expect((await requests.getById(b.id))?.status).toBe('waiting_confirmation');
+    // The send-back is the agent's turn, not the owner's (CREW-1078).
+    expect((await requests.getById(b.id))?.status).toBe('running');
     expect((await requests.getById(c.id))?.status).toBe('waiting_confirmation');
   });
 
@@ -406,6 +408,148 @@ describe('auto-accept: the owner moved on in the thread', () => {
     });
     expect(cur.status).toBe('waiting_confirmation');
     expect((await review.sweep()).autoAccepted).toBe(0);
+  });
+});
+
+describe('an answered question does not leave a ticket waiting for the owner (CREW-1078)', () => {
+  type Item = NonNullable<Request['openItems']>[number];
+
+  /** Put a ticket in 待验收, answered by atlas. */
+  async function inReview(n: number): Promise<Request> {
+    const t = await ticket(n, { chatChannelId: `ch${n}`, messageId: `m${n}` });
+    await review.onChatMessage(agentMsg(`ch${n}`, 'atlas', 'answer', `m${n}`));
+    await review.onAgentIdle('atlas');
+    return (await requests.getById(t.id))!;
+  }
+
+  /** A question the owner answered on its card, `offsetMs` from the submit. */
+  function answered(t: Request, answer: string, offsetMs = 60_000, id = 'q-1'): Item {
+    const at = new Date(Date.parse(t.submittedAt!) + offsetMs).toISOString();
+    return { id, type: 'question', agent: 'atlas', sourceMessageId: 'x', createdAt: at, status: 'resolved', text: '这样发可以吗？', decisionId: 'D-1', answer, closedAt: at };
+  }
+
+  /** A promise the agent still owes. */
+  const promise: Item = { id: 'c-1', type: 'commitment', agent: 'atlas', sourceMessageId: 'x', createdAt: new Date().toISOString(), status: 'open', text: '你点头后我就发出去' };
+
+  const status = async (id: string) => (await requests.getById(id))!.status;
+
+  it('counts a card tapped after the answer but before the ticket was submitted', async () => {
+    const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1' });
+    openWork.set(t.id, 1); // work still open: not submitted yet
+    await review.onChatMessage(agentMsg('ch1', 'atlas', 'answer', 'm1'));
+    const tapped = new Date(Date.now() + 5).toISOString();
+    await new Promise((r) => setTimeout(r, 20));
+    openWork.clear();
+    await review.onAgentIdle('atlas');
+    const sub = (await requests.getById(t.id))!;
+    expect(sub.status).toBe('waiting_confirmation');
+    expect(Date.parse(tapped)).toBeLessThan(Date.parse(sub.submittedAt!));
+    await requests.update(t.id, { openItems: [{ ...answered(sub, '对的'), closedAt: tapped }] });
+    expect((await review.sweep()).autoAccepted).toBe(1);
+    expect(await status(t.id)).toBe('done');
+  });
+
+  it('a yes that leaves work to deliver puts the ticket back in progress, with no reminder', async () => {
+    const sent: string[] = [];
+    review = new TicketReviewService({ requests, fallbackAgent: 'crewly-orc', now: () => new Date(clock), nudgeAgent: async (_a, text) => void sent.push(text) });
+    const t = await inReview(1);
+    await requests.update(t.id, { openItems: [answered(t, 'Yes'), promise] });
+    clock = Date.now() + TICKET_CONSTANTS.REVIEW.NUDGE_AFTER_MS + 60_000;
+    expect((await review.sweep()).autoAccepted).toBe(0);
+    expect(await status(t.id)).toBe('running');
+    expect(sent).toEqual([]);
+  });
+
+  it('an objection on the card goes back to work and is never accepted by silence', async () => {
+    const t = await inReview(1);
+    await requests.update(t.id, { openItems: [answered(t, '打回 少了截图')] });
+    clock = Date.now() + TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS + 60_000;
+    expect((await review.sweep()).autoAccepted).toBe(0);
+    expect(await status(t.id)).toBe('running');
+  });
+
+  it('an answer sends a ticket back once: the next delivery gets its own review', async () => {
+    const t = await inReview(1);
+    await requests.update(t.id, { openItems: [answered(t, 'Yes'), promise] });
+    await review.sweep();
+    const back = (await requests.getById(t.id))!;
+    expect(back.openItems?.[0].sentBackAt).toBeDefined();
+    // Submitted again with the old answer still after the reply on file.
+    await requests.update(t.id, { status: 'waiting_confirmation', openItems: [back.openItems![0], { ...promise, status: 'delivered' }] });
+    expect((await review.sweep()).autoAccepted).toBe(0);
+    expect(await status(t.id)).toBe('waiting_confirmation');
+  });
+
+  it('stays while another question is still his to answer', async () => {
+    const t = await inReview(1);
+    const open: Item = { id: 'q-2', type: 'question', agent: 'atlas', sourceMessageId: 'x', createdAt: new Date().toISOString(), status: 'open', text: '发哪个版本？', decisionId: 'D-2' };
+    await requests.update(t.id, { openItems: [answered(t, 'Yes'), open, promise] });
+    await review.sweep();
+    expect(await status(t.id)).toBe('waiting_confirmation');
+  });
+
+  it('"Reply in thread" and a skipped card are not answers', async () => {
+    const t = await inReview(1);
+    await requests.update(t.id, { openItems: [answered(t, 'Reply in thread'), { ...answered(t, 'x', 60_000, 'q-2'), status: 'skipped' }, promise] });
+    expect((await review.sweep()).autoAccepted).toBe(0);
+    expect(await status(t.id)).toBe('waiting_confirmation');
+  });
+
+  it('an answer older than the latest reply does not count', async () => {
+    const t = await inReview(1);
+    await requests.update(t.id, { openItems: [answered(t, '对的', -3_600_000)] });
+    expect((await review.sweep()).autoAccepted).toBe(0);
+    expect(await status(t.id)).toBe('waiting_confirmation');
+  });
+
+  describe('noReplyNeeded', () => {
+    it('is null for something that is not a chat ticket', async () => {
+      expect(await review.noReplyNeeded('CREW-1078', 'atlas')).toBeNull();
+      expect(await review.noReplyNeeded('TKT-999', 'atlas')).toBeNull();
+    });
+
+    it('closes a ticket whose owner already answered: closed 1', async () => {
+      const t = await inReview(1);
+      await requests.update(t.id, { openItems: [answered(t, '对的')] });
+      const r = await review.noReplyNeeded('TKT-1', 'atlas');
+      expect(r).toMatchObject({ closed: 1, ticket: 'TKT-001', status: 'done', chatChannelId: 'ch1' });
+      expect((await requests.getById(t.id))!.acceptedBy).toBe('silence');
+    });
+
+    it('moves a ticket with work to deliver out of review and says what is owed', async () => {
+      const t = await inReview(1);
+      await requests.update(t.id, { openItems: [answered(t, 'Yes'), promise] });
+      const r = await review.noReplyNeeded('TKT-1', 'atlas');
+      expect(r).toMatchObject({ closed: 1, status: 'running' });
+      expect(r!.message).toContain('reply --ticket TKT-001');
+      expect(r!.message).toContain(promise.text);
+    });
+
+    it('does not accept for an owner who said nothing: says what is pending and stops the reminders', async () => {
+      const t = await inReview(1);
+      const r = await review.noReplyNeeded('TKT-1', 'atlas');
+      expect(r).toMatchObject({ closed: 0, status: 'waiting_confirmation' });
+      expect(r!.message).toMatch(/still waiting for the owner: his review/);
+      expect(r!.message).toContain('no more review reminders');
+      expect(r!.message).toContain(new Date(Date.parse(t.submittedAt!) + TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS).toISOString());
+      expect((await requests.getById(t.id))!.nudgeCount).toBe(TICKET_CONSTANTS.REVIEW.MAX_NUDGES);
+    });
+
+    it('names the unanswered card, and an agent that did not answer cannot silence the one that did', async () => {
+      const t = await inReview(1);
+      await requests.update(t.id, { openItems: [{ id: 'q-2', type: 'question', agent: 'atlas', sourceMessageId: 'x', createdAt: new Date().toISOString(), status: 'open', text: '发哪个版本？', decisionId: 'D-2' }] });
+      const r = await review.noReplyNeeded('TKT-1', 'ella');
+      expect(r!.message).toContain('card D-2');
+      expect(r!.message).not.toContain('no more review reminders');
+      expect((await requests.getById(t.id))!.nudgeCount ?? 0).toBe(0);
+    });
+
+    it('says so when nothing is waiting on a confirmation', async () => {
+      await ticket(1);
+      const r = await review.noReplyNeeded('TKT-1', 'atlas');
+      expect(r).toMatchObject({ closed: 0 });
+      expect(r!.message).toContain('no confirmation is pending');
+    });
   });
 });
 

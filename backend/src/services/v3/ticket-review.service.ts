@@ -57,7 +57,7 @@ import {
   parseTicketNumber,
   ticketNeedsReview,
 } from '../../types/v2/ticket.types.js';
-import { answerNeedsOwner, isStaleTicket, ownerMovedOn, staleCloseUpdate } from './ticket-hygiene.js';
+import { answerNeedsOwner, isStaleTicket, ownerAnswerSendsBack, ownerMovedOn, staleCloseUpdate } from './ticket-hygiene.js';
 import { ACTIVE_OPEN_ITEM_STATUSES } from '../../types/v2/open-item.types.js';
 
 // ---------------------------------------------------------------------------
@@ -121,6 +121,20 @@ export type ReviewActionResult =
   | { ok: true; ticket: Request }
   | { ok: false; reason: 'not_found' | 'not_in_review' | 'already_done' | 'cancelled' | 'open_work' | 'invalid' ; ticket?: Request };
 
+/** What `reply --ticket <id> --none` did to a ticket. */
+export interface NoReplyResult {
+  /** Pending confirmations this closed: 1 when the ticket left 待验收, else 0 */
+  closed: number;
+  /** `TKT-123` */
+  ticket: string;
+  /** The ticket's status after the call */
+  status: Request['status'];
+  /** The ticket's own chat channel, when known */
+  chatChannelId?: string;
+  /** What happened, or what is still pending and how it closes — never empty */
+  message: string;
+}
+
 /** Where a 打回 came from. */
 export type RejectVia = 'thread' | 'board';
 
@@ -135,6 +149,18 @@ export interface TicketPatch {
 /** The agent still owes the owner something (a question or a promise): the done gate would park the ticket. */
 function hasActiveOpenItem(t: Request): boolean {
   return (t.openItems ?? []).some((i) => ACTIVE_OPEN_ITEM_STATUSES.has(i.status));
+}
+
+/** The open items of a ticket in words an agent can act on; empty when none. */
+function describeOpenItems(t: Request): string {
+  return (t.openItems ?? [])
+    .filter((i) => ACTIVE_OPEN_ITEM_STATUSES.has(i.status))
+    .map((i) => {
+      if (i.type === 'question') return `an unanswered question${i.decisionId ? ` (card ${i.decisionId})` : ''}: "${i.text.slice(0, 120)}"`;
+      if (i.status === 'waiting_owner') return `a promise waiting for the owner's yes: "${i.text.slice(0, 120)}"`;
+      return `a promise to deliver (reply --ticket ${tkt(t)} "<your message>"): "${i.text.slice(0, 120)}"`;
+    })
+    .join('; ');
 }
 
 /**
@@ -310,14 +336,21 @@ export class TicketReviewService {
           continue;
         }
         if (t.status !== 'waiting_confirmation' || !ticketNeedsReview(t) || !t.submittedAt) continue;
+        // The owner answered on a card and it is the agent's turn again: the
+        // ticket is not waiting for him (CREW-1078). Checked before the
+        // deadline, so an objection is never accepted by silence.
+        const sendsBack = ownerAnswerSendsBack(t);
+        if (sendsBack) {
+          await this.returnToWork(t, sendsBack);
+          continue;
+        }
         // Silence accepts: a hard deadline from the answer, whatever the nudges
         // did — or sooner, once the owner has moved on in the thread without
         // an objection (no ticket mechanics are ever shown to the owner).
         const expired = now - Date.parse(t.submittedAt) >= TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS;
         const movedOn = !expired && ownerMovedOn(t) && !hasActiveOpenItem(t);
         if (expired || movedOn) {
-          const tags = [...new Set([...t.tags, TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG])];
-          const r = await this.accept(t, tags, TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_REASON);
+          const r = await this.acceptBySilence(t);
           if (r.ok) autoAccepted += 1;
           else this.logger.debug('Auto-accept refused', { id: t.id, reason: r.reason });
           continue;
@@ -346,6 +379,95 @@ export class TicketReviewService {
       }
       return { submitted: submitted.length, autoAccepted, staleClosed };
     });
+  }
+
+  /**
+   * An agent said no reply is needed about a ticket (`reply --ticket <id>
+   * --none`). A confirmation the owner has already settled is closed now; one
+   * that still waits for him stays (an agent cannot accept on his behalf), the
+   * reminders to that agent stop, and the result says what is pending.
+   *
+   * @param ref - `TKT-123`, `123` or id
+   * @param session - The agent saying so
+   * @returns What happened, or null when `ref` is not a chat ticket
+   */
+  async noReplyNeeded(ref: string, session: string): Promise<NoReplyResult | null> {
+    return this.serial(async () => {
+      const found = await this.resolve(ref);
+      if (!found || typeof found.ticketNumber !== 'number') return null;
+      const label = formatTicketNumber(found.ticketNumber);
+      const result = (t: Request, closed: number, message: string): NoReplyResult => ({
+        closed,
+        ticket: label,
+        status: t.status,
+        ...(t.chatRef ? { chatChannelId: t.chatRef.channelId } : {}),
+        message,
+      });
+      if (found.status !== 'waiting_confirmation') {
+        const owed = describeOpenItems(found);
+        return result(found, 0, `${label} is ${found.status}: no confirmation is pending on it.${owed ? ` Still open: ${owed}.` : ''}`);
+      }
+      const sendsBack = ownerAnswerSendsBack(found);
+      if (sendsBack) {
+        const t = await this.returnToWork(found, sendsBack);
+        const owed = describeOpenItems(t);
+        return result(
+          t,
+          1,
+          `The owner already answered, so ${label} left review and is back in progress — it is your turn (${sendsBack === 'objection' ? 'the answer is not an approval' : 'the answer left work to deliver'}).${owed ? ` Still open: ${owed}.` : ''}`,
+        );
+      }
+      if (ownerMovedOn(found) && !hasActiveOpenItem(found)) {
+        const r = await this.acceptBySilence(found);
+        if (r.ok) return result(r.ticket, 1, `The owner already answered with no objection: ${label} is closed.`);
+        return result(found, 0, `The owner already answered, but ${label} cannot close yet (${r.reason.replace(/_/g, ' ')}). It stays in review.`);
+      }
+      const owed = describeOpenItems(found);
+      const deadline = found.submittedAt
+        ? new Date(Date.parse(found.submittedAt) + TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS).toISOString()
+        : undefined;
+      const mine = (found.reply?.by ?? found.assignee) === session;
+      let t = found;
+      if (mine && (found.nudgeCount ?? 0) < TICKET_CONSTANTS.REVIEW.MAX_NUDGES) {
+        t = await this.deps.requests.update(found.id, { nudgeCount: TICKET_CONSTANTS.REVIEW.MAX_NUDGES, lastNudgeAt: this.now().toISOString() });
+      }
+      return result(
+        t,
+        0,
+        `${label} is still waiting for the owner: ${owed || `his review of the answer submitted at ${found.submittedAt ?? 'an unknown time'}`}. --none cannot accept it for him.` +
+          (mine ? ' You will get no more review reminders about it.' : '') +
+          ` It closes when he answers${deadline ? `, or by itself at ${deadline}` : ''}.`,
+      );
+    });
+  }
+
+  /**
+   * Put a ticket whose owner answered on a card back to work.
+   *
+   * @param t - The ticket in 待验收
+   * @param why - Why it is the agent's turn
+   * @returns The ticket, now running
+   */
+  private async returnToWork(t: Request, why: 'objection' | 'agent_work'): Promise<Request> {
+    const at = this.now().toISOString();
+    const openItems = (t.openItems ?? []).map((i) =>
+      i.type === 'question' && i.status === 'resolved' && !!i.decisionId && !i.sentBackAt ? { ...i, sentBackAt: at } : i,
+    );
+    const updated = await this.deps.requests.update(t.id, { status: 'running', openItems });
+    this.logger.info('Owner answered on a card — ticket back in progress', { tkt: tkt(updated), why });
+    return updated;
+  }
+
+  /**
+   * Accept a ticket on the strength of the owner not objecting, recorded as
+   * such (never as his review).
+   *
+   * @param t - The ticket in 待验收
+   * @returns Result
+   */
+  private acceptBySilence(t: Request): Promise<ReviewActionResult> {
+    const tags = [...new Set([...t.tags, TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG])];
+    return this.accept(t, tags, TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_REASON);
   }
 
   /**

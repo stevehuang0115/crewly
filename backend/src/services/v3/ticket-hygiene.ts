@@ -18,7 +18,8 @@
  * @module services/v3/ticket-hygiene
  */
 
-import { TICKET_CONSTANTS } from '../../constants.js';
+import { OPEN_ITEMS_CONSTANTS, TICKET_CONSTANTS } from '../../constants.js';
+import { ACTIVE_OPEN_ITEM_STATUSES } from '../../types/v2/open-item.types.js';
 import type { Request, UpdateRequestInput } from '../../types/v2/request.types.js';
 import { formatTicketNumber, parseReviewReply, ticketNeedsReview, type TicketDiscussionEntry } from '../../types/v2/ticket.types.js';
 import { askText } from './ticket-ask-classifier.js';
@@ -75,6 +76,51 @@ export function isOwnerObjection(text: string): boolean {
 }
 
 /**
+ * What the owner answered on the decision cards of the answer under review.
+ *
+ * Counted from the agent's latest reply, not from the submit: a ticket is
+ * submitted only once its work and asks are done, so the owner often taps the
+ * card first, and that answer must not be lost (CREW-1078). An answer older
+ * than the latest reply does not count: the agent said something new after it.
+ * An answer that already sent the ticket back to work is used up.
+ * "Reply in thread" is not an answer — the owner's words are still to come.
+ *
+ * @param ticket - The ticket in 待验收
+ * @returns The answers, oldest item first
+ */
+export function ownerCardAnswers(
+  ticket: Pick<Request, 'submittedAt' | 'openItems'> & { reply?: Pick<NonNullable<Request['reply']>, 'at'> | undefined },
+): string[] {
+  const times = [ticket.submittedAt, ticket.reply?.at].map((t) => (t ? Date.parse(t) : NaN)).filter((n) => Number.isFinite(n));
+  if (times.length === 0) return [];
+  const since = Math.min(...times);
+  return (ticket.openItems ?? [])
+    .filter((i) => i.type === 'question' && i.status === 'resolved' && !!i.decisionId && !i.sentBackAt && !!i.closedAt && Date.parse(i.closedAt) > since)
+    .map((i) => i.answer ?? '')
+    .filter((a) => a !== OPEN_ITEMS_CONSTANTS.REPLY_LABEL);
+}
+
+/**
+ * Why an answered ticket has to leave 待验收 because it is the agent's turn
+ * again: the owner answered on a card and either objected, or the answer left
+ * the agent owing him something. While another question (or a promise waiting
+ * for his yes) is still open it is his turn, and the ticket stays.
+ *
+ * @param ticket - The ticket in 待验收
+ * @returns `objection`, `agent_work`, or null when it does not go back
+ */
+export function ownerAnswerSendsBack(
+  ticket: Pick<Request, 'submittedAt' | 'openItems'> & { reply?: Pick<NonNullable<Request['reply']>, 'at'> | undefined },
+): 'objection' | 'agent_work' | null {
+  const answers = ownerCardAnswers(ticket);
+  if (answers.length === 0) return null;
+  if (answers.some((a) => isOwnerObjection(a))) return 'objection';
+  const active = (ticket.openItems ?? []).filter((i) => ACTIVE_OPEN_ITEM_STATUSES.has(i.status));
+  if (active.some((i) => i.type === 'question' || i.status === 'waiting_owner')) return null;
+  return active.length > 0 ? 'agent_work' : null;
+}
+
+/**
  * Whether the owner already moved on in a 待验收 ticket's thread: they posted
  * after the answer, or answered one of the agent's questions on a decision
  * card after it, and nothing they said is an objection. Pure
@@ -87,7 +133,9 @@ export function isOwnerObjection(text: string): boolean {
  * @param ticket - The ticket in 待验收
  * @returns True when silence-about-the-work can be taken as acceptance now
  */
-export function ownerMovedOn(ticket: Pick<Request, 'submittedAt' | 'discussion' | 'openItems'>): boolean {
+export function ownerMovedOn(
+  ticket: Pick<Request, 'submittedAt' | 'discussion' | 'openItems'> & { reply?: Pick<NonNullable<Request['reply']>, 'at'> | undefined },
+): boolean {
   const since = ticket.submittedAt ? Date.parse(ticket.submittedAt) : NaN;
   if (!Number.isFinite(since)) return false;
   const later = (ticket.discussion ?? [])
@@ -98,10 +146,7 @@ export function ownerMovedOn(ticket: Pick<Request, 'submittedAt' | 'discussion' 
         Date.parse(d.at) > since,
     )
     .map((d) => d.text);
-  const cardAnswers = (ticket.openItems ?? [])
-    .filter((i) => i.type === 'question' && i.status === 'resolved' && !!i.decisionId && !!i.closedAt && Date.parse(i.closedAt) > since)
-    .map((i) => i.answer ?? '');
-  const said = [...later, ...cardAnswers];
+  const said = [...later, ...ownerCardAnswers(ticket)];
   return said.length > 0 && !said.some((t) => isOwnerObjection(t));
 }
 

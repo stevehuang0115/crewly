@@ -385,6 +385,20 @@ export function detectIdleHoldersOfRunningWork(
 // ---------------------------------------------------------------------------
 
 /**
+ * Whether every finished WorkItem of a ticket was already finished when it was
+ * last submitted for review. Unknown finish times count as new work.
+ *
+ * @param request - A Request that is not in review now
+ * @param workItems - Its effective WorkItems
+ * @returns True when nothing has finished since the last submit
+ */
+function finishedBeforeLastSubmit(request: Request, workItems: readonly WorkItem[]): boolean {
+  if (typeof request.ticketNumber !== 'number' || request.status === 'waiting_confirmation' || !request.submittedAt) return false;
+  const submitted = Date.parse(request.submittedAt);
+  return workItems.every((wi) => Date.parse(wi.completedAt ?? wi.statusChangedAt ?? '') <= submitted);
+}
+
+/**
  * Recomputes the correct status for a Request based on its WorkItems' statuses.
  * This is the core "truth recomputation" — events are hints, this is truth.
  *
@@ -438,6 +452,10 @@ export function reconcileRequestStatus(
 
   const statuses = workItems.map(wi => wi.status);
   const completion = evaluateRequestCompletion(workItems);
+  // A ticket that was submitted and then taken out of review (sent back, an
+  // owner follow-up) is not submitted again by the work he already saw: only
+  // work finished since, or the agent's new answer, does that (CREW-1078).
+  if (completion.outcome === 'complete' && finishedBeforeLastSubmit(request, workItems)) return null;
   const anyRunning = statuses.some(s => s === 'running');
   const allBlockedOrFailed = statuses.length > 0 && statuses.every(
     s => s === 'blocked' || s === 'failed' || s === 'cancelled'
