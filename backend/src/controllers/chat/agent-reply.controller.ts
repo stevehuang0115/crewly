@@ -30,6 +30,7 @@ import { reportOwnerThreadAgentPost } from '../../services/messaging/owner-threa
 import { reportAgentPostForFollowThrough } from '../../services/agent/follow-through.service.js';
 import { LoggerService, type ComponentLogger } from '../../services/core/logger.service.js';
 import { agentResponse, deliverAgentReplyToConversation, isAgentsOwnConversation } from './chat.controller.js';
+import { getTicketReviewService, type NoReplyResult } from '../../services/v3/ticket-review.service.js';
 
 const logger: ComponentLogger = LoggerService.getInstance().createComponentLogger('AgentReply');
 
@@ -47,6 +48,8 @@ export interface AgentReplyDeps {
   deliverReply: (input: DeliverReplyInput) => Promise<ReplyDelivery>;
   /** `reply --none`: take down the agent's placeholder in that thread */
   settleNoReply?: (agentSession: string, slackChannelId: string, threadTs: string) => Promise<number>;
+  /** `reply --ticket <id> --none`: settle that ticket's pending confirmation; null when not a chat ticket */
+  ticketNoReply?: (agentSession: string, ticket: string) => Promise<NoReplyResult | null>;
   /** `reply --drive <session>`: the answer goes to the owner's Drive mode session (their phone), not Slack */
   driveReply?: (agentSession: string, sessionId: string, input: { text: string; interim: boolean; recap: boolean; ack?: boolean }) => Promise<{ conversationId: string; closed: boolean }>;
 }
@@ -86,6 +89,11 @@ const defaultDeps: AgentReplyDeps = {
     const drive = getDriveAgentService();
     if (!drive) throw new DriveAgentError(503, 'Drive mode is not ready on this machine — answer the usual way (reply).');
     return drive.agentReply(agentSession, sessionId, input);
+  },
+  ticketNoReply: async (agentSession, ticket) => {
+    const review = getTicketReviewService();
+    if (!review) throw new Error('ticket review is not ready yet');
+    return review.noReplyNeeded(ticket, agentSession);
   },
   settleNoReply: async (agentSession, slackChannelId, threadTs) => {
     const { getSlackTypingPlaceholderService } = await import('../../services/slack/slack-typing-placeholder.service.js');
@@ -288,17 +296,7 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
           return;
         }
         case 'none': {
-          const key = parseSlackThreadKey(plan.origin?.slackThreadKey);
-          const closed =
-            getOwnerMessageWatchdog()?.closeByAgent(session, {
-              ...(plan.origin ? { chatChannelId: plan.origin.conversationId } : {}),
-              ...(key ? { slackChannelId: key.slackChannelId, threadTs: key.threadTs } : {}),
-            }) ?? 0;
-          // The agent said explicitly that no answer is needed: its
-          // "working on it" in that thread may go (spec §5 — a turn that just
-          // ends does not take it down).
-          if (key) await deps.settleNoReply?.(session, key.slackChannelId, key.threadTs).catch(() => 0);
-          res.json({ success: true, data: { closed } });
+          await answerNone(session, referenceOf(body)?.ticket, plan.origin, res, deps);
           return;
         }
         case 'orc-chat': {
@@ -350,6 +348,63 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
       next(err);
     }
   };
+}
+
+/**
+ * `reply --none`: waive the owed answer where the agent was asked and, when it
+ * names a ticket, settle that ticket's pending confirmation. A named ticket
+ * always gets a message back, so `closed: 0` is never silent; and a ticket
+ * whose own conversation is not the turn's origin does not waive what is owed
+ * at the origin.
+ *
+ * @param session - The agent
+ * @param ticket - `--ticket`, if any
+ * @param origin - Where the turn came from, if known
+ * @param res - Response
+ * @param deps - Collaborators
+ */
+async function answerNone(
+  session: string,
+  ticket: string | undefined,
+  origin: Extract<AgentReplyPlan, { kind: 'none' }>['origin'],
+  res: Response,
+  deps: AgentReplyDeps,
+): Promise<void> {
+  let result: NoReplyResult | null = null;
+  let failure: string | undefined;
+  if (ticket && deps.ticketNoReply) {
+    try {
+      result = await deps.ticketNoReply(session, ticket);
+    } catch (err) {
+      failure = err instanceof Error ? err.message : String(err);
+      logger.warn('reply --none could not check the ticket', { session, ticket, error: failure });
+    }
+  }
+  const elsewhere = !!result && !!origin && result.chatChannelId !== origin.conversationId;
+  const key = elsewhere ? null : parseSlackThreadKey(origin?.slackThreadKey);
+  const waived = elsewhere
+    ? 0
+    : getOwnerMessageWatchdog()?.closeByAgent(session, {
+        ...(origin ? { chatChannelId: origin.conversationId } : {}),
+        ...(key ? { slackChannelId: key.slackChannelId, threadTs: key.threadTs } : {}),
+      }) ?? 0;
+  // The agent said explicitly that no answer is needed: its "working on it" in
+  // that thread may go (spec §5 — a turn that just ends does not take it down).
+  if (key) await deps.settleNoReply?.(session, key.slackChannelId, key.threadTs).catch(() => 0);
+  if (!ticket) {
+    res.json({ success: true, data: { closed: waived } });
+    return;
+  }
+  const owedNote = waived > 0 ? ` Also closed ${waived} owed message(s) from this turn.` : '';
+  const message = result
+    ? `${result.message}${owedNote}`
+    : failure
+      ? `Could not check ${ticket} (${failure}); its state is unchanged. Run the command again in a minute.${owedNote}`
+      : `${ticket} is not a chat ticket on this machine (TKT-<number>), so no ticket confirmation was changed.${owedNote}`;
+  res.json({
+    success: true,
+    data: { closed: waived + (result?.closed ?? 0), ...(result ? { ticket: result.ticket, ticketStatus: result.status } : { ticket }), message },
+  });
 }
 
 /**

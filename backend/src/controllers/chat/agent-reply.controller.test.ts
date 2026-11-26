@@ -224,6 +224,52 @@ describe('POST /api/chat/reply', () => {
     expect(watchdog.size).toBe(0);
   });
 
+  describe('--none with --ticket (CREW-1078)', () => {
+    const owed = () => {
+      const watchdog = new OwnerMessageWatchdogService({ isBusy: () => false, nudge: async () => ({ outcome: 'sent' }), postNote: async () => true });
+      watchdog.track({ surface: 'slack', slackChannelId: 'D0DM', threadTs: '1790000000.000100', sourceTs: '1790000000.000100', chatChannelId: 'dm-ella', responsible: 'ella', recipients: ['ella'], required: true, text: 'unrelated question' });
+      setOwnerMessageWatchdog(watchdog);
+      return watchdog;
+    };
+    const run = async (ticketNoReply: AgentReplyDeps['ticketNoReply']) => {
+      const settleNoReply = jest.fn(async () => 0);
+      const { deps, deliver } = makeDeps({ ticketNoReply, settleNoReply });
+      const res = mockRes();
+      await createAgentReplyHandler(deps)(req({ none: true, ticket: 'TKT-865' }), res, next);
+      expect(deliver).not.toHaveBeenCalled();
+      return { body: res.body as { success: boolean; data: Record<string, unknown> }, settleNoReply };
+    };
+
+    it('reports what the ticket closed, and leaves what is owed elsewhere alone', async () => {
+      const watchdog = owed();
+      const { body, settleNoReply } = await run(async () => ({ closed: 1, ticket: 'TKT-865', status: 'done', chatChannelId: 'room-9', message: 'closed it' }));
+      expect(body.data).toEqual({ closed: 1, ticket: 'TKT-865', ticketStatus: 'done', message: 'closed it' });
+      expect(watchdog.size).toBe(1);
+      expect(settleNoReply).not.toHaveBeenCalled();
+    });
+
+    it("also waives the owed message when the turn came from the ticket's own conversation", async () => {
+      const watchdog = owed();
+      const { body, settleNoReply } = await run(async () => ({ closed: 0, ticket: 'TKT-865', status: 'waiting_confirmation', chatChannelId: 'dm-ella', message: 'TKT-865 is still waiting for the owner: his review.' }));
+      expect(body.data.closed).toBe(1);
+      expect(body.data.message).toBe('TKT-865 is still waiting for the owner: his review. Also closed 1 owed message(s) from this turn.');
+      expect(watchdog.size).toBe(0);
+      expect(settleNoReply).toHaveBeenCalled();
+    });
+
+    it('closed 0 on a named ticket always carries a message: pending, unknown, or unchecked', async () => {
+      const pending = await run(async () => ({ closed: 0, ticket: 'TKT-865', status: 'waiting_confirmation', chatChannelId: 'room-9', message: 'still waiting' }));
+      expect(pending.body.data).toMatchObject({ closed: 0, message: 'still waiting' });
+      const unknown = await run(async () => null);
+      expect(unknown.body.data).toMatchObject({ closed: 0, ticket: 'TKT-865' });
+      expect(unknown.body.data.message).toContain('not a chat ticket');
+      const broken = await run(async () => {
+        throw new Error('store down');
+      });
+      expect(broken.body.data.message).toContain('store down');
+    });
+  });
+
   it('nothing to reply to (no work, no owner message, no team channel) → 409 with a plain error', async () => {
     const { deps } = makeDeps({ workDestination: async () => makeWorkDeps({ teamChannel: null }).wd });
     const res = mockRes();
