@@ -8,7 +8,13 @@
  * {@link TL_DELEGATION_CONSTANTS.WINDOW_MS} gets one note back as hook
  * `additionalContext` — at most once per
  * {@link TL_DELEGATION_CONSTANTS.NUDGE_COOLDOWN_MS}. It never blocks: the
- * tool already ran, and any failure means no note.
+ * tool already ran, and any failure means no note. Shell commands (`Bash`)
+ * are counted the same way with their own, much higher threshold
+ * ({@link TL_DELEGATION_CONSTANTS.SHELL_THRESHOLD}), so a lead rendering or
+ * converting files through the shell is nudged too (§7).
+ *
+ * Owner work delivered to a lead also carries a one-line roster of the
+ * members that are free to take it ({@link buildRosterBlock}, §8).
  *
  * @module services/tl-delegation/tl-delegation.service
  */
@@ -28,6 +34,8 @@ export interface NudgeMember {
   role: string;
   /** idle: free now; stopped: starts when assigned; working: busy */
   availability: 'idle' | 'stopped' | 'working';
+  /** The member's session keys (session name, agent id), to match its work items */
+  sessions?: string[];
 }
 
 /** The lead's team, for the nudge. */
@@ -75,6 +83,11 @@ interface DelegationState {
 export interface TlDelegationDeps {
   /** The lead's team, or null when the session is not a team lead (or has nobody to delegate to) */
   leadContext: (session: string) => Promise<LeadContext | null>;
+  /**
+   * Sessions that hold a live work item (queued / accepted / running /
+   * blocked). Default: read from the task pool.
+   */
+  liveWorkTargets?: () => Promise<ReadonlySet<string>>;
   /** State file (default: CREWLY_HOME/tl-delegation.json) */
   statePath?: string;
   /** Clock (epoch ms) */
@@ -103,6 +116,34 @@ export function rankMembersForNudge(members: readonly NudgeMember[]): NudgeMembe
 }
 
 /**
+ * A member as a note names it: `Dex (developer, stopped — starts when assigned)`.
+ *
+ * @param m - Member
+ * @returns Phrase
+ */
+function memberPhrase(m: NudgeMember): string {
+  return `${m.name} (${m.role}, ${AVAILABILITY_WORDS[m.availability]})`;
+}
+
+/**
+ * What every execution nudge says after its opening sentence: who to hand
+ * the work to, and how.
+ *
+ * @param members - The lead's members
+ * @returns Advice
+ */
+function nudgeAdvice(members: readonly NudgeMember[]): string {
+  const named = rankMembersForNudge(members).map(memberPhrase).join(', ');
+  return (
+    `As team lead, hand hands-on work to a member: ${named}. ` +
+    'Any member can do any work that needs no special account, tool or permission — role is a preference, not a limit. ' +
+    'Delegate with delegate-task (pass --thread <key> for an owner request, so the member answers the owner in that thread; without it the result comes back to you). ' +
+    'Keep it only if the change is tiny, every member is busy, or it needs your own judgment — then record why: ' +
+    'delegate-task --no-member-fits "<what is missing>" --task "<the work>".'
+  );
+}
+
+/**
  * The nudge text (English harness text).
  *
  * @param edits - Edits counted in the window
@@ -111,15 +152,57 @@ export function rankMembersForNudge(members: readonly NudgeMember[]): NudgeMembe
  */
 export function buildNudgeText(edits: number, members: readonly NudgeMember[]): string {
   const minutes = Math.round(TL_DELEGATION_CONSTANTS.WINDOW_MS / 60000);
-  const named = rankMembersForNudge(members)
-    .map((m) => `${m.name} (${m.role}, ${AVAILABILITY_WORDS[m.availability]})`)
-    .join(', ');
+  return `${TL_DELEGATION_CONSTANTS.NUDGE_TAG} You have edited files ${edits} times in the last ${minutes} minutes. ${nudgeAdvice(members)}`;
+}
+
+/**
+ * The nudge text for shell work (English harness text): the same members
+ * and advice as {@link buildNudgeText}, opened with the command count.
+ *
+ * @param commands - Shell commands counted in the window
+ * @param members - The lead's members
+ * @returns Note
+ */
+export function buildShellNudgeText(commands: number, members: readonly NudgeMember[]): string {
+  const minutes = Math.round(TL_DELEGATION_CONSTANTS.WINDOW_MS / 60000);
+  return `${TL_DELEGATION_CONSTANTS.NUDGE_TAG} You have run ${commands} commands in the last ${minutes} minutes. ${nudgeAdvice(members)}`;
+}
+
+/**
+ * The members that can take work right now: idle or stopped, and holding no
+ * live work item. Idle first, then stopped; at most
+ * {@link TL_DELEGATION_CONSTANTS.NUDGE_MAX_MEMBERS}.
+ *
+ * @param members - The lead's members
+ * @param liveWorkTargets - Sessions that hold a live work item
+ * @returns Free members, ranked and capped
+ */
+export function freeMembers(members: readonly NudgeMember[], liveWorkTargets: ReadonlySet<string>): NudgeMember[] {
+  return rankMembersForNudge(
+    members.filter((m) => m.availability !== 'working' && !(m.sessions ?? []).some((s) => liveWorkTargets.has(s))),
+  );
+}
+
+/**
+ * The roster block appended to owner work delivered to a team lead
+ * (English harness text): who is free now and how to hand the work over.
+ *
+ * @param members - The lead's members
+ * @param liveWorkTargets - Sessions that hold a live work item
+ * @returns The block, or null when no member is free
+ *
+ * @example
+ * ```typescript
+ * buildRosterBlock([{ name: 'Dex', role: 'developer', availability: 'stopped' }], new Set());
+ * // '[TEAM] Free now: Dex (developer, stopped — starts when assigned). Hand hands-on work to …'
+ * ```
+ */
+export function buildRosterBlock(members: readonly NudgeMember[], liveWorkTargets: ReadonlySet<string>): string | null {
+  const free = freeMembers(members, liveWorkTargets);
+  if (free.length === 0) return null;
   return (
-    `${TL_DELEGATION_CONSTANTS.NUDGE_TAG} You have edited files ${edits} times in the last ${minutes} minutes. ` +
-    `As team lead, hand hands-on work to a member: ${named}. ` +
-    'Any member can do any work that needs no special account, tool or permission — role is a preference, not a limit. ' +
-    'Delegate with delegate-task (pass --thread <key> for an owner request, so the member answers the owner in that thread; without it the result comes back to you). ' +
-    'Keep it only if the change is tiny, every member is busy, or it needs your own judgment — then record why: ' +
+    `${TL_DELEGATION_CONSTANTS.ROSTER_TAG} Free now: ${free.map(memberPhrase).join(', ')}. ` +
+    'Hand hands-on work to a member with delegate-task --thread <key>; keep it only for lead-level work, and then record why: ' +
     'delegate-task --no-member-fits "<what is missing>" --task "<the work>".'
   );
 }
@@ -160,6 +243,10 @@ export class TlDelegationService {
   private readonly logger: ComponentLogger;
   /** session → recent edit times (epoch ms), in-memory only */
   private readonly edits = new Map<string, number[]>();
+  /** session → recent shell command times (epoch ms), in-memory only */
+  private readonly shells = new Map<string, number[]>();
+  /** lead session → when its last roster block was built (epoch ms), in-memory only */
+  private readonly rosterAt = new Map<string, number>();
   private state: DelegationState | null = null;
   private writing: Promise<void> = Promise.resolve();
 
@@ -204,23 +291,31 @@ export class TlDelegationService {
    */
   async observeToolUse(session: string, toolName: string): Promise<string | null> {
     try {
-      if (!(TL_DELEGATION_CONSTANTS.EDIT_TOOLS as readonly string[]).includes(toolName)) return null;
+      const isEdit = TL_DELEGATION_CONSTANTS.EDIT_TOOLS.includes(toolName);
+      const isShell = !isEdit && TL_DELEGATION_CONSTANTS.SHELL_TOOLS.includes(toolName);
+      if (!isEdit && !isShell) return null;
+      const log = isEdit ? this.edits : this.shells;
       const now = this.now();
-      const recent = (this.edits.get(session) ?? []).filter((t) => now - t < TL_DELEGATION_CONSTANTS.WINDOW_MS);
+      const recent = (log.get(session) ?? []).filter((t) => now - t < TL_DELEGATION_CONSTANTS.WINDOW_MS);
       recent.push(now);
-      this.edits.set(session, recent);
-      if (recent.length < TL_DELEGATION_CONSTANTS.EDIT_THRESHOLD) return null;
+      log.set(session, recent);
+      if (recent.length < (isEdit ? TL_DELEGATION_CONSTANTS.EDIT_THRESHOLD : TL_DELEGATION_CONSTANTS.SHELL_THRESHOLD)) return null;
       const state = this.load();
       const counts = state.nudges[session];
       if (counts?.lastAt !== undefined && now - counts.lastAt < TL_DELEGATION_CONSTANTS.NUDGE_COOLDOWN_MS) return null;
       const lead = await this.deps.leadContext(session);
       if (!lead || lead.members.length === 0) {
         // Not a lead: stop counting for it until the window passes.
-        this.edits.set(session, []);
+        log.set(session, []);
         return null;
       }
-      const text = buildNudgeText(recent.length, lead.members);
+      // Shell work is nudged only when somebody could take it right now: a
+      // lead's own skills are shell commands too, so the count alone says less.
+      if (isShell && !lead.members.some((m) => m.availability !== 'working')) return null;
+      const text = isEdit ? buildNudgeText(recent.length, lead.members) : buildShellNudgeText(recent.length, lead.members);
+      // One nudge covers both kinds of work (they share the cooldown).
       this.edits.set(session, []);
+      this.shells.set(session, []);
       const next: NudgeCounts = { ...(counts ?? { count: 0, followed: 0 }) };
       next.count += 1;
       next.lastAt = now;
@@ -231,7 +326,7 @@ export class TlDelegationService {
       next.days = pruneDays(days, now);
       state.nudges[session] = next;
       this.save();
-      this.logger.info('Team lead nudged to delegate', { session, teamId: lead.teamId, edits: recent.length });
+      this.logger.info('Team lead nudged to delegate', { session, teamId: lead.teamId, ...(isEdit ? { edits: recent.length } : { commands: recent.length }) });
       return text;
     } catch (err) {
       this.logger.debug('Nudge check failed — no nudge', { session, error: err instanceof Error ? err.message : String(err) });
@@ -242,6 +337,7 @@ export class TlDelegationService {
   /**
    * A work item was delegated. Counts as following a nudge when the
    * delegator was nudged within {@link TL_DELEGATION_CONSTANTS.FOLLOW_WINDOW_MS}.
+   * The delegator's shell-command count starts over: it is handing work out.
    *
    * @param delegator - Delegating session
    * @param target - Target session
@@ -250,6 +346,7 @@ export class TlDelegationService {
   recordDelegation(delegator: string | undefined, target: string | undefined): boolean {
     try {
       if (!delegator || !target || delegator === target) return false;
+      this.shells.delete(delegator);
       const state = this.load();
       const counts = state.nudges[delegator];
       if (!counts?.pendingSince) return false;
@@ -268,6 +365,48 @@ export class TlDelegationService {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * The roster block for owner work about to be delivered to `session`:
+   * only for a team lead with at least one member free right now (idle or
+   * stopped, no live work item), at most once per lead per
+   * {@link TL_DELEGATION_CONSTANTS.ROSTER_COOLDOWN_MS}. Never throws and
+   * never holds the delivery up: any failure, or a lookup slower than
+   * {@link TL_DELEGATION_CONSTANTS.ROSTER_TIMEOUT_MS}, means no block.
+   *
+   * @param session - Receiving agent session
+   * @returns The block, or null
+   */
+  async rosterBlockFor(session: string): Promise<string | null> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const now = this.now();
+      const last = this.rosterAt.get(session);
+      if (last !== undefined && now - last < TL_DELEGATION_CONSTANTS.ROSTER_COOLDOWN_MS) return null;
+      const timeout = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), TL_DELEGATION_CONSTANTS.ROSTER_TIMEOUT_MS);
+        timer.unref?.();
+      });
+      const build = (async (): Promise<string | null> => {
+        const lead = await this.deps.leadContext(session);
+        if (!lead || lead.members.length === 0) return null;
+        const live = await (this.deps.liveWorkTargets ?? liveWorkTargetsFromPool)();
+        return buildRosterBlock(lead.members, live);
+      })();
+      // A lookup that loses the race may still reject later: swallow it.
+      build.catch(() => undefined);
+      const block = await Promise.race([build, timeout]);
+      if (!block) return null;
+      this.rosterAt.set(session, now);
+      this.logger.info('Team roster added to owner work for a lead', { session });
+      return block;
+    } catch (err) {
+      this.logger.debug('Roster block failed — delivering without it', { session, error: err instanceof Error ? err.message : String(err) });
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -416,7 +555,7 @@ export function leadContextFromTeams(teams: readonly Team[], session: string): L
     const leadIds = new Set(leads.map((l) => l.id));
     const members = (team.members ?? [])
       .filter((m) => !leadIds.has(m.id) && m.role !== 'orchestrator')
-      .map((m) => ({ name: m.name, role: String(m.role), availability: memberAvailability(m) }));
+      .map((m) => ({ name: m.name, role: String(m.role), availability: memberAvailability(m), sessions: memberLedgerKeys(m) }));
     if (members.length === 0) continue;
     return { teamId: team.id, teamName: team.name, members };
   }
@@ -441,4 +580,19 @@ function cachedLeadContext(): (session: string) => Promise<LeadContext | null> {
     cache.set(session, { at: Date.now(), value });
     return value;
   };
+}
+
+/**
+ * Sessions that hold a live work item, from the task pool.
+ *
+ * @returns Target sessions of queued / accepted / running / blocked items
+ */
+async function liveWorkTargetsFromPool(): Promise<ReadonlySet<string>> {
+  const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+  const items = await TaskPoolService.getInstance().getAllItems();
+  const live = new Set<string>();
+  for (const item of items) {
+    if (item.target && TL_DELEGATION_CONSTANTS.LIVE_WORK_STATUSES.includes(item.status)) live.add(item.target);
+  }
+  return live;
 }

@@ -36,8 +36,10 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  *   company's Crewly account over a shared channel, held during the link's
  *   trial or because it may be internal — send it, or not (crewly#1543,
  *   specs/2026-11-10-shared-channel-send.md)
+ * - `team_lead`: a team of two or more members has no lead — who should lead
+ *   it, or not now (specs/2026-10-04-tl-delegation.md §6)
  */
-export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator' | 'app_template' | 'model_tier_change' | 'gmail_send' | 'private_share' | 'shared_send';
+export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator' | 'app_template' | 'model_tier_change' | 'gmail_send' | 'private_share' | 'shared_send' | 'team_lead';
 
 /** How a decision came to be: asked live, or carded by the open-items backfill. */
 export type DecisionSource = 'live' | 'backfill';

@@ -8519,6 +8519,56 @@ export const TL_DELEGATION_CONSTANTS = {
 	MAX_TEXT_CHARS: 300,
 	/** Accepted tool_name from the hook */
 	TOOL_NAME_PATTERN: /^[A-Za-z0-9_-]{1,64}$/,
+	/** Claude Code tools that count as hands-on shell work (builds, renders, conversions) */
+	SHELL_TOOLS: ['Bash'] as readonly string[],
+	/**
+	 * Shell commands in the window that trigger a nudge. High on purpose:
+	 * every Crewly skill a lead runs (reply, delegate-task, …) is a shell
+	 * command too.
+	 */
+	SHELL_THRESHOLD: 40,
+	/** Tag that opens the roster block added to owner work delivered to a lead */
+	ROSTER_TAG: '[TEAM]',
+	/** At most one roster block per lead per this long (ms) */
+	ROSTER_COOLDOWN_MS: 10 * 60 * 1000,
+	/** Building the roster block may take this long; past it the message goes without one (ms) */
+	ROSTER_TIMEOUT_MS: 1500,
+	/** Work item statuses that mean a member already holds work (not free) */
+	LIVE_WORK_STATUSES: ['queued', 'accepted', 'running', 'blocked'] as readonly string[],
+} as const;
+
+/**
+ * A team must have a lead (specs/2026-10-04-tl-delegation.md §6): a team of
+ * two or more members with no lead by the rule gets one owner card asking
+ * who leads it.
+ */
+export const TEAM_LEAD_REQUIRED_CONSTANTS = {
+	/** Decision kind of the card */
+	DECISION_KIND: 'team_lead',
+	/** Per-machine state under CREWLY_HOME */
+	STORE_FILENAME: 'team-lead-required.json',
+	/** First check after the decision cards start (ms) */
+	FIRST_TICK_DELAY_MS: 5 * 60 * 1000,
+	/** Check cadence after that (ms) */
+	TICK_INTERVAL_MS: 60 * 60 * 1000,
+	/** How long the owner has to answer; then "Not now" applies (ms) */
+	DEADLINE_MS: 7 * 24 * 60 * 60 * 1000,
+	/** After "Not now" (or no answer) the team is not asked about again this long (ms) */
+	SNOOZE_MS: 30 * 24 * 60 * 60 * 1000,
+	/** A team smaller than this needs no lead */
+	MIN_MEMBERS: 2,
+	/** Members offered on the card */
+	MAX_CANDIDATES: 3,
+	/** Roles offered first: they already coordinate work */
+	PREFERRED_ROLES: ['product-manager', 'tpm'] as readonly string[],
+	/** The declining option (the default) */
+	NOT_NOW_LABEL: 'Not now',
+	/** Detail shown next to the declining option */
+	NOT_NOW_DETAIL: 'the team stays without a lead; asked again in 30 days',
+	/** Why an open card is withdrawn when the team gained a lead elsewhere */
+	WITHDRAWN_NOTE: 'The team has a lead now',
+	/** Tag that opens the note to the new lead */
+	NOTE_TAG: '[TEAM LEAD]',
 } as const;
 
 /**

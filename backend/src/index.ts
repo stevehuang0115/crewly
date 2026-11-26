@@ -3179,6 +3179,12 @@ void (async () => {
 					// An owner message that waits for a busy agent goes to the
 					// front of its queue (2026-10-05, D-270: behind 6 reminders).
 					isOwnerMessage: (message) => isOwnerChatTurn(message, getSlackService().getOwnerUserId?.() ?? null),
+					// Owner work delivered to a team lead names the members that are
+					// free to take it (specs/2026-10-04-tl-delegation.md §8).
+					teamBlockFor: async (agentSession) => {
+						const { TlDelegationService } = await import('./services/tl-delegation/tl-delegation.service.js');
+						return (await TlDelegationService.getInstance().rosterBlockFor(agentSession)) ?? '';
+					},
 					// Records the agent already holds on what the message mentions
 					// (entity pages of its project, team and global vaults).
 					recordsFor: async ({ agentSession, text, ownerOnlyAudience }) => {
@@ -7711,6 +7717,11 @@ void (async () => {
 			// owner agrees to a runtime's first-run Terms from a Slack card.
 			const { startRuntimeTerms } = await import('./services/runtime-terms/runtime-terms.wiring.js');
 			startRuntimeTerms({ crewlyHome: this.config.crewlyHome, decisions, machineName: () => os.hostname().replace(/\.local$/, '') });
+			// A team must have a lead (specs/2026-10-04-tl-delegation.md §6): a team
+			// of two or more with no lead gets one owner card asking who leads it.
+			await import('./services/team-lead-required/team-lead-required.wiring.js')
+				.then((m) => m.startTeamLeadRequired({ crewlyHome: this.config.crewlyHome, decisions, sendToAgent, packageRoot: findPackageRoot(__dirname) }))
+				.catch((err) => this.logger.warn('Team lead card not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }));
 			// Open items (specs/2026-10-01-reply-open-items.md): commitments and
 			// questions in agents' replies to the owner are tracked until done.
 			const { startOpenItems } = await import('./services/open-items/open-items.wiring.js');

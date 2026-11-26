@@ -1,6 +1,7 @@
 import { memberAgentId, resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
 import { isPersonId } from '../../services/people/people-directory.service.js';
-import { canMemberDelegate, getTeamLeadIds, isLeadRole, setTeamLead, type SetTeamLeadMode } from '../../utils/team.utils.js';
+import { canMemberDelegate, getTeamLeadIds, isLeadRole, type SetTeamLeadMode } from '../../utils/team.utils.js';
+import { applyTeamLead } from '../../services/team-lead-required/team-lead.apply.js';
 import { Request, Response } from 'express';
 import type { ApiContext } from '../types.js';
 import type {
@@ -3665,10 +3666,7 @@ export async function setTeamLeadHandler(this: ApiContext, req: Request, res: Re
       return;
     }
 
-    const result = setTeamLead(team, member.id, mode);
-    (team as { updatedAt: string }).updatedAt = new Date().toISOString();
-    await this.storageService.saveTeam(team);
-    recordActivity({ actor: actorFromRequest(req), action: 'team.lead.changed', target: { type: 'team', id: team.id, name: team.name }, after: { lead: member.name, memberId: member.id, mode } });
+    const result = await applyTeamLead({ storage: this.storageService, team, memberId: member.id, mode, actor: actorFromRequest(req) });
     logger.info('Team lead changed', {
       teamId: team.id,
       teamName: team.name,
