@@ -11,9 +11,14 @@
  * An explicit block with `until` needs nothing here: blocking releases the
  * claim, so a blocked item is never taken for quiet.
  *
+ * The hold is capped: a time more than {@link TIMED_WAIT_CONSTANTS.MAX_HOLD_MS}
+ * ahead is ignored. It is ignored rather than clamped to now + cap, because
+ * "now" moves on every pass and a clamped end would never arrive.
+ *
  * @module services/reconciler/timed-wait
  */
 
+import { TIMED_WAIT_CONSTANTS } from '../../constants.js';
 import type { Trigger } from '../../types/v2/trigger.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 
@@ -83,12 +88,14 @@ function isRecheckOf(trigger: Trigger, workItem: WorkItem): boolean {
 
 /**
  * The time a running WorkItem is legitimately waiting for: its due date or a
- * scheduled recheck, whichever is later, when still in the future.
+ * scheduled recheck, whichever is later, among those still in the future and
+ * no further out than the hold cap. A time past the cap does not hide a nearer
+ * one, and counts once it comes within the cap.
  *
  * @param workItem - The item
  * @param triggers - Triggers to look for rechecks in
  * @param now - Current time (epoch ms)
- * @returns The wait, or null when the item has no future time of its own
+ * @returns The wait, or null when the item has no future time within the cap
  */
 export function pendingTimedWait(workItem: WorkItem, triggers: ReadonlyArray<Trigger>, now: number): TimedWait | null {
   if (workItem.status !== 'running') return null;
@@ -103,9 +110,14 @@ export function pendingTimedWait(workItem: WorkItem, triggers: ReadonlyArray<Tri
       waits.push({ untilMs: at, reason: `recheck ${trigger.id} scheduled for ${new Date(at).toISOString()}` });
     }
   }
-  // NaN (an unparsable date) fails the comparison and is dropped.
-  const pending = waits.filter((w) => w.untilMs > now).sort((a, b) => b.untilMs - a.untilMs);
-  return pending[0] ?? null;
+  // NaN (an unparsable date) fails both comparisons and is dropped.
+  const latestHeld = now + TIMED_WAIT_CONSTANTS.MAX_HOLD_MS;
+  const pending = waits
+    .filter((w) => w.untilMs > now && w.untilMs <= latestHeld)
+    .sort((a, b) => b.untilMs - a.untilMs)[0];
+  if (!pending) return null;
+  const capHours = TIMED_WAIT_CONSTANTS.MAX_HOLD_MS / 3_600_000;
+  return { ...pending, reason: `${pending.reason} (within the ${capHours}h hold cap; later times are ignored)` };
 }
 
 /**

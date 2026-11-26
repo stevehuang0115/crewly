@@ -69,6 +69,8 @@ sync, a deploy settling), pass `--for-work-item <id>` with `--in-minutes` or
 A one-shot follow-up you schedule that names the item (id or its first 8
 characters) in its title, name or description counts too. Crons never do.
 When the time passes, the item is treated like any other quiet one.
+A recheck more than 24 hours away does not hold the item yet (it counts once it
+is within 24 hours): for a longer wait, use `block-task` with `until`.
 
 If you do not need to keep the item, `block-task` with `until` is better: it
 releases the item and gives it back to you at that time.

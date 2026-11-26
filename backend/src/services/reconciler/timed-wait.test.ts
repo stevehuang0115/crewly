@@ -3,6 +3,7 @@
  */
 
 import { collectTimedWaits, pendingTimedWait } from './timed-wait.js';
+import { TIMED_WAIT_CONSTANTS } from '../../constants.js';
 import { createWorkItem } from '../../types/v2/index.js';
 import type { WorkItem } from '../../types/v2/index.js';
 import { createTrigger, type Trigger } from '../../types/v2/trigger.types.js';
@@ -43,7 +44,10 @@ const unnamed = { createWorkItem: { type: 'delegate' as const, target: VERA, tit
 describe('pendingTimedWait', () => {
   it('waits for a due date in the future', () => {
     const wi = running({ metadata: { dueAt: '2026-11-11T18:00:00Z' } });
-    expect(pendingTimedWait(wi, [], NOW)).toEqual({ untilMs: Date.parse('2026-11-11T18:00:00Z'), reason: 'due at 2026-11-11T18:00:00Z' });
+    expect(pendingTimedWait(wi, [], NOW)).toEqual({
+      untilMs: Date.parse('2026-11-11T18:00:00Z'),
+      reason: 'due at 2026-11-11T18:00:00Z (within the 24h hold cap; later times are ignored)',
+    });
   });
 
   it('stops waiting once the due date has passed', () => {
@@ -96,6 +100,37 @@ describe('pendingTimedWait', () => {
   it('takes the latest of several pending times', () => {
     const wi = running({ metadata: { dueAt: new Date(NOW + HOUR).toISOString() } });
     expect(pendingTimedWait(wi, [recheck()], NOW)?.untilMs).toBe(Date.parse(RECHECK));
+  });
+
+  describe('hold cap', () => {
+    const CAP = TIMED_WAIT_CONSTANTS.MAX_HOLD_MS;
+    const dueIn = (ms: number) => running({ metadata: { dueAt: new Date(NOW + ms).toISOString() } });
+    const recheckIn = (ms: number) => {
+      const at = new Date(NOW + ms).toISOString();
+      return recheck({ config: { type: 'time', fireAt: at }, nextFireAt: at });
+    };
+
+    it('is 24 hours', () => {
+      expect(CAP).toBe(24 * HOUR);
+    });
+
+    it('holds for a time up to the cap', () => {
+      expect(pendingTimedWait(dueIn(CAP), [], NOW)?.untilMs).toBe(NOW + CAP);
+      expect(pendingTimedWait(running(), [recheckIn(CAP)], NOW)?.untilMs).toBe(NOW + CAP);
+    });
+
+    it('does not hold for a time beyond the cap', () => {
+      expect(pendingTimedWait(dueIn(CAP + 1), [], NOW)).toBeNull();
+      expect(pendingTimedWait(running(), [recheckIn(14 * 24 * HOUR)], NOW)).toBeNull();
+    });
+
+    it('counts a far time once it comes within the cap', () => {
+      expect(pendingTimedWait(dueIn(3 * CAP), [], NOW + 2 * CAP)?.untilMs).toBe(NOW + 3 * CAP);
+    });
+
+    it('still holds for a near recheck when the due date is beyond the cap', () => {
+      expect(pendingTimedWait(dueIn(3 * CAP), [recheckIn(HOUR)], NOW)?.untilMs).toBe(NOW + HOUR);
+    });
   });
 
   it('applies to running items only', () => {

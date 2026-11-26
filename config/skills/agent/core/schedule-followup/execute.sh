@@ -44,7 +44,8 @@ Options:
   --max-fires        Stop after N fires (default: 1 for --in-minutes/--fire-at, unlimited for --cron)
   --max-idle-fires   Auto-cancel after N consecutive fires that produced no work (default: 3)
   --for-work-item    The WorkItem you are holding that this follow-up rechecks. While it is
-                     pending, going quiet does not take that item back. One-shot only.
+                     pending and at most 24h away, going quiet does not take that item
+                     back. One-shot only.
   --destination      Where the output is posted: "#channel-name", a channel id (C…) or a thread (C…:<ts>).
                      Default: a new top-level post in the target's team channel.
   --json      | -j   Raw JSON payload (same as legacy)
