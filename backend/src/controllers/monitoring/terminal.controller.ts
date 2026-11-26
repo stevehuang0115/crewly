@@ -530,6 +530,11 @@ async function queueMessageForOfflineMember(
 		findMember: (name) => StorageService.getInstance().findMemberBySessionName(name),
 		enqueue: (name, text) => SubAgentMessageQueue.getInstance().enqueue(name, text),
 		wake: getOfflineAgentWaker(),
+		// An agent in the same channel may wake the target even when its team is down.
+		sharesChannelWithSender: async (target) => {
+			const { peekChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
+			return peekChatV2Service()?.sessionsShareOpenChannel(caller, target) ?? false;
+		},
 	});
 }
 

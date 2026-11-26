@@ -11,7 +11,11 @@
  * put on the agent's persisted message queue (delivered when the agent
  * registers) and the agent is started. A team with nobody running is not
  * cold-launched for a message — that is a launch, which needs the owner — so
- * there the message only waits on the queue.
+ * there the message only waits on the queue. The exception is a sender that
+ * shares a channel with the agent: the owner put them in one room to work
+ * together, so the agent itself is started (only it — not its whole team).
+ * Ella could not get Pia, a listener in #awesome-videos, to start on
+ * 2026-11-26 because Pia's Flopost team was down after a restart.
  *
  * @module services/messaging/offline-agent-message
  */
@@ -31,6 +35,12 @@ export interface OfflineAgentMessageDeps {
 	enqueue: (sessionName: string, data: string) => void;
 	/** Starts the agent; null when no waker is wired (the message only waits). */
 	wake: OfflineAgentWaker | null;
+	/**
+	 * Whether the agent sending the message shares a channel with the target.
+	 * When true, an agent whose team is down is still started. Omitted when
+	 * the message has no agent sender.
+	 */
+	sharesChannelWithSender?: (sessionName: string) => boolean | Promise<boolean>;
 }
 
 /** Outcome for a message to a session that is down. */
@@ -91,7 +101,11 @@ export async function queueForOfflineAgent(
 
 	deps.enqueue(sessionName, data);
 
-	if (isDormantTeam(found.team)) {
+	const sharedRoom =
+		isDormantTeam(found.team) && deps.sharesChannelWithSender
+			? await Promise.resolve(deps.sharesChannelWithSender(sessionName)).catch(() => false)
+			: false;
+	if (isDormantTeam(found.team) && !sharedRoom) {
 		logger.info('Message queued for an agent whose team is not running (not starting the team)', { sessionName });
 		return {
 			queued: true,
@@ -105,7 +119,12 @@ export async function queueForOfflineAgent(
 	if (wakesInFlight.has(sessionName)) return { queued: true, waking: true };
 
 	wakesInFlight.add(sessionName);
-	logger.info('Message queued for an agent that is down — starting it', { sessionName });
+	logger.info(
+		sharedRoom
+			? 'Message queued for an agent whose team is down — starting it because the sender shares a channel with it'
+			: 'Message queued for an agent that is down — starting it',
+		{ sessionName },
+	);
 	void deps
 		.wake(sessionName)
 		.then((res) => {
