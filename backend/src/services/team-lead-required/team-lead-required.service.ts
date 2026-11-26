@@ -16,7 +16,7 @@
 
 import { DECISION_CONSTANTS, ORCHESTRATOR_ROLE, TEAM_LEAD_REQUIRED_CONSTANTS } from '../../constants.js';
 import { CREWLY_CONSTANTS } from '../../../../config/constants.js';
-import type { OwnerDecision } from '../../types/decision.types.js';
+import type { DecisionLanguage, OwnerDecision } from '../../types/decision.types.js';
 import type { Team, TeamMember } from '../../types/index.js';
 import { resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
 import { getTeamLeadIds, pickTeamLead } from '../../utils/team.utils.js';
@@ -50,6 +50,8 @@ export interface TeamLeadRequiredDeps {
   setLead: (team: Team, memberId: string) => Promise<void>;
   /** Deliver text to an agent (wakes a stopped one) */
   deliverToAgent: (session: string, text: string) => Promise<boolean>;
+  /** The owner's language (default English); the card is written in it */
+  ownerLanguage?: () => Promise<DecisionLanguage | null>;
   /** Folder of the team-leader skills, named in the note to the new lead */
   tlSkillsPath?: string;
   /** Clock */
@@ -106,7 +108,7 @@ export function leadCandidates(team: Team): TeamMember[] {
   const fallback = pickTeamLead(team);
   const ordered = [...preferred, ...(fallback ? [fallback] : []), ...members];
   const seenIds = new Set<string>();
-  const seenNames = new Set<string>([C.NOT_NOW_LABEL.toLowerCase()]);
+  const seenNames = new Set<string>([C.NOT_NOW_LABEL.toLowerCase(), C.NOT_NOW_LABEL_ZH.toLowerCase()]);
   const out: TeamMember[] = [];
   for (const m of ordered) {
     const name = candidateLabel(m).toLowerCase();
@@ -131,15 +133,24 @@ export function candidateLabel(m: Pick<TeamMember, 'name'>): string {
 }
 
 /**
- * The card for a team without a lead (English, Slack mrkdwn).
+ * The card for a team without a lead (Slack mrkdwn), in the owner's
+ * language: Chinese for a Chinese-writing owner, English otherwise.
  *
  * @param team - The team
+ * @param lang - Owner language
  * @returns Title, question and body sections
  */
-export function teamLeadCard(team: Team): TeamLeadCardText {
+export function teamLeadCard(team: Team, lang?: DecisionLanguage | null): TeamLeadCardText {
   const roster = leadEligibleMembers(team)
     .map((m) => `${m.name} (${m.role})`)
     .join(', ');
+  if (lang === 'zh') {
+    return {
+      title: `${team.name} 团队没有负责人`,
+      question: `谁来负责 ${team.name} 团队？没有负责人，团队里没人能分派工作、启动组员或验收结果。`,
+      body: [`*成员：* ${roster}`, '现在你把活交给谁，谁就一个人全做完。你选的负责人会把活分给其他组员并检查结果。之后可以在团队页面更换负责人。'],
+    };
+  }
   return {
     title: `Team ${team.name} has no lead`,
     question: `Who should lead team ${team.name}? Without a lead, nobody on the team can assign work, start members or review results.`,
@@ -148,6 +159,16 @@ export function teamLeadCard(team: Team): TeamLeadCardText {
       'Today whoever you write to does all the work alone. The lead you pick hands work to the other members and checks it. You can change the lead later on the team page.',
     ],
   };
+}
+
+/**
+ * The declining option of the card, in the owner's language.
+ *
+ * @param lang - Owner language
+ * @returns Label and detail
+ */
+export function notNowOption(lang?: DecisionLanguage | null): { label: string; detail: string } {
+  return lang === 'zh' ? { label: C.NOT_NOW_LABEL_ZH, detail: C.NOT_NOW_DETAIL_ZH } : { label: C.NOT_NOW_LABEL, detail: C.NOT_NOW_DETAIL };
 }
 
 /**
@@ -299,7 +320,9 @@ export class TeamLeadRequiredService implements DecisionKindHandler {
 
     const candidates = leadCandidates(team);
     if (candidates.length === 0) return;
-    const text = teamLeadCard(team);
+    const lang = this.deps.ownerLanguage ? await this.deps.ownerLanguage().catch(() => null) : null;
+    const text = teamLeadCard(team, lang);
+    const notNow = notNowOption(lang);
     const offered: TeamLeadCandidate[] = candidates.map((m) => ({ memberId: m.id, label: candidateLabel(m) }));
     const d = await decisions.askSystem({
       kind: C.DECISION_KIND,
@@ -309,9 +332,9 @@ export class TeamLeadRequiredService implements DecisionKindHandler {
       body: text.body,
       options: [
         ...candidates.map((m, i) => ({ label: offered[i].label, detail: String(m.role) })),
-        { label: C.NOT_NOW_LABEL, detail: C.NOT_NOW_DETAIL },
+        { label: notNow.label, detail: notNow.detail },
       ],
-      default: C.NOT_NOW_LABEL,
+      default: notNow.label,
       deadline: new Date(this.now().getTime() + C.DEADLINE_MS),
     });
     this.save({ teamId: team.id, status: 'asked', decisionId: d.id, candidates: offered });

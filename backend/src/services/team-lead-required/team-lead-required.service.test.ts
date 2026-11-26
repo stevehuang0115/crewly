@@ -79,6 +79,14 @@ describe('leadCandidates', () => {
 });
 
 describe('teamLeadCard / newLeadNote', () => {
+  it('writes the card in Chinese for a Chinese-writing owner', () => {
+    const card = teamLeadCard(flopost(), 'zh');
+    expect(card.title).toBe('Flopost 团队没有负责人');
+    expect(card.question).toContain('谁来负责 Flopost 团队');
+    expect(card.body[0]).toContain('Pia');
+    expect(teamLeadCard(flopost(), 'en').title).toBe(teamLeadCard(flopost()).title);
+  });
+
   it('asks in plain words within the card limits', () => {
     const card = teamLeadCard(flopost());
     expect(card.title).toBe('Team Flopost has no lead');

@@ -62,6 +62,17 @@ export function startTeamLeadRequired(input: TeamLeadRequiredWiringInput): TeamL
       await invalidateTeams().catch(() => undefined);
     },
     deliverToAgent: input.sendToAgent,
+    // The same lookup the decision cards use (crewly#1367), with no place:
+    // the owner's recent messages decide.
+    ownerLanguage: async () => {
+      try {
+        const { ownerLanguageOf } = await import('../orc/owner-completion-report.wiring.js');
+        const { getChatV2Service } = await import('../chat-v2/chat-v2.singleton.js');
+        return await ownerLanguageOf({ kind: 'owner' }, null, getChatV2Service(), () => null);
+      } catch {
+        return null;
+      }
+    },
     tlSkillsPath: path.join(input.packageRoot ?? findPackageRoot(process.cwd()), 'config', 'skills', 'team-leader'),
     logger: LoggerService.getInstance().createComponentLogger('TeamLeadRequired'),
   });

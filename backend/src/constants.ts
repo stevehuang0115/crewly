@@ -8565,6 +8565,10 @@ export const TEAM_LEAD_REQUIRED_CONSTANTS = {
 	NOT_NOW_LABEL: 'Not now',
 	/** Detail shown next to the declining option */
 	NOT_NOW_DETAIL: 'the team stays without a lead; asked again in 30 days',
+	/** The declining option for a Chinese-writing owner */
+	NOT_NOW_LABEL_ZH: '暂不设',
+	/** Its detail */
+	NOT_NOW_DETAIL_ZH: '团队继续没有负责人；30 天后再问',
 	/** Why an open card is withdrawn when the team gained a lead elsewhere */
 	WITHDRAWN_NOTE: 'The team has a lead now',
 	/** Tag that opens the note to the new lead */
