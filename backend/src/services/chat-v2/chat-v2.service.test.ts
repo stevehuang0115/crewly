@@ -1956,6 +1956,18 @@ describe('ChatV2Service', () => {
   // Phase B-2 (2026-05-17): createHuddle + listHuddleMembers + queryHuddleMembersForDispatch
   // ---------------------------------------------------------------------------
 
+  describe('sessionsShareOpenChannel', () => {
+    it('is true only for two agents on the roster of one open channel', () => {
+      const dto = service.createHuddle({ name: 'Room', memberSessions: ['sess-a', 'sess-b'], principal: owner });
+      service.createHuddle({ name: 'Other', memberSessions: ['sess-c'], principal: owner });
+      expect(service.sessionsShareOpenChannel('sess-a', 'sess-b')).toBe(true);
+      expect(service.sessionsShareOpenChannel('sess-a', 'sess-c')).toBe(false);
+      expect(service.sessionsShareOpenChannel('sess-a', 'sess-a')).toBe(false);
+      service.archiveChannelForBridge(dto.id);
+      expect(service.sessionsShareOpenChannel('sess-a', 'sess-b')).toBe(false);
+    });
+  });
+
   describe('createHuddle', () => {
     it('creates a type=huddle channel with the given roster', () => {
       const dto = service.createHuddle({

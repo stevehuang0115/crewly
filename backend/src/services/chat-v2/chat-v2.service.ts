@@ -1156,6 +1156,29 @@ export class ChatV2Service extends EventEmitter {
    * @param channelId - The huddle channel id
    * @returns Array of agent session names
    */
+  /**
+   * Whether two agents are both on the roster of an open (not archived)
+   * channel. Used to let one agent wake another it works with in a room.
+   *
+   * @param a - One agent session
+   * @param b - The other agent session
+   * @returns True when an open channel lists both
+   */
+  sessionsShareOpenChannel(a: string, b: string): boolean {
+    if (!a || !b || a === b) return false;
+    const row = this.db
+      .prepare(
+        `SELECT 1
+           FROM chat_channel_members m1
+           JOIN chat_channel_members m2 ON m2.channel_id = m1.channel_id
+           JOIN chat_channels c ON c.id = m1.channel_id
+          WHERE m1.member_session = ? AND m2.member_session = ? AND c.archived_at IS NULL
+          LIMIT 1`,
+      )
+      .get(a, b);
+    return row !== undefined;
+  }
+
   queryHuddleMembersForDispatch(channelId: string): string[] {
     return this.queryHuddleMembers(channelId).map((m) => m.sessionName);
   }
