@@ -11,6 +11,7 @@
  * @module services/session/session-handoff.service
  */
 
+import { startsWithOrcTag } from '../slack/orc-machine-tag.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -1170,7 +1171,7 @@ export function awaitsReply(recentMessages: readonly string[]): boolean {
   const idx = last.indexOf(':');
   const sender = (idx >= 0 ? last.slice(0, idx) : last).trim().toLowerCase();
   const preview = idx >= 0 ? last.slice(idx + 1).trim() : '';
-  if (ASSISTANT_SENDERS.has(sender) || preview.startsWith('[Orc]')) return false;
+  if (ASSISTANT_SENDERS.has(sender) || startsWithOrcTag(preview)) return false;
   return true;
 }
 

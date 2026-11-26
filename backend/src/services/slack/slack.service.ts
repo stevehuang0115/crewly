@@ -43,6 +43,7 @@ import { resolveFallbackNotificationChannels } from './slack-notification-fallba
 import { ContentApprovalService } from '../onboarding/content-approval.service.js';
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
 import { stripTraceMarkers } from '../trace/trace-markers.js';
+import { applyOrcMachineTag } from './orc-machine-tag.js';
 
 /**
  * Events emitted by SlackService
@@ -1834,6 +1835,13 @@ export class SlackService extends EventEmitter {
     // Run-trace ids are harness plumbing: never shown in Slack (or its mirror).
     if (typeof message.text === 'string' && message.text.includes('[TRACE:')) {
       message = { ...message, text: stripTraceMarkers(message.text) };
+    }
+
+    // Several machines share the workspace bot: say which one's orchestrator
+    // is speaking. Posts under an agent's own bot are left alone.
+    if (!message.botToken && typeof message.text === 'string') {
+      const tagged = applyOrcMachineTag(message.text);
+      if (tagged !== message.text) message = { ...message, text: tagged };
     }
 
     // Nothing to post: skip it rather than send the owner a bare "New message".
