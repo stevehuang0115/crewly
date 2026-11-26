@@ -244,6 +244,18 @@ per-message prompts. So review costs the owner nothing unless they object.
    *acceptance*, never verification (#813): the board shows 默认通过 · 未验收
    on the card, and an owner accept shows 已验收 (`acceptedBy: 'owner'`).
    See `specs/2026-09-26-workitem-verification-gate.md`.
+   **An answered question (CREW-1078).** A tap on the decision card of a
+   question in the answer counts from the agent's latest reply, so one made
+   before the submit is not lost. If the card answer is an objection, or it
+   leaves the agent owing something and no question or promise still waits for
+   the owner, the sweep puts the ticket back to `running` (an answer does that
+   once, `openItems[].sentBackAt`). "Reply in thread" and a skipped card are
+   not answers. A ticket taken out of review is not submitted again by the
+   reconciler for work that had finished before its last submit.
+   **`reply --ticket TKT-n --none`** closes a confirmation the owner has
+   already settled (`closed` ≥ 1). One that still waits for him stays: the
+   result's `message` says what is pending, and the answering agent gets no
+   more review reminders. An agent never accepts for the owner.
 5. **Receipts.** Slack 🎫 → ✅ when done (no message). chat-v2 note →
    「TKT-… 已完成」.
 

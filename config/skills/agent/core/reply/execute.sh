@@ -28,7 +28,8 @@ Options:
   --text | -t        Reply text (or the first positional argument, or stdin)
   --text-file        Read the reply from a file
   --interim          A short note before the real answer; "working on it" stays up
-  --none             Nothing to answer (already answered elsewhere / not for you)
+  --none             Nothing to answer (already answered elsewhere / not for you).
+                     With --ticket: settle that ticket's confirmation, or say what is pending
   --adds-new         Post even though the agent chosen to answer the owner here
                      already replied (when you have something new, or were asked)
   --share            The owner said in your DM to share a reply that was held

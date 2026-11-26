@@ -88,6 +88,12 @@ export interface RequestOpenItem {
   ownerNotifiedAt?: string;
   /** Commitment: when the stall watcher re-briefed the agent at 1.5× its estimate (ISO, once) (crewly#1363) */
   stallNudgedAt?: string;
+  /**
+   * Question: when this card answer sent the ticket from 待验收 back to work
+   * (ISO). An answer does that once, and no longer counts toward closing the
+   * ticket: what the agent delivers after it still needs its own review.
+   */
+  sentBackAt?: string;
   /** Commitment waiting on the owner: the ask-owner decision whose answer opens it, if any */
   gateDecisionId?: string;
   /** Commitment waiting on the owner: the question item from the same message whose answer opens it (CREW-440) */

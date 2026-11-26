@@ -477,6 +477,19 @@ describe('reconcileRequestStatus', () => {
     expect(reconcileRequestStatus(inReview, [makeWorkItem({ id: 'wi-1', status: 'done' })])).toBeNull();
   });
 
+  it('does not resubmit a ticket taken out of review for work finished before that submit (CREW-1078)', () => {
+    const sentBack = makeRequest({ status: 'running', ticketNumber: 865, requiresConfirmation: true, submittedAt: '2026-11-10T21:29:00.000Z', workItemIds: ['wi-1'] });
+    const old = makeWorkItem({ id: 'wi-1', status: 'done', completedAt: '2026-11-10T21:00:00.000Z' });
+    expect(reconcileRequestStatus(sentBack, [old])).toBeNull();
+    // Work finished since, or with no known finish time, submits it again.
+    const rework = makeWorkItem({ id: 'wi-2', status: 'done', completedAt: '2026-11-10T22:00:00.000Z' });
+    expect(reconcileRequestStatus(sentBack, [old, rework])?.newState).toBe('waiting_confirmation');
+    const undated = makeWorkItem({ id: 'wi-3', status: 'done', completedAt: undefined, statusChangedAt: undefined });
+    expect(reconcileRequestStatus(sentBack, [undated])?.newState).toBe('waiting_confirmation');
+    // A ticket never submitted is untouched by this.
+    expect(reconcileRequestStatus({ ...sentBack, submittedAt: undefined }, [old])?.newState).toBe('waiting_confirmation');
+  });
+
   it('leaves a ticket awaiting follow-up alone (reply-open-items)', () => {
     const waiting = makeRequest({ status: 'awaiting_followup', ticketNumber: 185, workItemIds: ['wi-1', 'wi-2'] });
     expect(reconcileRequestStatus(waiting, [makeWorkItem({ id: 'wi-1', status: 'running' }), makeWorkItem({ id: 'wi-2', status: 'done' })])).toBeNull();
