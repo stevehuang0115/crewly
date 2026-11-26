@@ -62,6 +62,8 @@ import { LoggerService } from '../core/logger.service.js';
 import { traceHarness } from '../trace/trace-recorder.js';
 import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { detectStalledAgents, type StalledAgent } from './stalled-agent-recovery.js';
+import { collectTimedWaits, type TimedWait } from './timed-wait.js';
+import type { Trigger } from '../../types/v2/trigger.types.js';
 import { RECONCILER_WAKE_CONSTANTS, STALLED_AGENT_RECOVERY_CONSTANTS } from '../../constants.js';
 
 /** Wake pacing and stalled-agent thresholds (overridable in tests). */
@@ -170,7 +172,9 @@ export interface ReconcilerDataProvider {
    * `detectExpiredClaims`). Optional: a provider without it simply never
    * renews, and claims expire as before.
    */
-  renewClaim?(claimId: string): Promise<void>;
+  renewClaim?(claimId: string, seenWorking?: boolean): Promise<void>;
+  /** Active triggers, for rechecks scheduled for running items (CREW-1079). Optional. */
+  getPendingTriggers?(): Promise<Trigger[]>;
   /** Get all available (queued, unclaimed) WorkItems from the task pool */
   getAvailablePoolItems?(): Promise<WorkItem[]>;
   /**
@@ -368,8 +372,10 @@ export class ReconcilerService {
       result.corrections.push(...stuck.corrections);
       result.workItemsTimedOut += stuck.stuckIds.length;
 
-      // 2. Detect expired claims (a holder that is visibly working is renewed)
-      const expired = detectExpiredClaims(claims, undefined, agentHealthMap);
+      // 2. Detect expired claims (a holder that is visibly working, or whose
+      // item waits for a known time, is renewed)
+      const timedWaits = await this.timedWaitsOf(workItems);
+      const expired = detectExpiredClaims(claims, undefined, agentHealthMap, undefined, timedWaits);
       result.corrections.push(...expired.corrections);
       // 2a. A quiet holder whose session is up stopped without reporting: tell its lead (#842).
       await this.reportIdleHolders(claims, expired.revokedIds, workItems, agentHealthMap);
@@ -542,7 +548,7 @@ export class ReconcilerService {
       // 9. Stalled agents (CREW-303): queued work waiting on a session that is
       // stopped, hung or idle past the threshold — or work a stopped agent still
       // holds — is recovered, once per cooldown.
-      await this.recoverStalledAgents(workItems, agentHealthMap, result);
+      await this.recoverStalledAgents(workItems, agentHealthMap, result, timedWaits);
     });
   }
 
@@ -560,8 +566,9 @@ export class ReconcilerService {
         this.dataProvider.getActiveWorkItems(),
       ]);
 
-      // 1. Check lease expiry (a holder that is visibly working is renewed)
-      const expired = detectExpiredClaims(claims, undefined, agentHealthMap);
+      // 1. Check lease expiry (a holder that is visibly working, or whose item
+      // waits for a known time, is renewed)
+      const expired = detectExpiredClaims(claims, undefined, agentHealthMap, undefined, await this.timedWaitsOf(workItems));
       result.corrections.push(...expired.corrections);
       // 1a. A quiet holder whose session is up stopped without reporting: tell its lead (#842).
       await this.reportIdleHolders(claims, expired.revokedIds, workItems, agentHealthMap);
@@ -765,7 +772,8 @@ export class ReconcilerService {
         if (correction.entityType === 'claim') {
           if (correction.newState === 'active') {
             // Liveness renewal — the holder is working (detectExpiredClaims).
-            await this.dataProvider.renewClaim?.(correction.entityId);
+            if (correction.claimRenewal === 'timed_wait') await this.dataProvider.renewClaim?.(correction.entityId, false);
+            else await this.dataProvider.renewClaim?.(correction.entityId);
           } else if (correction.newState === 'expiring') {
             await this.dataProvider.markClaimExpiring(correction.entityId);
           } else if (correction.newState === 'revoked') {
@@ -830,6 +838,18 @@ export class ReconcilerService {
         result.errors.push(`Failed to apply correction for ${correction.entityType}:${correction.entityId}: ${message}`);
       }
     }
+  }
+
+  /**
+   * The running items that wait for a future time of their own (due date or
+   * scheduled recheck), by id.
+   *
+   * @param workItems - The pass's WorkItems
+   * @returns WorkItem id → its wait
+   */
+  private async timedWaitsOf(workItems: WorkItem[]): Promise<Map<string, TimedWait>> {
+    const triggers = (await this.dataProvider.getPendingTriggers?.().catch(() => [] as Trigger[])) ?? [];
+    return collectTimedWaits(workItems, triggers);
   }
 
   /**
@@ -1446,11 +1466,13 @@ export class ReconcilerService {
    * @param workItems - The pass's WorkItems
    * @param agentHealthMap - Agent health by session
    * @param result - The pass result
+   * @param timedWaits - Running items waiting for a time of their own
    */
   private async recoverStalledAgents(
     workItems: WorkItem[],
     agentHealthMap: Map<string, AgentHealth>,
     result: ReconcileResult,
+    timedWaits: ReadonlyMap<string, TimedWait>,
   ): Promise<void> {
     if (!this.dataProvider.executeWakeAction) return;
     const log = LoggerService.getInstance().createComponentLogger('ReconcilerService');
@@ -1463,6 +1485,7 @@ export class ReconcilerService {
         heldStoppedMs: this.wakeTuning.stalledHeldMs,
         idleNoProgressMs: this.wakeTuning.stalledIdleMs,
         hungSessions: hung,
+        timedWaitIds: new Set(timedWaits.keys()),
       });
       const offline = this.dataProvider.getMachineOffline?.() ?? null;
       if (!offline) this.noticedOfflineQueues.clear();

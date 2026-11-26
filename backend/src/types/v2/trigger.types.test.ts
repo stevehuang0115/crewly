@@ -254,6 +254,27 @@ describe('Trigger Types', () => {
   // -----------------------------------------------------------------------
   // Factory
   // -----------------------------------------------------------------------
+  describe('forWorkItemId (CREW-1079)', () => {
+    const oneShot: CreateTriggerInput = {
+      type: 'time', config: { type: 'time', delayMs: 60_000 }, action: { runReconciler: true }, createdBy: 'agent', forWorkItemId: 'wi-1',
+    };
+
+    it('is kept on a one-shot time trigger', () => {
+      expect(validateCreateTriggerInput(oneShot)).toEqual([]);
+      expect(createTrigger(oneShot).forWorkItemId).toBe('wi-1');
+    });
+
+    it('is refused on a cron, a signal trigger, or when empty', () => {
+      for (const bad of [
+        { ...oneShot, config: { type: 'time' as const, cronExpression: '0 * * * *' } },
+        { ...oneShot, type: 'signal' as const, config: { type: 'signal' as const, eventType: 'agent:idle' } },
+        { ...oneShot, forWorkItemId: '  ' },
+      ]) {
+        expect(validateCreateTriggerInput(bad).join(' ')).toContain('forWorkItemId');
+      }
+    });
+  });
+
   describe('createTrigger', () => {
     const input: CreateTriggerInput = {
       type: 'signal',

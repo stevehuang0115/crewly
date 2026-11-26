@@ -61,6 +61,23 @@ re-creating (#621).
   Pass `--destination "#channel"`, `C…` or `C…:<ts>` to post it somewhere
   specific.
 
+## Rechecking a task you are holding
+
+If you keep a running WorkItem and have nothing to do on it until later (a data
+sync, a deploy settling), pass `--for-work-item <id>` with `--in-minutes` or
+`--fire-at`. Until that time, going quiet does not take the item back from you.
+A one-shot follow-up you schedule that names the item (id or its first 8
+characters) in its title, name or description counts too. Crons never do.
+When the time passes, the item is treated like any other quiet one.
+
+If you do not need to keep the item, `block-task` with `until` is better: it
+releases the item and gives it back to you at that time.
+
+```bash
+bash execute.sh --fire-at 2026-11-11T12:10:00Z \
+  --title "Recheck suppression after the 12:00Z sync" --for-work-item <workItemId>
+```
+
 ## Examples
 
 ```bash

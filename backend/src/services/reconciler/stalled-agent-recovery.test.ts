@@ -77,6 +77,17 @@ describe('detectStalledAgents', () => {
     expect(detectStalledAgents([queued(ORCHESTRATOR_SESSION_NAME, 60)], map, OPTS)).toEqual([]);
   });
 
+  it('does not wake a suspended holder for an item waiting on its own time (CREW-1079)', () => {
+    const wi = queued('a', 90, { status: 'running' });
+    const opts = { ...OPTS, heldStoppedMs: 30 * MIN };
+    const suspended = new Map([health('a', { status: 'suspended' })]);
+    expect(detectStalledAgents([wi], suspended, opts)).toHaveLength(1);
+    expect(detectStalledAgents([wi], suspended, { ...opts, timedWaitIds: new Set([wi.id]) })).toEqual([]);
+    // A session that is gone, not parked, is still recovered.
+    const gone = new Map([health('a', { status: 'inactive' })]);
+    expect(detectStalledAgents([wi], gone, { ...opts, timedWaitIds: new Set([wi.id]) })).toHaveLength(1);
+  });
+
   it('orders by the longest wait first', () => {
     const items = [queued('a', 25), queued('b', 90)];
     const map = new Map([health('a', { status: 'inactive' }), health('b', { status: 'inactive' })]);

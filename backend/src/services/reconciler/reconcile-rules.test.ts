@@ -307,6 +307,45 @@ describe('detectStuckWorkItems', () => {
 // detectExpiredClaims
 // ---------------------------------------------------------------------------
 describe('detectExpiredClaims', () => {
+  describe('an item waiting for its own time (CREW-1079)', () => {
+    const lapsed = (): TaskClaim => ({
+      ...createTaskClaim({ workItemId: 'wi-wait', agentId: 'agent-1' }),
+      status: 'expiring',
+      leaseExpiresAt: new Date(Date.now() - 200_000).toISOString(),
+    });
+    const waits = new Map([['wi-wait', { untilMs: Date.now() + 3_600_000, reason: 'recheck scheduled' }]]);
+    const holder = (extra: Partial<AgentHealth>): Map<string, AgentHealth> =>
+      new Map([['agent-1', { sessionName: 'agent-1', status: 'active', ...extra } as AgentHealth]]);
+    const run = (health: Map<string, AgentHealth>, timed?: typeof waits) =>
+      detectExpiredClaims([lapsed()], 180_000, health, Date.now(), timed);
+
+    it.each(['active', 'started', 'suspended'] as const)('keeps the claim of a quiet %s holder', (status) => {
+      const out = run(holder({ status }), waits);
+      expect(out.revokedIds).toEqual([]);
+      expect(out.renewedIds).toHaveLength(1);
+      expect(out.corrections[0]).toMatchObject({ newState: 'active', claimRenewal: 'timed_wait' });
+      expect(out.corrections[0].reason).toContain('recheck scheduled');
+    });
+
+    it('revokes as before without a pending wait', () => {
+      expect(run(holder({})).revokedIds).toHaveLength(1);
+      expect(run(holder({}), new Map([['wi-else', waits.get('wi-wait')!]])).revokedIds).toHaveLength(1);
+    });
+
+    it.each<[string, Partial<AgentHealth>]>([
+      ['gone', { status: 'inactive' }],
+      ['unknown', { status: 'unknown' }],
+      ['sitting on a human prompt', { waitingOnHumanSince: new Date().toISOString() }],
+    ])('does not keep the claim of a holder that is %s', (_label, extra) => {
+      expect(run(holder(extra), waits).revokedIds).toHaveLength(1);
+    });
+
+    it('does not mark a working holder\'s renewal as a timed wait', () => {
+      const out = run(holder({ lastActivityAt: new Date().toISOString() }), waits);
+      expect(out.corrections[0].claimRenewal).toBeUndefined();
+    });
+  });
+
   it('should detect lease-expired active claims', () => {
     const claim = createTaskClaim({ workItemId: 'wi-1', agentId: 'agent-1' });
     // Simulate lease expired

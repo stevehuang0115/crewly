@@ -259,9 +259,12 @@ export class ClaimService {
    *
    * @param claimId - The claim ID
    * @param now - Current time in ms (default: Date.now())
+   * @param seenWorking - False when the lease is kept for a timed wait: the
+   *   holder showed no sign of life, so no heartbeat is recorded and its hung
+   *   count stands
    * @returns The renewed claim, or undefined when it is missing or already ended
    */
-  async renewLease(claimId: string, now: number = Date.now()): Promise<TaskClaim | undefined> {
+  async renewLease(claimId: string, now: number = Date.now(), seenWorking = true): Promise<TaskClaim | undefined> {
     const claims = await this.storage.getClaims();
     const claim = claims.find((c) => c.id === claimId);
     if (!claim || (claim.status !== 'active' && claim.status !== 'expiring')) return undefined;
@@ -270,18 +273,18 @@ export class ClaimService {
     await this.storage.updateClaim(claimId, (c) => {
       c.status = 'active';
       c.leaseExpiresAt = renewed.leaseExpiresAt;
-      c.lastHeartbeatAt = renewed.lastHeartbeatAt;
+      if (seenWorking) c.lastHeartbeatAt = renewed.lastHeartbeatAt;
     });
     // Seen working = alive: not a hung session.
-    this.consecutiveGraceRevokes.delete(claim.agentId);
+    if (seenWorking) this.consecutiveGraceRevokes.delete(claim.agentId);
 
-    this.logger.debug?.('Claim lease renewed — holder is working', {
+    this.logger.debug?.(seenWorking ? 'Claim lease renewed — holder is working' : 'Claim lease kept — the item waits for a known time', {
       claimId,
       agentId: claim.agentId,
       workItemId: claim.workItemId,
       leaseExpiresAt: renewed.leaseExpiresAt,
     });
-    return { ...claim, ...renewed };
+    return { ...claim, ...renewed, ...(seenWorking ? {} : { lastHeartbeatAt: claim.lastHeartbeatAt }) };
   }
 
   // -----------------------------------------------------------------------

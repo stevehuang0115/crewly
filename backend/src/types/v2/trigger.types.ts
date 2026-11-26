@@ -189,6 +189,11 @@ export interface Trigger {
    */
   createdBySession?: string;
   /**
+   * The running WorkItem this one-shot trigger rechecks. While it is pending,
+   * the item's quiet holder keeps it (CREW-1079).
+   */
+  forWorkItemId?: string;
+  /**
    * Harness-internal plumbing the owner does not schedule (escalation sweep,
    * delegate-task fallback checks, …). Hidden from the owner's Schedules page
    * by default. Always set on rows created or loaded by this version; the
@@ -267,6 +272,8 @@ export interface CreateTriggerInput {
   createdBy: TriggerCreator;
   /** Agent session that created it (set by the API from X-Agent-Session) */
   createdBySession?: string;
+  /** WorkItem this trigger rechecks (see {@link Trigger.forWorkItemId}) */
+  forWorkItemId?: string;
   /**
    * Harness-internal? Defaults to true for `system` / `delegate-task`
    * creators and false otherwise (see {@link isInternalByDefault}).
@@ -412,6 +419,14 @@ export function validateCreateTriggerInput(input: CreateTriggerInput): string[] 
   if (input.managedBy !== undefined && !(TRIGGER_MANAGED_BY as readonly string[]).includes(input.managedBy)) {
     errors.push(`managedBy must be one of: ${TRIGGER_MANAGED_BY.join(', ')}`);
   }
+  if (input.forWorkItemId !== undefined) {
+    const config = input.config as TimeTriggerConfig | undefined;
+    if (typeof input.forWorkItemId !== 'string' || !input.forWorkItemId.trim()) {
+      errors.push('forWorkItemId must be a WorkItem id');
+    } else if (config?.type !== 'time' || config.cronExpression) {
+      errors.push('forWorkItemId needs a one-shot time trigger (delayMs or fireAt)');
+    }
+  }
   if (input.maxFires !== undefined && (input.maxFires < 1 || !Number.isInteger(input.maxFires))) {
     errors.push('maxFires must be a positive integer');
   }
@@ -451,6 +466,7 @@ export function createTrigger(input: CreateTriggerInput): Trigger {
     status: 'active',
     createdBy: input.createdBy,
     ...(input.createdBySession ? { createdBySession: input.createdBySession } : {}),
+    ...(input.forWorkItemId ? { forWorkItemId: input.forWorkItemId } : {}),
     internal: input.internal ?? isInternalByDefault(input.createdBy),
     createdAt: now,
     fireCount: 0,

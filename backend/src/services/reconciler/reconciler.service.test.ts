@@ -625,6 +625,49 @@ describe('ReconcilerService', () => {
       expect(stamp).toHaveBeenCalledWith('wi-quiet', expect.objectContaining({ idleHolderSurfacedAt: expect.any(String) }));
     });
 
+    // CREW-1079 / CE-571: quiet while waiting for a scheduled recheck.
+    it.each(['runFast', 'runFull'] as const)('%s keeps a quiet item until its recheck, then takes it back', async (loop) => {
+      jest.useFakeTimers({ now: Date.parse('2026-11-11T02:56:00Z') });
+      try {
+        const wi = { ...createWorkItem({ type: 'delegate', owner: 'team_lead', title: 'Follow-ups', target: 'agent-1' }), id: 'b8698146-8ee5-4949-905c-5190124abdd0', status: 'running' as const };
+        const lapsed = (): TaskClaim => ({
+          ...createTaskClaim({ workItemId: wi.id, agentId: 'agent-1' }),
+          status: 'expiring',
+          leaseExpiresAt: new Date(Date.now() - 200_000).toISOString(),
+        });
+        const first = lapsed();
+        const renewClaim = jest.fn().mockResolvedValue(undefined);
+        const getActiveClaims = jest.fn().mockResolvedValue([first]);
+        provider = createMockProvider({
+          getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+          getActiveClaims,
+          getAgentHealthMap: jest.fn().mockResolvedValue(new Map([['agent-1', { sessionName: 'agent-1', status: 'active' }]])),
+          getPendingTriggers: jest.fn().mockResolvedValue([{
+            id: 't-recheck', status: 'active', internal: false, createdBy: 'agent', createdBySession: 'agent-1',
+            config: { type: 'time', fireAt: '2026-11-11T12:10:00Z' },
+            action: { createWorkItem: { title: 'b8698146 item1: recheck after the sync' } },
+          }]),
+          renewClaim,
+        });
+        service = new ReconcilerService(provider);
+        const addToPool = jest.fn().mockResolvedValue(undefined);
+        service.setIdleHolderReporting({ loadTeams: async () => [], addToPool, stamp: jest.fn().mockResolvedValue(undefined) });
+
+        await service[loop]();
+        expect(renewClaim).toHaveBeenCalledWith(first.id, false);
+        expect(provider.revokeClaimAndRelease).not.toHaveBeenCalled();
+        expect(addToPool).not.toHaveBeenCalled();
+
+        jest.setSystemTime(Date.parse('2026-11-11T12:30:00Z'));
+        getActiveClaims.mockResolvedValue([lapsed()]);
+        await service[loop]();
+        expect(provider.revokeClaimAndRelease).toHaveBeenCalledTimes(1);
+        expect(addToPool).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     // 2026-09-29, WI f34f09b0 / CE-19: the holder was working, yet the claim
     // was revoked 13 minutes after it was taken.
     it.each(['runFast', 'runFull'] as const)('%s renews instead of revoking when the holder is working', async (loop) => {
