@@ -365,6 +365,19 @@ describe('ClaimService', () => {
       expect(service.getConsecutiveGraceRevokes('agent-vera')).toBe(0);
     });
 
+    it('keeps the hung count and heartbeat when the lease is kept for a timed wait (CREW-1079)', async () => {
+      const first = await service.createClaim({ workItemId: 'wi-1', agentId: 'agent-vera' });
+      await service.revoke(first.id, 'Grace period exceeded for claim x');
+      const second = await service.createClaim({ workItemId: 'wi-2', agentId: 'agent-vera' });
+      const heartbeatBefore = (await service.getClaimById(second.id))?.lastHeartbeatAt;
+      const now = Date.now() + 60_000;
+      const renewed = await service.renewLease(second.id, now, false);
+      expect(new Date(renewed!.leaseExpiresAt).getTime()).toBe(now + DEFAULT_LEASE_DURATION_MS);
+      expect(renewed?.lastHeartbeatAt).toBe(heartbeatBefore);
+      expect((await service.getClaimById(second.id))?.lastHeartbeatAt).toBe(heartbeatBefore);
+      expect(service.getConsecutiveGraceRevokes('agent-vera')).toBe(1);
+    });
+
     it('returns undefined for missing or ended claims', async () => {
       expect(await service.renewLease('nope')).toBeUndefined();
       const claim = await service.createClaim({ workItemId: 'wi-1', agentId: 'agent-vera' });

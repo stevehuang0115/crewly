@@ -38,6 +38,8 @@ import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service
 import { limitToOneProjectTicket } from '../task-pool/ticket-claim-policy.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import { NetworkStatusService } from '../core/network-status.service.js';
+import { TriggerEngine } from '../v3/trigger-engine.service.js';
+import type { Trigger } from '../../types/v2/trigger.types.js';
 import { ResourceModeService, RESOURCE_MODE_CONSTANTS } from '../agent/resource-mode.service.js';
 import { memoryStopHold } from '../agent/memory-stop-hold.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
@@ -788,15 +790,32 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    *
    * @param claimId - The claim ID to renew
    */
-  async renewClaim(claimId: string): Promise<void> {
+  async renewClaim(claimId: string, seenWorking = true): Promise<void> {
     try {
       const pool = TaskPoolService.getInstance();
-      await pool.renewClaim(claimId);
+      await pool.renewClaim(claimId, seenWorking);
     } catch (error) {
       this.logger.error('Failed to renew claim', {
         claimId,
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+  }
+
+  /**
+   * Active triggers, read to find rechecks scheduled for running items
+   * (CREW-1079). Empty when they cannot be read: items then expire as usual.
+   *
+   * @returns Active triggers
+   */
+  async getPendingTriggers(): Promise<Trigger[]> {
+    try {
+      return TriggerEngine.getInstance().list('active');
+    } catch (error) {
+      this.logger.warn('Could not read triggers for timed waits', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
     }
   }
 

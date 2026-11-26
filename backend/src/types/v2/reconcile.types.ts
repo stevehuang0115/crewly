@@ -96,6 +96,11 @@ export interface ReconcileCorrection {
    * (WorkItem.blockSource). Set by the waiting_on_human rule (#815).
    */
   blockSource?: WorkItemBlockSource;
+  /**
+   * For a claim renewal: `timed_wait` when the lease is kept because the item
+   * waits for a time of its own, not because the holder was seen working.
+   */
+  claimRenewal?: 'timed_wait';
 }
 
 // ---------------------------------------------------------------------------

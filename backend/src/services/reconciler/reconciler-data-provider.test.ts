@@ -1083,12 +1083,30 @@ describe('LiveReconcilerDataProvider', () => {
   describe('renewClaim', () => {
     it('delegates to pool service', async () => {
       await provider.renewClaim('claim-1');
-      expect(mockPool.renewClaim).toHaveBeenCalledWith('claim-1');
+      expect(mockPool.renewClaim).toHaveBeenCalledWith('claim-1', true);
+    });
+
+    it('passes on that the holder was not seen working', async () => {
+      await provider.renewClaim('claim-1', false);
+      expect(mockPool.renewClaim).toHaveBeenCalledWith('claim-1', false);
     });
 
     it('swallows pool errors', async () => {
       mockPool.renewClaim.mockRejectedValueOnce(new Error('disk'));
       await expect(provider.renewClaim('claim-1')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('getPendingTriggers', () => {
+    it('returns the active triggers, and nothing when they cannot be read', async () => {
+      const { TriggerEngine } = await import('../v3/trigger-engine.service.js');
+      const list = jest.fn().mockReturnValue([{ id: 't1' }]);
+      const spy = jest.spyOn(TriggerEngine, 'getInstance').mockReturnValue({ list } as never);
+      await expect(provider.getPendingTriggers()).resolves.toEqual([{ id: 't1' }]);
+      expect(list).toHaveBeenCalledWith('active');
+      spy.mockImplementation(() => { throw new Error('not ready'); });
+      await expect(provider.getPendingTriggers()).resolves.toEqual([]);
+      spy.mockRestore();
     });
   });
 

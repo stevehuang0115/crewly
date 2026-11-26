@@ -43,6 +43,9 @@ Options:
   --name             Stable name (used for cancel / dedup). Auto-generated if absent.
   --max-fires        Stop after N fires (default: 1 for --in-minutes/--fire-at, unlimited for --cron)
   --max-idle-fires   Auto-cancel after N consecutive fires that produced no work (default: 3)
+  --for-work-item    The WorkItem you are holding that this follow-up rechecks. While it is
+                     pending and at most 24h away, going quiet does not take that item
+                     back. One-shot only.
   --destination      Where the output is posted: "#channel-name", a channel id (C…) or a thread (C…:<ts>).
                      Default: a new top-level post in the target's team channel.
   --json      | -j   Raw JSON payload (same as legacy)
@@ -62,6 +65,7 @@ NAME=""
 MAX_FIRES=""
 MAX_IDLE_FIRES="3"
 DESTINATION=""
+FOR_WORK_ITEM=""
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   INPUT_JSON="$1"
@@ -81,6 +85,7 @@ while [[ $# -gt 0 ]]; do
     --max-fires)          MAX_FIRES="$2"; shift 2 ;;
     --max-idle-fires)     MAX_IDLE_FIRES="$2"; shift 2 ;;
     --destination)        DESTINATION="$2"; shift 2 ;;
+    --for-work-item)      FOR_WORK_ITEM="$2"; shift 2 ;;
     --json|-j)            INPUT_JSON="$2"; shift 2 ;;
     --help|-h)            print_usage; exit 0 ;;
     --)                   shift; break ;;
@@ -107,6 +112,7 @@ if [ -n "$INPUT_JSON" ]; then
   MAX_FIRES=$(printf '%s' "$INPUT_JSON" | jq -r '.maxFires // empty')
   MAX_IDLE_FIRES=$(printf '%s' "$INPUT_JSON" | jq -r '.maxIdleFires // "3"')
   DESTINATION=$(printf '%s' "$INPUT_JSON" | jq -r '.destination // empty')
+  FOR_WORK_ITEM=$(printf '%s' "$INPUT_JSON" | jq -r '.forWorkItemId // empty')
 fi
 
 # Validation
@@ -118,6 +124,11 @@ TIMING_COUNT=0
 [ -n "$CRON_EXPR" ] && TIMING_COUNT=$((TIMING_COUNT + 1))
 if [ "$TIMING_COUNT" -ne 1 ]; then
   echo '{"error":"Exactly one of --in-minutes, --fire-at, or --cron must be provided"}' >&2
+  exit 1
+fi
+
+if [ -n "$FOR_WORK_ITEM" ] && [ -n "$CRON_EXPR" ]; then
+  echo '{"error":"--for-work-item needs --in-minutes or --fire-at, not --cron"}' >&2
   exit 1
 fi
 
@@ -172,8 +183,10 @@ BODY=$(jq -n \
   --arg maxFires "$MAX_FIRES" \
   --arg maxIdle "$MAX_IDLE_FIRES" \
   --arg destination "$DESTINATION" \
+  --arg forWorkItem "$FOR_WORK_ITEM" \
   '{type:$type, config:$config, action:$action, createdBy:$createdBy, name:$name}
    + (if $destination != "" then {destination:$destination} else {} end)
+   + (if $forWorkItem != "" then {forWorkItemId:$forWorkItem} else {} end)
    + (if $teamId != "" then {teamId:$teamId} else {} end)
    + (if $maxFires != "" then {maxFires:($maxFires|tonumber)} else {} end)
    + (if $maxIdle != "" then {maxIdleFires:($maxIdle|tonumber)} else {} end)')

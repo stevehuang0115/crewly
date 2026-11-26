@@ -3356,10 +3356,11 @@ export class TaskPoolService {
    * liveness renewal — see {@link ClaimService.renewLease}).
    *
    * @param claimId - The claim ID
+   * @param seenWorking - False for a timed-wait renewal (CREW-1079)
    * @returns True when the claim was renewed
    */
-  async renewClaim(claimId: string): Promise<boolean> {
-    const renewed = await this.claimService.renewLease(claimId);
+  async renewClaim(claimId: string, seenWorking = true): Promise<boolean> {
+    const renewed = await this.claimService.renewLease(claimId, undefined, seenWorking);
     if (renewed) await this.storage.flush();
     return renewed !== undefined;
   }

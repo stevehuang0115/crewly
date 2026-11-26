@@ -9578,6 +9578,16 @@ export const DISPATCH_WRITE_RETRY_CONSTANTS = {
 	RETRYABLE_STATUSES: [502, 503, 504] as readonly number[],
 } as const;
 
+/** How long a running item's own timing can keep a quiet holder's claim. */
+export const TIMED_WAIT_CONSTANTS = {
+	/**
+	 * A running item's due date or recheck keeps a quiet holder's claim only
+	 * when it ends this soon. One further out does not count yet, so a hung
+	 * holder cannot keep an item for days (CREW-1079) (ms)
+	 */
+	MAX_HOLD_MS: 24 * 60 * 60 * 1000,
+} as const;
+
 /**
  * Reconciler wake pacing (CREW-304). On 2026-10-06 the reconciler traced
  * 2,295 failed wakes in 6h for two CE sessions — one per 10s fast-loop tick —

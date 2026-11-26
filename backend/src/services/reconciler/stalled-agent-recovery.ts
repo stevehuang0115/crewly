@@ -70,6 +70,8 @@ export interface StallDetectionOptions {
   idleNoProgressMs: number;
   /** Sessions the claim service reports as hung */
   hungSessions?: ReadonlySet<string>;
+  /** Items waiting for a future time of their own: a suspended holder is not woken for them */
+  timedWaitIds?: ReadonlySet<string>;
 }
 
 /**
@@ -153,6 +155,8 @@ export function detectStalledAgents(
     if (wi.status === 'queued') {
       if (opts.now - since >= opts.queuedAgeMs) tally(waiting, wi.target, wi, since);
     } else if (opts.heldStoppedMs !== undefined && isHeldWork(wi, byId)) {
+      // Idle-suspended while waiting for a known time: nothing to wake it for yet.
+      if (opts.timedWaitIds?.has(wi.id) && agentHealthMap.get(wi.target)?.status === 'suspended') continue;
       tally(held, wi.target, wi, since);
     }
   }

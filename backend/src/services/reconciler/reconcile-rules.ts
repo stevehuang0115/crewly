@@ -42,6 +42,7 @@ import {
   isWaitingOnHumanBlocked,
   WORK_ITEM_BLOCK_SOURCES,
 } from '../../types/v2/work-item.types.js';
+import type { TimedWait } from './timed-wait.js';
 import { CLAIM_ACTIVITY_LIVENESS_WINDOW_MS } from '../../types/v2/claim.types.js';
 import { evaluateRequestCompletion } from '../v3/request-completion.js';
 import { AGENT_ATTENTION_CONSTANTS } from '../../constants.js';
@@ -241,6 +242,19 @@ export function isAgentVisiblyWorking(
 }
 
 /**
+ * Whether a holder can keep an item through a timed wait: its session is up or
+ * was suspended for being idle. A gone session is handled as before, and so is
+ * one sitting on a human prompt (the waiting_on_human rule owns that).
+ *
+ * @param health - The holder's health entry, if known
+ * @returns True when the holder keeps its item
+ */
+function canHoldTimedWait(health: AgentHealth | undefined): boolean {
+  if (!health || health.waitingOnHumanSince) return false;
+  return health.status === 'active' || health.status === 'started' || health.status === 'suspended';
+}
+
+/**
  * Detects TaskClaims whose lease has expired and should be renewed, marked
  * expiring, or revoked.
  *
@@ -259,6 +273,9 @@ export function isAgentVisiblyWorking(
  * @param agentHealthMap - Agent health, for the liveness check. Omitted = no
  *   renewal (legacy behaviour).
  * @param now - Current time in ms (default: Date.now())
+ * @param timedWaits - Running items waiting for a future time of their own
+ *   ({@link collectTimedWaits}): their claim is renewed, not revoked, while the
+ *   holder's session is up or idle-suspended (CREW-1079)
  * @returns Claims to renew, mark expiring, and revoke
  */
 export function detectExpiredClaims(
@@ -266,6 +283,7 @@ export function detectExpiredClaims(
   gracePeriodMs: number = DEFAULT_GRACE_PERIOD_MS,
   agentHealthMap?: ReadonlyMap<string, AgentHealth>,
   now: number = Date.now(),
+  timedWaits?: ReadonlyMap<string, TimedWait>,
 ): {
   corrections: ReconcileCorrection[];
   expiringIds: string[];
@@ -291,6 +309,25 @@ export function detectExpiredClaims(
         reason: `Lease renewed for claim ${claim.id} on WorkItem ${claim.workItemId} — ${claim.agentId} is working`,
         evidence: `leaseExpiresAt=${claim.leaseExpiresAt}, lastActivityAt=${holder?.lastActivityAt}, agentId=${claim.agentId}, now=${new Date(now).toISOString()}`,
       }));
+      renewedIds.push(claim.id);
+      continue;
+    }
+
+    // Quiet on purpose: the item is due later, or a recheck is scheduled. Once
+    // that time passes the wait is gone and the claim expires as usual.
+    const wait = timedWaits?.get(claim.workItemId);
+    if (wait && canHoldTimedWait(holder)) {
+      corrections.push({
+        ...createCorrection({
+          entityType: 'claim',
+          entityId: claim.id,
+          previousState: claim.status,
+          newState: 'active',
+          reason: `Lease renewed for claim ${claim.id} on WorkItem ${claim.workItemId} — ${wait.reason}`,
+          evidence: `leaseExpiresAt=${claim.leaseExpiresAt}, agentId=${claim.agentId}, now=${new Date(now).toISOString()}`,
+        }),
+        claimRenewal: 'timed_wait',
+      });
       renewedIds.push(claim.id);
       continue;
     }
