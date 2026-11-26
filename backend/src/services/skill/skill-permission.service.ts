@@ -56,6 +56,9 @@ const DIRECTED_BLOCKED: ReadonlySet<string> = new Set([
   'aggregate-results',
   'set-member-model',
   'propose-tier-change',
+  'add-temp-member',
+  'remove-temp-member',
+  'request-seat',
 ]);
 
 /** Skills blocked for "bounded" agents — they can delegate within scope but not deploy to prod. */

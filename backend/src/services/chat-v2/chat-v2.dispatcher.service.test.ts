@@ -860,6 +860,72 @@ describe('ChatV2DispatcherService', () => {
       expect(delivered[0].m).not.toContain('[CHANNEL NOTES]');
     });
 
+    it('team roster: appended after owner work for the recipient that gets one, same prompt on a retry; none for others, non-owner messages or on failure', async () => {
+      const delivered: Array<{ s: string; m: string }> = [];
+      const asked: string[] = [];
+      const teamBlockFor = async (session: string): Promise<string> => {
+        asked.push(session);
+        return session === 'pia' ? '[TEAM] Free now: Dex (developer, idle).' : '';
+      };
+      const options = {
+        agentSink: { sendMessageToAgent: async (s: string, m: string) => { delivered.push({ s, m }); return { success: true }; } },
+        huddleMembersFor: () => ['pia', 'dex'],
+      };
+      const room = makeChannel({ id: 'h1', type: 'huddle', agentSession: undefined });
+      const dispatcher = new ChatV2DispatcherService({ ...options, isOwnerMessage: () => true, teamBlockFor });
+      await dispatcher.dispatchMessage(room, makeMessage({ channelId: 'h1', mentions: ['pia', 'dex'], content: 'render the promo video' }));
+      const lead = delivered.find((d) => d.s === 'pia')?.m ?? '';
+      expect(lead).toContain('[TEAM] Free now: Dex (developer, idle).');
+      expect(lead.lastIndexOf('render the promo video')).toBeLessThan(lead.indexOf('[TEAM] Free now'));
+      expect(lead.indexOf('[TEAM] Free now')).toBeLessThan(lead.lastIndexOf('\n---\n'));
+      expect(lead.match(/\[TEAM\]/g)).toHaveLength(1);
+      expect(delivered.find((d) => d.s === 'dex')?.m).not.toContain('[TEAM]');
+      expect(asked.sort()).toEqual(['dex', 'pia']);
+
+      // A direct conversation with the lead.
+      const dm = makeSink({ success: true });
+      const direct = new ChatV2DispatcherService({ agentSink: dm.sink, isOwnerMessage: () => true, teamBlockFor });
+      await direct.dispatchToAgent(makeChannel({ agentSession: 'pia' }), makeMessage({ content: 'render the promo video' }));
+      expect(dm.calls[0].message).toContain('[TEAM] Free now: Dex (developer, idle).');
+
+      // Not the owner: never asked.
+      asked.length = 0;
+      delivered.length = 0;
+      const notOwner = new ChatV2DispatcherService({ ...options, isOwnerMessage: () => false, teamBlockFor });
+      await notOwner.dispatchMessage(room, makeMessage({ channelId: 'h1', mentions: ['pia'] }));
+      const unknownOwner = new ChatV2DispatcherService({ ...options, teamBlockFor });
+      await unknownOwner.dispatchMessage(room, makeMessage({ channelId: 'h1', mentions: ['pia'] }));
+      expect(asked).toEqual([]);
+      for (const d of delivered) expect(d.m).not.toContain('[TEAM]');
+
+      // A failing lookup costs only the block.
+      delivered.length = 0;
+      const broken = new ChatV2DispatcherService({ ...options, isOwnerMessage: () => true, teamBlockFor: async () => { throw new Error('boom'); } });
+      const r = await broken.dispatchMessage(room, makeMessage({ channelId: 'h1', mentions: ['pia'] }));
+      expect(r.dispatched).toBe(true);
+      expect(delivered[0].m).not.toContain('[TEAM]');
+    });
+
+    it('team roster: asked once per recipient when the first delivery fails and the agent is started', async () => {
+      const asked: string[] = [];
+      const prompts: string[] = [];
+      let up = false;
+      const dispatcher = new ChatV2DispatcherService({
+        agentSink: { sendMessageToAgent: async (_s: string, m: string) => { prompts.push(m); return up ? { success: true } : { success: false, error: 'no session' }; } },
+        huddleMembersFor: () => ['pia'],
+        isOwnerMessage: () => true,
+        activateAgent: async () => { up = true; return true; },
+        activateRetryDelayMs: 0,
+        teamBlockFor: async (session) => { asked.push(session); return asked.length === 1 ? '[TEAM] Free now: Dex (developer, idle).' : ''; },
+      });
+      const r = await dispatcher.dispatchMessage(makeChannel({ id: 'h1', type: 'huddle', agentSession: undefined }), makeMessage({ channelId: 'h1', mentions: ['pia'] }));
+      expect(r.dispatched).toBe(true);
+      expect(asked).toEqual(['pia']);
+      expect(prompts).toHaveLength(2);
+      expect(prompts[1]).toBe(prompts[0]);
+      expect(prompts[1]).toContain('[TEAM] Free now');
+    });
+
     it('wiki records: a direct conversation with the owner may show restricted ones; a failing lookup costs only the block', async () => {
       const asked: boolean[] = [];
       const { sink, calls } = makeSink({ success: true });

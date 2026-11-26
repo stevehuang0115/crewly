@@ -180,6 +180,8 @@ export interface LeadDigestExtras {
   nudges?: { count: number; followed: number };
   /** Reasons recorded today for keeping work ("no member fits") */
   keptReasons?: string[];
+  /** Temporary members opened / removed today (specs/2026-11-26-temp-members-seat-requests.md) */
+  temp?: { opened: number; removed: number };
 }
 
 /**
@@ -195,7 +197,8 @@ export function buildLeadShareDigest(rows: readonly LeadShareRow[], extras: Read
   for (const r of rows) {
     const x = extras.get(r.teamId) ?? {};
     const kept = x.keptReasons ?? [];
-    if (r.today.team === 0 && kept.length === 0 && !x.nudges?.count) continue;
+    const temp = x.temp && (x.temp.opened > 0 || x.temp.removed > 0) ? x.temp : null;
+    if (r.today.team === 0 && kept.length === 0 && !x.nudges?.count && !temp) continue;
     const flag = r.today.flagged || r.week.flagged ? ' — over half: the lead is doing the work' : '';
     const parts = [
       `- *${r.teamName}* (${r.leads.join(', ')}): ${formatShare(r.today.share)} of ${formatTokens(r.today.team)} today${r.today.teamBudget !== undefined ? ` (${formatTokens(r.today.teamBudget)} weighted)` : ''}, ${formatShare(r.week.share)} this week${flag}`,
@@ -206,6 +209,7 @@ export function buildLeadShareDigest(rows: readonly LeadShareRow[], extras: Read
       const shown = kept.slice(0, max).map((k) => `"${k}"`).join('; ');
       parts.push(`  kept work, no member fits: ${shown}${kept.length > max ? `; +${kept.length - max} more` : ''}`);
     }
+    if (temp) parts.push(`  temporary members: ${temp.opened} opened, ${temp.removed} removed`);
     lines.push(parts.join('\n'));
   }
   if (lines.length === 0) return null;

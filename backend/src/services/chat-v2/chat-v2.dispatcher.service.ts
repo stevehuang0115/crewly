@@ -239,6 +239,14 @@ export interface ChatV2DispatcherOptions {
    */
   channelNotesFor?: (channel: { id: string; name: string }) => Promise<string>;
   /**
+   * The team roster for owner work delivered to a team lead: which members
+   * are free to take it (`tl-delegation.service.ts` `rosterBlockFor`,
+   * specs/2026-10-04-tl-delegation.md §8). Asked only for a message the
+   * owner wrote. Must not throw; '' = nothing (not a lead, nobody free,
+   * shown recently).
+   */
+  teamBlockFor?: (agentSession: string) => Promise<string>;
+  /**
    * Override the prompt formatter for tests / future customization. The
    * default matches the `reply-chat` skill's parser exactly.
    */
@@ -451,6 +459,8 @@ export interface FormatPromptArgs {
   recordsBlock?: string;
   /** What is known about this room: lead, who covers what, recent threads (delivered copy only) */
   channelNotesBlock?: string;
+  /** Owner work delivered to a team lead: the members free to take it (delivered copy only) */
+  teamBlock?: string;
 }
 
 /**
@@ -835,6 +845,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     ...(args.channelNotesBlock ? [args.channelNotesBlock, ``] : []),
     trimmed,
     ...(args.bareMentionNote ? [args.bareMentionNote] : []),
+    ...(args.teamBlock ? [``, args.teamBlock] : []),
     ``,
     `---`,
     replyHint + actionGuard,
@@ -904,6 +915,7 @@ export class ChatV2DispatcherService {
   private readonly isOwnerMessage?: ChatV2DispatcherOptions['isOwnerMessage'];
   private readonly recordsFor?: ChatV2DispatcherOptions['recordsFor'];
   private readonly channelNotesFor?: ChatV2DispatcherOptions['channelNotesFor'];
+  private readonly teamBlockFor?: ChatV2DispatcherOptions['teamBlockFor'];
   /** Room messages queued as context only, shown on each agent's next prompt from the room */
   readonly contextBacklog: RoomContextBacklog;
   private readonly logger: ComponentLogger;
@@ -928,6 +940,7 @@ export class ChatV2DispatcherService {
     this.isOwnerMessage = options.isOwnerMessage;
     this.recordsFor = options.recordsFor;
     this.channelNotesFor = options.channelNotesFor;
+    this.teamBlockFor = options.teamBlockFor;
     this.contextBacklog = options.contextBacklog ?? new RoomContextBacklog();
     this.logger = LoggerService.getInstance().createComponentLogger('ChatV2Dispatcher');
   }
@@ -1676,6 +1689,30 @@ export class ChatV2DispatcherService {
   }
 
   /**
+   * The team roster for owner work delivered to an agent: set only when the
+   * owner wrote the message and the agent leads a team with a member free
+   * to take the work. Any failure means no block; delivery never waits on
+   * an error.
+   *
+   * @param agentSession - Receiving agent
+   * @param message - The message being delivered
+   * @returns The block, or undefined
+   */
+  private async teamBlockForOwnerWork(agentSession: string, message: ChatMessageDTO): Promise<string | undefined> {
+    if (!this.teamBlockFor || message.senderType !== 'user' || agentAuthorOf(message)) return undefined;
+    try {
+      if (this.isOwnerMessage?.(message) !== true) return undefined;
+      return (await this.teamBlockFor(agentSession)) || undefined;
+    } catch (err) {
+      this.logger.debug('Team roster lookup failed; delivering without it', {
+        agentSession,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return undefined;
+    }
+  }
+
+  /**
    * What is known about a room, for a message a person wrote there. A
    * colleague's message gets none: the notes are for deciding who answers a
    * person.
@@ -1741,7 +1778,18 @@ export class ChatV2DispatcherService {
     // What is known about the room, read once for every recipient of this message.
     let channelNotesRead: Promise<string | undefined> | undefined;
     const channelNotes = (): Promise<string | undefined> => (channelNotesRead ??= this.channelNotesBlockFor(channel, message));
-    const promptFor = (sessionName: string, responseMode: 'required' | 'optional', contextOnlyBlock?: string, recordsBlock?: string, channelNotesBlock?: string): string =>
+    // The team roster is built once per recipient: a retry after a start
+    // must deliver the same prompt (the roster is rate-limited per lead).
+    const teamBlocks = new Map<string, Promise<string | undefined>>();
+    const teamBlockOf = (sessionName: string): Promise<string | undefined> => {
+      let block = teamBlocks.get(sessionName);
+      if (!block) {
+        block = this.teamBlockForOwnerWork(sessionName, message);
+        teamBlocks.set(sessionName, block);
+      }
+      return block;
+    };
+    const promptFor = (sessionName: string, responseMode: 'required' | 'optional', contextOnlyBlock?: string, recordsBlock?: string, channelNotesBlock?: string, teamBlock?: string): string =>
       this.formatPrompt({
         channelId: channel.id,
         channelName: channel.name,
@@ -1769,6 +1817,7 @@ export class ChatV2DispatcherService {
         ...(contextOnlyBlock ? { contextOnlyBlock } : {}),
         ...(recordsBlock ? { recordsBlock } : {}),
         ...(channelNotesBlock ? { channelNotesBlock } : {}),
+        ...(teamBlock ? { teamBlock } : {}),
         ...(message.metadata?.[AGENT_COORDINATION_CONSTANTS.INTERNAL_METADATA_KEY] ? { internalCoordination: true } : {}),
       });
 
@@ -1779,7 +1828,7 @@ export class ChatV2DispatcherService {
       const heard = this.contextBacklog.take(sessionName, channel.id, message.id);
       // A room can hold people who may not read a restricted record.
       const records = await this.recordsBlockFor(sessionName, message, [slackContextOf(options, sessionName) ?? '', renderChatContext(this.contextFor(channel.id, contextThread))], false);
-      const prompt = promptFor(sessionName, responseMode, renderContextOnlyBlock(heard), records, await channelNotes());
+      const prompt = promptFor(sessionName, responseMode, renderContextOnlyBlock(heard), records, await channelNotes(), await teamBlockOf(sessionName));
       try {
         this.noteActingFor(sessionName, message);
         const result = await this.sendToAgent(
@@ -2021,6 +2070,7 @@ export class ChatV2DispatcherService {
       [dmSlackContext ?? '', renderChatContext(dmContext)],
       this.isOwnerMessage?.(message) === true,
     );
+    const dmTeamBlock = await this.teamBlockForOwnerWork(channel.agentSession, message);
     const prompt = this.formatPrompt({
       channelId: channel.id,
       channelName: channel.name,
@@ -2034,6 +2084,7 @@ export class ChatV2DispatcherService {
       context: dmContext,
       slackContext: dmSlackContext,
       ...(dmRecords ? { recordsBlock: dmRecords } : {}),
+      ...(dmTeamBlock ? { teamBlock: dmTeamBlock } : {}),
       ticketLine: ticketLineOf(message),
       slackDmChannelId: slackDmChannelOf(message),
       slackThreadKey: slackThreadKeyOf(message),

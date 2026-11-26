@@ -4274,6 +4274,81 @@ export const MODEL_TIER_CONSTANTS = {
 	GUARD_MAX_DAYS: 30,
 } as const;
 
+/**
+ * Temporary members and permanent seat requests
+ * (specs/2026-11-26-temp-members-seat-requests.md): a team lead adds a
+ * temporary member within the team's temporary headcount, or asks the owner
+ * for a permanent seat.
+ */
+export const TEMP_MEMBER_CONSTANTS = {
+	/** Temporary members a team may have at the same time when `Team.tempHeadcount` is unset */
+	DEFAULT_HEADCOUNT: 2,
+	/** Largest headcount the owner can set */
+	MAX_HEADCOUNT: 10,
+	/** History + seat-request file, under CREWLY_HOME */
+	STORE_FILE: 'temp-members.json',
+	/** History events kept (oldest dropped) */
+	MAX_EVENTS: 1000,
+	/** Seat requests kept (oldest settled dropped) */
+	MAX_SEAT_REQUESTS: 200,
+	/** How often temporary members are checked for removal */
+	TICK_MS: 10 * 60 * 1000,
+	/** Bound work item finished: removed after this long idle */
+	DONE_IDLE_MS: 30 * 60 * 1000,
+	/** Removed after this long without live work */
+	UNUSED_MS: 6 * 60 * 60 * 1000,
+	/** Hard age limit of a temporary member (`temporary.expiresAt`) */
+	MAX_AGE_MS: 3 * 24 * 60 * 60 * 1000,
+	/** Work-item statuses that mean a member still holds work (never removed then) */
+	LIVE_WORK_STATUSES: ['queued', 'scheduled', 'proposed', 'accepted', 'running', 'blocked', 'escalated'],
+	/** Work-item statuses that mean the bound work was accepted or closed */
+	SETTLED_WORK_STATUSES: ['done', 'verified', 'cancelled'],
+	/** Window of the "this need keeps coming back" hint and of the seat-request evidence (days) */
+	EVIDENCE_WINDOW_DAYS: 14,
+	/** Same role opened this many times in the window: the lead is told to request a seat */
+	REPEAT_THRESHOLD: 3,
+	/** Decision kind of the seat-request card */
+	DECISION_KIND: 'team_seat',
+	/** How long a seat-request card waits for the owner (default = Not now) */
+	DECISION_DEADLINE_MS: 7 * 24 * 60 * 60 * 1000,
+	/** After "Not now" / expiry the same team + role cannot be requested again for this long */
+	DECLINE_COOLDOWN_MS: 14 * 24 * 60 * 60 * 1000,
+	/** Card option keys */
+	APPROVE_KEY: 'a',
+	DECLINE_KEY: 'b',
+	/** Max characters of a reason */
+	MAX_REASON_CHARS: 300,
+	/** Max characters of a member name */
+	MAX_NAME_CHARS: 40,
+	/** Name prefix of a temporary member (`Temp-Developer-1`) */
+	NAME_PREFIX: 'Temp',
+	/** Roles a temporary member or a requested seat can never have */
+	REFUSED_ROLES: ['orchestrator', 'team-leader', 'tech-lead'],
+	/** Tag that opens notes to the lead */
+	NOTE_TAG: '[TEMP MEMBER]',
+	/** Tag that opens seat-request notes to the lead */
+	SEAT_NOTE_TAG: '[SEAT REQUEST]',
+	/** Error codes the lead's skills get */
+	ERRORS: {
+		NOT_LEAD: 'not_team_lead',
+		UNKNOWN_ROLE: 'unknown_role',
+		ROLE_NOT_ALLOWED: 'role_not_allowed',
+		REASON_REQUIRED: 'reason_required',
+		NAME_TAKEN: 'name_taken',
+		HEADCOUNT_DISABLED: 'temp_headcount_disabled',
+		HEADCOUNT_FULL: 'temp_headcount_full',
+		MEMORY_PRESSURE: 'memory_pressure',
+		NOT_TEMPORARY: 'not_temporary',
+		MEMBER_BUSY: 'member_busy',
+		MEMBER_NOT_FOUND: 'member_not_found',
+		TEAM_NOT_FOUND: 'team_not_found',
+		SEAT_REQUEST_OPEN: 'seat_request_open',
+		SEAT_RECENTLY_DECLINED: 'seat_recently_declined',
+		CARDS_UNAVAILABLE: 'decision_cards_unavailable',
+		INVALID_HEADCOUNT: 'invalid_temp_headcount',
+	},
+} as const;
+
 export const CHAT_CONTEXT_CONSTANTS = {
 	/** Whether preceding messages are included at all */
 	ENABLED: true,
@@ -8519,6 +8594,60 @@ export const TL_DELEGATION_CONSTANTS = {
 	MAX_TEXT_CHARS: 300,
 	/** Accepted tool_name from the hook */
 	TOOL_NAME_PATTERN: /^[A-Za-z0-9_-]{1,64}$/,
+	/** Claude Code tools that count as hands-on shell work (builds, renders, conversions) */
+	SHELL_TOOLS: ['Bash'] as readonly string[],
+	/**
+	 * Shell commands in the window that trigger a nudge. High on purpose:
+	 * every Crewly skill a lead runs (reply, delegate-task, …) is a shell
+	 * command too.
+	 */
+	SHELL_THRESHOLD: 40,
+	/** Tag that opens the roster block added to owner work delivered to a lead */
+	ROSTER_TAG: '[TEAM]',
+	/** At most one roster block per lead per this long (ms) */
+	ROSTER_COOLDOWN_MS: 10 * 60 * 1000,
+	/** Building the roster block may take this long; past it the message goes without one (ms) */
+	ROSTER_TIMEOUT_MS: 1500,
+	/** Work item statuses that mean a member already holds work (not free) */
+	LIVE_WORK_STATUSES: ['queued', 'accepted', 'running', 'blocked'] as readonly string[],
+} as const;
+
+/**
+ * A team must have a lead (specs/2026-10-04-tl-delegation.md §6): a team of
+ * two or more members with no lead by the rule gets one owner card asking
+ * who leads it.
+ */
+export const TEAM_LEAD_REQUIRED_CONSTANTS = {
+	/** Decision kind of the card */
+	DECISION_KIND: 'team_lead',
+	/** Per-machine state under CREWLY_HOME */
+	STORE_FILENAME: 'team-lead-required.json',
+	/** First check after the decision cards start (ms) */
+	FIRST_TICK_DELAY_MS: 5 * 60 * 1000,
+	/** Check cadence after that (ms) */
+	TICK_INTERVAL_MS: 60 * 60 * 1000,
+	/** How long the owner has to answer; then "Not now" applies (ms) */
+	DEADLINE_MS: 7 * 24 * 60 * 60 * 1000,
+	/** After "Not now" (or no answer) the team is not asked about again this long (ms) */
+	SNOOZE_MS: 30 * 24 * 60 * 60 * 1000,
+	/** A team smaller than this needs no lead */
+	MIN_MEMBERS: 2,
+	/** Members offered on the card */
+	MAX_CANDIDATES: 3,
+	/** Roles offered first: they already coordinate work */
+	PREFERRED_ROLES: ['product-manager', 'tpm'] as readonly string[],
+	/** The declining option (the default) */
+	NOT_NOW_LABEL: 'Not now',
+	/** Detail shown next to the declining option */
+	NOT_NOW_DETAIL: 'the team stays without a lead; asked again in 30 days',
+	/** The declining option for a Chinese-writing owner */
+	NOT_NOW_LABEL_ZH: '暂不设',
+	/** Its detail */
+	NOT_NOW_DETAIL_ZH: '团队继续没有负责人；30 天后再问',
+	/** Why an open card is withdrawn when the team gained a lead elsewhere */
+	WITHDRAWN_NOTE: 'The team has a lead now',
+	/** Tag that opens the note to the new lead */
+	NOTE_TAG: '[TEAM LEAD]',
 } as const;
 
 /**

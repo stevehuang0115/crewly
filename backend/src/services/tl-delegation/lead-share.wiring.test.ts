@@ -33,6 +33,16 @@ describe('leadShareDigestFor', () => {
     expect(text).toContain('"needs the brand Canva login"');
   });
 
+  it('adds the day\'s temporary members, and survives a failing history read', async () => {
+    const delegation = { nudgeCounts: () => ({ total: { count: 0, followed: 0 }, day: { count: 0, followed: 0 } }), keptWorkSince: () => [] };
+    const tempCounts = jest.fn(async () => new Map([['t-mkt', { opened: 1, removed: 2 }]]));
+    const text = await leadShareDigestFor(NOW, { teams: async () => teams, forEachEvent: () => undefined, delegation, tempCounts });
+    expect(tempCounts).toHaveBeenCalledWith(new Date(2026, 9, 4).getTime());
+    expect(text).toContain('temporary members: 1 opened, 2 removed');
+    const failing = await leadShareDigestFor(NOW, { teams: async () => teams, forEachEvent: () => undefined, delegation, tempCounts: async () => Promise.reject(new Error('unreadable')) });
+    expect(failing).toBeNull();
+  });
+
   it('is null when no team has anything to report', async () => {
     const text = await leadShareDigestFor(NOW, {
       teams: async () => teams,
