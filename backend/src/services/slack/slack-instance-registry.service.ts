@@ -51,6 +51,7 @@ import { SLACK_CLOUD_CONSTANTS } from '../../constants.js';
 import { SlackIdentityCloudError, type IdentityCloudClient } from './slack-agent-identity.service.js';
 import { teamChannelLeader, teamChannelMembers, orchestratorSyncEntry } from './slack-team-channel.service.js';
 import { buildAgentRoster } from '../cloud/agent-roster.utils.js';
+import { setOrcMachineSource, type OrcMachineInfo } from './orc-machine-tag.js';
 
 /** The slice of DeviceIdentityService this service needs. */
 export interface RegistryDeviceIdentity {
@@ -641,6 +642,18 @@ export class SlackInstanceRegistryService {
   }
 
   /**
+   * What the orchestrator post tag needs (`orc-machine-tag.ts`): this
+   * machine's name and how many machines the account has, from what is
+   * already cached (no network, no await).
+   *
+   * @returns The values, or null before the machine's name is known
+   */
+  orcMachineInfo(): OrcMachineInfo | null {
+    if (!this.deviceName) return null;
+    return { deviceName: this.deviceName, machineCount: this.accountInstances.length };
+  }
+
+  /**
    * This machine's name and instance id, for text shown to agents.
    *
    * @returns The name ('' when unknown) and the id (null before it resolves)
@@ -919,6 +932,7 @@ let instance: SlackInstanceRegistryService | null = null;
  */
 export function setSlackInstanceRegistryService(service: SlackInstanceRegistryService | null): void {
   instance = service;
+  setOrcMachineSource(service ? () => service.orcMachineInfo() : null);
 }
 
 /**
