@@ -1486,6 +1486,27 @@ export class DecisionService {
   }
 
   /**
+   * Follow an agent that moved to another team: the open questions it asked
+   * count for its new team. A card about a team itself (a model tier change)
+   * stays with that team.
+   *
+   * @param sessions - Names the agent is known by
+   * @param fromTeamId - Old team
+   * @param toTeamId - New team
+   * @returns Ids of the decisions that changed
+   */
+  async reassignTeam(sessions: ReadonlySet<string>, fromTeamId: string, toTeamId: string): Promise<string[]> {
+    const mine = (d: OwnerDecision): boolean =>
+      PENDING_DECISION_STATUSES.has(d.status) && d.teamId === fromTeamId && sessions.has(d.asker) && !d.tierChange;
+    const moved: string[] = [];
+    for (const d of await this.deps.store.list(mine)) {
+      const done = await this.deps.store.update(d.id, (cur) => (mine(cur) ? { teamId: toTeamId } : null));
+      if (done) moved.push(done.id);
+    }
+    return moved;
+  }
+
+  /**
    * Withdraw the decisions of a team that moved to another machine, without
    * touching their Slack cards (the target keeps the live copy; team move,
    * crewly#1189).

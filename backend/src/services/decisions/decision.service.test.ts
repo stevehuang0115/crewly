@@ -1781,3 +1781,21 @@ describe('owner wording (crewly#1367, crewly#1369 §3)', () => {
     expect(JSON.stringify(card.blocks)).toContain('Details: PR #1138');
   });
 });
+
+describe('member move (specs/2026-11-27-move-team-member.md)', () => {
+  it('hands only the open questions the moved agent asked to its new team', async () => {
+    const h = await harness();
+    const mine = await h.service.ask('dev-ann', ticketAsk);
+    const other = await h.service.ask('crewly-orc', { ...ticketAsk, ticket: 'APP-13', question: 'Send the follow-up email to the partners on Friday?' });
+    await h.deps.store.update(other.id, () => ({ teamId: 'team-a', asker: 'tl-sam' }));
+    const settled = await h.service.ask('dev-ann', { ...ticketAsk, ticket: 'APP-14', question: 'Publish the partner page this week?' });
+    await h.service.cancelWhere((d) => d.id === settled.id);
+
+    const moved = await h.service.reassignTeam(new Set(['dev-ann']), 'team-a', 'team-b');
+
+    expect(moved).toEqual([mine.id]);
+    expect((await h.deps.store.get(mine.id))?.teamId).toBe('team-b');
+    expect((await h.deps.store.get(other.id))?.teamId).toBe('team-a');
+    expect((await h.deps.store.get(settled.id))?.teamId).toBe('team-a');
+  });
+});

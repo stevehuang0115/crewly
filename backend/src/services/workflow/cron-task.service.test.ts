@@ -1253,3 +1253,44 @@ describe('team pause (specs/2026-10-04-team-pause.md)', () => {
 		expect(execute).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe('CronTaskService.moveMemberTasks', () => {
+	const task = (id: string, targetAgent: string, targetTeamId: string) => ({ id, targetAgent, targetTeamId });
+
+	beforeEach(() => {
+		mockReadFile.mockReset();
+		mockWriteFile.mockClear();
+	});
+
+	const stores = (files: Record<string, object[]>) =>
+		mockReadFile.mockImplementation((async (p: string) => {
+			const hit = Object.keys(files).find((suffix) => String(p).endsWith(suffix));
+			if (!hit) throw enoent();
+			return JSON.stringify({ tasks: files[hit] });
+		}) as never);
+
+	const written = () => mockWriteFile.mock.calls.map(([p, c]) => [String(p), (JSON.parse(String(c)) as { tasks: object[] }).tasks]);
+
+	it('writes the new store before it empties the old one, and renames the team on orchestrator tasks', async () => {
+		stores({
+			'/home/cron-tasks.json': [task('g1', 's-nova', 'from'), task('g2', 's-ada', 'from')],
+			'/teams/from/cron-tasks.json': [task('c1', 's-nova', 'from'), task('c2', 's-ada', 'from')],
+		});
+
+		await expect(new CronTaskService('/home').moveMemberTasks('s-nova', 'from', 'to')).resolves.toEqual(['g1', 'c1']);
+
+		expect(written()).toEqual([
+			['/home/cron-tasks.json', [task('g1', 's-nova', 'to'), task('g2', 's-ada', 'from')]],
+			['/home/teams/to/cron-tasks.json', [task('c1', 's-nova', 'to')]],
+			['/home/teams/from/cron-tasks.json', [task('c2', 's-ada', 'from')]],
+		]);
+	});
+
+	it('writes nothing for an agent with no tasks', async () => {
+		stores({ '/teams/from/cron-tasks.json': [task('c2', 's-ada', 'from')] });
+
+		await expect(new CronTaskService('/home').moveMemberTasks('s-nova', 'from', 'to')).resolves.toEqual([]);
+
+		expect(mockWriteFile).not.toHaveBeenCalled();
+	});
+});

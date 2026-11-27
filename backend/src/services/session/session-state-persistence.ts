@@ -212,6 +212,21 @@ export class SessionStatePersistence {
 	}
 
 	/**
+	 * Record that a session's agent moved to another team, so a restore after a
+	 * restart starts it there.
+	 *
+	 * @param name - Session name
+	 * @param teamId - New team id
+	 * @returns True when the session is registered and changed
+	 */
+	setTeamId(name: string, teamId: string): boolean {
+		const metadata = this.sessionMetadata.get(name);
+		if (!metadata || metadata.teamId === teamId) return false;
+		metadata.teamId = teamId;
+		return true;
+	}
+
+	/**
 	 * Update the Claude session ID for a registered session.
 	 * Called when an agent registers via MCP and reports its session ID.
 	 *

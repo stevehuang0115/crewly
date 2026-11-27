@@ -34,6 +34,7 @@ import { getTeamLeadShare, recordLeadSelfWork } from './team-lead-share.controll
 import { getTeamModelTiers, proposeTierChange, startTeamModelTierReview, updateTeamModelTiers } from './team-model-tiers.controller.js';
 import { hidePausedTeamsFromAgents, pauseTeamHandler, resumeTeamHandler } from './team-pause.controller.js';
 import { addTeamTempMember, getTeamTempMembers, removeTeamTempMember, requestTeamSeat } from './team-temp-members.controller.js';
+import { moveTeamMemberHandler } from './team-member-move.controller.js';
 
 /**
  * Creates team router with all team-related endpoints
@@ -84,6 +85,7 @@ export function createTeamRouter(context: ApiContext): Router {
 
   // Team member management
   router.post('/:id/members', invalidateCache(teamsCacheKeys), addTeamMember.bind(context));
+  router.post('/:id/members/:memberId/move', invalidateCache(teamsCacheKeys), moveTeamMemberHandler.bind(context));
   router.put('/:teamId/members/:memberId', invalidateCache(teamsCacheKeys), updateTeamMember.bind(context));
   router.patch('/:teamId/members/:memberId', invalidateCache(teamsCacheKeys), updateTeamMember.bind(context));
   router.delete('/:teamId/members/:memberId', invalidateCache(teamsCacheKeys), deleteTeamMember.bind(context));

@@ -711,6 +711,17 @@ export class StorageService {
   }
 
   /**
+   * Delete a member's prompt file (the member left the team). A missing file
+   * is not an error.
+   *
+   * @param teamId - The team ID
+   * @param memberId - The member ID
+   */
+  async removeMemberPrompt(teamId: string, memberId: string): Promise<void> {
+    await fs.rm(this.getMemberPromptPath(teamId, memberId), { force: true });
+  }
+
+  /**
    * Find a team member by their ID across all teams.
    *
    * @param memberId - Member UUID

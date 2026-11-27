@@ -839,6 +839,42 @@ export class CronTaskService {
 	}
 
 	/**
+	 * Follow an agent that moved to another team: its cron tasks in the old
+	 * team's store move to the new team's store, and orchestrator tasks that
+	 * name the old team for it name the new one. Ids and schedules are kept.
+	 * The new store is written first, so a task is never lost.
+	 *
+	 * @param session - The agent's session name
+	 * @param fromTeamId - Old team
+	 * @param toTeamId - New team
+	 * @returns Ids of the tasks that changed
+	 */
+	async moveMemberTasks(session: string, fromTeamId: string, toTeamId: string): Promise<string[]> {
+		const changed: string[] = [];
+
+		const globalStore = await this.loadGlobalStore();
+		for (const task of globalStore.tasks) {
+			if (task.targetAgent !== session || task.targetTeamId !== fromTeamId) continue;
+			task.targetTeamId = toTeamId;
+			changed.push(task.id);
+		}
+		if (changed.length > 0) await this.saveGlobalStore(globalStore);
+
+		const source = await this.loadTeamStore(fromTeamId);
+		const mine = source.tasks.filter((t) => t.targetAgent === session);
+		if (mine.length === 0) return changed;
+		const target = await this.loadTeamStore(toTeamId);
+		const present = new Set(target.tasks.map((t) => t.id));
+		target.tasks.push(...mine.filter((t) => !present.has(t.id)).map((t) => ({ ...t, targetTeamId: toTeamId })));
+		await this.saveTeamStore(toTeamId, target);
+		source.tasks = source.tasks.filter((t) => t.targetAgent !== session);
+		await this.saveTeamStore(fromTeamId, source);
+		changed.push(...mine.map((t) => t.id));
+		this.logger.info('Cron tasks moved with their agent', { session, fromTeamId, toTeamId, count: changed.length });
+		return changed;
+	}
+
+	/**
 	 * Delete a cron task. Searches across all teams to find and remove it.
 	 *
 	 * @param id - Cron task ID
