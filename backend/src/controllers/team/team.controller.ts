@@ -30,7 +30,7 @@ import {
   RUNTIME_STARTUP_CONSTANTS,
 } from '../../constants.js';
 import type { RuntimeType } from '../../constants.js';
-import { CREWLY_CONSTANTS, AGENT_TIMEOUTS, AGENT_WAKE_ERROR_CODES, TEAM_LEAD_CONSTANTS, TEAM_PAUSE_CONSTANTS, STALLED_AGENT_RECOVERY_CONSTANTS, TEMP_MEMBER_CONSTANTS } from '../../constants.js';
+import { CREWLY_CONSTANTS, AGENT_TIMEOUTS, AGENT_WAKE_ERROR_CODES, TEAM_LEAD_CONSTANTS, TEAM_PAUSE_CONSTANTS, STALLED_AGENT_RECOVERY_CONSTANTS, TEMP_MEMBER_CONSTANTS, ORCHESTRATOR_WINDOW_NAME } from '../../constants.js';
 import { parseTempHeadcount } from '../../services/temp-members/temp-member.service.js';
 import { updateAgentHeartbeat } from '../../services/agent/agent-heartbeat.service.js';
 import { getSessionBackendSync, getSessionStatePersistence } from '../../services/session/index.js';
@@ -498,7 +498,7 @@ function buildOrchestratorTeam(
   const members: TeamMember[] = [
     {
       id: 'orchestrator-member',
-      name: 'Agentmux Orchestrator',
+      name: ORCHESTRATOR_WINDOW_NAME,
       sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
       role: 'orchestrator',
       systemPrompt: 'You are the Crewly Orchestrator responsible for coordinating teams and managing project workflows.',
@@ -3278,7 +3278,7 @@ export async function updateTeamMemberRuntime(this: ApiContext, req: Request, re
       const orchestratorStatus = await this.storageService.getOrchestratorStatus();
       const updatedMember: TeamMember = {
         id: 'orchestrator-member',
-        name: 'Agentmux Orchestrator',
+        name: ORCHESTRATOR_WINDOW_NAME,
         sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
         role: 'orchestrator',
         systemPrompt: 'You are the Crewly Orchestrator responsible for coordinating teams and managing project workflows.',
