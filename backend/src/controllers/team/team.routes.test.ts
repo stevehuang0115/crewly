@@ -101,3 +101,12 @@ describe('Team Routes', () => {
     expect(memberPatch).toBeDefined();
   });
 });
+
+describe('Team Routes: move a member', () => {
+  it('registers POST /:id/members/:memberId/move', () => {
+    const router = createTeamRouter({ storageService: {} } as unknown as ApiContext);
+    const layers = router.stack as unknown as Array<{ route?: { path: string; methods: Record<string, boolean> } }>;
+
+    expect(layers.some((l) => l.route?.path === '/:id/members/:memberId/move' && l.route.methods['post'])).toBe(true);
+  });
+});

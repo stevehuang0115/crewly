@@ -156,16 +156,19 @@ describe('moveTeamMember', () => {
   });
 
   it('pins the agent id of a member stored without one, from the source team name', async () => {
-    const source = await teamById('from');
-    const stored = source.members.find((m) => m.id === 'm-nova') as TeamMember;
+    // A config written before agent ids existed: saveTeam would fill one in, so edit the file.
+    const file = path.join(home, 'teams', 'from', 'config.json');
+    const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as Team;
+    const stored = raw.members.find((m) => m.id === 'm-nova') as TeamMember;
     stored.sessionName = '';
-    stored.agentId = 'core-nova-m-nova';
-    await storage.saveTeam(source);
+    delete stored.agentId;
+    fs.writeFileSync(file, JSON.stringify(raw));
 
     const result = await move();
 
-    expect((await teamById('to')).members[1].agentId).toBe('core-nova-m-nova');
-    expect(result.member.sessionName).toBe('core-nova-m-nova');
+    // Derived from "Core", the team it was created in, not from "Growth".
+    expect(result.member.sessionName).toMatch(/^core-nova-/);
+    expect((await teamById('to')).members[1].agentId).toBe(result.member.sessionName);
   });
 
   it('moves the prompt file and renames only the generated team sentence', async () => {
