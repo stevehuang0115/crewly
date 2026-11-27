@@ -5901,3 +5901,17 @@ describe('agent-to-agent coordination (crewly#1340)', () => {
     });
   });
 });
+
+describe('a team created with no members', () => {
+  it('gets a valid channel, then its members from the first save that has one', async () => {
+    service = makeService();
+    const mapping = await service.ensureTeamChannel(team({ members: [] }));
+
+    expect(mapping.teamId).toBe('team-alpha');
+    expect(chat.channels.get(mapping.chatChannelId)).toBeDefined();
+    await expect(service.syncTeamMembers(team({ members: [] }), mapping)).resolves.toEqual({ added: [], removed: [] });
+
+    const joined = await service.syncTeamMembers(team({ members: [member('Nova', 'developer')] }), mapping);
+    expect(joined?.added).toHaveLength(1);
+  });
+});

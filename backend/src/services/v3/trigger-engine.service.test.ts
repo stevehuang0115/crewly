@@ -1325,3 +1325,24 @@ describe('team pause (specs/2026-10-04-team-pause.md)', () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('TriggerEngine.moveToTeam', () => {
+  afterEach(() => TriggerEngine.resetInstance());
+
+  it('changes the team of a followup and of the work it will create, but not of a team-spec trigger', async () => {
+    TriggerEngine.resetInstance();
+    const engine = TriggerEngine.getInstance('/tmp/test-project');
+    const base = { type: 'time' as const, config: { type: 'time' as const, delayMs: 60_000 }, createdBy: 'agent' as const, teamId: 'from' };
+    const followup = await engine.create({ ...base, name: 'followup', action: { createWorkItem: { target: 's-nova', metadata: { teamId: 'from', keep: 1 } } } });
+    const spec = await engine.create({ ...base, name: 'spec', managedBy: 'team-spec', action: { runReconciler: true } });
+
+    expect(await engine.moveToTeam(followup.id, 'to')).toBe(true);
+    expect(await engine.moveToTeam(followup.id, 'to')).toBe(false);
+    expect(await engine.moveToTeam(spec.id, 'to')).toBe(false);
+    expect(await engine.moveToTeam('missing', 'to')).toBe(false);
+
+    expect(engine.get(followup.id)?.teamId).toBe('to');
+    expect(engine.get(followup.id)?.action.createWorkItem?.metadata).toEqual({ teamId: 'to', keep: 1 });
+    expect(engine.get(spec.id)?.teamId).toBe('from');
+  });
+});

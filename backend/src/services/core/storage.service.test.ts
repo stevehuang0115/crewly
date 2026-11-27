@@ -833,3 +833,14 @@ describe('StorageService', () => {
     });
   });
 });
+
+describe('StorageService.removeMemberPrompt', () => {
+  it('deletes only that member\'s prompt file and accepts one that is already gone', async () => {
+    mockFsPromises.rm.mockClear();
+    mockFsPromises.rm.mockResolvedValue(undefined);
+
+    await new StorageService('/tmp/crewly-test').removeMemberPrompt('t1', 'm1');
+
+    expect(mockFsPromises.rm.mock.calls).toEqual([[path.join('/tmp/crewly-test', 'teams', 't1', 'prompts', 'm1.md'), { force: true }]]);
+  });
+});

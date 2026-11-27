@@ -1235,7 +1235,9 @@ export async function createTeam(this: ApiContext, req: Request, res: Response):
   try {
     const { name, description, members, projectPath, currentProject, projectIds, hierarchical, templateId, parentTeamId, mission, budget, qualityGate } = req.body as CreateTeamRequestBody;
 
-    if (!name || !members || !Array.isArray(members) || members.length === 0) {
+    // `members: []` is allowed: an empty team that agents are then moved into
+    // (move-team-member). The array itself is still required.
+    if (!name || !Array.isArray(members)) {
       res.status(400).json({
         success: false,
         error: 'Missing required fields: name and members array'

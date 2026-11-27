@@ -935,4 +935,22 @@ describe('TeamModal Component', () => {
       vi.mocked(rolesService.getRole).mockReset();
     });
   });
+
+  describe('a team with no members', () => {
+    it('can add members to a team that has none yet, each with its own id', async () => {
+      await act(async () => {
+        render(<TeamModal {...defaultProps} team={{ ...mockTeam, members: [] }} />);
+      });
+      const added = () => screen.queryAllByDisplayValue('Fullstack Developer');
+      expect(added().length).toBe(0);
+
+      for (let i = 0; i < 3; i += 1) fireEvent.click(screen.getByText('Add Team Member'));
+      expect(added().length).toBe(3);
+
+      // Members that shared an id would disappear together.
+      const removeButtons = screen.getAllByRole('button', { name: 'Delete Member' });
+      fireEvent.click(removeButtons[removeButtons.length - 1]);
+      expect(added().length).toBe(2);
+    });
+  });
 });

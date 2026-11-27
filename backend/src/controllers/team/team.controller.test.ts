@@ -280,23 +280,36 @@ describe('Teams Handlers', () => {
       });
     });
 
-    it('should return 400 error when members array is empty', async () => {
-      mockRequest.body = {
-        name: 'Test Team',
-        members: []
-      };
+    it('creates an empty team from members: [] (agents are moved in afterwards)', async () => {
+      mockRequest.body = { name: 'Studio', members: [], projectIds: ['test-project'] };
 
-      await teamsHandlers.createTeam.call(
-        mockApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
+      await teamsHandlers.createTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+      expect(responseMock.status).toHaveBeenCalledWith(201);
+      expect(mockStorageService.saveTeam).toHaveBeenCalledWith(expect.objectContaining({ name: 'Studio', members: [], projectIds: ['test-project'] }));
+      expect(mockSchedulerService.scheduleDefaultCheckins).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no members field', { name: 'Studio' }],
+      ['a members value that is not a list', { name: 'Studio', members: {} }],
+      ['an empty team without a name', { members: [] }],
+    ])('refuses %s', async (_what, body) => {
+      mockRequest.body = body;
+
+      await teamsHandlers.createTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
 
       expect(responseMock.status).toHaveBeenCalledWith(400);
-      expect(responseMock.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Missing required fields: name and members array'
-      });
+      expect(mockStorageService.saveTeam).not.toHaveBeenCalled();
+    });
+
+    it('still requires a lead for a hierarchical team, so an empty one is refused', async () => {
+      mockRequest.body = { name: 'Studio', members: [], hierarchical: true };
+
+      await teamsHandlers.createTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+      expect(mockStorageService.saveTeam).not.toHaveBeenCalled();
     });
 
     it('should return 400 error when member data is incomplete', async () => {
@@ -2172,6 +2185,22 @@ describe('Teams Handlers', () => {
   });
 
   describe('startTeam', () => {
+    it('starts nothing, without an error, for an empty team', async () => {
+      mockRequest.params = { id: 'team-empty' };
+      mockRequest.body = { projectId: 'project-1' };
+      mockStorageService.getTeams.mockResolvedValue([
+        { id: 'team-empty', name: 'Studio', members: [], projectIds: [], createdAt: '', updatedAt: '' } as Team,
+      ]);
+      mockStorageService.getProjects.mockResolvedValue([{ id: 'project-1', path: '/test/project', name: 'Test Project' }]);
+      mockStorageService.saveTeam.mockResolvedValue(undefined);
+
+      await teamsHandlers.startTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+      expect(responseMock.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true, data: expect.objectContaining({ sessionsCreated: 0, results: [] }) }),
+      );
+    });
+
     it('should set team members agentStatus to starting when starting', async () => {
       const mockTeam: Team = {
         id: 'team-123',

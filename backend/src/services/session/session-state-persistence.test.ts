@@ -810,3 +810,15 @@ describe('SessionStatePersistence', () => {
 		});
 	});
 });
+
+describe('SessionStatePersistence.setTeamId', () => {
+	it('records the new team of a registered session', () => {
+		const persistence = new SessionStatePersistence(path.join(tmpdir(), `session-team-${process.pid}.json`));
+		persistence.registerSession('s-nova', { cwd: '/tmp', command: 'bash', args: [] }, 'claude-code', 'developer', 'from');
+
+		expect(persistence.setTeamId('s-nova', 'to')).toBe(true);
+		expect(persistence.getSessionMetadata('s-nova')?.teamId).toBe('to');
+		expect(persistence.setTeamId('s-nova', 'to')).toBe(false);
+		expect(persistence.setTeamId('unknown', 'to')).toBe(false);
+	});
+});

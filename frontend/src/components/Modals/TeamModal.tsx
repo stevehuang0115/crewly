@@ -270,7 +270,8 @@ export const TeamModal: React.FC<TeamModalProps> = ({ isOpen, onClose, onSubmit,
   ];
 
   const addMember = () => {
-    const newId = (Math.max(...members.map(m => parseInt(m.id))) + 1).toString();
+    // The leading 0 keeps this a number for a team with no members.
+    const newId = (Math.max(0, ...members.map(m => parseInt(m.id) || 0)) + 1).toString();
     const fullstackDevRole = availableRoles.find(role => role.key === 'fullstack-dev');
     const newMember: TeamMember = {
       id: newId,

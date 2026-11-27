@@ -42,6 +42,7 @@ import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 import { TRIGGER_ENGINE_CONSTANTS } from '../../constants.js';
 import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { classifyTriggerOnLoad } from './trigger-classification.js';
+import { isSpecManaged } from '../../types/v2/trigger.types.js';
 import { needsExpiryNotice, projectLastFireAt, remainingFires } from './trigger-expiry.js';
 
 // ---------------------------------------------------------------------------
@@ -432,6 +433,25 @@ export class TriggerEngine {
     action.target = target;
     await this.persistTriggers();
     this.logger.info('Trigger retargeted to the member\'s current session', { id, from, to: target });
+    return true;
+  }
+
+  /**
+   * Hands a trigger to another team, when the agent it belongs to moved there.
+   * Team-spec triggers belong to their team's config and are not moved.
+   *
+   * @param id - Trigger UUID
+   * @param teamId - New team id
+   * @returns True when the trigger changed
+   */
+  public async moveToTeam(id: string, teamId: string): Promise<boolean> {
+    const trigger = this.triggers.get(id);
+    if (!trigger || trigger.teamId === teamId || isSpecManaged(trigger)) return false;
+    trigger.teamId = teamId;
+    const created = trigger.action?.createWorkItem as { metadata?: Record<string, unknown> } | undefined;
+    if (created?.metadata?.['teamId'] !== undefined) created.metadata = { ...created.metadata, teamId };
+    await this.persistTriggers();
+    this.logger.info('Trigger moved to another team', { id, teamId });
     return true;
   }
 

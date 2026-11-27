@@ -392,3 +392,14 @@ describe('findOwnersFor', () => {
 		expect(findOwnersFor(solo, 'widget service')[0].handTo).toBe('Sol');
 	});
 });
+
+describe('a team with no members yet', () => {
+	it('is built, rendered and searched without needing a first member', () => {
+		const empty = team('t-new', 'Studio', [], { description: 'Video studio team for editing work.' });
+		const roster = buildRoster(sources({ teams: [CE, empty] }));
+
+		expect(roster.find((t) => t.name === 'Studio')).toMatchObject({ members: [], leads: [] });
+		expect(renderRoster(roster)).toContain('Studio');
+		expect(findOwnersFor(roster, 'video studio editing')[0]).toMatchObject({ team: 'Studio', handTo: 'Studio' });
+	});
+});
