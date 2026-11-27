@@ -12,6 +12,7 @@ import { CronTaskService } from '../workflow/cron-task.service.js';
 import type { Team, TeamMember } from '../../types/index.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { Trigger } from '../../types/v2/trigger.types.js';
+import { setTeamLead, getTeamLeadIds } from '../../utils/team.utils.js';
 import { moveTeamMember, MoveRefusedError, type MemberRunState, type MoveMemberDeps } from './team-member-move.service.js';
 
 const NOW = '2026-11-27T00:00:00.000Z';
@@ -90,6 +91,11 @@ describe('moveTeamMember', () => {
     deps = {
       storage,
       runState: async () => state,
+      // The same code path set-team-lead uses; only its activity entry is skipped.
+      makeLead: async (t, memberId) => {
+        setTeamLead(t, memberId);
+        await storage.saveTeam(t);
+      },
       workItems: {
         getAllItems: async () => items,
         patchMetadata: async (id, key, value) => {
@@ -280,6 +286,78 @@ describe('moveTeamMember', () => {
     await move({ memberId: 'm-lead' });
 
     expect(await ids('to')).toContain('m-lead');
+  });
+
+  describe('asLead', () => {
+    /** Ada and Nova both lead Core, as two co-leads do. */
+    const coLeads = async (): Promise<void> => {
+      const source = await teamById('from');
+      source.leaderIds = ['m-lead', 'm-nova'];
+      await storage.saveTeam(source);
+    };
+
+    it('moves a co-lead into an empty team as its lead, without allowLead', async () => {
+      await coLeads();
+      await storage.saveTeam(team('new', 'Studio', []));
+
+      const result = await move({ toTeamId: 'new', asLead: true });
+
+      const created = await teamById('new');
+      expect(created.leaderIds).toEqual(['m-nova']);
+      expect(created.members).toEqual([expect.objectContaining({ id: 'm-nova', agentId: SESSION, canDelegate: true })]);
+      expect(getTeamLeadIds(await teamById('from'))).toEqual(['m-lead']);
+      expect(result.leadOfTarget).toBe(true);
+      expect(result.warnings.join('\n')).toContain('"Core" is now led by Ada');
+    });
+
+    it('replaces the lead of a hierarchical target and keeps the hierarchy consistent', async () => {
+      const target = await teamById('to');
+      target.hierarchical = true;
+      await storage.saveTeam(target);
+
+      const result = await move({ asLead: true });
+
+      const after = await teamById('to');
+      const [boss, nova] = after.members;
+      expect(after.leaderIds).toEqual(['m-nova']);
+      expect(nova).toMatchObject({ canDelegate: true, hierarchyLevel: 1, subordinateIds: ['m-boss'] });
+      expect(nova.parentMemberId).toBeUndefined();
+      expect(boss).toMatchObject({ canDelegate: false, parentMemberId: 'm-nova', subordinateIds: [] });
+      expect(result.warnings).toContain('Nova replaced Bo as lead of "Growth".');
+    });
+
+    it('still needs allowLead for the sole lead', async () => {
+      expect(await refusal(move({ memberId: 'm-lead', asLead: true }))).toBe('member_is_lead');
+      expect(await ids('from')).toEqual(['m-lead', 'm-nova']);
+
+      const result = await move({ memberId: 'm-lead', asLead: true, allowLead: true });
+
+      expect(result.leadOfTarget).toBe(true);
+      expect((await teamById('to')).leaderIds).toEqual(['m-lead']);
+    });
+
+    it('still refuses a co-lead without asLead or allowLead', async () => {
+      await coLeads();
+      expect(await refusal(move())).toBe('member_is_lead');
+    });
+
+    it('keeps the move and says so when the lead change fails', async () => {
+      deps.makeLead = async () => {
+        throw new Error('disk full');
+      };
+
+      const result = await move({ asLead: true });
+
+      expect(result.leadOfTarget).toBe(false);
+      expect(await ids('to')).toContain('m-nova');
+      expect(result.warnings.join('\n')).toContain('NOT made lead of "Growth" (disk full)');
+    });
+
+    it('leaves the lead alone without asLead', async () => {
+      const result = await move();
+      expect(result.leadOfTarget).toBe(false);
+      expect((await teamById('to')).leaderIds).toEqual(['m-boss']);
+    });
   });
 
   it('refuses the team it is already on, so a repeated move duplicates nothing', async () => {

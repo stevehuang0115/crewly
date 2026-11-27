@@ -82,13 +82,19 @@ describe('POST /api/teams/:id/members/:memberId/move', () => {
 
     const res = await call({ toTeamId: ' to ', allowLead: 'yes' });
 
-    expect(moveTeamMember).toHaveBeenCalledWith(expect.anything(), { fromTeamId: 'from', memberId: 'm1', toTeamId: 'to', allowLead: false });
+    expect(moveTeamMember).toHaveBeenCalledWith(expect.anything(), { fromTeamId: 'from', memberId: 'm1', toTeamId: 'to', allowLead: false, asLead: false });
     expect(res.json).toHaveBeenCalledWith({ success: true, data: result });
     expect(recordActivity).toHaveBeenCalledWith(expect.objectContaining({
       action: 'team.member.moved',
       before: { teamId: 'from', team: 'Core', role: 'developer' },
       after: { teamId: 'to', team: 'Growth', role: 'developer' },
     }));
+  });
+
+  it('passes asLead on', async () => {
+    moveTeamMember.mockResolvedValue({ member: { id: 'm1', name: 'Nova' }, from: {}, to: {} });
+    await call({ toTeamId: 'to', asLead: true });
+    expect(moveTeamMember).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ asLead: true }));
   });
 
   it('answers a refusal with its status, code and message', async () => {
@@ -109,8 +115,8 @@ describe('POST /api/teams/:id/members/:memberId/move', () => {
 
 describe('buildMoveDeps', () => {
   it('leaves decisions out when owner decisions are not set up', () => {
-    expect(buildMoveDeps(context).decisions).toBeUndefined();
-    expect(buildMoveDeps(context).storage).toBe(context.storageService);
+    expect(buildMoveDeps(context, { type: 'owner' } as never).decisions).toBeUndefined();
+    expect(buildMoveDeps(context, { type: 'owner' } as never).storage).toBe(context.storageService);
   });
 });
 

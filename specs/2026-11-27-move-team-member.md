@@ -8,10 +8,10 @@ machine.
 
 ## Interface
 
-- `POST /api/teams/:fromTeamId/members/:memberId/move` `{ toTeamId, allowLead? }`
+- `POST /api/teams/:fromTeamId/members/:memberId/move` `{ toTeamId, allowLead?, asLead? }`
   — the owner or the orchestrator; other callers are refused.
 - Orchestrator skill `move-team-member --member <name|session> --to <team>
-  [--from <team>] [--allow-lead]`.
+  [--from <team>] [--as-lead] [--allow-lead]`.
 - Service: `services/team/team-member-move.service.ts`.
 
 ## The member entry
@@ -50,11 +50,30 @@ team field. Team channel rosters follow the `team-saved` event.
 Checked before any write: unknown source, target or member; same team; target
 already lists the member; archived target; the orchestrator team or agent; a
 temporary member (its headcount and expiry belong to the old team); the source
-lead, unless the target already names it lead or `allowLead` is set; a member
+lead, unless the target already names it lead, `allowLead` is set, or
+`asLead` leaves the source another lead; a member
 that is **busy or starting**. A running idle member can be moved: the result
 says `restartRequired`, because its session still holds the old context. The
 move never stops or starts a session. A session whose activity cannot be read
 counts as busy.
+
+## Leading the target (`asLead`)
+
+After the move the member is made THE lead of the target through
+`applyTeamLead`, the code behind `set-team-lead`: former target leads are
+replaced (named in `warnings`) and on a hierarchical team report to the new
+lead. The role is not changed. A source lead then moves without `allowLead`
+while the source **currently has another lead**; the sole lead still needs it.
+If the lead change fails the member stays moved, `leadOfTarget` is false and a
+warning says to run `set-team-lead`.
+
+## Empty teams
+
+`POST /api/teams` accepts `members: []` (the array and the name stay
+required), so a target can be created before anyone is moved into it. A
+hierarchical team still needs a lead at creation. An empty team has no lead;
+starting it starts nothing; its Slack channel, when one is auto-created,
+gets its members from the first move whose roster sync sees them.
 
 ## Consistency
 

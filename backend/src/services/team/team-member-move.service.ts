@@ -70,6 +70,8 @@ export interface MoveMemberDeps {
     getAllItems(): Promise<WorkItem[]>;
     patchMetadata(workItemId: string, key: string, value: unknown): Promise<WorkItem | null>;
   };
+  /** Make the member THE lead of a team that holds it (the set-team-lead path) */
+  makeLead(team: Team, memberId: string): Promise<unknown>;
   /** Absent when the trigger engine is not running */
   triggers?: {
     list(): Trigger[];
@@ -88,6 +90,11 @@ export interface MoveMemberInput {
   toTeamId: string;
   /** Move the source team's lead anyway */
   allowLead?: boolean;
+  /**
+   * Make the member the lead of the target team after the move. A source lead
+   * then needs no `allowLead` as long as the source keeps another lead.
+   */
+  asLead?: boolean;
 }
 
 /** What a move did. */
@@ -95,6 +102,8 @@ export interface MoveMemberResult {
   member: { id: string; name: string; role: string; sessionName: string };
   from: { id: string; name: string };
   to: { id: string; name: string };
+  /** True when `asLead` was asked and the member now leads the target */
+  leadOfTarget: boolean;
   /** The running session still has the old team's context until it restarts */
   restartRequired: boolean;
   updated: {
@@ -153,10 +162,10 @@ async function readTeam(deps: MoveMemberDeps, teamId: string): Promise<Team | un
  * @param target - Target team
  * @param member - Member in the source
  * @param sessionName - Its permanent session name
- * @param allowLead - Move a lead anyway
+ * @param intent - `allowLead` / `asLead` from the request
  * @throws {MoveRefusedError}
  */
-function assertMovable(source: Team, target: Team, member: TeamMember, sessionName: string, allowLead: boolean): void {
+function assertMovable(source: Team, target: Team, member: TeamMember, sessionName: string, intent: Pick<MoveMemberInput, 'allowLead' | 'asLead'>): void {
   if (sessionName === ORCHESTRATOR_SESSION_NAME) {
     throw new MoveRefusedError('orchestrator', 'The orchestrator cannot be moved.');
   }
@@ -170,7 +179,10 @@ function assertMovable(source: Team, target: Team, member: TeamMember, sessionNa
     throw new MoveRefusedError('member_is_temporary', `${member.name} is a temporary member of "${source.name}". Remove it, or have the owner make it permanent first.`);
   }
   const targetNamesItLead = Boolean(target.leaderIds?.includes(member.id) || target.leaderId === member.id);
-  if (getTeamLeadIds(source).includes(member.id) && !targetNamesItLead && !allowLead) {
+  const leads = getTeamLeadIds(source);
+  // A co-lead leaving to lead the target: the source is not left without one.
+  const leavesALead = intent.asLead === true && leads.some((id) => id !== member.id);
+  if (leads.includes(member.id) && !targetNamesItLead && !leavesALead && intent.allowLead !== true) {
     throw new MoveRefusedError(
       'member_is_lead',
       `${member.name} leads "${source.name}". Give the team another lead first (set-team-lead), or pass allowLead to move the lead anyway.`,
@@ -346,7 +358,7 @@ async function performMove(deps: MoveMemberDeps, input: MoveMemberInput): Promis
     throw new MoveRefusedError('member_not_found', `Team "${source.name}" has no member "${memberId}".`, 404);
   }
   const sessionName = resolveMemberSessionName(source.name, member);
-  assertMovable(source, target, member, sessionName, input.allowLead === true);
+  assertMovable(source, target, member, sessionName, input);
 
   const state = await deps.runState(member, sessionName);
   if (state === 'busy' || state === 'starting') {
@@ -367,6 +379,20 @@ async function performMove(deps: MoveMemberDeps, input: MoveMemberInput): Promis
   const orphaned = await writeTeams(deps, input, target, entry);
   if (!(await settle(deps, input, entry))) {
     warnings.push('The team configs kept changing during the move; check both teams list the member once, in the target only.');
+  }
+
+  let leadOfTarget = false;
+  if (input.asLead === true) {
+    try {
+      const current = await readTeam(deps, toTeamId);
+      if (!current) throw new Error('the team disappeared');
+      const replaced = getTeamLeads(current).filter((m) => m.id !== member.id).map((m) => m.name);
+      await deps.makeLead(current, member.id);
+      leadOfTarget = true;
+      if (replaced.length > 0) warnings.push(`${member.name} replaced ${replaced.join(', ')} as lead of "${target.name}".`);
+    } catch (error) {
+      warnings.push(`${member.name} moved but was NOT made lead of "${target.name}" (${error instanceof Error ? error.message : String(error)}). Run set-team-lead.`);
+    }
   }
 
   const ids: ReadonlySet<string> = new Set([sessionName, entry.agentId as string, member.id]);
@@ -437,6 +463,7 @@ async function performMove(deps: MoveMemberDeps, input: MoveMemberInput): Promis
     member: { id: member.id, name: member.name, role: member.role, sessionName },
     from: { id: source.id, name: source.name },
     to: { id: target.id, name: target.name },
+    leadOfTarget,
     restartRequired: state === 'idle',
     updated,
     warnings,

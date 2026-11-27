@@ -28,7 +28,7 @@ api_call() {
     return 0
   fi
   echo "\${method} \${path} \$(printf '%s' "\$body" | jq -c .)" >> "${CALL_LOG}"
-  echo '{"success":true,"data":{"member":{"name":"Nova","sessionName":"core-nova-1"},"from":{"name":"Core"},"to":{"name":"Growth Team"},"restartRequired":true,"updated":{"workItems":["a","b"],"triggers":[],"cronTasks":["c"],"decisions":[]},"warnings":[]}}'
+  echo '{"success":true,"data":{"member":{"name":"Nova","sessionName":"core-nova-1"},"from":{"name":"Core"},"to":{"name":"Growth Team"},"leadOfTarget":true,"restartRequired":true,"updated":{"workItems":["a","b"],"triggers":[],"cronTasks":["c"],"decisions":[]},"warnings":[]}}'
 }
 STUB
 cp "$SCRIPT_DIR/execute.sh" "$SKILL_PARENT/move-team-member/execute.sh"
@@ -54,11 +54,17 @@ check_no_call() {
 echo "=== ORC move-team-member ==="
 
 run --member core-nova-1 --to t-growth
-check "session name and team id" 'POST /teams/t-core/members/m1/move {"toTeamId":"t-growth","allowLead":false}'
-check "says what moved and what changed" 'Moved Nova (core-nova-1) from Core to Growth Team. Updated: 2 work item(s), 0 followup(s), 1 cron task(s), 0 open decision(s). Restart the agent' "$OUT"
+check "session name and team id" 'POST /teams/t-core/members/m1/move {"toTeamId":"t-growth","allowLead":false,"asLead":false}'
+check "says what moved and what changed" 'Moved Nova (core-nova-1) from Core to Growth Team. Updated: 2 work item(s), 0 followup(s), 1 cron task(s), 0 open decision(s). Nova now leads Growth Team. Restart the agent' "$OUT"
 
 run --member nova --to "growth team" --allow-lead
-check "names are case-insensitive; --allow-lead is sent" 'POST /teams/t-core/members/m1/move {"toTeamId":"t-growth","allowLead":true}'
+check "names are case-insensitive; --allow-lead is sent" 'POST /teams/t-core/members/m1/move {"toTeamId":"t-growth","allowLead":true,"asLead":false}'
+
+run --member Nova --to t-growth --as-lead
+check "--as-lead is sent" 'POST /teams/t-core/members/m1/move {"toTeamId":"t-growth","allowLead":false,"asLead":true}'
+
+run '{"member":"Nova","to":"t-growth","asLead":true}'
+check "JSON asLead is sent" '"asLead":true'
 
 run '{"member":"Kai","from":"Core","to":"Growth Team"}'
 check "JSON form; --from picks between two members of the same name" 'POST /teams/t-core/members/m2/move'

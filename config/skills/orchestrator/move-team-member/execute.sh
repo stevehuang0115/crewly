@@ -2,8 +2,8 @@
 # Move an existing agent to another team (specs/2026-11-27-move-team-member.md).
 #
 # Usage:
-#   execute.sh --member <name|session|id> --to <team name|id> [--from <team name|id>] [--allow-lead]
-#   execute.sh '{"member":"Nova","to":"Growth","from":"Core","allowLead":false}'
+#   execute.sh --member <name|session|id> --to <team name|id> [--from <team name|id>] [--as-lead] [--allow-lead]
+#   execute.sh '{"member":"Nova","to":"Growth","from":"Core","asLead":true}'
 #
 # Looks the member and teams up in GET /teams, then calls
 # POST /api/teams/:from/members/:member/move as the orchestrator; other agents
@@ -12,11 +12,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-USAGE="Usage: execute.sh --member <name|session> --to <team name|id> [--from <team>] [--allow-lead]"
+USAGE="Usage: execute.sh --member <name|session> --to <team name|id> [--from <team>] [--as-lead] [--allow-lead]"
 MEMBER=""
 TO=""
 FROM=""
 ALLOW_LEAD="false"
+AS_LEAD="false"
 
 if [ "${1:-}" != "" ] && [[ "${1}" == --* ]]; then
   while [ $# -gt 0 ]; do
@@ -25,6 +26,7 @@ if [ "${1:-}" != "" ] && [[ "${1}" == --* ]]; then
       --to) TO="${2:-}"; shift 2 ;;
       --from) FROM="${2:-}"; shift 2 ;;
       --allow-lead) ALLOW_LEAD="true"; shift ;;
+      --as-lead) AS_LEAD="true"; shift ;;
       *) error_exit "Unknown option: $1. ${USAGE}" ;;
     esac
   done
@@ -35,6 +37,7 @@ else
   TO=$(printf '%s' "$INPUT" | jq -r '.to // .toTeam // empty')
   FROM=$(printf '%s' "$INPUT" | jq -r '.from // .fromTeam // empty')
   ALLOW_LEAD=$(printf '%s' "$INPUT" | jq -r 'if .allowLead == true then "true" else "false" end')
+  AS_LEAD=$(printf '%s' "$INPUT" | jq -r 'if .asLead == true then "true" else "false" end')
 fi
 
 require_param "member" "$MEMBER"
@@ -90,7 +93,7 @@ fi
 
 SOURCE_PATH=$(jq -rn --arg t "$SOURCE_ID" '$t | @uri')
 MEMBER_PATH=$(jq -rn --arg m "$MEMBER_ID" '$m | @uri')
-BODY=$(jq -n --arg to "$TO_ID" --argjson allow "$ALLOW_LEAD" '{toTeamId: $to, allowLead: $allow}')
+BODY=$(jq -n --arg to "$TO_ID" --argjson allow "$ALLOW_LEAD" --argjson lead "$AS_LEAD" '{toTeamId: $to, allowLead: $allow, asLead: $lead}')
 
 RESULT=$(api_call POST "/teams/${SOURCE_PATH}/members/${MEMBER_PATH}/move" "$BODY")
 printf '%s' "$RESULT" | tail -n 1 | jq '
@@ -98,5 +101,6 @@ printf '%s' "$RESULT" | tail -n 1 | jq '
     "Moved \(.data.member.name) (\(.data.member.sessionName)) from \(.data.from.name) to \(.data.to.name). "
     + "Updated: \(.data.updated.workItems | length) work item(s), \(.data.updated.triggers | length) followup(s), "
     + "\(.data.updated.cronTasks | length) cron task(s), \(.data.updated.decisions | length) open decision(s)."
+    + (if .data.leadOfTarget then " \(.data.member.name) now leads \(.data.to.name)." else "" end)
     + (if .data.restartRequired then " Restart the agent so it loads the new team." else " It loads the new team at its next start." end)
   )} else . end'

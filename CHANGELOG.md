@@ -5,7 +5,7 @@ User-visible changes. Newest first.
 ## Unreleased
 
 ### Added
-- **An agent can be moved to another team.** Until now a team could only add a new member or delete one, so splitting a team meant new agents with no memory. `move-team-member` (or `POST /api/teams/:id/members/:memberId/move`) moves the same agent: its session name, memory and model settings stay, and its open work, followups, cron tasks and open questions go with it. A member that is working or starting up is not moved, and neither is a team's lead unless you say so.
+- **An agent can be moved to another team.** Until now a team could only add a new member or delete one, so splitting a team meant new agents with no memory. `move-team-member` (or `POST /api/teams/:id/members/:memberId/move`) moves the same agent: its session name, memory and model settings stay, and its open work, followups, cron tasks and open questions go with it. A member that is working or starting up is not moved, and neither is a team's lead unless you say so. With `--as-lead` the agent also leads its new team (a co-lead then needs no extra flag), and a team can now be created with no members to move people into.
 
 ### Fixed
 - **You can tell which machine's Orc is talking.** Every machine's orchestrator posts through the same Crewly bot and opened with the same `[Orc]` tag, so two machines answering in one thread looked like one voice. When your account has more than one machine the tag now names it: `[Orc · mac-mini]`. With a single machine nothing changes.

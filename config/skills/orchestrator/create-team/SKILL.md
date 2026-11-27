@@ -24,12 +24,12 @@ execution:
 
 # Create Team
 
-Creates a new agent team with optional members.
+Creates a new agent team, with new members or empty.
 
 ## Usage
 
 ```bash
-bash config/skills/orchestrator/create-team/execute.sh '{"name":"Alpha","description":"Frontend team","members":[{"name":"dev1","role":"developer"}]}'
+bash config/skills/orchestrator/create-team/execute.sh '{"name":"Alpha","description":"Frontend team","members":[{"name":"dev1","role":"developer","systemPrompt":"You are dev1, a developer on the Alpha team."}]}'
 ```
 
 ## Parameters
@@ -38,7 +38,7 @@ bash config/skills/orchestrator/create-team/execute.sh '{"name":"Alpha","descrip
 |-----------|----------|-------------|
 | `name` | Yes | Team name |
 | `description` | No | Team description |
-| `members` | No | Array of `{name, role}` objects |
+| `members` | Yes | Array of `{name, role, systemPrompt}` objects. `[]` creates an empty team to move existing agents into (`move-team-member`); a hierarchical team still needs a lead |
 
 ## Output
 
