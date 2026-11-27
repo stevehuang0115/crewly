@@ -81,6 +81,7 @@ export type CrewlyChannelRoomsApi = Pick<
   | 'renameRoom'
   | 'archiveRoom'
   | 'syncRoomsFromSlack'
+  | 'getSettings'
 >;
 
 /** An agent that can be put in a channel. */
@@ -129,6 +130,29 @@ export interface CrewlyChannelMembershipResult {
 /** Placeholder rosters bridges put in a huddle that has no real member yet. */
 const PLACEHOLDER_MEMBER = /^(team|channel):/;
 const SYSTEM_PRINCIPAL = { userId: 'system', source: 'oss' as const };
+
+/**
+ * A channel name carrying this machine's Slack channel prefix. A name that
+ * already starts with it is not prefixed twice.
+ *
+ * Kept out of `slackChannelNameFor`: team channel names come from it, and
+ * changing it there would rename channels that exist.
+ *
+ * @param name - Channel or typed name
+ * @param prefix - The saved `channelPrefix` (may be empty)
+ * @returns The Slack-style name without `#`
+ *
+ * @example
+ * prefixedChannelName('ce-posts', 'mini-') // 'mini-ce-posts'
+ * prefixedChannelName('mini-ce-posts', 'mini-') // 'mini-ce-posts'
+ */
+export function prefixedChannelName(name: string, prefix: string): string {
+  const bare = slackChannelNameFor(name);
+  if (!/[\p{L}\p{N}_]/u.test(prefix)) return bare;
+  const p = slackChannelNameFor(prefix);
+  const carried = bare.startsWith(`${p}-`) || (p.endsWith('_') && bare.startsWith(p));
+  return carried ? bare : slackChannelNameFor(name, prefix);
+}
 
 /**
  * Owner-facing Crewly channels: list, create, rename, members, archive.
@@ -196,7 +220,8 @@ export class CrewlyChannelService {
       const members = this.memberSessions(rec.id);
       try {
         const mapping = await rooms.ensureAgentChannel({
-          name: rec.name,
+          // Made while Slack was not set up, the name may not have the prefix yet.
+          name: prefixedChannelName(rec.name, await this.channelPrefix()),
           purpose: rec.purpose ?? CREWLY_CHANNEL_CONSTANTS.DEFAULT_PURPOSE,
           memberSessions: members,
           applyPrefix: false,
@@ -315,7 +340,7 @@ export class CrewlyChannelService {
    */
   async get(ref: string): Promise<CrewlyChannelDTO> {
     await this.reconcile();
-    return this.toDTO(this.requireRecord(ref), await this.agentIndex());
+    return this.toDTO(await this.requireRecord(ref), await this.agentIndex());
   }
 
   /**
@@ -342,7 +367,8 @@ export class CrewlyChannelService {
    * @throws CrewlyChannelError 400 on a bad name/roster, 409 on a name in use, 502 when Slack refuses
    */
   async create(input: { name: string; purpose?: string; memberSessions: string[]; allowNoLocalMembers?: boolean }): Promise<CrewlyChannelDTO> {
-    const name = this.normaliseName(input.name);
+    const typed = this.normaliseName(input.name);
+    const name = prefixedChannelName(typed, await this.channelPrefix());
     const purpose = this.validatePurpose(input.purpose);
     // allowNoLocalMembers: the orchestrator may open a channel for agents that all
     // run on other machines (they join through Cloud); Slack must be connected then.
@@ -351,6 +377,9 @@ export class CrewlyChannelService {
       throw new CrewlyChannelError('A channel with no agents on this machine needs Slack to be connected', 400, 'validation_error');
     }
     await this.reconcile();
+    // An older channel without the prefix still holds the name: a conflict, so
+    // compose extends it instead of opening a prefixed twin beside it.
+    this.assertNameFree(typed);
     this.assertNameFree(name);
     const store = await this.load();
     const rooms = this.deps.getRooms();
@@ -393,7 +422,8 @@ export class CrewlyChannelService {
 
   /**
    * Rename a channel. A linked Slack channel is renamed first; Crewly then
-   * shows the name Slack applied.
+   * shows the name Slack applied. The new name gets this machine's channel
+   * prefix, so renaming a channel to its own name adds a missing prefix.
    *
    * @param ref - Channel id / name
    * @param rawName - The new name
@@ -402,8 +432,8 @@ export class CrewlyChannelService {
    */
   async rename(ref: string, rawName: string): Promise<CrewlyChannelDTO> {
     await this.reconcile();
-    const record = this.requireRecord(ref);
-    const name = this.normaliseName(rawName);
+    const record = await this.requireRecord(ref);
+    const name = prefixedChannelName(this.normaliseName(rawName), await this.channelPrefix());
     if (name !== record.name) this.assertNameFree(name, record.id);
     let applied = name;
     const rooms = this.deps.getRooms();
@@ -430,7 +460,7 @@ export class CrewlyChannelService {
    */
   async addMember(ref: string, sessionName: string): Promise<CrewlyChannelMembershipResult> {
     await this.reconcile();
-    const record = this.requireRecord(ref);
+    const record = await this.requireRecord(ref);
     const [session] = await this.validateMembers([sessionName], { min: 1 });
     const current = this.memberSessions(record.id);
     if (current.includes(session)) {
@@ -451,7 +481,7 @@ export class CrewlyChannelService {
    */
   async removeMember(ref: string, sessionName: string): Promise<CrewlyChannelMembershipResult> {
     await this.reconcile();
-    const record = this.requireRecord(ref);
+    const record = await this.requireRecord(ref);
     const current = this.memberSessions(record.id);
     if (!current.includes(sessionName)) {
       throw new CrewlyChannelError(`${sessionName} is not in #${record.name}`, 404, 'not_found');
@@ -468,7 +498,7 @@ export class CrewlyChannelService {
    */
   async archive(ref: string): Promise<CrewlyChannelDTO> {
     await this.reconcile();
-    const record = this.requireRecord(ref);
+    const record = await this.requireRecord(ref);
     const rooms = this.deps.getRooms();
     if (record.slackChannelId && rooms) {
       await rooms.archiveRoom(record.slackChannelId, { archiveSlackChannel: record.origin === 'crewly' });
@@ -563,16 +593,30 @@ export class CrewlyChannelService {
     return this.refreshing;
   }
 
-  private requireRecord(ref: string): CrewlyChannelRecord {
+  /** The saved Slack channel prefix; empty while Slack is not set up. */
+  private async channelPrefix(): Promise<string> {
+    return (await this.deps.getRooms()?.getSettings())?.channelPrefix ?? '';
+  }
+
+  /** A live channel by id, Slack id or name; a name may leave out the prefix. */
+  private async requireRecord(ref: string): Promise<CrewlyChannelRecord> {
     const key = (ref ?? '').trim();
     const name = key.replace(/^#/, '').toLowerCase();
     const live = (this.store?.channels ?? []).filter((c) => !c.archivedAt);
     const rec =
       live.find((c) => c.id === key) ??
       live.find((c) => c.slackChannelId === key) ??
-      live.find((c) => c.name.toLowerCase() === name);
+      live.find((c) => c.name.toLowerCase() === name) ??
+      (await this.findByUnprefixedName(live, name));
     if (!rec) throw new CrewlyChannelError(`No channel ${key}`, 404, 'not_found');
     return rec;
+  }
+
+  private async findByUnprefixedName(live: CrewlyChannelRecord[], name: string): Promise<CrewlyChannelRecord | undefined> {
+    // Without this guard an empty ref would slug to the fallback name 'team'.
+    if (!/[\p{L}\p{N}]/u.test(name)) return undefined;
+    const prefixed = prefixedChannelName(name, await this.channelPrefix());
+    return live.find((c) => c.name.toLowerCase() === prefixed);
   }
 
   private memberSessions(chatChannelId: string): string[] {

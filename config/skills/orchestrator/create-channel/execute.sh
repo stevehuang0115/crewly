@@ -3,6 +3,7 @@
 # agents to an existing channel.
 #   execute.sh --name <channel> --members "Owen,Growth Team Lead" [--purpose "..."]
 #   execute.sh --add <channel> --members "Owen"
+#   execute.sh --rename <channel> --to <new name>   (only when the owner asks)
 # Names may be display names, session names or "<team> Lead". Agents on other
 # machines join through Crewly Cloud. Prints who was added, who was asked of
 # another machine, and who could not be found — so you can tell the owner.
@@ -10,20 +11,45 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-NAME=""; ADD=""; MEMBERS=""; PURPOSE=""
+NAME=""; ADD=""; MEMBERS=""; PURPOSE=""; RENAME=""; TO=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name|-n) NAME="${2:-}"; shift 2 ;;
     --add|-a) ADD="${2:-}"; shift 2 ;;
     --members|-m) MEMBERS="${2:-}"; shift 2 ;;
     --purpose|-p) PURPOSE="${2:-}"; shift 2 ;;
+    --rename) RENAME="${2:-}"; shift 2 ;;
+    --to) TO="${2:-}"; shift 2 ;;
     --help|-h)
       echo 'Usage: bash execute.sh --name <channel> --members "Owen,Growth Team Lead" [--purpose "..."]'
       echo '       bash execute.sh --add <existing channel> --members "Owen"'
+      echo '       bash execute.sh --rename <existing channel> --to <new name>'
       exit 0 ;;
     *) shift ;;
   esac
 done
+
+if [ -n "$RENAME" ] || [ -n "$TO" ]; then
+  if [ -z "$RENAME" ] || [ -z "$TO" ]; then
+    echo "Error: --rename <existing channel> and --to <new name> are both required" >&2
+    exit 1
+  fi
+  REF=$(jq -rn --arg v "${RENAME#\#}" '$v|@uri')
+  BODY=$(jq -n -c --arg name "$TO" '{name: $name}')
+  if [ "${CREWLY_SKILL_DRY_RUN:-}" = "1" ]; then
+    echo "PATCH /channels/$REF $BODY"
+    exit 0
+  fi
+  if [ -n "${CREWLY_SKILL_FAKE_RESPONSE:-}" ]; then
+    RAW="$CREWLY_SKILL_FAKE_RESPONSE"
+  else
+    RAW=$(api_call PATCH "/channels/$REF" "$BODY")
+  fi
+  printf '%s' "$RAW" | jq -r '
+    if .success == true then "Channel renamed to #\(.data.name)"
+    else "ERROR: \(.message // .error // "request failed")" end'
+  exit 0
+fi
 
 if [ -z "$MEMBERS" ] || { [ -z "$NAME" ] && [ -z "$ADD" ]; }; then
   echo "Error: --members and one of --name (new channel) or --add (existing channel) are required" >&2

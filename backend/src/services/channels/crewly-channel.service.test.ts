@@ -13,7 +13,7 @@ import { EventEmitter } from 'events';
 import * as os from 'os';
 import * as path from 'path';
 import { promises as fs } from 'fs';
-import { CrewlyChannelService, CrewlyChannelError, agentsFromTeams, mentionsName, type CrewlyChannelChatApi } from './crewly-channel.service.js';
+import { CrewlyChannelService, CrewlyChannelError, agentsFromTeams, mentionsName, prefixedChannelName, type CrewlyChannelChatApi } from './crewly-channel.service.js';
 import { SlackTeamChannelService, type TeamChannelChatApi, type TeamChannelSlackApi } from '../slack/slack-team-channel.service.js';
 import type { Team, TeamMember } from '../../types/index.js';
 import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
@@ -217,6 +217,66 @@ describe('agentsFromTeams', () => {
   it('lists every member once with its team and skips archived teams', () => {
     const agents = agentsFromTeams([...TEAMS, { ...TEAMS[1], id: 't-old', archived: true } as Team]);
     expect(agents.map((a) => `${a.sessionName}@${a.teamName}`)).toEqual(['research-ella@Research', 'research-iris@Research', 'eng-atlas@Engineering']);
+  });
+});
+
+describe('prefixedChannelName', () => {
+  it.each([
+    ['ce-posts', 'mini-', 'mini-ce-posts'],
+    ['CE Posts', 'Mini', 'mini-ce-posts'],
+    ['mini-ce-posts', 'mini-', 'mini-ce-posts'],
+    ['Mini CE Posts', 'mini-', 'mini-ce-posts'],
+    ['minimal', 'mini-', 'mini-minimal'],
+    ['crew_posts', 'crew_', 'crew_posts'],
+    ['ce-posts', '', 'ce-posts'],
+    ['ce-posts', ' -- ', 'ce-posts'],
+  ])('%j with prefix %j is %j', (name, prefix, expected) => {
+    expect(prefixedChannelName(name, prefix)).toBe(expected);
+  });
+});
+
+describe('CrewlyChannelService — machine channel prefix', () => {
+  const setPrefix = (channelPrefix: string) => rooms!.updateSettings({ channelPrefix });
+
+  it('creates the Slack channel with the saved prefix, once', async () => {
+    await setPrefix('mini-');
+    const a = await service.create({ name: 'ce-posts', memberSessions: ['research-ella'] });
+    const b = await service.create({ name: 'mini-ce-immigration', memberSessions: ['research-ella'] });
+    expect(slack.created).toEqual(['mini-ce-posts', 'mini-ce-immigration']);
+    expect([a.name, b.name]).toEqual(['mini-ce-posts', 'mini-ce-immigration']);
+  });
+
+  it('finds a prefixed channel by the name without it; an empty ref matches nothing', async () => {
+    await setPrefix('mini-');
+    const ch = await service.create({ name: 'ce-posts', memberSessions: ['research-ella'] });
+    for (const ref of ['ce-posts', '#CE-Posts', 'CE Posts', 'mini-ce-posts']) expect((await service.get(ref)).id).toBe(ch.id);
+    await service.create({ name: 'team', memberSessions: ['research-ella'] });
+    await expect(service.get('#')).rejects.toMatchObject({ httpStatus: 404 });
+  });
+
+  it('does not open a prefixed twin of an older channel; rename adds the prefix', async () => {
+    const old = await service.create({ name: 'ce-posts', memberSessions: ['research-ella'] });
+    await setPrefix('mini-');
+    // Saving the prefix leaves ad-hoc channels alone: they change only on rename.
+    expect((await service.get(old.id)).name).toBe('ce-posts');
+    await expect(service.create({ name: 'ce-posts', memberSessions: ['eng-atlas'] })).rejects.toMatchObject({ httpStatus: 409 });
+    expect(slack.created).toEqual(['ce-posts']);
+    const renamed = await service.rename('ce-posts', 'ce-posts');
+    expect(renamed.name).toBe('mini-ce-posts');
+    expect(slack.renamed).toEqual([['CNEW1', 'mini-ce-posts']]);
+    await expect(service.create({ name: 'ce-posts', memberSessions: ['eng-atlas'] })).rejects.toMatchObject({ httpStatus: 409 });
+  });
+
+  it('prefixes a channel made before Slack was set up when it is linked', async () => {
+    const connected = rooms;
+    rooms = null;
+    const ch = await service.create({ name: 'brief', memberSessions: ['research-ella'] });
+    expect(ch.name).toBe('brief');
+    rooms = connected;
+    await setPrefix('mini-');
+    expect(await service.linkUnlinked()).toEqual([ch.id]);
+    expect(slack.created).toEqual(['mini-brief']);
+    expect((await service.get('brief')).name).toBe('mini-brief');
   });
 });
 

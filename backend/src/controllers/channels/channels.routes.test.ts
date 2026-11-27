@@ -103,6 +103,15 @@ describe('/api/channels', () => {
       expect(compose.compose).toHaveBeenCalledWith({ name: 'x', channel: undefined, purpose: undefined, members: ['Owen'] });
     });
 
+    it('lets a verified orchestrator rename, and refuses every other caller', async () => {
+      const send = (headers: Record<string, string>) => request(real).patch('/api/channels/huddle-1').set(headers).send({ name: 'n' });
+      expect((await send(agentAuthHeaders('eng-atlas'))).status).toBe(403);
+      expect((await send({ 'X-Agent-Session': 'crewly-orc' })).status).toBe(403);
+      expect(service.rename).not.toHaveBeenCalled();
+      expect((await send(agentAuthHeaders('crewly-orc'))).status).toBe(200);
+      expect(service.rename).toHaveBeenCalledWith('huddle-1', 'n');
+    });
+
     it('still refuses every other agent, and the orc on other mutations', async () => {
       const atlas = agentAuthHeaders('eng-atlas');
       expect((await request(real).post('/api/channels').set(atlas).send({ name: 'x', memberSessions: ['a'] })).status).toBe(403);
@@ -113,7 +122,6 @@ describe('/api/channels', () => {
       const orc = agentAuthHeaders('crewly-orc');
       expect((await request(real).delete('/api/channels/huddle-1/members/a').set(orc)).status).toBe(403);
       expect((await request(real).post('/api/channels/huddle-1/archive').set(orc)).status).toBe(403);
-      expect((await request(real).patch('/api/channels/huddle-1').set(orc).send({ name: 'n' })).status).toBe(403);
     });
   });
 });
