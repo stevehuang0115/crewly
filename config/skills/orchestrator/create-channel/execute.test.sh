@@ -25,6 +25,12 @@ assert_contains "missing members is an error" "required" "$out"
 out=$(bash "$SCRIPT_DIR/execute.sh" --members A 2>&1 || true)
 assert_contains "missing name/add is an error" "required" "$out"
 
+assert_eq "rename request, ref encoded" \
+  'PATCH /channels/ce%20posts {"name":"ce-posts"}' \
+  "$(bash "$SCRIPT_DIR/execute.sh" --rename "#ce posts" --to ce-posts)"
+out=$(bash "$SCRIPT_DIR/execute.sh" --rename ce-posts 2>&1 || true)
+assert_contains "rename without --to is an error" "both required" "$out"
+
 # Formatter: a canned backend response goes through the real jq program.
 unset CREWLY_SKILL_DRY_RUN
 fmt() { CREWLY_SKILL_FAKE_RESPONSE="$1" bash "$SCRIPT_DIR/execute.sh" --name x --members A 2>&1 || true; }
@@ -43,6 +49,11 @@ assert_eq "updated, Crewly-only, nothing else" "Channel #iris updated (Crewly-on
 assert_eq "error response" "ERROR: only the orchestrator may do this (only the orchestrator and the owner may do this)" \
   "$(fmt '{"success":false,"error":"owner_only","message":"only the orchestrator may do this"}')"
 assert_eq "error without message" "ERROR: boom" "$(fmt '{"success":false,"error":"boom"}')"
+
+assert_eq "renamed line shows the applied name" "Channel renamed to #mini-ce-posts" \
+  "$(CREWLY_SKILL_FAKE_RESPONSE='{"success":true,"data":{"name":"mini-ce-posts"}}' bash "$SCRIPT_DIR/execute.sh" --rename ce-posts --to ce-posts)"
+assert_eq "rename error" "ERROR: #x already exists" \
+  "$(CREWLY_SKILL_FAKE_RESPONSE='{"success":false,"error":"conflict","message":"#x already exists"}' bash "$SCRIPT_DIR/execute.sh" --rename a --to x)"
 
 echo "=== Results: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]

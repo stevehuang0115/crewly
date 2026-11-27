@@ -12,7 +12,7 @@
  * - `POST   /api/channels/:ref/archive`          — archive
  *
  * Reading is open to agents (to find a channel to post in); every change is
- * the owner's alone — except create / add-member / compose, which the
+ * the owner's alone — except create / rename / add-member / compose, which the
  * orchestrator may also do (it acts for an owner who asks from the phone).
  *
  * @module controllers/channels/channels.routes
@@ -29,11 +29,11 @@ const OWNER_ONLY_CHANNELS = Object.freeze({
   message: 'Only the owner can create or change channels (Chat › Channels).',
 });
 
-/** What any other agent hears when it tries to open or extend a channel. */
+/** What any other agent hears when it tries to open, rename or extend a channel. */
 const OWNER_OR_ORC_CHANNELS = Object.freeze({
   success: false,
   error: 'owner_only',
-  message: 'Only the owner (or the orchestrator on the owner\'s behalf) can create channels or add members.',
+  message: 'Only the owner (or the orchestrator on the owner\'s behalf) can create or rename channels or add members.',
 });
 
 /**
@@ -68,8 +68,9 @@ export function createChannelsRouter(
     (ownerOnly: boolean | 'owner-or-orc', fn: (service: CrewlyChannelService, req: Request, res: Response) => Promise<void>) =>
     async (req: Request, res: Response): Promise<void> => {
       // 2026-10-13: the owner asks the orchestrator (from the phone) to open a
-      // channel; the orc must be able to, so create / add-member admit it. Every
-      // other change stays the owner's alone.
+      // channel; the orc must be able to, so create / add-member admit it, and
+      // rename (2026-11-27, to add the channel prefix when the owner asks).
+      // Every other change stays the owner's alone.
       if (ownerOnly === 'owner-or-orc') {
         if (rejectNonOwnerOrOrchestrator(req, res, OWNER_OR_ORC_CHANNELS)) return;
       } else if (ownerOnly && rejectNonOwner(req, res, OWNER_ONLY_CHANNELS)) return;
@@ -142,7 +143,7 @@ export function createChannelsRouter(
 
   router.patch(
     '/:ref',
-    withService(true, async (service, req, res) => {
+    withService('owner-or-orc', async (service, req, res) => {
       const name = typeof req.body?.name === 'string' ? req.body.name : '';
       res.json({ success: true, data: await service.rename(req.params.ref, name) });
     }),
