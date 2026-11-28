@@ -39,6 +39,8 @@ import { runtimeLabel } from '../runtime-fallback/runtime-fallback.types.js';
 import { MoveJournal } from './team-move-journal.js';
 import { checkTools, hasRoomFor } from './team-move-preflight.js';
 import type {
+  SkippedFile,
+  TeamMoveMemoryReport,
   CarryIndex,
   ImportStep,
   PackageProject,
@@ -194,6 +196,36 @@ interface ProjectMapping {
   to: string;
   /** The project already existed here under this id. */
   existing: boolean;
+}
+
+/**
+ * Name the memory files a package left behind. A count alone hides that a
+ * whole memory store is missing: the machine then starts an empty one, which
+ * reads like a project that never had any.
+ *
+ * @param project - A project of the package
+ * @returns The files named (every memory store, other memory files up to the cap) and the sentence, or null when no memory file was left out
+ */
+export function leftOutMemory(project: PackageProject): { files: SkippedFile[]; warning: string } | null {
+  const byPath = (a: SkippedFile, b: SkippedFile): number => a.path.localeCompare(b.path);
+  const stores = project.skipped.filter((f) => f.path.startsWith(C.MEMORY_STORE_PREFIX)).sort(byPath);
+  const others = project.skipped.filter((f) => C.OTHER_MEMORY_PREFIXES.some((prefix) => f.path.startsWith(prefix))).sort(byPath);
+  const files = [...stores, ...others.slice(0, C.MEMORY_WARNING_MAX_FILES)];
+  if (files.length === 0) return null;
+  const names = files.map((f) => `${f.path} (${f.reason.replace('_', ' ')}, ${Math.ceil(f.bytes / 1024)} KB)`);
+  const rest = stores.length + others.length - files.length;
+  const warning = `${project.name}: MEMORY NOT MOVED. This machine does not have: ${names.join(', ')}${rest > 0 ? `, and ${rest} more` : ''}. Keep ${sourceDataDir(project)} until you have copied them over (for "secret scan", remove the credential first).`;
+  return { files, warning };
+}
+
+/**
+ * Where a project's Crewly data stays on the source, for a sentence.
+ *
+ * @param project - A project of the package
+ * @returns The folder, in words
+ */
+function sourceDataDir(project: PackageProject): string {
+  return project.dataDir === 'home' ? "the source's Crewly home" : `${project.sourcePath}/${project.dataDir} on the source`;
 }
 
 /** The importer. */
@@ -535,6 +567,7 @@ export class TeamMoveImporter {
     rewrites: ReadonlyArray<readonly [string, string]>,
     tag: string,
     skip: (rel: string) => boolean = () => false,
+    isMasked: (rel: string) => boolean = () => false,
   ): Promise<CopyCounts> {
     const counts: CopyCounts = { written: 0, unchanged: 0, replaced: 0, rewritten: 0 };
     for await (const f of walkFiles(srcRoot)) {
@@ -558,6 +591,12 @@ export class TeamMoveImporter {
       if (current) {
         if (createHash('sha256').update(current).digest('hex') === createHash('sha256').update(content).digest('hex')) {
           counts.unchanged += 1;
+          continue;
+        }
+        // A masked copy is less than the original: it never takes the place of a file this machine has.
+        if (isMasked(f.rel)) {
+          await writeFileAtomic(`${dest}${C.MASKED_COPY_SUFFIX}${tag}`, content);
+          counts.written += 1;
           continue;
         }
         const backup = `${dest}.pre-move-${tag}`;
@@ -598,7 +637,8 @@ export class TeamMoveImporter {
             return owned;
           }
         : undefined;
-      add(await this.copyTree(src, dest, rewrites, tag, skip));
+      const masked = new Set((p.redacted ?? []).map((r) => r.path));
+      add(await this.copyTree(src, dest, rewrites, tag, skip, (rel) => masked.has(rel)));
       ticketsKept += kept;
       // Working files of a project that is not a git repository: copied as they are (no path rewriting in user files).
       if (p.work) add(await this.copyTree(path.join(staging, 'projects', p.id, 'files'), mapping.to, [], tag));
@@ -864,6 +904,40 @@ export class TeamMoveImporter {
   // report
   // -------------------------------------------------------------------------
 
+  /**
+   * What of the projects' memory did not arrive as it was on the source. Read
+   * from the manifest and the disk, so a resumed import reports the same.
+   *
+   * @param manifest - The package
+   * @param mappings - Where its projects were put
+   * @returns The report, or undefined when all memory arrived unchanged
+   */
+  private async memoryReport(manifest: TeamMoveManifest, mappings: ProjectMapping[]): Promise<TeamMoveMemoryReport | undefined> {
+    const report: TeamMoveMemoryReport = { notMoved: [], masked: [], warnings: [] };
+    for (const project of manifest.projects) {
+      const left = leftOutMemory(project);
+      if (left) {
+        report.notMoved.push(...left.files.map((f) => ({ project: project.name, path: f.path, reason: f.reason, bytes: f.bytes })));
+        report.warnings.push(left.warning);
+      }
+      const redacted = project.redacted ?? [];
+      if (redacted.length === 0) continue;
+      const to = mappings.find((m) => m.projectId === project.id)?.to;
+      const kept: string[] = [];
+      for (const file of redacted) {
+        const beside = to ? `${path.join(this.projectDataDir(project, to), ...file.path.split('/'))}${C.MASKED_COPY_SUFFIX}${manifest.moveId.slice(0, 8)}` : null;
+        const savedAs = beside && (await pathExists(beside)) ? beside : undefined;
+        if (savedAs) kept.push(savedAs);
+        report.masked.push({ project: project.name, path: file.path, redactions: file.redactions, ...(savedAs ? { savedAs } : {}) });
+      }
+      report.warnings.push(
+        `${project.name}: MEMORY MASKED. Credentials were replaced by [REDACTED] in the moved copy of: ${redacted.map((f) => `${f.path} (${f.redactions})`).join(', ')}. The originals stay unchanged in ${sourceDataDir(project)}.` +
+          (kept.length > 0 ? ` This machine kept its own version of ${kept.length === 1 ? 'one file' : `${kept.length} files`}; merge by hand from: ${kept.join(', ')}.` : ''),
+      );
+    }
+    return report.warnings.length > 0 ? report : undefined;
+  }
+
   private async buildReport(
     manifest: TeamMoveManifest,
     mappings: ProjectMapping[],
@@ -913,6 +987,7 @@ export class TeamMoveImporter {
       });
     }
 
+    const memory = await this.memoryReport(manifest, mappings);
     const warnings: string[] = [...repoOutcome.warnings];
     if (started.requested && !started.ok) {
       warnings.unshift(`The team did not start on ${machine}${started.error ? `: ${started.error}` : ''}${started.attempts && started.attempts > 1 ? ` (tried ${started.attempts} times over a few minutes)` : ''}. Its data is here; start it from the Teams page once the items above are fixed.`);
@@ -929,6 +1004,9 @@ export class TeamMoveImporter {
     if ((data['ticketsKept'] ?? 0) > 0) warnings.push(`${data['ticketsKept']} ticket(s) from the source were not copied: this machine already has the project and keeps its own ticket backlog.`);
     if ((data['filesReplaced'] ?? 0) > 0) warnings.push(`${data['filesReplaced']} existing file(s) were replaced by the moved version; the old copies are next to them as *.pre-move-*.`);
 
+    // First, so lost or changed memory is not below the routine notes.
+    if (memory) warnings.unshift(...memory.warnings);
+
     const moved: Record<string, number> = { ...manifest.counts };
     for (const [k, v] of Object.entries(records)) if (typeof v === 'number') moved[k] = v;
     moved['filesWritten'] = data['filesWritten'] ?? 0;
@@ -944,6 +1022,7 @@ export class TeamMoveImporter {
       started,
       warnings,
       notMoved: manifest.notMoved,
+      ...(memory ? { memory } : {}),
       crewlyVersion: this.deps.crewlyVersion,
       importedAt: this.now(),
     };

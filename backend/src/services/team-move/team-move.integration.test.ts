@@ -387,6 +387,47 @@ describe('team move between two homes', () => {
     expect(ok.result.manifest.secretScan.excludedFiles).toBe(1);
   });
 
+  it('masks a key in a memory store and moves the store, instead of stopping or leaving it behind', async () => {
+    const knowledge = path.join(fx.projectDir, '.crewly', 'knowledge');
+    await fs.mkdir(knowledge, { recursive: true });
+    const gotchas = JSON.stringify([{ id: 'g1', problem: `post failed with ${FAKE_SLACK}` }, { id: 'g2', problem: 'plain text' }]);
+    await fs.writeFile(path.join(knowledge, 'gotchas.json'), gotchas);
+    await fs.writeFile(path.join(knowledge, 'learnings.md'), `## note\nused ${FAKE_SLACK} once\n`);
+
+    const { key, enc, file, result } = await exportAndEncrypt();
+
+    const project = result.manifest.projects[0]!;
+    expect(project.skipped).toEqual([]);
+    expect(project.redacted!.map((r) => r.path).sort()).toEqual(['knowledge/gotchas.json', 'knowledge/learnings.md']);
+    expect(result.manifest.secretScan.excludedFiles).toBe(0);
+    for (const name of ['gotchas.json', 'learnings.md']) {
+      const packed = await fs.readFile(path.join(result.staging.root, 'projects', project.id, 'data', 'knowledge', name), 'utf8');
+      expect(packed).not.toContain(FAKE_SLACK);
+      expect(packed).toContain('[REDACTED');
+    }
+    // The source's own store is not touched.
+    expect(await fs.readFile(path.join(knowledge, 'gotchas.json'), 'utf8')).toBe(gotchas);
+
+    const report = await importer().run({ moveId: MOVE_ID, packageFile: file, privateKey: key.privateKey, expectedSha256: enc.sha256 });
+    expect(report.memory!.masked.map((m) => m.path).sort()).toEqual(['knowledge/gotchas.json', 'knowledge/learnings.md']);
+    const placed = (await targetStorage.getProjects()).find((p) => p.id === project.id)!;
+    const arrived = JSON.parse(await fs.readFile(path.join(placed.path, '.crewly', 'knowledge', 'gotchas.json'), 'utf8')) as Array<{ id: string; problem: string }>;
+    expect(arrived.map((g) => g.id)).toEqual(['g1', 'g2']);
+    expect(arrived[1]!.problem).toBe('plain text');
+  });
+
+  it('does not ask for a memory store to be cleaned before a move, only for the other flagged files', async () => {
+    await fs.mkdir(path.join(fx.projectDir, '.crewly', 'knowledge'), { recursive: true });
+    await fs.writeFile(path.join(fx.projectDir, '.crewly', 'knowledge', 'gotchas.json'), JSON.stringify([{ id: 'g1', problem: FAKE_SLACK }]));
+    await fs.writeFile(path.join(fx.projectDir, '.crewly', 'findings', 'leak.md'), `token: ${FAKE_SLACK}\n`);
+
+    const report = await exporter().preflight({ teamId: F.teamId, stagingDir: path.join(fx.root, 'preflight'), force: true });
+
+    const files = report.scan!.findings.map((f) => f.file);
+    expect(files.some((f) => f.endsWith('findings/leak.md'))).toBe(true);
+    expect(files.some((f) => f.includes('knowledge/'))).toBe(false);
+  });
+
   it('masks a key pasted into a chat message in the package copy, so skipFlagged still passes and the channel moves', async () => {
     const db = openChatDatabase({ dbPath: path.join(fx.home, 'chat.db'), skipIntegrityCheck: true });
     try {

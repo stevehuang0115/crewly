@@ -48,6 +48,7 @@ import { collectCarry, describeLeft, resolveCarryLimits, type CarryLimits, type 
 import { createBundle, estimateRepoBytes, formatBytes, resolveBundleLimits, type BundleLimits, type BundleMode } from './team-move-bundle.js';
 import { describeBlockingRepos, displayRemote, inspectRepo as defaultInspectRepo, readRepoChanges, sanitizeRemote } from './team-move-git.js';
 import {
+  memoryStoreOf,
   TeamMoveSecretScanError,
   isRedactableFinding,
   isSkippableFinding,
@@ -495,7 +496,8 @@ export class TeamMoveExporter {
       const staging = path.resolve(input.stagingDir);
       try {
         const result = await this.export({ teamId: team.id, moveId: `preflight-${Date.now()}`, stagingDir: staging, allowDirty: true, carryChanges: !!input.carryChanges, dryRun: true, unreachableRemotes: input.unreachableRemotes });
-        const findings: PreflightFinding[] = result.scanFindings.slice(0, C.PREFLIGHT_MAX_FINDINGS).map((f) => ({ file: f.label, matches: f.matches, removable: f.removable }));
+        // A memory store is masked by the move, so it is nothing to fix first: listing it would send an agent to edit the store.
+        const findings: PreflightFinding[] = result.scanFindings.filter((f) => memoryStoreOf(f.path) === null).slice(0, C.PREFLIGHT_MAX_FINDINGS).map((f) => ({ file: f.label, matches: f.matches, removable: f.removable }));
         heavy = {
           key,
           at: Date.now(),
@@ -647,9 +649,9 @@ export class TeamMoveExporter {
     const known = this.deps.knownSecrets ? await this.deps.knownSecrets() : collectSecretEnvValues(process.env);
     // Bundles are not text-scanned: they are binary packs (history that already lives in git), encrypted for the target.
     const scan = await scanStaging(staging, staging.files(), known, (p) => p.endsWith(`/${C.BUNDLE_FILE}`));
-    // Conversation transcripts and the JSON records (chat channels, tasks,
-    // decisions) are redacted in the package copy rather than
-    // stopping the move: the member resumes on the target with the keys it
+    // Conversation transcripts, the JSON records (chat channels, tasks,
+    // decisions) and the projects' memory stores are redacted in the package
+    // copy rather than stopping the move or being left out: the member resumes on the target with the keys it
     // had read masked. A transcript that still matches afterwards stays a
     // finding. Never on a dry run (the preview reports what was found).
     let redactedFiles = 0;
@@ -660,10 +662,21 @@ export class TeamMoveExporter {
           stillFlagged.push(finding);
           continue;
         }
-        const { residual } = await (isRedactableRecord(finding.path) ? redactRecordInStaging : redactTranscriptInStaging)(staging, finding.path, known);
+        const store = memoryStoreOf(finding.path);
+        const bytesBefore = staging.files().find((e) => e.path === finding.path)?.bytes ?? 0;
+        const wholeFile = isRedactableRecord(finding.path) || store !== null;
+        const { entry, redactions, residual } = await (wholeFile ? redactRecordInStaging : redactTranscriptInStaging)(staging, finding.path, known);
         // Judged on the parsed strings: the raw JSON text of a masked quoted value still looks like a secret.
         if (residual > 0) stillFlagged.push({ path: finding.path, matches: residual });
-        else redactedFiles += 1;
+        else {
+          redactedFiles += 1;
+          const project = store ? packageProjects.find((p) => p.id === store.projectId) : undefined;
+          if (project && store) {
+            // Named in the manifest so the target says which memory arrived masked.
+            project.redacted = [...(project.redacted ?? []), { path: store.path, redactions }];
+            project.bytes += entry.bytes - bytesBefore;
+          }
+        }
       }
       scan.findings = stillFlagged;
     }

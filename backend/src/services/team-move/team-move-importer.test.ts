@@ -7,8 +7,8 @@ import type { Team } from '../../types/index.js';
 import { generateTargetKeyPair } from './team-move-crypto.js';
 import { buildEncryptedPackage } from './team-move-exporter.js';
 import { StagingArea } from './team-move-fs.js';
-import { TeamMoveImportError, TeamMoveImporter, isTargetOwnedProjectFile, projectsRoot, type ImportDeps } from './team-move-importer.js';
-import type { ImportProgress, TeamMoveManifest } from './team-move.types.js';
+import { TeamMoveImportError, TeamMoveImporter, isTargetOwnedProjectFile, leftOutMemory, projectsRoot, type ImportDeps } from './team-move-importer.js';
+import type { ImportProgress, PackageProject, TeamMoveManifest } from './team-move.types.js';
 
 let counter = 0;
 
@@ -211,6 +211,80 @@ describe('TeamMoveImporter', () => {
     const [project] = await storage.getProjects();
     expect(await fs.readFile(path.join(project!.path, '.crewly', 'tickets', 'T-1.md'), 'utf8')).toBe(`ticket at ${project!.path}`);
     expect(await fs.readFile(path.join(project!.path, '.crewly', 'tickets', '.counter.json'), 'utf8')).toBe('{"next":3}');
+  });
+
+  it('names every memory file the package left behind, in the report and first among the warnings', async () => {
+    const report = await run(await pack((m) => void (m.projects[0]!.skipped = [
+      { path: 'wiki/page.md', bytes: 10, reason: 'size_cap' },
+      { path: 'findings/notes.md', bytes: 10, reason: 'size_cap' },
+      { path: 'knowledge/gotchas.json', bytes: 4096, reason: 'secret_scan' },
+    ])));
+    expect(report.warnings[0]).toBe(
+      'P One: MEMORY NOT MOVED. This machine does not have: knowledge/gotchas.json (secret scan, 4 KB), wiki/page.md (size cap, 1 KB). ' +
+        'Keep /src/p/.crewly on the source until you have copied them over (for "secret scan", remove the credential first).',
+    );
+    expect(report.warnings.join(' ')).toContain('3 project file(s) were left out');
+    expect(report.memory).toEqual({
+      notMoved: [
+        { project: 'P One', path: 'knowledge/gotchas.json', reason: 'secret_scan', bytes: 4096 },
+        { project: 'P One', path: 'wiki/page.md', reason: 'size_cap', bytes: 10 },
+      ],
+      masked: [],
+      warnings: [report.warnings[0]],
+    });
+  });
+
+  it('names every memory store however many there are, and only caps other memory files', () => {
+    const project = (paths: string[]) => ({ name: 'P', sourcePath: '/s', dataDir: '.crewly', skipped: paths.map((p) => ({ path: p, bytes: 1, reason: 'size_cap' as const })) }) as unknown as PackageProject;
+    expect(leftOutMemory(project(['findings/a.md', 'specs/b.md']))).toBeNull();
+    const stores = Array.from({ length: 14 }, (_, i) => `knowledge/${String(i).padStart(2, '0')}.json`);
+    const left = leftOutMemory(project([...Array.from({ length: 12 }, (_, i) => `wiki/${i}.md`), ...stores]))!;
+    for (const store of stores) expect(left.warning).toContain(store);
+    expect(left.files).toHaveLength(stores.length + 10);
+    expect(left.warning).toContain('and 2 more');
+  });
+
+  it('says nothing about memory when it all arrived', async () => {
+    expect((await run(await pack())).memory).toBeUndefined();
+  });
+
+  describe('a memory store that arrived masked', () => {
+    const MASKED = '[{"id":"a","problem":"[REDACTED]"}]';
+    const maskedPack = () =>
+      pack(async (m, s) => {
+        await s.writeText('projects/p1/data/knowledge/gotchas.json', MASKED);
+        m.files = s.files();
+        m.projects[0]!.redacted = [{ path: 'knowledge/gotchas.json', redactions: 2 }];
+      });
+
+    it('is put in place and named when this machine had none', async () => {
+      const report = await run(await maskedPack());
+      const [project] = await storage.getProjects();
+      expect(await fs.readFile(path.join(project!.path, '.crewly', 'knowledge', 'gotchas.json'), 'utf8')).toBe(MASKED);
+      expect(report.memory!.masked).toEqual([{ project: 'P One', path: 'knowledge/gotchas.json', redactions: 2 }]);
+      expect(report.warnings[0]).toContain('MEMORY MASKED');
+      expect(report.warnings[0]).toContain('knowledge/gotchas.json (2)');
+    });
+
+    it('never replaces the store this machine already has', async () => {
+      const first = await run(await pack());
+      const [project] = await storage.getProjects();
+      const store = path.join(project!.path, '.crewly', 'knowledge', 'gotchas.json');
+      await fs.mkdir(path.dirname(store), { recursive: true });
+      await fs.writeFile(store, '[{"id":"mine"}]');
+      expect(first.memory).toBeUndefined();
+      // The team left again, then comes back with a masked copy.
+      const [team] = await storage.getTeams();
+      await storage.saveTeam({ ...team!, moveArchive: { moveId: 'm' } } as unknown as Team);
+
+      const report = await run(await maskedPack());
+
+      expect(await fs.readFile(store, 'utf8')).toBe('[{"id":"mine"}]');
+      const savedAs = report.memory!.masked[0]!.savedAs!;
+      expect(savedAs.startsWith(`${store}.moved-masked-`)).toBe(true);
+      expect(await fs.readFile(savedAs, 'utf8')).toBe(MASKED);
+      expect(report.warnings[0]).toContain('This machine kept its own version');
+    });
   });
 
   it('reports repositories it could not clone and non-git folders separately', async () => {

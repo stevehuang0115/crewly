@@ -149,6 +149,7 @@ describe('TeamMoveDriver protocol', () => {
   let stopped: string[];
   let testedRemotes: string[];
   let denyGit: boolean;
+  let told: Array<{ machine: string; session: string; text: string }>;
 
   beforeEach(async () => {
     fx = await buildSourceFixture();
@@ -162,6 +163,7 @@ describe('TeamMoveDriver protocol', () => {
     stopped = [];
     testedRemotes = [];
     denyGit = false;
+    told = [];
 
     const poolFile = (home: string): string => path.join(home, 'task-pool', 'pool.json');
     const poolAdd = (home: string) => async (items: Array<{ id: string }>): Promise<number> => {
@@ -224,6 +226,8 @@ describe('TeamMoveDriver protocol', () => {
             runtimeLogins: async () => ({ 'claude-code': true }),
           }),
         preflight,
+        sendToAgent: async (session, text) => (told.push({ machine: instanceId, session, text }), true),
+        getTeams: () => storage.getTeams(),
         isTeamIdle: async () => true,
         sleep: async () => undefined,
       });
@@ -272,6 +276,31 @@ describe('TeamMoveDriver protocol', () => {
     // The importing move told Cloud what it was doing, and the status order did not change.
     expect(cloud.progress.length).toBeGreaterThanOrEqual(1);
     expect(cloud.progress[0]).toMatchObject({ step: 'repos', repo: expect.any(String) });
+  });
+
+  it('tells the orchestrator and the lead when memory arrived masked, and nobody otherwise', async () => {
+    const knowledge = path.join(fx.projectDir, '.crewly', 'knowledge');
+    await fs.mkdir(knowledge, { recursive: true });
+    await fs.writeFile(path.join(knowledge, 'gotchas.json'), JSON.stringify([{ id: 'g1', problem: `OPENAI_API_KEY=${FAKE_OPENAI}` }]));
+
+    await source.startMove({ teamId: F.teamId, targetInstanceId: 'dst' });
+    await settle();
+
+    expect(cloud.view!.status).toBe('completed');
+    const notices = told.filter((t) => t.text.includes('project memory'));
+    expect(notices.map((n) => n.machine)).toEqual(['dst', 'dst']);
+    expect(notices[0]!.session).toBe('crewly-orc');
+    const [team] = await targetStorage.getTeams();
+    expect(team!.members.map((m) => m.sessionName)).toContain(notices[1]!.session);
+    expect(notices[0]!.text).toContain('knowledge/gotchas.json');
+    expect(notices[0]!.text).not.toContain(FAKE_OPENAI);
+  });
+
+  it('sends no memory notice for a move that carried all memory', async () => {
+    await source.startMove({ teamId: F.teamId, targetInstanceId: 'dst' });
+    await settle();
+    expect(cloud.view!.status).toBe('completed');
+    expect(told.filter((t) => t.text.includes('project memory'))).toEqual([]);
   });
 
   it('has the target test the repository remotes and carries the ones it cannot read in the package', async () => {

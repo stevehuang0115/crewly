@@ -1,5 +1,5 @@
 import type { Team } from '../../types/index.js';
-import { buildAskTeamMessage, pickAskRecipient, repoNeedsPush } from './team-move-ask.js';
+import { buildAskTeamMessage, pickAskRecipient, repoNeedsPush, buildMemoryNotice } from './team-move-ask.js';
 import type { RepoPreflight } from './team-move.types.js';
 
 const repo = (over: Partial<RepoPreflight> = {}): RepoPreflight => ({
@@ -73,5 +73,13 @@ describe('team-move-ask', () => {
     } as unknown as Team;
     expect(pickAskRecipient(team)?.sessionName).toBe('edu-lena');
     expect(pickAskRecipient({ ...team, members: [] } as Team)).toBeNull();
+  });
+});
+
+describe('buildMemoryNotice', () => {
+  it('names the team and carries every memory sentence', () => {
+    const text = buildMemoryNotice('Movers', ['P: MEMORY NOT MOVED. one', 'P: MEMORY MASKED. two']);
+    expect(text).toContain('Team "Movers"');
+    expect(text).toContain('- P: MEMORY NOT MOVED. one\n- P: MEMORY MASKED. two');
   });
 });

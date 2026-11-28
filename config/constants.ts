@@ -892,6 +892,14 @@ export const MEMORY_CONSTANTS = {
     ] as const,
   },
 
+  /** Copies the guarded entry-store writer keeps beside a knowledge store. */
+  STORE_BACKUP: {
+    /** The version before the last write */
+    PREVIOUS_SUFFIX: '.bak',
+    /** Followed by a timestamp: the version before a removal of several entries */
+    REMOVAL_SUFFIX: '.before-removal-',
+  },
+
   /**
    * Storage limits to keep memory files performant
    */
