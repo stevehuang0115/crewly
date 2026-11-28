@@ -496,7 +496,8 @@ export class TeamMoveExporter {
       const staging = path.resolve(input.stagingDir);
       try {
         const result = await this.export({ teamId: team.id, moveId: `preflight-${Date.now()}`, stagingDir: staging, allowDirty: true, carryChanges: !!input.carryChanges, dryRun: true, unreachableRemotes: input.unreachableRemotes });
-        const findings: PreflightFinding[] = result.scanFindings.slice(0, C.PREFLIGHT_MAX_FINDINGS).map((f) => ({ file: f.label, matches: f.matches, removable: f.removable }));
+        // A memory store is masked by the move, so it is nothing to fix first: listing it would send an agent to edit the store.
+        const findings: PreflightFinding[] = result.scanFindings.filter((f) => memoryStoreOf(f.path) === null).slice(0, C.PREFLIGHT_MAX_FINDINGS).map((f) => ({ file: f.label, matches: f.matches, removable: f.removable }));
         heavy = {
           key,
           at: Date.now(),
