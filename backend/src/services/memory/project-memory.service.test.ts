@@ -993,5 +993,46 @@ describe('ProjectMemoryService', () => {
       expect(archiveExists).toBe(false);
     });
   });
-});
 
+  describe('stores cannot shrink by accident', () => {
+    const gotcha = (n: number) => ({ title: `Trap ${n}`, problem: `Problem number ${n} ${'x'.repeat(n * 40)}`, solution: `Fix ${n}`, severity: 'medium' as const, discoveredBy: 'tester' });
+    const storeFile = () => path.join(testProjectPath, '.crewly', 'knowledge', 'gotchas.json');
+    const read = async () => JSON.parse(await fs.readFile(storeFile(), 'utf-8')) as Array<{ id: string }>;
+
+    beforeEach(async () => {
+      await service.initializeProject(testProjectPath);
+    });
+
+    it('keeps every entry when several are added at once', async () => {
+      await Promise.all([1, 2, 3, 4, 5].map((n) => service.addGotcha(testProjectPath, gotcha(n))));
+      expect(await read()).toHaveLength(5);
+    });
+
+    it('keeps the version before the last write', async () => {
+      await service.addGotcha(testProjectPath, gotcha(1));
+      await service.addGotcha(testProjectPath, gotcha(2));
+      expect(JSON.parse(await fs.readFile(`${storeFile()}.bak`, 'utf-8'))).toHaveLength(1);
+    });
+
+    it('refuses to save over entries a caller did not load', async () => {
+      await service.addGotcha(testProjectPath, gotcha(1));
+      await service.addGotcha(testProjectPath, gotcha(2));
+      const before = await fs.readFile(storeFile(), 'utf-8');
+      jest.spyOn(service, 'getGotchas').mockResolvedValueOnce([]);
+
+      await expect(service.addGotcha(testProjectPath, gotcha(3))).rejects.toThrow(/would drop 2/);
+
+      expect(await fs.readFile(storeFile(), 'utf-8')).toBe(before);
+    });
+
+    it('never replaces a file during initialisation, even when it cannot see it', async () => {
+      await service.addGotcha(testProjectPath, gotcha(1));
+      const before = await fs.readFile(storeFile(), 'utf-8');
+      jest.spyOn(service as unknown as { fileExists(p: string): Promise<boolean> }, 'fileExists').mockResolvedValue(false);
+
+      await service.initializeProject(testProjectPath);
+
+      expect(await fs.readFile(storeFile(), 'utf-8')).toBe(before);
+    });
+  });
+});

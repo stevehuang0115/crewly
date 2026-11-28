@@ -7,8 +7,8 @@ import type { Team } from '../../types/index.js';
 import { generateTargetKeyPair } from './team-move-crypto.js';
 import { buildEncryptedPackage } from './team-move-exporter.js';
 import { StagingArea } from './team-move-fs.js';
-import { TeamMoveImportError, TeamMoveImporter, isTargetOwnedProjectFile, projectsRoot, type ImportDeps } from './team-move-importer.js';
-import type { ImportProgress, TeamMoveManifest } from './team-move.types.js';
+import { TeamMoveImportError, TeamMoveImporter, isTargetOwnedProjectFile, leftOutMemoryWarning, projectsRoot, type ImportDeps } from './team-move-importer.js';
+import type { ImportProgress, PackageProject, TeamMoveManifest } from './team-move.types.js';
 
 let counter = 0;
 
@@ -211,6 +211,27 @@ describe('TeamMoveImporter', () => {
     const [project] = await storage.getProjects();
     expect(await fs.readFile(path.join(project!.path, '.crewly', 'tickets', 'T-1.md'), 'utf8')).toBe(`ticket at ${project!.path}`);
     expect(await fs.readFile(path.join(project!.path, '.crewly', 'tickets', '.counter.json'), 'utf8')).toBe('{"next":3}');
+  });
+
+  it('names every memory file the package left behind, first among the warnings', async () => {
+    const report = await run(await pack((m) => void (m.projects[0]!.skipped = [
+      { path: 'wiki/page.md', bytes: 10, reason: 'size_cap' },
+      { path: 'findings/notes.md', bytes: 10, reason: 'size_cap' },
+      { path: 'knowledge/gotchas.json', bytes: 4096, reason: 'secret_scan' },
+    ])));
+    expect(report.warnings[0]).toBe(
+      'P One: MEMORY NOT MOVED. This machine does not have: knowledge/gotchas.json (secret scan, 4 KB), wiki/page.md (size cap, 1 KB). ' +
+        'Keep /src/p/.crewly on the source until you have copied them over (for "secret scan", remove the credential first).',
+    );
+    expect(report.warnings.join(' ')).toContain('3 project file(s) were left out');
+  });
+
+  it('adds no memory warning when only other files were left behind, and counts a long list', () => {
+    const project = (paths: string[]) => ({ name: 'P', sourcePath: '/s', dataDir: '.crewly', skipped: paths.map((p) => ({ path: p, bytes: 1, reason: 'size_cap' as const })) }) as unknown as PackageProject;
+    expect(leftOutMemoryWarning(project(['findings/a.md', 'specs/b.md']))).toBeNull();
+    const long = leftOutMemoryWarning(project([...Array.from({ length: 12 }, (_, i) => `wiki/${i}.md`), 'knowledge/x.json']));
+    expect(long).toContain('does not have: knowledge/x.json');
+    expect(long).toContain('and 3 more');
   });
 
   it('reports repositories it could not clone and non-git folders separately', async () => {

@@ -196,6 +196,25 @@ interface ProjectMapping {
   existing: boolean;
 }
 
+/**
+ * Name the memory files a package left behind. A count alone hides that a
+ * whole memory store is missing: the machine then starts an empty one, which
+ * reads like a project that never had any.
+ *
+ * @param project - A project of the package
+ * @returns The warning, or null when no memory file was left out
+ */
+export function leftOutMemoryWarning(project: PackageProject): string | null {
+  const rank = (p: string): number => C.MEMORY_DATA_PREFIXES.findIndex((prefix) => p.startsWith(prefix));
+  // In the order of the prefixes, so a cut list never hides a knowledge store.
+  const memory = project.skipped.filter((f) => rank(f.path) >= 0).sort((a, b) => rank(a.path) - rank(b.path) || a.path.localeCompare(b.path));
+  if (memory.length === 0) return null;
+  const names = memory.slice(0, C.MEMORY_WARNING_MAX_FILES).map((f) => `${f.path} (${f.reason.replace('_', ' ')}, ${Math.ceil(f.bytes / 1024)} KB)`);
+  const more = memory.length > names.length ? `, and ${memory.length - names.length} more` : '';
+  const where = project.dataDir === 'home' ? "the source's Crewly home" : `${project.sourcePath}/${project.dataDir} on the source`;
+  return `${project.name}: MEMORY NOT MOVED. This machine does not have: ${names.join(', ')}${more}. Keep ${where} until you have copied them over (for "secret scan", remove the credential first).`;
+}
+
 /** The importer. */
 export class TeamMoveImporter {
   private readonly home: string;
@@ -919,6 +938,8 @@ export class TeamMoveImporter {
     }
     for (const p of manifest.projects) {
       if (p.skipped.length > 0) warnings.push(`${p.name}: ${p.skipped.length} project file(s) were left out (size caps or secret scan).`);
+      const memory = leftOutMemoryWarning(p);
+      if (memory) warnings.unshift(memory);
       const left = p.work?.skipped ?? [];
       if (left.length > 0) {
         const names = left.slice(0, 5).map((f) => `${f.path} (${f.reason.replace('_', ' ')})`).join(', ');

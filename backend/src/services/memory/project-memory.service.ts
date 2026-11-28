@@ -12,6 +12,7 @@ import * as path from 'path';
 import { existsSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
+import { withEntryStore, writeEntryStore } from './entry-store.writer.js';
 import {
   ProjectMemory,
   PatternEntry,
@@ -166,6 +167,21 @@ export class ProjectMemoryService implements IProjectMemoryService {
   }
 
   /**
+   * Create a JSON file only when there is none. `fileExists` answers false for
+   * any access error, so initialising must not be able to replace a file.
+   *
+   * @param filePath - File to create
+   * @param data - Its first content
+   */
+  private async createIfMissing(filePath: string, data: unknown): Promise<void> {
+    try {
+      await fs.writeFile(filePath, JSON.stringify(data, null, 2), { encoding: 'utf-8', flag: 'wx' });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+  }
+
+  /**
    * Checks if a file exists
    *
    * @param filePath - Path to check
@@ -252,9 +268,9 @@ export class ProjectMemoryService implements IProjectMemoryService {
             updatedAt: now,
             ...DEFAULT_PROJECT_MEMORY,
           };
-          await atomicWriteJson(filePath, indexData);
+          await this.createIfMissing(filePath, indexData);
         } else {
-          await atomicWriteJson(filePath, []);
+          await this.createIfMissing(filePath, []);
         }
       }
     }
@@ -306,20 +322,22 @@ export class ProjectMemoryService implements IProjectMemoryService {
     const archiveDir = path.join(this.getKnowledgePath(projectPath), MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVE_DIR);
 
     // decisions.json
-    const decisionsPath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.DECISIONS);
-    const decisions = await safeReadJson<DecisionEntry[]>(decisionsPath, []);
-    const taskDecisions = decisions.filter(d => isTaskCompletionLog(d.decision) || isTaskCompletionLog(d.title));
-    if (taskDecisions.length > 0) {
-      await fs.mkdir(archiveDir, { recursive: true });
-      const archivePath = path.join(archiveDir, MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVED_TASK_DECISIONS);
-      const archived = await safeReadJson<DecisionEntry[]>(archivePath, []);
-      // Archive first, then shrink the live file: a crash in between leaves a
-      // duplicate in the archive, never a lost entry.
-      await atomicWriteJson(archivePath, [...archived, ...taskDecisions]);
-      const moved = new Set(taskDecisions.map(d => d.id));
-      await this.saveDecisions(projectPath, decisions.filter(d => !moved.has(d.id)));
-      result.decisions = taskDecisions.length;
-    }
+    await withEntryStore(this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.DECISIONS), async () => {
+      const decisionsPath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.DECISIONS);
+      const decisions = await safeReadJson<DecisionEntry[]>(decisionsPath, []);
+      const taskDecisions = decisions.filter(d => isTaskCompletionLog(d.decision) || isTaskCompletionLog(d.title));
+      if (taskDecisions.length > 0) {
+        await fs.mkdir(archiveDir, { recursive: true });
+        const archivePath = path.join(archiveDir, MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVED_TASK_DECISIONS);
+        const archived = await safeReadJson<DecisionEntry[]>(archivePath, []);
+        // Archive first, then shrink the live file: a crash in between leaves a
+        // duplicate in the archive, never a lost entry.
+        await atomicWriteJson(archivePath, [...archived, ...taskDecisions]);
+        const moved = new Set(taskDecisions.map(d => d.id));
+        await this.saveDecisions(projectPath, decisions.filter(d => !moved.has(d.id)), [...moved]);
+        result.decisions = taskDecisions.length;
+      }
+    });
 
     // learnings.md
     const learningsPath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.LEARNINGS);
@@ -377,6 +395,17 @@ export class ProjectMemoryService implements IProjectMemoryService {
     projectPath: string,
     pattern: Omit<PatternEntry, 'id' | 'createdAt'>
   ): Promise<string> {
+    const store = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.PATTERNS);
+    return withEntryStore(store, () => this.addPatternLocked(projectPath, pattern));
+  }
+
+  /**
+   * Body of {@link addPattern}; runs while no other change to its store does.
+   */
+  private async addPatternLocked(
+    projectPath: string,
+    pattern: Omit<PatternEntry, 'id' | 'createdAt'>
+  ): Promise<string> {
     const patterns = await this.getPatterns(projectPath);
 
     // Dedup requires BOTH title match AND content similarity. Pre-fix this was an
@@ -417,8 +446,9 @@ export class ProjectMemoryService implements IProjectMemoryService {
     }
 
     // Enforce storage limits
+    const evicted: string[] = [];
     if (patterns.length >= MEMORY_CONSTANTS.LIMITS.MAX_PATTERN_ENTRIES) {
-      patterns.shift(); // Remove oldest
+      evicted.push(...patterns.splice(0, 1).map((p) => p.id)); // Remove oldest
       this.logger.debug('Removed oldest pattern to stay within limits', { projectPath });
     }
 
@@ -429,7 +459,7 @@ export class ProjectMemoryService implements IProjectMemoryService {
     };
 
     patterns.push(newPattern);
-    await this.savePatterns(projectPath, patterns);
+    await this.savePatterns(projectPath, patterns, evicted);
 
     // Record as learning
     await this.recordLearning(
@@ -464,9 +494,9 @@ export class ProjectMemoryService implements IProjectMemoryService {
   /**
    * Saves patterns to disk
    */
-  private async savePatterns(projectPath: string, patterns: PatternEntry[]): Promise<void> {
+  private async savePatterns(projectPath: string, patterns: PatternEntry[], removing: string[] = []): Promise<void> {
     const filePath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.PATTERNS);
-    await atomicWriteJson(filePath, patterns);
+    await writeEntryStore(filePath, patterns, { removing, logger: this.logger });
     this.invalidateCache(projectPath);
   }
 
@@ -503,6 +533,18 @@ export class ProjectMemoryService implements IProjectMemoryService {
     projectPath: string,
     decision: Omit<DecisionEntry, 'id' | 'decidedAt'>,
     options: { supersedes?: string[] } = {}
+  ): Promise<string> {
+    const store = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.DECISIONS);
+    return withEntryStore(store, () => this.addDecisionLocked(projectPath, decision, options));
+  }
+
+  /**
+   * Body of {@link addDecision}; runs while no other change to its store does.
+   */
+  private async addDecisionLocked(
+    projectPath: string,
+    decision: Omit<DecisionEntry, 'id' | 'decidedAt'>,
+    options: { supersedes?: string[] }
   ): Promise<string> {
     const decisions = await this.getDecisions(projectPath);
 
@@ -624,9 +666,9 @@ export class ProjectMemoryService implements IProjectMemoryService {
   /**
    * Saves decisions to disk
    */
-  private async saveDecisions(projectPath: string, decisions: DecisionEntry[]): Promise<void> {
+  private async saveDecisions(projectPath: string, decisions: DecisionEntry[], removing: string[] = []): Promise<void> {
     const filePath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.DECISIONS);
-    await atomicWriteJson(filePath, decisions);
+    await writeEntryStore(filePath, decisions, { removing, logger: this.logger });
     this.invalidateCache(projectPath);
   }
 
@@ -638,6 +680,17 @@ export class ProjectMemoryService implements IProjectMemoryService {
    * @returns ID of the created gotcha
    */
   public async addGotcha(
+    projectPath: string,
+    gotcha: Omit<GotchaEntry, 'id' | 'createdAt'>
+  ): Promise<string> {
+    const store = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.GOTCHAS);
+    return withEntryStore(store, () => this.addGotchaLocked(projectPath, gotcha));
+  }
+
+  /**
+   * Body of {@link addGotcha}; runs while no other change to its store does.
+   */
+  private async addGotchaLocked(
     projectPath: string,
     gotcha: Omit<GotchaEntry, 'id' | 'createdAt'>
   ): Promise<string> {
@@ -677,6 +730,7 @@ export class ProjectMemoryService implements IProjectMemoryService {
     }
 
     // Enforce storage limits
+    const evicted: string[] = [];
     if (gotchas.length >= MEMORY_CONSTANTS.LIMITS.MAX_GOTCHA_ENTRIES) {
       // Evict the OLDEST resolved low-severity gotcha. The loaded list is sorted by
       // severity, so a bare find() would pick an arbitrary entry among the lows.
@@ -684,7 +738,7 @@ export class ProjectMemoryService implements IProjectMemoryService {
       candidates.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
       const toRemove = candidates[0];
       if (toRemove) {
-        gotchas.splice(gotchas.indexOf(toRemove), 1);
+        evicted.push(...gotchas.splice(gotchas.indexOf(toRemove), 1).map((g) => g.id));
       } else {
         this.logger.warn('addGotcha: at limit with no resolved low-severity gotcha to evict', {
           projectPath,
@@ -700,7 +754,7 @@ export class ProjectMemoryService implements IProjectMemoryService {
     };
 
     gotchas.push(newGotcha);
-    await this.saveGotchas(projectPath, gotchas);
+    await this.saveGotchas(projectPath, gotchas, evicted);
 
     // Record as learning
     await this.recordLearning(
@@ -738,9 +792,9 @@ export class ProjectMemoryService implements IProjectMemoryService {
   /**
    * Saves gotchas to disk
    */
-  private async saveGotchas(projectPath: string, gotchas: GotchaEntry[]): Promise<void> {
+  private async saveGotchas(projectPath: string, gotchas: GotchaEntry[], removing: string[] = []): Promise<void> {
     const filePath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.GOTCHAS);
-    await atomicWriteJson(filePath, gotchas);
+    await writeEntryStore(filePath, gotchas, { removing, logger: this.logger });
     this.invalidateCache(projectPath);
   }
 
@@ -752,6 +806,17 @@ export class ProjectMemoryService implements IProjectMemoryService {
    * @returns ID of the created relationship
    */
   public async addRelationship(
+    projectPath: string,
+    relationship: Omit<RelationshipEntry, 'id'>
+  ): Promise<string> {
+    const store = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.RELATIONSHIPS);
+    return withEntryStore(store, () => this.addRelationshipLocked(projectPath, relationship));
+  }
+
+  /**
+   * Body of {@link addRelationship}; runs while no other change to its store does.
+   */
+  private async addRelationshipLocked(
     projectPath: string,
     relationship: Omit<RelationshipEntry, 'id'>
   ): Promise<string> {
@@ -774,8 +839,9 @@ export class ProjectMemoryService implements IProjectMemoryService {
     }
 
     // Enforce storage limits
+    const evicted: string[] = [];
     if (relationships.length >= MEMORY_CONSTANTS.LIMITS.MAX_RELATIONSHIP_ENTRIES) {
-      relationships.shift(); // Remove oldest
+      evicted.push(...relationships.splice(0, 1).map((r) => r.id)); // Remove oldest
     }
 
     const newRelationship: RelationshipEntry = {
@@ -784,7 +850,7 @@ export class ProjectMemoryService implements IProjectMemoryService {
     };
 
     relationships.push(newRelationship);
-    await this.saveRelationships(projectPath, relationships);
+    await this.saveRelationships(projectPath, relationships, evicted);
 
     this.logger.debug('Added relationship', { projectPath, relationshipId: newRelationship.id });
     return newRelationship.id;
@@ -812,9 +878,9 @@ export class ProjectMemoryService implements IProjectMemoryService {
   /**
    * Saves relationships to disk
    */
-  private async saveRelationships(projectPath: string, relationships: RelationshipEntry[]): Promise<void> {
+  private async saveRelationships(projectPath: string, relationships: RelationshipEntry[], removing: string[] = []): Promise<void> {
     const filePath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.RELATIONSHIPS);
-    await atomicWriteJson(filePath, relationships);
+    await writeEntryStore(filePath, relationships, { removing, logger: this.logger });
     this.invalidateCache(projectPath);
   }
 
@@ -828,6 +894,17 @@ export class ProjectMemoryService implements IProjectMemoryService {
    * @returns The id of the recorded entry (echoes input.id)
    */
   public async addTaskHistory(
+    projectPath: string,
+    entry: TaskHistoryEntry,
+  ): Promise<string> {
+    const store = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.TASK_HISTORY);
+    return withEntryStore(store, () => this.addTaskHistoryLocked(projectPath, entry));
+  }
+
+  /**
+   * Body of {@link addTaskHistory}; runs while no other change to its store does.
+   */
+  private async addTaskHistoryLocked(
     projectPath: string,
     entry: TaskHistoryEntry,
   ): Promise<string> {
@@ -867,7 +944,7 @@ export class ProjectMemoryService implements IProjectMemoryService {
     entries: TaskHistoryEntry[],
   ): Promise<void> {
     const filePath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.TASK_HISTORY);
-    await atomicWriteJson(filePath, entries);
+    await writeEntryStore(filePath, entries, { logger: this.logger });
     this.invalidateCache(projectPath);
   }
 
