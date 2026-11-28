@@ -26,6 +26,41 @@ const FAKE = {
 	ghPat: ('github_pat_' + '11ABCDEFG0TESTfakeFineGrained_0123456789abcdefghij'),
 };
 
+describe('values an earlier release left after a mask (CREW-1329)', () => {
+	const value = ['abc123def456', 'ghi789'].join('');
+
+	it('masks them on a later pass and restores the quoted shape', () => {
+		for (const quote of ['"', "'", '\\"', '\\\\\\"']) {
+			const out = redactSecretsWithCount(`run API_KEY=[REDACTED]${quote}${value}\\" now`);
+			expect(out.count).toBe(1);
+			expect(out.text).toBe(`run API_KEY=${quote}[REDACTED]\\" now`);
+			expect(redactSecretsWithCount(out.text).count).toBe(0);
+		}
+	});
+
+	it('keeps a serialized transcript line valid JSON', () => {
+		const line = JSON.stringify({ text: `export DB_PASSWORD=[REDACTED]"${value}\\" && run` });
+		const out = redactSecretsWithCount(line).text;
+		expect(out).not.toContain(value);
+		expect((JSON.parse(out) as { text: string }).text).toBe('export DB_PASSWORD="[REDACTED]\\" && run');
+	});
+
+	it('leaves a quote that only closes the surrounding string alone', () => {
+		for (const text of [
+			'{"a":"API_KEY=[REDACTED]"}',
+			'{"a":"API_KEY=[REDACTED]","name":"x"}',
+			'echo "API_KEY=[REDACTED]" && run',
+			'API_KEY=[REDACTED]"$SUFFIX"',
+			'API_KEY="[REDACTED]"',
+			'API_KEY=[REDACTED]"[REDACTED api_key]\\"',
+			'API_KEY=[REDACTED]"..." as an example',
+			`TOKEN_COUNT=[REDACTED]"${value}"`,
+		]) {
+			expect(redactSecretsWithCount(text)).toEqual({ text, count: 0 });
+		}
+	});
+});
+
 describe('assignments with escaped quotes (CREW-1327)', () => {
 	const value = ['abc123def456', 'ghi789'].join('');
 

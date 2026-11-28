@@ -23,6 +23,9 @@
  *    `github_pat_…`, plus the wiki confidentiality patterns (JWTs, bearer
  *    headers, private-key blocks, connection strings).
  *
+ * Values that earlier releases left behind after a mask (see
+ * LEFTOVER_VALUE_RE) are masked too, so a new scrub pass catches them.
+ *
  * Redaction is idempotent: running it over already-redacted text changes
  * nothing and reports a count of 0.
  *
@@ -70,6 +73,16 @@ const TOKEN_PATTERNS: readonly TokenPattern[] = [...EXTRA_TOKEN_PATTERNS, ...SEC
  * taken for the whole value and masked while the secret stayed.
  */
 const ASSIGNMENT_RE = /\b([A-Za-z_][A-Za-z0-9_]*)=((?:\\+(?=["']))?["']?)((?:(?!\\+["'])[^\s"'`;&|])+)/g;
+
+/**
+ * What earlier releases left behind for `NAME=\"value\"`: they masked the
+ * backslash as if it were the value (`NAME=[REDACTED]"value\"`), so a later
+ * pass saw an already-masked assignment. The mask comes first, then the
+ * quote (still escaped when the text was serialized again), then the value.
+ * The value must start like a credential, so the quote that closes a JSON or
+ * shell string right after a mask (`..[REDACTED]"}`) is not read as one.
+ */
+export const LEFTOVER_VALUE_RE = /\b([A-Za-z_][A-Za-z0-9_]*)=\[REDACTED\](\\*["'])((?=[A-Za-z0-9_!@#%^*+~/=-])(?:(?!\\+["'])[^\s"'`;&|]){4,})/g;
 
 /** Prefix every mask this module emits starts with. */
 const REDACTED_PREFIX = '[REDACTED';
@@ -132,6 +145,12 @@ export function redactSecretsWithCount(text: string, knownSecrets: readonly Secr
 
 	out = out.replace(ASSIGNMENT_RE, (match: string, name: string, quote: string, value: string) => {
 		if (!isSecretAssignmentName(name) || value.startsWith('$') || value.startsWith(REDACTED_PREFIX)) return match;
+		count++;
+		return `${name}=${quote}${ASSIGNMENT_MASK}`;
+	});
+
+	out = out.replace(LEFTOVER_VALUE_RE, (match: string, name: string, quote: string) => {
+		if (!isSecretAssignmentName(name)) return match;
 		count++;
 		return `${name}=${quote}${ASSIGNMENT_MASK}`;
 	});
