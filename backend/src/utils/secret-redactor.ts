@@ -23,6 +23,9 @@
  *    `github_pat_…`, plus the wiki confidentiality patterns (JWTs, bearer
  *    headers, private-key blocks, connection strings).
  *
+ * A value that follows a mask token and a quote is masked too (see
+ * MASK_QUOTE_VALUE_RE).
+ *
  * Redaction is idempotent: running it over already-redacted text changes
  * nothing and reports a count of 0.
  *
@@ -69,6 +72,14 @@ const TOKEN_PATTERNS: readonly TokenPattern[] = [...EXTRA_TOKEN_PATTERNS, ...SEC
  * (`NAME=\"value\"`, JSON pasted into text).
  */
 const ASSIGNMENT_RE = /\b([A-Za-z_][A-Za-z0-9_]*)=((?:\\+(?=["']))?["']?)((?:(?!\\+["'])[^\s"'`;&|])+)/g;
+
+/**
+ * A value that follows a mask token and a quote (`NAME=[REDACTED]"value`).
+ * The quote may be escaped. The value must start like a credential, so the
+ * quote that closes a JSON or shell string right after a mask
+ * (`..[REDACTED]"}`) is not read as one.
+ */
+export const MASK_QUOTE_VALUE_RE = /\b([A-Za-z_][A-Za-z0-9_]*)=\[REDACTED\](\\*["'])((?=[A-Za-z0-9_!@#%^*+~/=-])(?:(?!\\+["'])[^\s"'`;&|]){4,})/g;
 
 /** Prefix every mask this module emits starts with. */
 const REDACTED_PREFIX = '[REDACTED';
@@ -131,6 +142,12 @@ export function redactSecretsWithCount(text: string, knownSecrets: readonly Secr
 
 	out = out.replace(ASSIGNMENT_RE, (match: string, name: string, quote: string, value: string) => {
 		if (!isSecretAssignmentName(name) || value.startsWith('$') || value.startsWith(REDACTED_PREFIX)) return match;
+		count++;
+		return `${name}=${quote}${ASSIGNMENT_MASK}`;
+	});
+
+	out = out.replace(MASK_QUOTE_VALUE_RE, (match: string, name: string, quote: string) => {
+		if (!isSecretAssignmentName(name)) return match;
 		count++;
 		return `${name}=${quote}${ASSIGNMENT_MASK}`;
 	});
