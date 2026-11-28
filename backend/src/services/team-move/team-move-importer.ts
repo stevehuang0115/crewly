@@ -215,6 +215,19 @@ export function leftOutMemoryWarning(project: PackageProject): string | null {
   return `${project.name}: MEMORY NOT MOVED. This machine does not have: ${names.join(', ')}${more}. Keep ${where} until you have copied them over (for "secret scan", remove the credential first).`;
 }
 
+/**
+ * List the files that arrived with credentials masked, so the owner knows
+ * which copies differ from the source. Names and counts only.
+ *
+ * @param masked - The package's masked files
+ * @returns The warning, or null when nothing was masked
+ */
+export function maskedFilesWarning(masked: ReadonlyArray<{ path: string; redactions: number }> | undefined): string | null {
+  if (!masked || masked.length === 0) return null;
+  const names = masked.map((f) => `${f.path} (${f.redactions})`).join(', ');
+  return `Credentials were masked in ${masked.length} moved file(s), with the number masked: ${names}. The source keeps its originals.`;
+}
+
 /** The importer. */
 export class TeamMoveImporter {
   private readonly home: string;
@@ -947,6 +960,8 @@ export class TeamMoveImporter {
       }
       if (p.sharedWithTeams.length > 0) warnings.push(`${p.name} is also used by ${p.sharedWithTeams.join(', ')}; its Crewly data was copied and stays on the source too.`);
     }
+    const maskedWarning = maskedFilesWarning(manifest.secretScan?.masked);
+    if (maskedWarning) warnings.push(maskedWarning);
     if ((data['ticketsKept'] ?? 0) > 0) warnings.push(`${data['ticketsKept']} ticket(s) from the source were not copied: this machine already has the project and keeps its own ticket backlog.`);
     if ((data['filesReplaced'] ?? 0) > 0) warnings.push(`${data['filesReplaced']} existing file(s) were replaced by the moved version; the old copies are next to them as *.pre-move-*.`);
 

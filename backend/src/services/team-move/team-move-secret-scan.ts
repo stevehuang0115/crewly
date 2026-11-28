@@ -118,7 +118,89 @@ const TRANSCRIPT_PREFIX = 'transcripts/';
  * @returns True for a transcript
  */
 export function isRedactableFinding(packagePath: string): boolean {
-  return (packagePath.startsWith(TRANSCRIPT_PREFIX) && packagePath.endsWith('.jsonl')) || isRedactableRecord(packagePath);
+  return (
+    (packagePath.startsWith(TRANSCRIPT_PREFIX) && packagePath.endsWith('.jsonl')) ||
+    isRedactableRecord(packagePath) ||
+    isRedactableKnowledge(packagePath)
+  );
+}
+
+/**
+ * Whether a flagged file is a project memory store (`knowledge/*.json` or
+ * `knowledge/learnings.md`). Leaving one behind starts the target with an
+ * empty memory, so it is masked in the package copy instead (CREW-1327).
+ *
+ * @param packagePath - Package path of the flagged file
+ * @returns True for a project's knowledge store or learnings log
+ */
+export function isRedactableKnowledge(packagePath: string): boolean {
+  return /^projects\/[^/]+\/data\/knowledge\/(?:[^/]+\.json|learnings\.md)$/.test(packagePath);
+}
+
+/**
+ * Every string of a parsed JSON value, keys included, in document order.
+ *
+ * @param value - Any JSON value
+ * @param into - Receives the strings
+ * @returns `into`
+ */
+function jsonStrings(value: unknown, into: string[] = []): string[] {
+  if (typeof value === 'string') into.push(value);
+  else if (Array.isArray(value)) for (const item of value) jsonStrings(item, into);
+  else if (value && typeof value === 'object') {
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      into.push(key);
+      jsonStrings(item, into);
+    }
+  }
+  return into;
+}
+
+/**
+ * Mask the secrets in a project memory file inside the package (see
+ * {@link isRedactableKnowledge}), leaving the machine's own copy untouched.
+ *
+ * A JSON store is masked inside its parsed strings. One that does not parse is
+ * not touched and reports a residual, so it is treated like any other flagged
+ * project file (left behind and named). After masking, its strings are checked
+ * again joined together, so a secret spread over several of them (a private key
+ * stored one line per array item) also leaves the file behind. Markdown is
+ * masked as text.
+ *
+ * @param staging - The package being built
+ * @param packagePath - A knowledge file in it
+ * @param known - Exact secret values to look for
+ * @returns The file entry, the number of redactions, and `residual` (0 when the
+ *   file is safe to send)
+ */
+export async function redactKnowledgeInStaging(
+  staging: StagingArea,
+  packagePath: string,
+  known: readonly SecretEnvValue[] = [],
+): Promise<{ entry: PackageFileEntry; redactions: number; residual: number }> {
+  const source = staging.abs(packagePath);
+  const raw = await fs.readFile(source, 'utf8');
+  const tally = { count: 0 };
+  let written: string;
+  let checked: string;
+  if (packagePath.endsWith('.json')) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { entry: await staging.adopt(packagePath), redactions: 0, residual: Math.max(1, redactSecretsWithCount(raw, known).count) };
+    }
+    const masked = redactJsonValue(parsed, known, tally);
+    written = JSON.stringify(masked, null, 2);
+    checked = jsonStrings(masked).join('\n');
+  } else {
+    const out = redactSecretsWithCount(raw, known);
+    tally.count += out.count;
+    written = out.text;
+    checked = written;
+  }
+  await fs.writeFile(source, written, 'utf8');
+  return { entry: await staging.adopt(packagePath), redactions: tally.count, residual: redactSecretsWithCount(checked, known).count };
 }
 
 /**

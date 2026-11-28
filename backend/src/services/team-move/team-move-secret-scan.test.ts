@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { StagingArea } from './team-move-fs.js';
-import { TeamMoveSecretScanError, isRedactableFinding, isRedactableRecord, isSkippableFinding, redactRecordInStaging, redactTranscriptInStaging, scanStaging } from './team-move-secret-scan.js';
+import { TeamMoveSecretScanError, isRedactableFinding, isRedactableRecord, isSkippableFinding, redactKnowledgeInStaging, redactRecordInStaging, redactTranscriptInStaging, scanStaging } from './team-move-secret-scan.js';
 
 // Fake credentials are assembled at run time so secret scanners do not flag this file.
 const FAKE_SLACK = ['xoxb', '123456789012', '123456789012', 'abcdefghijklmnop'].join('-');
@@ -65,6 +65,57 @@ describe('team-move-secret-scan', () => {
     expect(text).not.toContain('abc123def456ghi789');
     expect(text).not.toContain('hunter2hunter2hunter2');
     expect(JSON.parse(text.split('\n')[0]).text).toBe('export ANTHROPIC_API_KEY="[REDACTED]" && run');
+  });
+
+  describe('project memory files (CREW-1327)', () => {
+    const GOTCHAS = 'projects/p1/data/knowledge/gotchas.json';
+    const LEARNINGS = 'projects/p1/data/knowledge/learnings.md';
+
+    it('are redactable: knowledge/*.json and learnings.md only', () => {
+      for (const p of [GOTCHAS, LEARNINGS]) expect(isRedactableFinding(p)).toBe(true);
+      for (const p of ['projects/p1/data/knowledge/notes.md', 'projects/p1/data/knowledge/sub/x.json', 'projects/p1/data/findings/x.json', 'projects/p1/files/knowledge/x.json']) {
+        expect(isRedactableFinding(p)).toBe(false);
+      }
+    });
+
+    it('masks a JSON store inside its strings and keeps every entry', async () => {
+      const store = [{ id: 'g1', content: `the key was ${FAKE_ANTHROPIC}`, n: 1 }, { id: 'g2', content: 'export DB_PASSWORD="hunter2hunter2" first' }, { id: 'g3', content: 'plain' }];
+      const s = await stage({ [GOTCHAS]: JSON.stringify(store, null, 2) });
+      const { entry, redactions, residual } = await redactKnowledgeInStaging(s, GOTCHAS);
+      expect({ redactions, residual }).toEqual({ redactions: 2, residual: 0 });
+      expect(s.files().find((f) => f.path === GOTCHAS)).toEqual(entry);
+      const text = await fs.readFile(s.abs(GOTCHAS), 'utf8');
+      for (const secret of [FAKE_ANTHROPIC, 'hunter2hunter2']) expect(text).not.toContain(secret);
+      const out = JSON.parse(text) as typeof store;
+      expect(out.map((e) => e.id)).toEqual(['g1', 'g2', 'g3']);
+      expect(out[2]).toEqual(store[2]);
+    });
+
+    it('masks learnings.md as text, including an assignment with escaped quotes', async () => {
+      const md = ['# Learnings', `- token ${FAKE_SLACK}`, '- pasted: {"cmd":"API_KEY=\\"abc123def456ghi789\\" run"}', FAKE_PEM, '- keep this line'].join('\n');
+      const s = await stage({ [LEARNINGS]: md });
+      const { redactions, residual } = await redactKnowledgeInStaging(s, LEARNINGS);
+      expect({ redactions, residual }).toEqual({ redactions: 3, residual: 0 });
+      const text = await fs.readFile(s.abs(LEARNINGS), 'utf8');
+      for (const secret of [FAKE_SLACK, 'abc123def456ghi789', FAKE_PEM]) expect(text).not.toContain(secret);
+      expect(text).toContain('- keep this line');
+      expect(text.startsWith('# Learnings')).toBe(true);
+    });
+
+    it('does not touch a JSON store that cannot be parsed, and reports it as still flagged', async () => {
+      const broken = `[{"content":"${FAKE_ANTHROPIC}"`;
+      const s = await stage({ [GOTCHAS]: broken });
+      const { redactions, residual } = await redactKnowledgeInStaging(s, GOTCHAS);
+      expect(redactions).toBe(0);
+      expect(residual).toBeGreaterThan(0);
+      expect(await fs.readFile(s.abs(GOTCHAS), 'utf8')).toBe(broken);
+    });
+
+    it('keeps a store flagged when a secret is spread over several strings', async () => {
+      const s = await stage({ [GOTCHAS]: JSON.stringify({ lines: FAKE_PEM.split('\n') }) });
+      expect((await scanStaging(s, s.files())).findings).toHaveLength(1);
+      expect((await redactKnowledgeInStaging(s, GOTCHAS)).residual).toBeGreaterThan(0);
+    });
   });
 
   it('only conversation transcripts are redacted in place', () => {

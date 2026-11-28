@@ -387,6 +387,30 @@ describe('team move between two homes', () => {
     expect(ok.result.manifest.secretScan.excludedFiles).toBe(1);
   });
 
+  it('moves memory files that hold a key, masked, and names them in the import report', async () => {
+    const dir = path.join(fx.projectDir, '.crewly', 'knowledge');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'gotchas.json'), JSON.stringify([{ id: 'g1', content: `never reuse ${FAKE_SLACK}` }]));
+    await fs.writeFile(path.join(dir, 'learnings.md'), `# Learnings\n- the key ${FAKE_ANTHROPIC} expired\n`);
+    const { key, enc, file, result } = await exportAndEncrypt();
+    expect(result.manifest.projects[0]!.skipped).toEqual([]);
+    expect(result.manifest.secretScan.excludedFiles).toBe(0);
+    expect(result.manifest.secretScan.masked!.map((m) => [m.path.replace(/^.*\/\.crewly\//, ''), m.redactions]).sort()).toEqual([
+      ['knowledge/gotchas.json', 1],
+      ['knowledge/learnings.md', 1],
+    ]);
+    for (const name of ['gotchas.json', 'learnings.md']) {
+      const entry = result.manifest.files.find((f) => f.path.endsWith(`/data/knowledge/${name}`))!;
+      const packed = await fs.readFile(path.join(result.staging.root, entry.path), 'utf8');
+      for (const secret of [FAKE_SLACK, FAKE_ANTHROPIC]) expect(packed).not.toContain(secret);
+      expect(await fs.readFile(path.join(dir, name), 'utf8')).toContain(name === 'gotchas.json' ? FAKE_SLACK : FAKE_ANTHROPIC);
+    }
+    const report = await importer().run({ moveId: MOVE_ID, packageFile: file, privateKey: key.privateKey, expectedSha256: enc.sha256 });
+    const warning = report.warnings.find((w) => w.startsWith('Credentials were masked in 2 moved file(s)'))!;
+    expect(warning).toContain('knowledge/gotchas.json (1)');
+    expect(warning).not.toContain(FAKE_SLACK);
+  });
+
   it('masks a key pasted into a chat message in the package copy, so skipFlagged still passes and the channel moves', async () => {
     const db = openChatDatabase({ dbPath: path.join(fx.home, 'chat.db'), skipIntegrityCheck: true });
     try {

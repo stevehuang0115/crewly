@@ -213,6 +213,16 @@ describe('TeamMoveImporter', () => {
     expect(await fs.readFile(path.join(project!.path, '.crewly', 'tickets', '.counter.json'), 'utf8')).toBe('{"next":3}');
   });
 
+  it('lists each file that arrived with credentials masked, with its count', async () => {
+    const report = await run(await pack((m) => void (m.secretScan = { ...m.secretScan, redactedFiles: 2, masked: [
+      { path: 'P One/.crewly/knowledge/gotchas.json', redactions: 3 },
+      { path: 'records/chat-channels.json', redactions: 1 },
+    ] })));
+    expect(report.warnings).toContain(
+      'Credentials were masked in 2 moved file(s), with the number masked: P One/.crewly/knowledge/gotchas.json (3), records/chat-channels.json (1). The source keeps its originals.',
+    );
+  });
+
   it('names every memory file the package left behind, first among the warnings', async () => {
     const report = await run(await pack((m) => void (m.projects[0]!.skipped = [
       { path: 'wiki/page.md', bytes: 10, reason: 'size_cap' },

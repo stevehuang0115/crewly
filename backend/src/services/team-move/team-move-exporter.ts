@@ -51,7 +51,9 @@ import {
   TeamMoveSecretScanError,
   isRedactableFinding,
   isSkippableFinding,
+  isRedactableKnowledge,
   isRedactableRecord,
+  redactKnowledgeInStaging,
   redactRecordInStaging,
   redactTranscriptInStaging,
   scanStaging,
@@ -284,6 +286,20 @@ export function bundleMessage(repo: Pick<PackageRepo, 'remoteUrl' | 'unpushed'>,
 /** Escape a string for use in a RegExp. */
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The owner's name for a masked file: `Project/.crewly/...` for project data,
+ * the package path otherwise.
+ *
+ * @param packagePath - Package path of the file
+ * @param projects - The team's projects
+ * @returns The label
+ */
+function maskedLabel(packagePath: string, projects: readonly Project[]): string {
+  const m = /^projects\/([^/]+)\/data\/(.*)$/.exec(packagePath);
+  if (!m) return packagePath;
+  return `${projects.find((p) => p.id === m[1])?.name ?? m[1]}/.crewly/${m[2]}`;
 }
 
 /** The exporter. */
@@ -647,12 +663,12 @@ export class TeamMoveExporter {
     const known = this.deps.knownSecrets ? await this.deps.knownSecrets() : collectSecretEnvValues(process.env);
     // Bundles are not text-scanned: they are binary packs (history that already lives in git), encrypted for the target.
     const scan = await scanStaging(staging, staging.files(), known, (p) => p.endsWith(`/${C.BUNDLE_FILE}`));
-    // Conversation transcripts and the JSON records (chat channels, tasks,
-    // decisions) are redacted in the package copy rather than
+    // Conversation transcripts, the JSON records (chat channels, tasks,
+    // decisions) and project memory files are redacted in the package copy rather than
     // stopping the move: the member resumes on the target with the keys it
     // had read masked. A transcript that still matches afterwards stays a
     // finding. Never on a dry run (the preview reports what was found).
-    let redactedFiles = 0;
+    const masked: Array<{ path: string; redactions: number }> = [];
     if (!options.dryRun) {
       const stillFlagged: SecretFinding[] = [];
       for (const finding of scan.findings) {
@@ -660,10 +676,13 @@ export class TeamMoveExporter {
           stillFlagged.push(finding);
           continue;
         }
-        const { residual } = await (isRedactableRecord(finding.path) ? redactRecordInStaging : redactTranscriptInStaging)(staging, finding.path, known);
+        const redact = isRedactableKnowledge(finding.path)
+          ? redactKnowledgeInStaging
+          : isRedactableRecord(finding.path) ? redactRecordInStaging : redactTranscriptInStaging;
+        const { residual, redactions } = await redact(staging, finding.path, known);
         // Judged on the parsed strings: the raw JSON text of a masked quoted value still looks like a secret.
         if (residual > 0) stillFlagged.push({ path: finding.path, matches: residual });
-        else redactedFiles += 1;
+        else masked.push({ path: maskedLabel(finding.path, projects), redactions });
       }
       scan.findings = stillFlagged;
     }
@@ -730,7 +749,7 @@ export class TeamMoveExporter {
       // A dry run builds no bundle; its estimate keeps the preflight size honest.
       totalBytes: files.reduce((n, f) => n + f.bytes, 0) + (options.dryRun ? repos.reduce((n, r) => n + (r.bundle && !r.bundle.file ? r.bundle.bytes : 0), 0) : 0),
       noSecrets: true,
-      secretScan: { filesScanned: scan.filesScanned, knownValuesChecked: known.length, findings: 0, excludedFiles, ...(redactedFiles > 0 ? { redactedFiles } : {}) },
+      secretScan: { filesScanned: scan.filesScanned, knownValuesChecked: known.length, findings: 0, excludedFiles, ...(masked.length > 0 ? { redactedFiles: masked.length, masked } : {}) },
       notMoved: this.notMovedList(),
     };
     await staging.writeJson('manifest.json', manifest);
