@@ -14,6 +14,7 @@ import * as fs from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
+import { TEAM_MOVE_CONSTANTS } from '../../constants.js';
 import { redactSecretsWithCount } from '../../utils/secret-redactor.js';
 import type { SecretEnvValue } from '../../utils/secret-env.js';
 import { looksLikeText } from './team-move-fs.js';
@@ -118,7 +119,23 @@ const TRANSCRIPT_PREFIX = 'transcripts/';
  * @returns True for a transcript
  */
 export function isRedactableFinding(packagePath: string): boolean {
-  return (packagePath.startsWith(TRANSCRIPT_PREFIX) && packagePath.endsWith('.jsonl')) || isRedactableRecord(packagePath);
+  return (packagePath.startsWith(TRANSCRIPT_PREFIX) && packagePath.endsWith('.jsonl')) || isRedactableRecord(packagePath) || memoryStoreOf(packagePath) !== null;
+}
+
+/** A text file of a project's memory stores, as it sits in the package. */
+const MEMORY_STORE_RE = /^projects\/([^/]+)\/data\/(.+\.(?:json|jsonl|md))$/;
+
+/**
+ * Whether a package file belongs to a project's memory stores. A secret in one
+ * is masked in the package copy: they hold months of free text, so a match is
+ * likely, and dropping the file would take the whole store with it.
+ *
+ * @param packagePath - Package path of the flagged file
+ * @returns The project id and the path below its data folder, or null
+ */
+export function memoryStoreOf(packagePath: string): { projectId: string; path: string } | null {
+  const m = MEMORY_STORE_RE.exec(packagePath);
+  return m && m[2]!.startsWith(TEAM_MOVE_CONSTANTS.MEMORY_STORE_PREFIX) ? { projectId: m[1]!, path: m[2]! } : null;
 }
 
 /**
@@ -215,8 +232,9 @@ export async function redactTranscriptInStaging(
 }
 
 /**
- * Mask the secrets in a JSON record inside the package (see
- * {@link isRedactableRecord}), leaving the machine's own stores untouched.
+ * Mask the secrets in a JSON record or a memory store inside the package (see
+ * {@link isRedactableRecord} and {@link memoryStoreOf}), leaving the
+ * machine's own files untouched.
  *
  * The file is parsed and only its strings (and keys) are redacted, so it stays
  * the same valid JSON, written with the package's usual indentation. A file
@@ -224,7 +242,7 @@ export async function redactTranscriptInStaging(
  * parsed strings of the written file, like a transcript's.
  *
  * @param staging - The package being built
- * @param packagePath - A `records/*.json` file in it
+ * @param packagePath - A `records/*.json` or memory store file in it
  * @param known - Exact secret values to look for
  * @returns The new file entry, the number of redactions, and `residual`
  *   (secrets a second pass still finds; 0 when clean)

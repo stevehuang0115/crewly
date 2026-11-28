@@ -10347,10 +10347,18 @@ export const TEAM_MOVE_CONSTANTS = {
 	WORK_FILE_MAX_MB_ENV: 'CREWLY_TEAM_MOVE_WORK_FILE_MAX_MB',
 	/** Directory names never packaged from a non-git project (dependencies and build output). */
 	WORK_EXCLUDED_DIRS: ['node_modules', '.next', 'dist', 'build', '.cache', '.crewly', '.git'],
-	/** Project data folders that hold memory: a file left out of these is named one by one after an import. */
-	MEMORY_DATA_PREFIXES: ['knowledge/', 'wiki/'],
-	/** How many left-out memory files an import warning names before it counts the rest. */
+	/**
+	 * The project data folder with the memory stores (gotchas, learnings,
+	 * decisions, patterns). Its files are always named one by one, and a
+	 * secret in one is masked in the package instead of leaving it behind.
+	 */
+	MEMORY_STORE_PREFIX: 'knowledge/',
+	/** Other project data folders with memory; an import names their left-out files up to the cap below. */
+	OTHER_MEMORY_PREFIXES: ['wiki/'],
+	/** How many of those other memory files an import names before it counts the rest. */
 	MEMORY_WARNING_MAX_FILES: 10,
+	/** Followed by the move tag: a masked memory file saved beside the one this machine already had. */
+	MASKED_COPY_SUFFIX: '.moved-masked-',
 	/** A machine counts as live when its Cloud heartbeat is newer than this. */
 	MACHINE_LIVE_WINDOW_MS: 5 * 60 * 1000,
 	/** Cloud instance ids/names that are not machines (virtual instances). */

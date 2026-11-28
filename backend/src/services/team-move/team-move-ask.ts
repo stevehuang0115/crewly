@@ -25,6 +25,24 @@ export function pickAskRecipient(team: Team): TeamMember | null {
 }
 
 /**
+ * The message to the orchestrator and the team lead when a team arrived
+ * without some of its project memory, or with credentials masked in it.
+ *
+ * @param teamName - The team that arrived
+ * @param warnings - The memory sentences of the import report
+ * @returns Message text
+ */
+export function buildMemoryNotice(teamName: string, warnings: readonly string[]): string {
+  return [
+    `[TEAM MOVE] Team "${teamName}" arrived on this machine, but some project memory is not here as it was on the source:`,
+    '',
+    ...warnings.map((w) => `- ${w}`),
+    '',
+    'Do not read an empty or small memory store as the whole history. Tell the owner once, and ask for the source folder to be kept until the missing memory is here.',
+  ].join('\n');
+}
+
+/**
  * Whether a repository holds work that exists only on the source.
  *
  * @param repo - Repository as the preflight read it

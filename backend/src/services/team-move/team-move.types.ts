@@ -299,6 +299,8 @@ export interface PackageProject {
   files: number;
   bytes: number;
   skipped: SkippedFile[];
+  /** Memory store files whose secrets were masked in the package copy (paths below the data folder). */
+  redacted?: Array<{ path: string; redactions: number }>;
   /**
    * Working files of a project that is not a git repository (the code itself
    * travels in the package; git projects are cloned instead). Stored under
@@ -364,7 +366,7 @@ export interface TeamMoveManifest {
   totalBytes: number;
   /** Always true: the secret scan passed (a package is never built otherwise). */
   noSecrets: true;
-  /** `redactedFiles`: conversation transcripts whose secrets were masked in the package copy. */
+  /** `redactedFiles`: transcripts, records and memory store files whose secrets were masked in the package copy. */
   secretScan: { filesScanned: number; knownValuesChecked: number; findings: 0; excludedFiles: number; redactedFiles?: number };
   /** Source things that are deliberately not moved (shown to the owner). */
   notMoved: string[];
@@ -423,6 +425,16 @@ export interface TeamMoveStartResult {
   fallbacks?: RuntimeStandIn[];
 }
 
+/** What of the projects' memory did not arrive as it was. */
+export interface TeamMoveMemoryReport {
+  /** Files left out of the package: every memory store, and other memory files up to a cap. */
+  notMoved: Array<{ project: string; path: string; reason: SkippedFile['reason']; bytes: number }>;
+  /** Memory store files that arrived with secrets masked. `savedAs` is set when this machine already had the file and kept it. */
+  masked: Array<{ project: string; path: string; redactions: number; savedAs?: string }>;
+  /** The same in sentences (also at the top of the report's warnings). */
+  warnings: string[];
+}
+
 /** The target's import report (owner-facing). */
 export interface TeamMoveImportReport {
   /** Moved counts by kind; Cloud shows these. */
@@ -446,6 +458,8 @@ export interface TeamMoveImportReport {
   warnings: string[];
   /** Things not moved (copied from the manifest). */
   notMoved: string[];
+  /** Project memory that is not here as it was on the source; absent when it all arrived unchanged. */
+  memory?: TeamMoveMemoryReport;
   crewlyVersion: string;
   importedAt: string;
 }

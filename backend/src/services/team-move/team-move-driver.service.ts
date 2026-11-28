@@ -32,13 +32,13 @@
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { TEAM_MOVE_CONSTANTS } from '../../constants.js';
+import { TEAM_MOVE_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import type { IncomingMessage } from './../cloud/cloud-sync.types.js';
 import { TeamMoveArchiver } from './team-move-archive.js';
 import { TeamMoveCloudClient, TeamMoveCloudError, type PreflightRequest } from './team-move-cloud.client.js';
-import { buildAskTeamMessage, pickAskRecipient } from './team-move-ask.js';
+import { buildAskTeamMessage, buildMemoryNotice, pickAskRecipient } from './team-move-ask.js';
 import { generateTargetKeyPair, isPublicKeyString } from './team-move-crypto.js';
 import { TeamMoveBlockedError, TeamMoveExporter, buildEncryptedPackage } from './team-move-exporter.js';
 import { TeamMoveImportError, TeamMoveImporter } from './team-move-importer.js';
@@ -384,6 +384,32 @@ export class TeamMoveDriver {
     await this.deps.cloud.postStatus(view.moveId, { status: 'imported', report });
     // The package is applied and its ciphertext deleted; the private key has done its job.
     await fs.rm(path.join(journal.dir, 'target-key.json'), { force: true });
+    if (report.memory) await this.tellAgentsAboutMemory(view, report.memory.warnings, report.started.ok);
+  }
+
+  /**
+   * Put lost or masked memory in front of the agents who would otherwise work
+   * on as if it were complete: the orchestrator, and the team's lead when the
+   * team started (a team left stopped is not woken). Best effort: the report
+   * carries the same sentences.
+   *
+   * @param view - The move
+   * @param warnings - The memory sentences of the import report
+   * @param started - Whether the team started here
+   */
+  private async tellAgentsAboutMemory(view: TeamMoveView, warnings: readonly string[], started: boolean): Promise<void> {
+    if (!this.deps.sendToAgent) return;
+    const recipients: string[] = [ORCHESTRATOR_SESSION_NAME];
+    if (started && this.deps.getTeams) {
+      const team = (await this.deps.getTeams().catch(() => [])).find((t) => t.id === view.teamId);
+      const lead = team ? pickAskRecipient(team)?.sessionName : undefined;
+      if (lead && !recipients.includes(lead)) recipients.push(lead);
+    }
+    const text = buildMemoryNotice(view.teamName, warnings);
+    for (const session of recipients) {
+      const delivered = await this.deps.sendToAgent(session, text).catch(() => false);
+      if (!delivered) this.logger.warn('Could not tell an agent about memory that did not arrive', { moveId: view.moveId, session });
+    }
   }
 
   /**

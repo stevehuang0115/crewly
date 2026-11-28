@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { StagingArea } from './team-move-fs.js';
-import { TeamMoveSecretScanError, isRedactableFinding, isRedactableRecord, isSkippableFinding, redactRecordInStaging, redactTranscriptInStaging, scanStaging } from './team-move-secret-scan.js';
+import { TeamMoveSecretScanError, isRedactableFinding, isRedactableRecord, isSkippableFinding, redactRecordInStaging, redactTranscriptInStaging, scanStaging, memoryStoreOf } from './team-move-secret-scan.js';
 
 // Fake credentials are assembled at run time so secret scanners do not flag this file.
 const FAKE_SLACK = ['xoxb', '123456789012', '123456789012', 'abcdefghijklmnop'].join('-');
@@ -142,5 +142,21 @@ describe('team-move-secret-scan', () => {
   it('allows skipping notes and project files but never core records', () => {
     for (const p of ['projects/p/data/x.md', 'handover/a.md', 'agents/s/sessions/1.md', 'team/wiki/a.md', 'team/norms/n.md']) expect(isSkippableFinding(p)).toBe(true);
     for (const p of ['team/config.json', 'records/task-pool.json', 'agents/s/memory.json', 'manifest.json', 'team/prompts/a.md']) expect(isSkippableFinding(p)).toBe(false);
+  });
+});
+
+describe('memoryStoreOf', () => {
+  it('knows a project memory store, which is masked rather than dropped', () => {
+    for (const store of ['knowledge/gotchas.json', 'knowledge/learnings.md', 'knowledge/decisions.json', 'knowledge/patterns.json', 'knowledge/archive/old.jsonl']) {
+      expect(memoryStoreOf(`projects/p1/data/${store}`)).toEqual({ projectId: 'p1', path: store });
+      expect(isRedactableFinding(`projects/p1/data/${store}`)).toBe(true);
+    }
+  });
+
+  it('leaves every other file to the old rules', () => {
+    for (const other of ['projects/p1/data/findings/leak.md', 'projects/p1/files/knowledge/gotchas.json', 'projects/p1/data/knowledge/index.db', 'projects/p1/data/specs/knowledge/a.md', 'team/wiki/knowledge/a.md']) {
+      expect(memoryStoreOf(other)).toBeNull();
+      expect(isRedactableFinding(other)).toBe(false);
+    }
   });
 });
