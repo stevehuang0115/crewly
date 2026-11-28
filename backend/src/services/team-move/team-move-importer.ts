@@ -16,6 +16,8 @@
  * @module services/team-move/team-move-importer
  */
 
+import { TRIGGER_RECORD, isTriggerStorePath, triggerReport, triggerWarnings, type TeamMoveTriggerStore } from './team-move-triggers.js';
+import type { TeamMoveTriggerReport } from './team-move.types.js';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import * as fs from 'node:fs/promises';
@@ -88,6 +90,8 @@ export interface ImportDeps {
   addWorkItems: (items: WorkItem[]) => Promise<number>;
   /** Add decisions that are not there yet; returns how many were added. */
   addDecisions: (decisions: Array<Record<string, unknown>>) => Promise<number>;
+  /** This machine's trigger store. */
+  triggers: Pick<TeamMoveTriggerStore, 'restore' | 'arm'>;
   /** Make the Slack channel mapping known before the team exists (no duplicate channel). */
   adoptSlackMapping: (mapping: Record<string, unknown>) => Promise<boolean>;
   /**
@@ -291,12 +295,22 @@ export class TeamMoveImporter {
     const repoOutcome = await step('repos', () => this.cloneRepos(manifest, mappings, staging));
     const dataCounts = await step('data', () => this.importData(staging, manifest, mappings));
     const recordCounts = await step('records', () => this.importRecords(staging, manifest, mappings));
+    // Before the team appears: its first save reconciles the team's declared
+    // schedules, which must find the moved ones instead of creating new ones.
+    const triggers = await journal.run('records:triggers', () => this.importTriggers(staging, manifest, mappings));
     const teamResult = await step('team', () => this.registerTeam(staging, manifest, mappings));
+    // Now that the team is here, a one-shot that came due on the way may fire.
+    await this.deps.triggers.arm(triggers.armIds);
     repoOutcome.warnings.push(...teamResult.notes);
     const started = await step('start', () => this.startTeam(manifest, teamResult.paused));
 
     return step('report', async () => {
       const report = await this.buildReport(manifest, mappings, repoOutcome, dataCounts, recordCounts, started);
+      if (triggers.report) {
+        report.triggers = triggers.report;
+        report.moved['triggersImported'] = triggers.report.imported.length;
+      }
+      report.warnings.push(...triggerWarnings(triggers.report));
       await atomicWriteFile(path.join(journal.dir, 'import-report.json'), JSON.stringify(report, null, 2));
       // The decrypted copy and the ciphertext are no longer needed.
       await fs.rm(staging, { recursive: true, force: true });
@@ -638,7 +652,10 @@ export class TeamMoveImporter {
           }
         : undefined;
       const masked = new Set((p.redacted ?? []).map((r) => r.path));
-      add(await this.copyTree(src, dest, rewrites, tag, skip, (rel) => masked.has(rel)));
+      // Older packages carry a trigger store as a project file. It is never
+      // copied: on this machine it could be the live store of every team.
+      const skipFile = (rel: string): boolean => isTriggerStorePath(rel) || (skip?.(rel) ?? false);
+      add(await this.copyTree(src, dest, rewrites, tag, skipFile, (rel) => masked.has(rel)));
       ticketsKept += kept;
       // Working files of a project that is not a git repository: copied as they are (no path rewriting in user files).
       if (p.work) add(await this.copyTree(path.join(staging, 'projects', p.id, 'files'), mapping.to, [], tag));
@@ -760,6 +777,32 @@ export class TeamMoveImporter {
     }
     out['scheduledMessagesAdded'] = addedMessages;
     return out;
+  }
+
+  /**
+   * Merge the team's triggers into this machine's store.
+   *
+   * @returns Their names by outcome (null when the package has no trigger record) and the ids to arm
+   * @throws TeamMoveImportError when the record is there but cannot be read
+   */
+  private async importTriggers(
+    staging: string,
+    manifest: TeamMoveManifest,
+    mappings: ProjectMapping[],
+  ): Promise<{ report: TeamMoveTriggerReport | null; armIds: string[] }> {
+    const present = await fs.stat(path.join(staging, TRIGGER_RECORD)).catch(() => null);
+    if (!present) return { report: null, armIds: [] };
+    const record = await this.readRecord<{ triggers?: unknown } | null>(staging, TRIGGER_RECORD, this.rewritesFor(manifest, mappings), null);
+    if (!record || !Array.isArray(record.triggers)) throw new TeamMoveImportError('the package\'s trigger record cannot be read', 'invalid_package');
+    // Only the moving team's: a package never adds schedules for another team.
+    const own: unknown[] = [];
+    const foreign: unknown[] = [];
+    for (const row of record.triggers as unknown[]) {
+      ((row as { teamId?: unknown } | null)?.teamId === manifest.team.id ? own : foreign).push(row);
+    }
+    const result = await this.deps.triggers.restore(own);
+    for (const row of foreign) result.failed.push({ row, reason: 'it does not belong to the moving team' });
+    return { report: triggerReport(result), armIds: result.imported.map((t) => t.id) };
   }
 
   // -------------------------------------------------------------------------

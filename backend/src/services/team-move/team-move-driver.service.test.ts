@@ -23,7 +23,7 @@ import {
 } from './team-move-driver.service.js';
 import { TeamMoveExporter } from './team-move-exporter.js';
 import { TeamMoveImporter } from './team-move-importer.js';
-import { FIXTURE, buildSourceFixture, buildTargetPaths, type Fixture } from './team-move.fixture.js';
+import { FIXTURE, buildSourceFixture, buildTargetPaths, type Fixture, emptyTriggerStore } from './team-move.fixture.js';
 import type { TeamMovePreflight, TeamMoveReportStatus, TeamMoveRole, TeamMoveAction, TeamMoveView } from './team-move.types.js';
 
 // Fake credentials are assembled at run time so secret scanners do not flag this file.
@@ -186,6 +186,7 @@ describe('TeamMoveDriver protocol', () => {
         source: new EventEmitter() as never,
         identity: async () => ({ instanceId, deviceName: instanceId }),
         exporter: new TeamMoveExporter({
+      getTriggers: async () => [],
           home,
           getTeams: () => storage.getTeams(),
           getProjects: () => storage.getProjects(),
@@ -194,6 +195,7 @@ describe('TeamMoveDriver protocol', () => {
           knownSecrets: async () => [],
         }),
         archiver: new TeamMoveArchiver({
+      triggers: emptyTriggerStore(),
           home,
           storage,
           runtime: {
@@ -215,6 +217,7 @@ describe('TeamMoveDriver protocol', () => {
         }),
         importer: () =>
           new TeamMoveImporter({
+      triggers: emptyTriggerStore(),
             home,
             crewlyVersion: '9.9.9',
             storage,

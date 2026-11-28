@@ -339,4 +339,22 @@ describe('TeamTriggerReconciler', () => {
       expect(await reconciler.unregisterAll('ghost-team')).toBe(0);
     });
   });
+
+  describe('handleStorageEvent', () => {
+    it('converges on save and removes everything on delete', async () => {
+      await reconciler.handleStorageEvent({ kind: 'team-saved', team: makeTeam([makeSpec()]), created: true });
+      expect(engine.size()).toBe(1);
+
+      await reconciler.handleStorageEvent({ kind: 'team-deleted', teamId: 'team-abc' });
+      expect(engine.size()).toBe(0);
+    });
+
+    it('keeps the triggers of a team that moved away: the move saves and removes them', async () => {
+      await reconciler.reconcile(makeTeam([makeSpec()]));
+
+      await reconciler.handleStorageEvent({ kind: 'team-moved-away', teamId: 'team-abc' });
+
+      expect(engine.size()).toBe(1);
+    });
+  });
 });

@@ -7,6 +7,7 @@
  * @module services/team-move/team-move.fixture
  */
 
+import type { TeamMoveTriggerStore } from './team-move-triggers.js';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -225,4 +226,19 @@ export async function buildTargetPaths(root: string): Promise<{ home: string; pr
   await fs.mkdir(home, { recursive: true });
   await fs.mkdir(projectsRoot, { recursive: true });
   return { home, projectsRoot };
+}
+
+/**
+ * A trigger store holding nothing, for tests that are not about triggers
+ * (those run real engines: team-move-triggers.integration.test.ts).
+ *
+ * @returns The store
+ */
+export function emptyTriggerStore(): TeamMoveTriggerStore {
+  return {
+    list: async () => [],
+    restore: async () => ({ imported: [], skipped: [], failed: [] }),
+    arm: async () => undefined,
+    remove: async () => 0,
+  };
 }

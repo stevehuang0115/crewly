@@ -12,6 +12,8 @@
  * @module services/team-move/team-move-runtime
  */
 
+import { TriggerEngine } from '../v3/trigger-engine.service.js';
+import { engineTriggerStore } from './team-move-triggers.js';
 import { SLACK_TEAM_CHANNEL_CONSTANTS } from '../../constants.js';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -148,7 +150,10 @@ export function createTeamMoveDriver(input: TeamMoveRuntimeInput): TeamMoveDrive
 
   const knownSecrets = async (): Promise<SecretEnvValue[]> => [...collectSecretEnvValues(process.env), ...(await collectSettingsSecretValues(home))];
 
+  const triggers = engineTriggerStore(() => TriggerEngine.getInstance());
+
   const exporter = new TeamMoveExporter({
+    getTriggers: () => triggers.list(),
     home,
     getTeams: () => storage.getTeams(),
     getProjects: () => storage.getProjects(),
@@ -167,6 +172,7 @@ export function createTeamMoveDriver(input: TeamMoveRuntimeInput): TeamMoveDrive
   };
 
   const archiver = new TeamMoveArchiver({
+    triggers,
     home,
     storage,
     runtime: {
@@ -210,6 +216,7 @@ export function createTeamMoveDriver(input: TeamMoveRuntimeInput): TeamMoveDrive
     archiver,
     importer: () =>
       new TeamMoveImporter({
+        triggers,
         home,
         crewlyVersion: version(),
         storage,

@@ -1,4 +1,5 @@
 import * as fs from 'node:fs/promises';
+import { emptyTriggerStore } from './team-move.fixture.js';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { StorageService } from '../core/storage.service.js';
@@ -50,6 +51,7 @@ describe('TeamMoveImporter', () => {
   });
 
   const deps = (over: Partial<ImportDeps> = {}): ImportDeps => ({
+    triggers: emptyTriggerStore(),
     home,
     crewlyVersion: '9',
     storage,

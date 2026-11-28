@@ -13,7 +13,7 @@ import { generateTargetKeyPair } from './team-move-crypto.js';
 import { TeamMoveBlockedError, TeamMoveExporter, buildEncryptedPackage } from './team-move-exporter.js';
 import { TeamMoveImporter } from './team-move-importer.js';
 import { TeamMoveSecretScanError } from './team-move-secret-scan.js';
-import { FIXTURE, buildSourceFixture, buildTargetPaths, type Fixture } from './team-move.fixture.js';
+import { FIXTURE, buildSourceFixture, buildTargetPaths, type Fixture, emptyTriggerStore } from './team-move.fixture.js';
 import type { CarryIndex } from './team-move.types.js';
 
 // Fake credentials are assembled at run time so secret scanners do not flag this file.
@@ -56,6 +56,7 @@ describe('team move: carry uncommitted changes and preflight', () => {
 
   const exporter = (): TeamMoveExporter =>
     new TeamMoveExporter({
+      getTriggers: async () => [],
       home: fx.home,
       getTeams: () => sourceStorage.getTeams(),
       getProjects: () => sourceStorage.getProjects(),
@@ -66,6 +67,7 @@ describe('team move: carry uncommitted changes and preflight', () => {
 
   const importer = (): TeamMoveImporter =>
     new TeamMoveImporter({
+      triggers: emptyTriggerStore(),
       home: targetHome,
       crewlyVersion: '9.9.9',
       storage: targetStorage,
@@ -164,6 +166,7 @@ describe('team move: carry uncommitted changes and preflight', () => {
   it('still blocks a repository whose changes do not fit, and says why', async () => {
     await dirty();
     const small = new TeamMoveExporter({
+      getTriggers: async () => [],
       home: fx.home,
       getTeams: () => sourceStorage.getTeams(),
       getProjects: () => sourceStorage.getProjects(),

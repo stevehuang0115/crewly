@@ -27,6 +27,8 @@
  * @module services/team-move/team-move-exporter
  */
 
+import type { Trigger } from '../../types/v2/trigger.types.js';
+import { TRIGGER_RECORD, isTriggerStorePath, selectLiveTeamTriggers } from './team-move-triggers.js';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { createWriteStream } from 'node:fs';
@@ -88,7 +90,6 @@ const CORE_PROJECT_DIRS: ReadonlySet<string> = new Set([
   'tickets',
   'missions',
   'requests',
-  'triggers',
   'knowledge',
   'wiki',
   'goals',
@@ -128,6 +129,8 @@ export interface ExportDeps {
   getProjects: () => Promise<Project[]>;
   crewlyVersion: string;
   source: { instanceId: string | null; deviceName: string | null };
+  /** Every trigger on this machine, from the running engine. */
+  getTriggers: () => Promise<Trigger[]>;
   /** Exact secret values this machine holds (env, settings). */
   knownSecrets?: () => Promise<SecretEnvValue[]>;
   inspectRepo?: typeof defaultInspectRepo;
@@ -902,6 +905,11 @@ export class TeamMoveExporter {
     await staging.writeJson('records/scheduled-messages.json', { messages: mine });
     counts['scheduledMessages'] = mine.length;
 
+    // The team's schedules and event watchers, from the live trigger store.
+    const triggers = selectLiveTeamTriggers(await this.deps.getTriggers(), team.id);
+    await staging.writeJson(TRIGGER_RECORD, { triggers });
+    counts['triggers'] = triggers.length;
+
     // The Slack channel mapping of the team, so the target reuses the same channel.
     const slackFile = await safeReadJson<{ mappings?: Array<Record<string, unknown>> }>(path.join(this.home, 'slack-team-channels.json'), {});
     const allMappings = Array.isArray(slackFile.mappings) ? slackFile.mappings : [];
@@ -970,6 +978,8 @@ export class TeamMoveExporter {
         }
         for await (const f of walkFiles(root.dir, PROJECT_SCRATCH_DIRS)) {
           const rel = root.prefix ? `${root.prefix}/${f.rel}` : f.rel;
+          // A trigger store is machine state of all teams; the team's own travel in records/.
+          if (isTriggerStorePath(rel)) continue;
           candidates.push({ abs: f.abs, rel, size: f.size, priority: CORE_PROJECT_DIRS.has(rel.split('/')[0]!) ? 0 : 1 });
         }
       }
@@ -998,7 +1008,6 @@ export class TeamMoveExporter {
       counts['tickets'] = (counts['tickets'] ?? 0) + staging.files().filter((f) => f.path.startsWith(`projects/${project.id}/data/tickets/`) && f.path.endsWith('.md')).length;
       counts['missionFiles'] = (counts['missionFiles'] ?? 0) + count('missions');
       counts['requestFiles'] = (counts['requestFiles'] ?? 0) + count('requests');
-      counts['triggerFiles'] = (counts['triggerFiles'] ?? 0) + count('triggers');
       out.push(entry);
     }
     return out;

@@ -21,6 +21,7 @@ import type { Team, TeamTriggerSpec } from '../../types/index.js';
 import type { Trigger, CreateTriggerInput } from '../../types/v2/trigger.types.js';
 import { DEFAULT_MAX_IDLE_FIRES, isSpecManaged } from '../../types/v2/trigger.types.js';
 import type { TriggerEngine } from './trigger-engine.service.js';
+import type { StorageEvent } from '../core/storage.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 
 // ---------------------------------------------------------------------------
@@ -164,6 +165,19 @@ export class TeamTriggerReconciler {
     });
 
     return summary;
+  }
+
+  /**
+   * Applies one team storage event: a save converges the team's declared
+   * triggers, a delete removes all of them. A team that moved to another
+   * machine ('team-moved-away') keeps its triggers here until the team move
+   * has saved them; the move removes them itself (team-move-archive).
+   *
+   * @param event - The storage event
+   */
+  async handleStorageEvent(event: StorageEvent): Promise<void> {
+    if (event.kind === 'team-saved') await this.reconcile(event.team);
+    else if (event.kind === 'team-deleted') await this.unregisterAll(event.teamId);
   }
 
   /**
