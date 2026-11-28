@@ -2,7 +2,7 @@
  * Source-side stop, archive and rollback of a moved team.
  *
  * `archive` stops the team and hides it: its folder, open work items, open
- * decisions, chat channels and Slack mapping are saved under
+ * decisions, triggers, chat channels and Slack mapping are saved under
  * `~/.crewly/team-moves/<moveId>/archive/` and taken out of the live stores, so
  * nothing on this machine wakes agents that now live elsewhere. The archive is
  * kept 7 days. `restore` puts everything back and starts the team (rollback).
@@ -19,6 +19,8 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { TEAM_MOVE_CONSTANTS } from '../../constants.js';
 import type { ScheduledMessage, Team } from '../../types/index.js';
+import type { Trigger } from '../../types/v2/trigger.types.js';
+import { selectTeamTriggers, triggerLabel, type TeamMoveTriggerStore } from './team-move-triggers.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { safeReadJson } from '../../utils/file-io.utils.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
@@ -36,6 +38,8 @@ interface ArchiveRecords {
   channelIds: string[];
   mapping: Record<string, unknown> | null;
   scheduledMessages: ScheduledMessage[];
+  /** The team's triggers in every status; absent in archives made before they were saved. */
+  triggers?: Trigger[];
 }
 
 /** `archive/meta.json`. */
@@ -74,6 +78,8 @@ export interface ArchiveDeps {
     list(): Promise<Array<DecisionLike & Record<string, unknown>>>;
     setStatus(id: string, status: 'open' | 'cancelled'): Promise<void>;
   };
+  /** This machine's trigger store. */
+  triggers: TeamMoveTriggerStore;
   slack: {
     /** Remove the team's channel mapping (the Slack channel itself stays). Returns the removed mapping. */
     unlink(teamId: string): Promise<Record<string, unknown> | null>;
@@ -87,6 +93,8 @@ export interface RestoreOutcome {
   restored: boolean;
   started: boolean;
   error?: string;
+  /** Archived triggers that could not be put back, by name and reason. */
+  triggerFailures?: string[];
 }
 
 /** The archiver. */
@@ -155,6 +163,7 @@ export class TeamMoveArchiver {
         channelIds: chat.channels.map((c) => String(c['id'])),
         mapping: null,
         scheduledMessages: scheduled,
+        triggers: selectTeamTriggers(await this.deps.triggers.list(), teamId),
       };
       return out;
     });
@@ -164,6 +173,8 @@ export class TeamMoveArchiver {
       const removed = await this.deps.pool.removeWorkItems(records.workItems.map((w) => w.id));
       for (const decisionId of records.decisionIds) await this.deps.decisions.setStatus(decisionId, 'cancelled');
       for (const m of records.scheduledMessages) await this.deps.storage.deleteScheduledMessage(m.id);
+      // Only what the snapshot saved: nothing leaves the store without a copy to restore it from.
+      await this.deps.triggers.remove((records.triggers ?? []).map((t) => t.id));
       setChannelsArchived(this.home, records.channelIds, true);
       const mapping = await this.deps.slack.unlink(teamId);
       return { removed, mapping };
@@ -205,7 +216,7 @@ export class TeamMoveArchiver {
     const teamDir = path.join(this.home, 'teams', meta.teamId);
     const journal = new MoveJournal(moveId, this.home, this.now);
 
-    await journal.run('restore:records', async () => {
+    const restored = await journal.run('restore:records', async () => {
       // The Slack mapping first, so the returning team keeps its channel.
       if (meta.records.mapping) await this.deps.slack.adopt(meta.records.mapping);
       setChannelsArchived(this.home, meta.records.channelIds, false);
@@ -213,7 +224,13 @@ export class TeamMoveArchiver {
       for (const decisionId of meta.records.decisionIds) await this.deps.decisions.setStatus(decisionId, 'open');
       const have = new Set((await this.deps.storage.getScheduledMessages()).map((m) => m.id));
       for (const m of meta.records.scheduledMessages) if (!have.has(m.id)) await this.deps.storage.saveScheduledMessage(m);
-      return { restored: true };
+      // Before the team returns, so its declared schedules are found rather than recreated.
+      const triggers = await this.deps.triggers.restore(meta.records.triggers ?? []);
+      return {
+        restored: true,
+        triggerIds: triggers.imported.map((t) => t.id),
+        triggerFailures: triggers.failed.map((f) => `${triggerLabel(f.row)}: ${f.reason}`),
+      };
     });
 
     await journal.run('restore:team', async () => {
@@ -229,6 +246,9 @@ export class TeamMoveArchiver {
       return { restored: true };
     });
 
+    // The team is back: a one-shot that came due meanwhile may fire now.
+    await this.deps.triggers.arm(restored?.triggerIds ?? []);
+
     let started = false;
     let error: string | undefined;
     if (options.start !== false) {
@@ -237,7 +257,8 @@ export class TeamMoveArchiver {
       error = result.error;
     }
     await fs.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ ...meta, state: 'restored' }, null, 2));
-    return { restored: true, started, ...(error ? { error } : {}) };
+    const lost = restored?.triggerFailures ?? [];
+    return { restored: true, started, ...(error ? { error } : {}), ...(lost.length > 0 ? { triggerFailures: lost } : {}) };
   }
 
   /**
@@ -256,7 +277,7 @@ export class TeamMoveArchiver {
       const dir = this.archiveDir(moveId);
       if (await pathExists(dir)) {
         await fs.rm(path.join(dir, 'team'), { recursive: true, force: true });
-        await fs.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ ...meta, state: 'purged', records: { ...meta.records, workItems: [] } }, null, 2));
+        await fs.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ ...meta, state: 'purged', records: { ...meta.records, workItems: [], triggers: [] } }, null, 2));
       }
       purged.push(moveId);
     }

@@ -4622,13 +4622,7 @@ void (async () => {
 					}
 
 					// Ongoing: subscribe to storage events.
-					this.storageService.onStorageEvent(async (event) => {
-						if (event.kind === 'team-saved') {
-							await reconciler.reconcile(event.team);
-						} else if (event.kind === 'team-deleted' || event.kind === 'team-moved-away') {
-							await reconciler.unregisterAll(event.teamId);
-						}
-					});
+					this.storageService.onStorageEvent((event) => reconciler.handleStorageEvent(event));
 
 					this.logger.info('TeamTriggerReconciler subscribed to storage events', {
 						initialTeams: existingTeams.length,

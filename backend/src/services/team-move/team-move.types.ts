@@ -435,6 +435,13 @@ export interface TeamMoveMemoryReport {
   warnings: string[];
 }
 
+/** What an import did with the team's triggers. */
+export interface TeamMoveTriggerReport {
+  imported: string[];
+  skipped: Array<{ trigger: string; reason: string }>;
+  failed: Array<{ trigger: string; reason: string }>;
+}
+
 /** The target's import report (owner-facing). */
 export interface TeamMoveImportReport {
   /** Moved counts by kind; Cloud shows these. */
@@ -458,6 +465,8 @@ export interface TeamMoveImportReport {
   warnings: string[];
   /** Things not moved (copied from the manifest). */
   notMoved: string[];
+  /** The team's schedules by name; absent when the package carries none (an older source). */
+  triggers?: TeamMoveTriggerReport;
   /** Project memory that is not here as it was on the source; absent when it all arrived unchanged. */
   memory?: TeamMoveMemoryReport;
   crewlyVersion: string;

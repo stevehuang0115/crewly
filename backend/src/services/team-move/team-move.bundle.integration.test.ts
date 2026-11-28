@@ -14,7 +14,7 @@ import { StorageService } from '../core/storage.service.js';
 import { generateTargetKeyPair } from './team-move-crypto.js';
 import { TeamMoveBlockedError, TeamMoveExporter, buildEncryptedPackage, type ExportDeps } from './team-move-exporter.js';
 import { TeamMoveImporter } from './team-move-importer.js';
-import { FIXTURE, buildSourceFixture, buildTargetPaths, type Fixture } from './team-move.fixture.js';
+import { FIXTURE, buildSourceFixture, buildTargetPaths, type Fixture, emptyTriggerStore } from './team-move.fixture.js';
 
 const MOVE_ID = 'move-bundle-00000001';
 const F = FIXTURE;
@@ -51,6 +51,7 @@ describe('team move: repositories carried as git bundles', () => {
 
   const exporter = (extra: Partial<ExportDeps> = {}): TeamMoveExporter =>
     new TeamMoveExporter({
+      getTriggers: async () => [],
       home: fx.home,
       getTeams: () => sourceStorage.getTeams(),
       getProjects: () => sourceStorage.getProjects(),
@@ -62,6 +63,7 @@ describe('team move: repositories carried as git bundles', () => {
 
   const importer = (): TeamMoveImporter =>
     new TeamMoveImporter({
+      triggers: emptyTriggerStore(),
       home: targetHome,
       crewlyVersion: '9.9.9',
       storage: targetStorage,
@@ -263,6 +265,7 @@ describe('team move: repositories carried as git bundles', () => {
       const file = path.join(fx.root, 'package-unreachable.enc');
       const enc = await buildEncryptedPackage(staging, file, key.publicKey, MOVE_ID);
       const report = await new TeamMoveImporter({
+      triggers: emptyTriggerStore(),
         home: targetHome,
         crewlyVersion: '9.9.9',
         storage: targetStorage,

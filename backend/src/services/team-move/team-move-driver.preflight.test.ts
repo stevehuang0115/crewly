@@ -77,6 +77,7 @@ describe('TeamMoveDriver preflight', () => {
       source: new EventEmitter() as never,
       identity: async () => ({ instanceId: 'src', deviceName: 'Mac' }),
       exporter: new TeamMoveExporter({
+      getTriggers: async () => [],
         home: fx.home,
         getTeams: () => storage.getTeams(),
         getProjects: () => storage.getProjects(),
@@ -232,7 +233,7 @@ describe('TeamMoveDriver preflight', () => {
         cloud: cloud as unknown as TeamMoveCloudClient,
         source: new EventEmitter() as never,
         identity: async () => ({ instanceId: 'src', deviceName: 'Mac' }),
-        exporter: new TeamMoveExporter({ home: fx.home, getTeams: () => storage.getTeams(), getProjects: () => storage.getProjects(), crewlyVersion: '9.9.9', source: { instanceId: 'src', deviceName: 'Mac' }, knownSecrets: async () => [] }),
+        exporter: new TeamMoveExporter({ getTriggers: async () => [], home: fx.home, getTeams: () => storage.getTeams(), getProjects: () => storage.getProjects(), crewlyVersion: '9.9.9', source: { instanceId: 'src', deviceName: 'Mac' }, knownSecrets: async () => [] }),
         importer: () => {
           throw new Error('not used');
         },

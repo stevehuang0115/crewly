@@ -36,6 +36,7 @@ import {
   validateCreateTriggerInput,
   isRecurringTrigger,
 } from '../../types/v2/index.js';
+import { isSpecManaged, isValidTriggerType, TRIGGER_STATUSES } from '../../types/v2/trigger.types.js';
 import { getNextRunTime } from '../workflow/cron-task.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
@@ -101,6 +102,33 @@ export interface TriggerFireResult {
   productive: boolean;
   /** ISO timestamp of the fire */
   firedAt: string;
+}
+
+/** What {@link TriggerEngine.restoreTriggers} did with the rows it was given. */
+export interface TriggerRestoreResult {
+  /** Triggers added to the store */
+  imported: Trigger[];
+  /** Rows left out because the store already holds them */
+  skipped: Array<{ row: Trigger; reason: string }>;
+  /** Rows that are not usable triggers */
+  failed: Array<{ row: unknown; reason: string }>;
+}
+
+/**
+ * Why a stored row cannot be held by the engine. Deliberately structural: a row
+ * the source engine ran must not be refused by newer creation rules.
+ *
+ * @param row - A stored trigger row
+ * @returns The problem, or null when the row is usable
+ */
+function storedTriggerProblem(row: unknown): string | null {
+  if (typeof row !== 'object' || row === null) return 'not an object';
+  const t = row as Partial<Trigger>;
+  if (typeof t.id !== 'string' || t.id.length === 0) return 'no id';
+  if (typeof t.config !== 'object' || t.config === null || !isValidTriggerType(String(t.config.type))) return 'unknown trigger type';
+  if (typeof t.action !== 'object' || t.action === null) return 'no action';
+  if (!(TRIGGER_STATUSES as readonly string[]).includes(String(t.status))) return 'unknown status';
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -494,6 +522,76 @@ export class TriggerEngine {
     await this.persistTriggers();
     this.logger.info('Trigger deleted', { id });
     return true;
+  }
+
+  /**
+   * Add triggers that already exist elsewhere (a team move or its rollback),
+   * keeping their ids, counters and status. Rows whose id is already here are
+   * skipped, as is a team-spec schedule this store already holds under the same
+   * team and name. One-shot timers are not armed: the caller does that with
+   * {@link armTriggers} once the team the triggers act on is in place.
+   *
+   * @param rows - Stored trigger rows, e.g. from a move package
+   * @returns What was added, skipped and refused
+   * @throws When the store cannot be written; nothing is added then
+   */
+  public async restoreTriggers(rows: readonly unknown[]): Promise<TriggerRestoreResult> {
+    const result: TriggerRestoreResult = { imported: [], skipped: [], failed: [] };
+    for (const row of rows) {
+      const problem = storedTriggerProblem(row);
+      if (problem) {
+        result.failed.push({ row, reason: problem });
+        continue;
+      }
+      const trigger = structuredClone(row) as Trigger;
+      if (this.triggers.has(trigger.id)) {
+        result.skipped.push({ row: trigger, reason: 'a trigger with this id is already here' });
+        continue;
+      }
+      const sameSchedule =
+        isSpecManaged(trigger) &&
+        Array.from(this.triggers.values()).some(
+          (t) => isSpecManaged(t) && t.teamId === trigger.teamId && t.name === trigger.name,
+        );
+      if (sameSchedule) {
+        result.skipped.push({ row: trigger, reason: 'the team schedule of this name is already here' });
+        continue;
+      }
+      this.triggers.set(trigger.id, trigger);
+      result.imported.push(trigger);
+    }
+    if (result.imported.length > 0) {
+      try {
+        await this.persistTriggers();
+      } catch (error) {
+        for (const trigger of result.imported) this.triggers.delete(trigger.id);
+        throw error;
+      }
+      this.logger.info('Triggers restored', { count: result.imported.length });
+    }
+    return result;
+  }
+
+  /**
+   * Arm the one-shot timers of triggers added by {@link restoreTriggers}. A
+   * one-shot whose time passed without a fire fires now; one that already
+   * fired for its time is left alone, so repeating the call (a resumed import)
+   * fires nothing twice. Cron and signal triggers need no arming. Does nothing
+   * while the engine is stopped (start
+   * arms every active one-shot).
+   *
+   * @param ids - Trigger ids
+   */
+  public armTriggers(ids: readonly string[]): void {
+    if (!this.running) return;
+    for (const id of ids) {
+      const trigger = this.triggers.get(id);
+      if (!trigger || trigger.status !== 'active' || trigger.config.type !== 'time') continue;
+      const dueAt = this.resolveOneShotTargetMs(trigger);
+      if (dueAt === undefined) continue;
+      if (trigger.lastFiredAt && Date.parse(trigger.lastFiredAt) >= dueAt) continue;
+      this.scheduleOneShot(trigger);
+    }
   }
 
   // ---------------------------------------------------------------------------

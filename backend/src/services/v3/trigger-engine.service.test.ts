@@ -1324,4 +1324,88 @@ describe('team pause (specs/2026-10-04-team-pause.md)', () => {
     await engine.fire(trigger);
     expect(handler).toHaveBeenCalledTimes(1);
   });
+
+  describe('restoreTriggers and armTriggers', () => {
+    const stored = (id: string, overrides: Partial<Trigger> = {}): Trigger => ({
+      id,
+      type: 'time',
+      config: { type: 'time', cronExpression: '0 9 * * 1' },
+      action: { runReconciler: true },
+      status: 'active',
+      createdBy: 'agent',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      fireCount: 7,
+      teamId: 'team-m',
+      ...overrides,
+    } as Trigger);
+
+    it('adds rows as stored and skips ids already here', async () => {
+      const first = await engine.restoreTriggers([stored('r-1')]);
+      const second = await engine.restoreTriggers([stored('r-1', { fireCount: 0 }), stored('r-2', { status: 'paused' })]);
+
+      expect(first.imported.map((t) => t.id)).toEqual(['r-1']);
+      expect(second.imported.map((t) => t.id)).toEqual(['r-2']);
+      expect(second.skipped).toEqual([expect.objectContaining({ reason: 'a trigger with this id is already here' })]);
+      expect(engine.get('r-1')?.fireCount).toBe(7);
+      expect(engine.get('r-2')?.status).toBe('paused');
+    });
+
+    it('skips a team schedule that is already here under another id', async () => {
+      const spec = { managedBy: 'team-spec' as const, name: 'weekly' };
+      await engine.restoreTriggers([stored('s-1', spec)]);
+
+      const result = await engine.restoreTriggers([stored('s-2', spec), stored('s-3', { ...spec, teamId: 'team-x' })]);
+
+      expect(result.imported.map((t) => t.id)).toEqual(['s-3']);
+      expect(result.skipped.map((s) => s.row.id)).toEqual(['s-2']);
+    });
+
+    it('refuses rows the engine cannot hold, with the reason', async () => {
+      const result = await engine.restoreTriggers([null, { id: '' }, { id: 'x', config: { type: 'nope' } }, stored('y', { action: undefined }), stored('z', { status: 'odd' as never })]);
+
+      expect(result.imported).toEqual([]);
+      expect(result.failed.map((f) => f.reason)).toEqual(['not an object', 'no id', 'unknown trigger type', 'no action', 'unknown status']);
+      expect(engine.list()).toEqual([]);
+    });
+
+    it('adds nothing when the store cannot be written', async () => {
+      const { atomicWriteJsonWithGuard } = await import('../../utils/integrity-guarded-write.utils.js');
+      jest.mocked(atomicWriteJsonWithGuard).mockRejectedValueOnce(new Error('disk full'));
+
+      await expect(engine.restoreTriggers([stored('w-1')])).rejects.toThrow('disk full');
+
+      expect(engine.get('w-1')).toBeUndefined();
+    });
+
+    it('arms a restored one-shot only when asked, firing one that came due', async () => {
+      const handler = jest.fn().mockResolvedValue(undefined);
+      engine.setActionHandler(handler);
+      await engine.start();
+      await engine.restoreTriggers([stored('o-1', { config: { type: 'time', fireAt: new Date(Date.now() - 1000).toISOString() } })]);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(handler).not.toHaveBeenCalled();
+
+      engine.armTriggers(['o-1', 'missing']);
+      await new Promise((resolve) => setImmediate(resolve));
+      engine.armTriggers(['o-1']);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      engine.stop();
+    });
+
+    it('does not fire a restored one-shot that already fired for its time', async () => {
+      const handler = jest.fn().mockResolvedValue(undefined);
+      engine.setActionHandler(handler);
+      await engine.start();
+      const fireAt = new Date(Date.now() - 60_000).toISOString();
+      await engine.restoreTriggers([stored('o-2', { config: { type: 'time', fireAt }, lastFiredAt: new Date(Date.now() - 30_000).toISOString() })]);
+
+      engine.armTriggers(['o-2']);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(handler).not.toHaveBeenCalled();
+      engine.stop();
+    });
+  });
 });

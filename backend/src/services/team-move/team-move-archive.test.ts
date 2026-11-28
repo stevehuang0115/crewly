@@ -1,4 +1,5 @@
 import * as fs from 'node:fs/promises';
+import { emptyTriggerStore } from './team-move.fixture.js';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { TeamMoveArchiver, type ArchiveDeps } from './team-move-archive.js';
@@ -16,6 +17,7 @@ describe('TeamMoveArchiver edges', () => {
   const archiver = (teams: unknown[] = []): { a: TeamMoveArchiver; stop: jest.Mock } => {
     const stop = jest.fn();
     const deps = {
+      triggers: emptyTriggerStore(),
       home,
       storage: { getTeams: async () => teams, saveTeam: jest.fn(), detachTeamForMove: jest.fn(), getScheduledMessages: async () => [], saveScheduledMessage: jest.fn(), deleteScheduledMessage: jest.fn() },
       runtime: { stopTeam: stop, startTeam: jest.fn() },

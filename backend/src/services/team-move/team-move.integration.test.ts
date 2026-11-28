@@ -18,7 +18,7 @@ import { walkFiles } from './team-move-fs.js';
 import { TeamMoveImporter, TeamMoveImportError } from './team-move-importer.js';
 import { MoveJournal } from './team-move-journal.js';
 import { TeamMoveSecretScanError } from './team-move-secret-scan.js';
-import { FIXTURE, buildSourceFixture, buildTargetPaths, type Fixture } from './team-move.fixture.js';
+import { FIXTURE, buildSourceFixture, buildTargetPaths, type Fixture, emptyTriggerStore } from './team-move.fixture.js';
 
 // Fake credentials are assembled at run time so secret scanners do not flag this file.
 const FAKE_SLACK = ['xoxb', '123456789012', '123456789012', 'abcdefghijklmnop'].join('-');
@@ -53,6 +53,7 @@ describe('team move between two homes', () => {
 
   const exporter = (overrides: Partial<ConstructorParameters<typeof TeamMoveExporter>[0]> = {}): TeamMoveExporter =>
     new TeamMoveExporter({
+      getTriggers: async () => [],
       home: fx.home,
       getTeams: () => sourceStorage.getTeams(),
       getProjects: () => sourceStorage.getProjects(),
@@ -64,6 +65,7 @@ describe('team move between two homes', () => {
 
   const importer = (extra: Partial<ConstructorParameters<typeof TeamMoveImporter>[0]> = {}): TeamMoveImporter =>
     new TeamMoveImporter({
+      triggers: emptyTriggerStore(),
       home: targetHome,
       crewlyVersion: '9.9.9',
       storage: targetStorage,
@@ -558,6 +560,7 @@ describe('team move between two homes', () => {
     const unlinked: string[] = [];
     let adoptedBack: Record<string, unknown> | null = null;
     const archiver = new TeamMoveArchiver({
+      triggers: emptyTriggerStore(),
       home: fx.home,
       storage: {
         getTeams: () => sourceStorage.getTeams(),
@@ -647,6 +650,7 @@ describe('team move between two homes', () => {
   it('purges archives after their 7 days', async () => {
     const clock = { now: '2026-10-10T00:00:00.000Z' };
     const archiver = new TeamMoveArchiver({
+      triggers: emptyTriggerStore(),
       home: fx.home,
       now: () => clock.now,
       storage: {
