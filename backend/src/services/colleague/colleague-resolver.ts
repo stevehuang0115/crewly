@@ -45,10 +45,17 @@ export function toCandidate(entry: DirectoryEntry): ColleagueCandidate {
   return { name: entry.name, team: entry.team, machine: entry.machine, session: entry.agentSession };
 }
 
+/** @param name - Display name @returns It without a trailing `(Team)` */
+function bareName(name: string): string {
+  return name.replace(/\s*\([^)]*\)\s*$/u, '').trim();
+}
+
 /**
- * Pick the colleague a query names. Matches the agent session exactly, or the
- * display name case-insensitively (a leading `@` is ignored). `team` narrows a
- * name two machines share. Two matches are never guessed between.
+ * Pick the colleague a query names. An exact agent session wins; otherwise the
+ * display name, case-insensitively (a leading `@` is ignored), with or without
+ * its `(Team)` suffix — "Ella" means both "Ella" here and "Ella (Marketing)"
+ * elsewhere. `team` narrows a name two machines share. Two matches are never
+ * guessed between.
  *
  * @param entries - The account directory
  * @param query - What the agent typed
@@ -72,10 +79,10 @@ export function resolveColleague(
 
   const lower = q.toLowerCase();
   const team = opts.team?.trim().toLowerCase();
-  const matches = agents.filter(
-    (e) =>
-      (e.agentSession === q || e.name.toLowerCase() === lower) &&
-      (!team || (e.team ?? '').toLowerCase() === team),
+  const bySession = agents.filter((e) => e.agentSession === q);
+  const named = (e: ColleagueEntry): boolean => e.name.toLowerCase() === lower || bareName(e.name).toLowerCase() === lower;
+  const matches = (bySession.length > 0 ? bySession : agents.filter(named)).filter(
+    (e) => !team || (e.team ?? '').toLowerCase() === team,
   );
   const others = matches.filter((e) => e.agentSession !== opts.fromSession);
   // The same colleague listed twice (Cloud and local both know it) is one.

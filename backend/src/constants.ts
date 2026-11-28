@@ -5574,22 +5574,8 @@ export const ROOM_CONTEXT_CONSTANTS = {
  * a human's message does; those rows carry one of the markers below and are
  * never owner evidence.
  */
-/**
- * An agent's post in a shared Slack room whose thread has agents on ANOTHER
- * machine (CREW-860). Cloud drops a cross-machine post that @-names nobody (loop
- * guard, by design), so the harness either adds the @names of the other-machine
- * agents already in that thread, or tells the author nobody there got it.
- */
+/** Limits for the other-machine "did not get it" note (CREW-860, CREW-1318). */
 export const CROSS_MACHINE_MENTION_CONSTANTS = {
-	/** Kill switch: set this env var to the OFF value to stop adding @names (the author is told instead) */
-	AUTO_ADD_ENV: 'CREWLY_CROSS_MACHINE_AUTO_MENTION',
-	AUTO_ADD_OFF_VALUE: 'off',
-	/**
-	 * Agent turns in a row (no human between) after which no @name is added: the
-	 * hand-off is left to the author, well below Cloud's turn cap, so a thread of
-	 * agents cannot keep itself alive through this feature.
-	 */
-	MAX_CONSECUTIVE_AGENT_TURNS: 4,
 	/** Most threads messages read to find who is in the thread */
 	THREAD_READ_LIMIT: 200,
 } as const;

@@ -470,13 +470,11 @@ describe('chat-v2 controller (REST)', () => {
     const HUMAN = { senderType: 'user', senderId: 'owner', metadata: {}, mentions: [] };
 
     /** Posts as sess-a into a Slack room whose directory holds `entries` and whose thread holds `thread`. */
-    async function post(entries: unknown[], thread: unknown[], content: string, env: Record<string, string> = {}) {
+    async function post(entries: unknown[], thread: unknown[], content: string, ambiguity: string | null = null) {
       const { app, service } = buildApp();
       const dir = await import('../../services/slack/slack-directory.service.js');
       const spy = jest.spyOn(dir, 'getSlackDirectoryService').mockReturnValue({ list: async () => entries } as never);
       jest.spyOn(service, 'listThreadForBridge').mockReturnValue(thread as never);
-      const saved = { ...process.env };
-      Object.assign(process.env, env);
       try {
         const created = await request(app).post('/api/chat/channels').send({ agentSession: 'sess-a', name: 'Ch' });
         const chId = created.body.data.id;
@@ -484,36 +482,31 @@ describe('chat-v2 controller (REST)', () => {
         mockTeamChannels.current = {
           findByChatChannelId: jest.fn((id: string) => (id === chId ? { chatChannelId: chId, slackChannelId: 'C0CE', slackChannelName: 'ce' } : null)),
           heldReplyFor: jest.fn(async () => null),
+          mentionAmbiguityNote: jest.fn(async () => ambiguity),
         };
         return await request(app).post(`/api/chat/channels/${chId}/messages`).set('X-Agent-Session', 'sess-a').send({ content, threadId: root.body.data.id });
       } finally {
-        for (const k of Object.keys(env)) delete process.env[k];
-        Object.assign(process.env, saved);
         spy.mockRestore();
         mockTeamChannels.current = null;
         service.close();
       }
     }
 
-    it('(b) a post with no @name gets the @name of the other-machine agent in the thread, and the author is told', async () => {
-      const res = await post([ENTRY('Owen', 'ce-owen-1'), ENTRY('Lead', 'ce-lead-1')], [HUMAN, OWEN_POSTED], 'Here is the enquiry form.');
+    it('a cross-machine post into a thread with other-machine participants is stored as written, with no mention added (CREW-1318)', async () => {
+      const bot = { ...ENTRY('Atlas', 'think-atlas-1'), botUserId: 'UATLAS' };
+      const namesake = { ...ENTRY('Ella (Marketing)', 'mkt-ella-1'), botUserId: 'UELLAMKT' };
+      const thread = [HUMAN, { senderType: 'user', senderId: 'u', metadata: { remoteAgentSession: 'think-atlas-1' }, mentions: ['mkt-ella-1'] }];
+      const res = await post([bot, namesake, ENTRY('Owen', 'ce-owen-1')], thread, 'Here is the file.');
       expect(res.status).toBe(201);
-      expect(res.body.data.content).toBe('@Owen Here is the enquiry form.');
-      expect(res.body.crossMachine).toMatchObject({ added: ['Owen'], unreached: [] });
-      expect(res.body.crossMachine.note).toContain('Added @Owen');
+      expect(res.body.data.content).toBe('Here is the file.');
+      expect(res.body.crossMachine.unreached).toEqual(['Atlas', 'Ella (Marketing)']);
+      expect(res.body.crossMachine.note).toContain('Atlas: <@UATLAS>');
     });
 
-    it('(b) an other-machine agent with its own bot is added as <@BOTID>, never a plain @Name Cloud would drop', async () => {
-      const bot = { ...ENTRY('Owen', 'ce-owen-1'), botUserId: 'UOWEN' };
-      const res = await post([bot], [HUMAN, OWEN_POSTED], 'Here is the enquiry form.');
-      expect(res.body.data.content).toBe('<@UOWEN> Here is the enquiry form.');
-    });
-
-    it('(c) with auto-add off the post goes unchanged and the author is told it reached nobody', async () => {
-      const res = await post([ENTRY('Owen', 'ce-owen-1')], [HUMAN, OWEN_POSTED], 'Here is the form.', { CREWLY_CROSS_MACHINE_AUTO_MENTION: 'off' });
-      expect(res.body.data.content).toBe('Here is the form.');
-      expect(res.body.crossMachine.unreached).toEqual(['Owen']);
-      expect(res.body.crossMachine.note).toContain('reached nobody on iriss-air');
+    it('tells the author when a name in the post was too ambiguous to tag', async () => {
+      const res = await post([ENTRY('Owen', 'ce-owen-1')], [HUMAN], '@Ella can you check?', '"@Ella" matches more than one agent');
+      expect(res.body.data.content).toBe('@Ella can you check?');
+      expect(res.body.mentionNote).toBe('"@Ella" matches more than one agent');
     });
 
     it('a post that already names an other-machine agent says nothing new', async () => {
@@ -528,9 +521,10 @@ describe('chat-v2 controller (REST)', () => {
       expect(res.body).not.toHaveProperty('crossMachine');
     });
 
-    it('never adds an other-machine agent that is not in the thread', async () => {
+    it('does not report an other-machine agent that is not in the thread', async () => {
       const res = await post([ENTRY('Owen', 'ce-owen-1'), ENTRY('Lead', 'ce-lead-1')], [HUMAN, OWEN_POSTED], 'Done.');
-      expect(res.body.data.content).not.toContain('Lead');
+      expect(res.body.data.content).toBe('Done.');
+      expect(res.body.crossMachine.unreached).toEqual(['Owen']);
     });
   });
 

@@ -1509,6 +1509,96 @@ describe('mirrorOutbound', () => {
     });
   });
 
+  describe('namesakes on two machines (CREW-1318)', () => {
+    const ids = new FakeIdentities();
+    const local = (session: string, displayName: string, botUserId: string) =>
+      ids.records.set(session, {
+        agentSession: session, displayName, appId: `A-${botUserId}`, status: 'installed', botUserId, botToken: 'xoxb', announcedIn: [], invitedTo: [],
+      } as unknown as SlackAgentIdentityRecord);
+    const elsewhere = (name: string, botUserId: string | null, inChannel: boolean, session = 'pa-ella') => ({
+      name, mention: null, botUserId, agentSession: session, team: 'Personal Assistant', machine: 'studio', source: 'this-account', inChannel, kind: 'agent',
+    });
+    const withDirectory = (entries: unknown[]) =>
+      setSlackDirectoryService({ list: async () => entries } as unknown as SlackDirectoryService);
+    const members = (list: string[] | null) => {
+      (slack as unknown as { listChannelMembers?: (c: string) => Promise<string[]> }).listChannelMembers = list ? async () => list : undefined;
+    };
+
+    /** This machine: one "Ella" with a bot, on the room's roster. */
+    async function room(name = 'Ella') {
+      ids.records.clear();
+      identities = ids;
+      service = makeService();
+      isLocal = (s) => s.startsWith('mkt-');
+      local('mkt-ella', name, 'UELLALOCAL');
+      await service.ensureTeamChannel(team());
+      chat.setHuddleMembers(service.findBySlackChannelId('C1')!.chatChannelId, ['mkt-ella']);
+    }
+    afterEach(() => setSlackDirectoryService(null));
+
+    it('a post with no @ is never given a mention', async () => {
+      await room();
+      withDirectory([elsewhere('Ella (Personal Assistant)', 'UELLAPA', true)]);
+      const text = 'Ella here: the form is attached, Atlas has seen it.';
+      expect(await service.linkAgentMentions(text, 'C1')).toBe(text);
+      expect(await service.mentionAmbiguityNote(text, 'C1')).toBeNull();
+    });
+
+    it('the local one does not win a bare @Name when both are in the channel, and the author is told', async () => {
+      await room();
+      members(['UELLALOCAL', 'UELLAPA']);
+      withDirectory([elsewhere('Ella (Personal Assistant)', 'UELLAPA', true)]);
+      expect(await service.linkAgentMentions('@Ella please check', 'C1')).toBe('@Ella please check');
+      const note = await service.mentionAmbiguityNote('@Ella please check', 'C1');
+      expect(note).toContain('"@Ella" matches more than one agent');
+      expect(note).toContain('<@UELLALOCAL>');
+      expect(note).toContain('Ella (Personal Assistant) [Personal Assistant, studio]: <@UELLAPA>');
+    });
+
+    it('the full name and the <@ID> tag exactly one of them', async () => {
+      await room('Ella (Marketing)');
+      withDirectory([elsewhere('Ella (Personal Assistant)', 'UELLAPA', true)]);
+      expect(await service.linkAgentMentions('@Ella (Personal Assistant) and <@UELLALOCAL>', 'C1')).toBe('<@UELLAPA> and <@UELLALOCAL>');
+    });
+
+    it('the local roster alone cannot rule out a namesake elsewhere when Slack cannot list members', async () => {
+      await room();
+      members(null);
+      withDirectory([elsewhere('Ella (Personal Assistant)', 'UELLAPA', false)]);
+      expect(await service.linkAgentMentions('@Ella go', 'C1')).toBe('@Ella go');
+      expect(await service.mentionAmbiguityNote('@Ella go', 'C1')).not.toBeNull();
+    });
+
+    it('links the one in the channel once the member list shows the other is not in it', async () => {
+      await room();
+      members(['UELLALOCAL']);
+      withDirectory([elsewhere('Ella (Personal Assistant)', 'UELLAPA', false)]);
+      expect(await service.linkAgentMentions('@Ella go', 'C1')).toBe('<@UELLALOCAL> go');
+    });
+
+    it('an app-less namesake in the channel also makes the bare name ambiguous', async () => {
+      await room();
+      members(['UELLALOCAL']);
+      withDirectory([elsewhere('Ella', null, true)]);
+      expect(await service.linkAgentMentions('@Ella go', 'C1')).toBe('@Ella go');
+      expect(await service.mentionAmbiguityNote('@Ella go', 'C1')).toContain('no Slack bot');
+    });
+
+    it('a full name that cannot be tagged does not fall back to a namesake by first name', async () => {
+      await room();
+      members(['UELLALOCAL']);
+      withDirectory([elsewhere('Ella (Personal Assistant)', 'UELLAPA', false)]);
+      expect(await service.linkAgentMentions('@Ella (Personal Assistant) go', 'C1')).toBe('@Ella (Personal Assistant) go');
+    });
+
+    it('one agent known to both the identity file and the directory is not its own namesake', async () => {
+      await room();
+      withDirectory([{ ...elsewhere('Ella', null, true, 'mkt-ella'), source: 'this-machine' }]);
+      expect(await service.linkAgentMentions('@Ella go', 'C1')).toBe('<@UELLALOCAL> go');
+      expect(await service.mentionAmbiguityNote('@Ella go', 'C1')).toBeNull();
+    });
+  });
+
   it('links a bare @Name to a team-suffixed bot ("Ella (Crewly Marketing)") only when the bare name is unique', async () => {
     const ids = new FakeIdentities();
     identities = ids;
@@ -1536,7 +1626,8 @@ describe('mirrorOutbound', () => {
     expect(await service.linkAgentMentions('@Ella only', 'CNEW')).toBe('<@UELLA> only');
     expect(asked).toEqual(['CBETA', 'CBOTH']);
 
-    // The Crewly room's roster decides first — no Slack call needed.
+    // Both on this machine: the Crewly room's roster decides — no Slack call needed.
+    isLocal = () => true;
     await service.ensureTeamChannel(team());
     const room = service.findBySlackChannelId('C1')!;
     chat.setHuddleMembers(room.chatChannelId, ['a-sam']);

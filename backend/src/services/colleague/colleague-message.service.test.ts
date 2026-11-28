@@ -103,6 +103,14 @@ describe('ColleagueMessageService.send', () => {
     expect(r.error).toContain('list-colleagues');
   });
 
+  it('warns that only this machine was searched when a name is matched locally with Cloud down', async () => {
+    const { svc } = build({ listDirectory: async () => null });
+    const byName = await svc.send({ fromSession: 'steamfun-fern', to: 'Nova', text: 'ping' });
+    expect(byName.note).toContain('only this machine was searched');
+    const bySession = await svc.send({ fromSession: 'steamfun-fern', to: 'steamfun-nova', text: 'pong' });
+    expect(bySession.note).toBe('Delivered to Nova.');
+  });
+
   it('says so when Cloud is down and only local agents can be found', async () => {
     const { svc } = build({ listDirectory: async () => null });
     const r = await svc.send({ fromSession: 'steamfun-fern', to: 'Pia', text: 'hi' });

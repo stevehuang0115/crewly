@@ -762,6 +762,28 @@ export function isAssistantRoom(team: Pick<Team, 'name' | 'templateId'> | null, 
   return /assistant|support|helpdesk|help-desk|concierge|助理|助手|客服|秘书/i.test(text);
 }
 
+/** One agent an `@Name` could mean. */
+interface NamedAgent {
+  name: string;
+  /** Name plus team and machine, for telling namesakes apart */
+  label: string;
+  session: string;
+  /** Null for an agent without a Slack app of its own */
+  botUserId: string | null;
+  /** The directory places it in the target channel */
+  here: boolean;
+  /** May be tagged when it is the only one of its name */
+  linkable: boolean;
+  /** Runs on this machine */
+  local: boolean;
+}
+
+/** A name that tagged nobody because several agents answer to it. */
+interface AmbiguousMention {
+  name: string;
+  candidates: NamedAgent[];
+}
+
 export class SlackTeamChannelService {
   private readonly logger: ComponentLogger;
   private readonly deps: SlackTeamChannelServiceDeps;
@@ -4971,79 +4993,161 @@ export class SlackTeamChannelService {
 
   /**
    * Turn `@Name` in an agent's reply into a real Slack mention of that
-   * agent's bot user, for every agent of the account with an installed bot
-   * — including agents on other machines (the identity cache holds the
-   * whole account). Names nobody owns are left as typed.
+   * agent's bot user, for agents of the account on this machine and others.
+   * Names nobody owns, and names that cannot be pinned to one agent, are left
+   * as typed.
    *
    * @param text - Reply text
    * @param channelId - Slack channel the text goes to; when two agents share
-   *   a first name, the one in this channel is meant
+   *   a name, only being the one of them in this channel decides it
    * @returns Text with `<@Uxxx>` mentions
    */
   async linkAgentMentions(text: string, channelId?: string): Promise<string> {
-    if (!text || !text.includes('@')) return text;
+    return (await this.resolveAgentMentions(text, channelId)).text;
+  }
+
+  /**
+   * One line for the author of a post that names an agent ambiguously.
+   *
+   * @param text - The post
+   * @param channelId - Slack channel it goes to
+   * @returns Which names tagged nobody and how to tag one; null when none
+   */
+  async mentionAmbiguityNote(text: string, channelId?: string): Promise<string | null> {
+    const { ambiguous } = await this.resolveAgentMentions(text, channelId);
+    if (ambiguous.length === 0) return null;
+    return ambiguous
+      .map(({ name, candidates }) => {
+        const options = candidates
+          .map((c) => `${c.label}${c.botUserId ? `: <@${c.botUserId}>` : ' (no Slack bot: use the full name)'}`)
+          .join('; ');
+        return `"@${name}" matches more than one agent, so it tagged nobody. To tag one, write its code — ${options}.`;
+      })
+      .join(' ');
+  }
+
+  /**
+   * Resolve the `@Name`s of a post. An agent is identified by its session (and
+   * bot), never by first name: when several share a name, one is tagged only if
+   * it is the single one of them in the channel AND the others can be ruled out.
+   *
+   * @param text - The post
+   * @param channelId - Slack channel it goes to
+   * @returns The linked text and the names that stayed unlinked as ambiguous
+   */
+  private async resolveAgentMentions(text: string, channelId?: string): Promise<{ text: string; ambiguous: AmbiguousMention[] }> {
+    const ambiguous: AmbiguousMention[] = [];
+    if (!text || !text.includes('@')) return { text, ambiguous };
     text = await this.linkHumanMentions(text);
-    if (!this.deps.identities) return text;
+    if (!this.deps.identities) return { text, ambiguous };
     const store = await this.deps.identities.load();
-    const byName = new Map<string, string>();
-    // A duplicated first name carries its team in the bot's display name —
-    // "Ella (Crewly Marketing)" — while agents write "@Ella" (2026-09-25:
-    // Atlas's "@Ella" stayed plain text). Index the bare name too, but only
-    // when exactly one agent has it; an ambiguous bare name stays unlinked.
-    const bareOwners = new Map<string, Set<string>>();
-    const fullNames: Array<{ name: string; id: string }> = [];
-    // Agents on OTHER machines of the account with a bot of their own: Cloud
-    // knows them only by <@BOTID>, and the local identity file holds this
-    // machine's bots only. The channel directory names them (CREW-860).
-    const known = new Set(store.identities.map((r) => r.botUserId).filter((id): id is string => !!id));
-    const remote = channelId
-      ? ((await getSlackDirectoryService()?.list(channelId).catch(() => [])) ?? [])
-          .filter((e) => e.kind === 'agent' && e.source === 'this-account' && e.inChannel && !!e.botUserId && !known.has(e.botUserId))
-          .map((e) => ({ status: 'installed' as const, botUserId: e.botUserId, displayName: e.name, agentSession: e.agentSession ?? '' }))
-      : [];
-    for (const r of [...store.identities, ...remote]) {
+    // One candidate per agent: the identity file's bots, plus what the account
+    // directory knows (other machines' agents, with or without a bot, CREW-860).
+    const candidates: NamedAgent[] = [];
+    for (const r of store.identities) {
       if (r.status !== 'installed' || !r.botUserId || !r.displayName) continue;
-      const full = r.displayName.trim();
-      byName.set(full.toLowerCase(), r.botUserId);
-      const bare = full.replace(/\s*\([^)]*\)\s*$/u, '').trim();
-      if (bare && bare !== full) {
-        fullNames.push({ name: full, id: r.botUserId });
-        const set = bareOwners.get(bare.toLowerCase()) ?? new Set<string>();
-        set.add(r.botUserId);
-        bareOwners.set(bare.toLowerCase(), set);
-      }
+      candidates.push({ name: r.displayName.trim(), label: r.displayName.trim(), session: r.agentSession, botUserId: r.botUserId, here: false, linkable: true, local: this.deps.isLocalAgent?.(r.agentSession) ?? false });
     }
-    for (const [bare, ids] of bareOwners) {
-      if (byName.has(bare)) continue;
-      if (ids.size === 1) {
-        byName.set(bare, [...ids][0]);
+    const directory = (await getSlackDirectoryService()?.list(channelId).catch(() => [])) ?? [];
+    for (const e of directory) {
+      if (e.kind !== 'agent' || (e.source !== 'this-account' && e.source !== 'this-machine') || !e.name) continue;
+      const here = !!channelId && e.inChannel;
+      const known = candidates.find((c) => (!!e.botUserId && c.botUserId === e.botUserId) || (!!e.agentSession && c.session === e.agentSession));
+      const where = [e.team, e.machine].filter(Boolean).join(', ');
+      if (known) {
+        known.here ||= here;
+        known.local ||= e.source === 'this-machine';
+        if (where) known.label = `${known.name} [${where}]`;
         continue;
       }
-      // Two Ellas (Crewly Marketing / Personal Assistant Team): the one in
-      // this channel is meant. Only asked when the text names her.
-      if (!channelId || !new RegExp(`@${bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'iu').test(text)) continue;
-      // First the room's own roster (agents Crewly put in this channel —
-      // no Slack scope needed; agent bots can't read private-channel
-      // members), then Slack's member list.
-      await this.load();
-      const roster = this.rosterBotIds(channelId, store.identities);
-      let here = [...ids].filter((id) => roster.has(id));
-      if (here.length !== 1) {
-        const members = await this.membersOf(channelId);
-        here = [...ids].filter((id) => members?.has(id));
+      // An app-less namesake matters only when it is in the channel.
+      if (!e.botUserId && !here) continue;
+      const name = e.name.trim();
+      candidates.push({ name, label: where ? `${name} [${where}]` : name, session: e.agentSession ?? '', botUserId: e.botUserId || null, here, linkable: here, local: e.source === 'this-machine' });
+    }
+    if (candidates.length === 0) return { text, ambiguous };
+
+    const group = (key: (c: NamedAgent) => string): Map<string, NamedAgent[]> => {
+      const out = new Map<string, NamedAgent[]>();
+      for (const c of candidates) out.set(key(c), [...(out.get(key(c)) ?? []), c]);
+      return out;
+    };
+    const bareOf = (name: string): string => name.replace(/\s*\([^)]*\)\s*$/u, '').trim();
+    const byFull = group((c) => c.name.toLowerCase());
+    const byBare = group((c) => bareOf(c.name).toLowerCase());
+    const decided = new Map<string, string | null>();
+    const decide = async (name: string, owners: NamedAgent[]): Promise<string | null> => {
+      const key = owners.map((c) => c.botUserId ?? c.session).sort().join(',');
+      if (decided.has(key)) return decided.get(key) ?? null;
+      let id: string | null = null;
+      if (owners.length === 1) {
+        // A directory-only agent outside the channel is never pulled in by name.
+        id = owners[0].linkable ? owners[0].botUserId : null;
+      } else {
+        const only = await this.onlyOneInChannel(owners, channelId, store.identities);
+        if (only) id = only.botUserId;
+        else ambiguous.push({ name, candidates: owners });
       }
-      if (here.length === 1) byName.set(bare, here[0]);
+      decided.set(key, id);
+      return id;
+    };
+
+    // "@Ella (Crewly Marketing)" written out in full — longest names first. One
+    // that cannot be tagged is set aside, so "@Ella" inside it is not read again.
+    const setAside: string[] = [];
+    const fullNames = [...byFull.values()].filter((o) => bareOf(o[0].name) !== o[0].name).sort((a, b) => b[0].name.length - a[0].name.length);
+    for (const owners of fullNames) {
+      const escaped = owners[0].name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`(?<![\\w<@])@${escaped}`, 'giu');
+      if (text.search(re) < 0) continue;
+      const id = await decide(owners[0].name, owners);
+      text = text.replace(re, (whole) => (id ? `<@${id}>` : `\uE000${setAside.push(whole) - 1}\uE000`));
     }
-    if (byName.size === 0) return text;
-    // "@Ella (Crewly Marketing)" written out in full — longest names first.
-    for (const { name, id } of fullNames.sort((a, b) => b.name.length - a.name.length)) {
-      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      text = text.replace(new RegExp(`(?<![\\w<@])@${escaped}`, 'giu'), `<@${id}>`);
+    const typed = /(?<![\w<@])@([\p{L}\p{N}_.-]+)/gu;
+    const ids = new Map<string, string>();
+    for (const match of text.matchAll(typed)) {
+      const name = match[1].replace(/[.-]+$/u, '');
+      const owners = byBare.get(name.toLowerCase());
+      if (!owners || ids.has(name.toLowerCase())) continue;
+      const id = await decide(name, owners);
+      if (id) ids.set(name.toLowerCase(), id);
     }
-    return text.replace(/(?<![\w<@])@([\p{L}\p{N}_.-]+)/gu, (whole, name: string) => {
-      const id = byName.get(name.replace(/[.-]+$/u, '').toLowerCase());
+    text = text.replace(typed, (whole, name: string) => {
+      const id = ids.get(name.replace(/[.-]+$/u, '').toLowerCase());
       return id ? `<@${id}>` : whole;
     });
+    return { text: text.replace(/\uE000(\d+)\uE000/g, (_, i: string) => setAside[Number(i)]), ambiguous };
+  }
+
+  /**
+   * Of several agents sharing a name, the single one in the channel. The room's
+   * own roster and the directory show who is in it; Slack's member list is asked
+   * whenever they leave doubt. This machine's roster says nothing about another
+   * machine's agents, so without the member list those cannot be ruled out.
+   *
+   * @param owners - The agents sharing the name
+   * @param channelId - Target channel
+   * @param identities - The account's agent identities
+   * @returns That agent, or null when it cannot be told
+   */
+  private async onlyOneInChannel(
+    owners: NamedAgent[],
+    channelId: string | undefined,
+    identities: ReadonlyArray<{ agentSession: string; botUserId?: string | null }>,
+  ): Promise<NamedAgent | null> {
+    if (!channelId) return null;
+    await this.load();
+    const roster = this.rosterBotIds(channelId, identities);
+    const sessions = new Set(this.rosterSessions(channelId));
+    const present = new Set(owners.filter((c) => c.here || sessions.has(c.session) || (!!c.botUserId && roster.has(c.botUserId))));
+    const inDoubt = owners.some((c) => !present.has(c) && !c.local);
+    if (present.size !== 1 || inDoubt) {
+      // Agent bots can't read private-channel members, so this may be unknown.
+      const members = await this.membersOf(channelId);
+      if (!members && inDoubt) return null;
+      for (const c of owners) if (c.botUserId && members?.has(c.botUserId)) present.add(c);
+    }
+    return present.size === 1 ? [...present][0] : null;
   }
 
   /**

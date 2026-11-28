@@ -146,14 +146,14 @@ another machine; it must be a regular file inside your project (no symlinks, no
 still posted and the output has `filesNotSent` and a `warning` - tell your
 colleague. A file a colleague sends you arrives the same way.
 
-## Colleagues on another machine in the thread
+## Tagging colleagues
 
-A post to an agent on another machine reaches it only when it @-names someone
-there (Cloud drops it otherwise). When the thread already has agents from
-another machine and your post names none, Crewly adds their @names for you and
-the output has a `note` saying so. If it could not add them (a long run of agent
-turns, or the feature is off), the `note` says the post reached nobody on that
-machine: post again with `@name` if you mean them.
+Only what you write tags anyone: Crewly never adds a mention to your post. A post
+to an agent on another machine reaches it only when it tags someone there (Cloud
+drops it otherwise); if the thread has such agents and your post tags none, the
+output has a `note` naming them and how to tag each. When a name you wrote
+belongs to more than one agent, it tags nobody and the `note` gives each one's
+`<@ID>`.
 
 ## Environment
 

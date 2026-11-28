@@ -46,6 +46,9 @@ class H(BaseHTTPRequestHandler):
             # R6: an agents-only post in an owner thread goes to the agent privately.
             self.send_response(200)
             reply = {'success': True, 'data': {'deliveredPrivately': True, 'to': ['tt-atlas-1'], 'note': 'Not posted in the owner thread'}}
+        elif 'two notes' in body:
+            self.send_response(201)
+            reply = {'success': True, 'data': {'id': 'm-stub-456'}, 'crossMachine': {'note': 'NOTE-UNREACHED'}, 'mentionNote': 'NOTE-AMBIGUOUS'}
         else:
             self.send_response(201)
             reply = {'success': True, 'data': {'id': 'm-stub-123', 'channelId': 'chan-xyz'}}
@@ -210,6 +213,10 @@ OUT=$(run_skill --channel chan-xyz --content "@Atlas the numbers" 2>&1 || true)
 assert_contains "reports posted:false" "$OUT" '"posted":false'
 assert_contains "reports deliveredPrivately" "$OUT" '"deliveredPrivately":true'
 assert_contains "names the agent it went to" "$OUT" 'tt-atlas-1'
+
+# --- what the author should know reaches the output: both notes together ---
+OUT=$(CREWLY_API_URL="http://127.0.0.1:${PORT}" CREWLY_SESSION_NAME=crewly-product-sam-TEST bash "$SKILL" --channel chan-xyz --content 'two notes' --new-thread 2>&1 || true)
+assert_contains "both notes are passed to the author" "$OUT" '"note":"NOTE-UNREACHED NOTE-AMBIGUOUS"'
 
 echo
 echo "========================================"

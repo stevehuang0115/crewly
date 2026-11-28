@@ -195,9 +195,13 @@ export class ColleagueMessageService {
         extra: { ...(input.replyTo ? { replyTo: input.replyTo } : {}), delivered: delivered.success, ...(delivered.queued ? { queued: true } : {}) },
       });
       if (!delivered.success) return { ...fail('delivery_failed', `${target.name} did not take the message: ${delivered.error ?? 'delivery failed'}.`), messageId: wire.id, to };
+      // Found by name while only this machine could be searched: a namesake elsewhere is invisible.
+      const unchecked = !cloud && target.agentSession !== input.to.trim().replace(/^@/, '')
+        ? ` Crewly Cloud did not answer, so only this machine was searched. If you meant a ${target.name} on another machine, send again with --to <session> once it is back.`
+        : '';
       return {
         success: true, messageId: wire.id, route: 'local', to, ...(delivered.queued ? { queued: true } : {}),
-        note: delivered.queued ? `${target.name} is not running: the message is queued and ${target.name} is being started.` : `Delivered to ${target.name}.`,
+        note: (delivered.queued ? `${target.name} is not running: the message is queued and ${target.name} is being started.` : `Delivered to ${target.name}.`) + unchecked,
       };
     }
 
