@@ -232,6 +232,25 @@ export async function redactTranscriptInStaging(
 }
 
 /**
+ * Every string of a parsed JSON value, keys included, in document order.
+ *
+ * @param value - Any JSON value
+ * @param into - Receives the strings
+ * @returns `into`
+ */
+function jsonStrings(value: unknown, into: string[] = []): string[] {
+  if (typeof value === 'string') into.push(value);
+  else if (Array.isArray(value)) for (const item of value) jsonStrings(item, into);
+  else if (value && typeof value === 'object') {
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      into.push(key);
+      jsonStrings(item, into);
+    }
+  }
+  return into;
+}
+
+/**
  * Mask the secrets in a JSON record or a memory store inside the package (see
  * {@link isRedactableRecord} and {@link memoryStoreOf}), leaving the
  * machine's own files untouched.
@@ -240,6 +259,11 @@ export async function redactTranscriptInStaging(
  * the same valid JSON, written with the package's usual indentation. A file
  * that does not parse is redacted as plain text. `residual` is judged on the
  * parsed strings of the written file, like a transcript's.
+ *
+ * A memory store is held to more: a `.json` one that does not parse is left
+ * untouched and reports a residual, and a parsed one is checked again with all
+ * its strings joined, so a secret spread over several of them (a private key
+ * stored one line per array item) keeps it flagged.
  *
  * @param staging - The package being built
  * @param packagePath - A `records/*.json` or memory store file in it
@@ -255,22 +279,29 @@ export async function redactRecordInStaging(
   const source = staging.abs(packagePath);
   const raw = await fs.readFile(source, 'utf8');
   const tally = { count: 0 };
+  const isStore = memoryStoreOf(packagePath) !== null;
   let written: string;
   try {
     written = JSON.stringify(redactJsonValue(JSON.parse(raw), known, tally), null, 2);
   } catch {
+    if (isStore && packagePath.endsWith('.json')) {
+      return { entry: await staging.adopt(packagePath), redactions: 0, residual: Math.max(1, redactSecretsWithCount(raw, known).count) };
+    }
     const out = redactSecretsWithCount(raw, known);
     tally.count += out.count;
     written = out.text;
   }
   await fs.writeFile(source, written, 'utf8');
   const after = { count: 0 };
+  let joined = 0;
   try {
-    redactJsonValue(JSON.parse(written), known, after);
+    const parsed: unknown = JSON.parse(written);
+    redactJsonValue(parsed, known, after);
+    if (isStore) joined = redactSecretsWithCount(jsonStrings(parsed).join('\n'), known).count;
   } catch {
     after.count = redactSecretsWithCount(written, known).count;
   }
-  return { entry: await staging.adopt(packagePath), redactions: tally.count, residual: after.count };
+  return { entry: await staging.adopt(packagePath), redactions: tally.count, residual: Math.max(after.count, joined) };
 }
 
 /**

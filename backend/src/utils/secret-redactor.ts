@@ -65,9 +65,10 @@ const TOKEN_PATTERNS: readonly TokenPattern[] = [...EXTRA_TOKEN_PATTERNS, ...SEC
 /**
  * `NAME=value` (optionally quoted value). The value stops at whitespace,
  * quotes, backticks and shell separators. The identifier must start at a
- * word boundary so it is matched whole.
+ * word boundary so it is matched whole. The quote may be escaped
+ * (`NAME=\"value\"`, JSON pasted into text).
  */
-const ASSIGNMENT_RE = /\b([A-Za-z_][A-Za-z0-9_]*)=(["']?)([^\s"'`;&|]+)/g;
+const ASSIGNMENT_RE = /\b([A-Za-z_][A-Za-z0-9_]*)=((?:\\+(?=["']))?["']?)((?:(?!\\+["'])[^\s"'`;&|])+)/g;
 
 /** Prefix every mask this module emits starts with. */
 const REDACTED_PREFIX = '[REDACTED';

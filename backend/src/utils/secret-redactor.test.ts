@@ -26,6 +26,23 @@ const FAKE = {
 	ghPat: ('github_pat_' + '11ABCDEFG0TESTfakeFineGrained_0123456789abcdefghij'),
 };
 
+describe('assignments with escaped quotes (CREW-1327)', () => {
+	const value = ['abc123def456', 'ghi789'].join('');
+
+	it('handles an escaped quote around the value', () => {
+		for (const quote of ['\\"', '\\\\\\"', "\\'"]) {
+			const out = redactSecretsWithCount(`run API_KEY=${quote}${value}${quote} now`);
+			expect(out.count).toBe(1);
+			expect(out.text).toBe(`run API_KEY=${quote}[REDACTED]${quote} now`);
+			expect(redactSecretsWithCount(out.text).count).toBe(0);
+		}
+	});
+
+	it('still reads a backslash that is not before a quote as part of the value', () => {
+		expect(redactSecretsWithCount('DB_PASSWORD=ab\\cd9876 ok').text).toBe('DB_PASSWORD=[REDACTED] ok');
+	});
+});
+
 describe('redactSecrets — secret-named assignments', () => {
 	it.each([
 		['GEMINI_API_KEY', 'anything-at-all-123'],

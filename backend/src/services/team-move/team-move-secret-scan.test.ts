@@ -145,6 +145,48 @@ describe('team-move-secret-scan', () => {
   });
 });
 
+describe('memory stores that are not safe to send (CREW-1327)', () => {
+  const GOTCHAS = 'projects/p1/data/knowledge/gotchas.json';
+  let dir: string;
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'move-store-'));
+  });
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  async function stage(rel: string, content: string): Promise<StagingArea> {
+    const s = new StagingArea(dir);
+    await s.init();
+    await s.writeText(rel, content);
+    return s;
+  }
+
+  it('does not touch a JSON store that cannot be parsed, and reports it as still flagged', async () => {
+    const broken = `[{"content":"${FAKE_ANTHROPIC}"`;
+    const s = await stage(GOTCHAS, broken);
+    const { redactions, residual } = await redactRecordInStaging(s, GOTCHAS);
+    expect(redactions).toBe(0);
+    expect(residual).toBeGreaterThan(0);
+    expect(await fs.readFile(s.abs(GOTCHAS), 'utf8')).toBe(broken);
+  });
+
+  it('keeps a store flagged when a secret is spread over several strings', async () => {
+    const s = await stage(GOTCHAS, JSON.stringify({ lines: FAKE_PEM.split('\n') }));
+    expect((await redactRecordInStaging(s, GOTCHAS)).residual).toBeGreaterThan(0);
+  });
+
+  it('still masks learnings.md as text, including an assignment with escaped quotes', async () => {
+    const rel = 'projects/p1/data/knowledge/learnings.md';
+    const s = await stage(rel, ['# Learnings', '- pasted: {"cmd":"API_KEY=\\"abc123def456ghi789\\" run"}', '- keep'].join('\n'));
+    const { redactions, residual } = await redactRecordInStaging(s, rel);
+    expect({ redactions, residual }).toEqual({ redactions: 1, residual: 0 });
+    const text = await fs.readFile(s.abs(rel), 'utf8');
+    expect(text).not.toContain('abc123def456ghi789');
+    expect(text).toContain('- keep');
+  });
+});
+
 describe('memoryStoreOf', () => {
   it('knows a project memory store, which is masked rather than dropped', () => {
     for (const store of ['knowledge/gotchas.json', 'knowledge/learnings.md', 'knowledge/decisions.json', 'knowledge/patterns.json', 'knowledge/archive/old.jsonl']) {
