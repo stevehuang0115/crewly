@@ -2,6 +2,7 @@ import type { Trigger } from '../../types/v2/trigger.types.js';
 import {
   engineTriggerStore,
   isTriggerStorePath,
+  remapTriggerChannelIds,
   selectLiveTeamTriggers,
   selectTeamTriggers,
   triggerLabel,
@@ -25,6 +26,18 @@ describe('team move triggers', () => {
     expect(isTriggerStorePath('triggers')).toBe(true);
     expect(isTriggerStorePath('knowledge/triggers.json')).toBe(false);
     expect(isTriggerStorePath('triggers-notes.md')).toBe(false);
+  });
+
+  it('replaces moved channel ids anywhere in a trigger, full uuids only', () => {
+    const from = '3e4b40f2-0000-4000-8000-000000000001';
+    const to = 'cdf6c8bb-0000-4000-8000-000000000002';
+    const rows = [{ id: 'a', config: { filter: { channelId: from } }, action: { sendMessage: { message: `post to "${from}", then ${from}.\nnot huddle-src` } } }];
+
+    const [moved] = remapTriggerChannelIds(rows, new Map([[from, to], ['huddle-src', 'huddle-here']]));
+
+    expect(moved).toEqual({ id: 'a', config: { filter: { channelId: to } }, action: { sendMessage: { message: `post to "${to}", then ${to}.\nnot huddle-src` } } });
+    expect(rows[0]!.config.filter.channelId).toBe(from);
+    expect(remapTriggerChannelIds(rows, new Map())).toEqual(rows);
   });
 
   it('labels a trigger by name and id', () => {

@@ -17,7 +17,7 @@ import type { Team, TeamTriggerSpec } from '../../types/index.js';
 import { TeamMoveArchiver } from './team-move-archive.js';
 import { generateTargetKeyPair } from './team-move-crypto.js';
 import { TeamMoveExporter, buildEncryptedPackage } from './team-move-exporter.js';
-import { TeamMoveImporter } from './team-move-importer.js';
+import { TeamMoveImporter, type ImportDeps as ImporterDeps } from './team-move-importer.js';
 import { FIXTURE, buildSourceFixture, buildTargetPaths, type Fixture } from './team-move.fixture.js';
 import { engineTriggerStore } from './team-move-triggers.js';
 
@@ -168,8 +168,9 @@ describe('a team move carries the team\'s triggers', () => {
     return { file, privateKey: key.privateKey, record: recordText, manifestPaths: result.manifest.files.map((f) => f.path) };
   };
 
-  const importPackage = (pkg: { file: string; privateKey: string }) =>
+  const importPackage = (pkg: { file: string; privateKey: string }, extra: Partial<ImporterDeps> = {}) =>
     new TeamMoveImporter({
+      ...extra,
       home: target.home,
       crewlyVersion: '9.9.9',
       storage: target.storage,
@@ -257,6 +258,28 @@ describe('a team move carries the team\'s triggers', () => {
     expect(source.fires.find((f) => f.id === ids.due)?.teamPresent).toBe(true);
     source.bus.emit('event_published', { eventId: 'e3', eventType: 'agent:idle', sessionName: F.devSession });
     await until(() => source.fires.some((f) => f.id === ids.signal));
+  });
+
+  it('points a moved trigger at the id the target already uses for a shared room', async () => {
+    const sourceRoom = '3e4b40f2-0000-4000-8000-000000000001';
+    const targetRoom = 'cdf6c8bb-0000-4000-8000-000000000002';
+    const slackFile = path.join(fx.home, 'slack-team-channels.json');
+    const slack = await safeReadJson<{ mappings: Array<Record<string, unknown>> }>(slackFile, { mappings: [] });
+    slack.mappings.push({ teamId: 'adhoc:C0SHARED', slackChannelId: 'C0SHARED', slackChannelName: 'shared-room', chatChannelId: sourceRoom, createdAt: '2026-10-05T10:00:00.000Z', autoCreated: false, members: [F.leadSession] });
+    await atomicWriteJson(slackFile, slack);
+    const post = await source.engine.create({
+      type: 'time',
+      config: { type: 'time', cronExpression: '0 8 * * *' },
+      action: { sendMessage: { target: F.leadSession, message: `post the summary to ${sourceRoom}` } },
+      createdBy: 'agent',
+      createdBySession: F.devSession,
+      teamId: F.teamId,
+      name: 'daily-post',
+    });
+
+    await importPackage(await exportPackage(), { adoptAdhocMapping: async () => ({ chatChannelId: targetRoom, added: false }) });
+
+    expect(target.engine.get(post.id)?.action).toEqual({ sendMessage: { target: F.leadSession, message: `post the summary to ${targetRoom}` } });
   });
 
   it('skips ids the target already has and says which', async () => {

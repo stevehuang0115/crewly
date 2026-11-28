@@ -20,6 +20,32 @@ const ENGINE_WAIT_MS = 120_000;
 /** Interval between looks while waiting. */
 const ENGINE_POLL_MS = 500;
 
+/** A whole channel id: only these are replaced inside text. */
+const CHANNEL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Point triggers at the channel ids this machine uses. A shared room the target
+ * already has keeps its own id, so an id named anywhere in a moved trigger (its
+ * message, title, filter) must follow. Only ids in full uuid form are replaced.
+ *
+ * @param rows - Trigger rows from a package
+ * @param idMap - Source channel id to the id on this machine
+ * @returns The rows with the ids replaced
+ */
+export function remapTriggerChannelIds(rows: readonly unknown[], idMap: ReadonlyMap<string, string>): unknown[] {
+  const pairs = [...idMap].filter(([from]) => CHANNEL_UUID_RE.test(from));
+  if (pairs.length === 0) return [...rows];
+  return rows.map((row) => {
+    let text = JSON.stringify(row);
+    // The replacement is escaped as JSON string content; a function keeps `$` literal.
+    for (const [from, to] of pairs) {
+      const escaped = JSON.stringify(to).slice(1, -1);
+      text = text.replaceAll(from, () => escaped);
+    }
+    return JSON.parse(text) as unknown;
+  });
+}
+
 /** The trigger store as a move uses it. */
 export interface TeamMoveTriggerStore {
   /** Every trigger on this machine. */
