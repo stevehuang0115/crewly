@@ -524,6 +524,11 @@ export class TriggerEngine {
     return true;
   }
 
+  /** @returns The file this engine reads and writes */
+  public getStorePath(): string {
+    return this.triggersFile;
+  }
+
   /**
    * Add triggers that already exist elsewhere (a team move or its rollback),
    * keeping their ids, counters and status. Rows whose id is already here are

@@ -4632,6 +4632,29 @@ void (async () => {
 						error: recErr instanceof Error ? recErr.message : String(recErr),
 					});
 				}
+
+				// After the reconcile, so a declared team schedule is found, not doubled.
+				try {
+					const { mergeProjectTriggerStores } = await import('./services/v3/project-trigger-store-merge.js');
+					const run = await mergeProjectTriggerStores({
+						engine: triggerEngine,
+						projects: await this.storageService.getProjects(),
+						teamIds: new Set((await this.storageService.getTeams()).map((t) => t.id)),
+					});
+					for (const report of run.merged) {
+						this.logger.warn('Merged a project trigger store; merged triggers are paused until resumed', { ...report });
+					}
+					this.logger.info('Project trigger stores checked', {
+						projectsExamined: run.projectsExamined,
+						storesMerged: run.merged.length,
+						unreadable: run.unreadable,
+						...(run.notRun ? { notRun: run.notRun } : {}),
+					});
+				} catch (mergeErr) {
+					this.logger.warn('Project trigger store merge failed (non-critical)', {
+						error: mergeErr instanceof Error ? mergeErr.message : String(mergeErr),
+					});
+				}
 			} catch (triggerErr) {
 				this.logger.warn('TriggerEngine initialization failed (non-critical)', {
 					error: triggerErr instanceof Error ? triggerErr.message : String(triggerErr),
