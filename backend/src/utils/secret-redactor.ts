@@ -17,6 +17,10 @@
  *    whole identifier, so `TOKEN_COUNT=5` or `MAX_TOKENS=4096` are left alone
  *    (the name does not END in a secret suffix); `$VAR` references and
  *    already-masked values are left alone too.
+ * Between layers 1 and 2, utils/secret-forms masks values recognised by what
+ * stands in front of them (`name: value` pairs, headers, password flags, URL
+ * logins, labels in prose).
+ *
  * 3. **Token shapes** — well-known raw credential formats wherever they
  *    appear: Slack `xoxb-/xoxp-/xoxa-/xoxe-/xapp-…`, OpenAI/DeepSeek `sk-…`,
  *    Anthropic `sk-ant-…`, Google `AIza…`, GitHub `ghp_/gho_/…` and
@@ -31,8 +35,9 @@
  *
  * Output is streamed in arbitrary chunks, so a secret can be split between
  * two chunks. StreamingSecretRedactor holds back the tail after the last
- * whitespace (secrets never contain whitespace) and prepends it to the next
- * chunk, which keeps the whole thing linear with a small bounded carry.
+ * whitespace and prepends it to the next chunk. A value found by its label can
+ * come after a space or on the next line, so a line that holds such a label is
+ * held until it is complete. The carry stays bounded either way.
  *
  * @module utils/secret-redactor
  */
@@ -40,6 +45,7 @@
 import { SECRET_REDACTION_CONSTANTS } from '../constants.js';
 import { SECRET_PATTERNS } from '../services/wiki/wiki-redaction.js';
 import { isSecretEnvKey, type SecretEnvValue } from './secret-env.js';
+import { maskSecretForms } from './secret-forms.js';
 
 /** A raw-token detector used by the redactor. */
 interface TokenPattern {
@@ -93,6 +99,12 @@ const ASSIGNMENT_MASK = '[REDACTED]';
 /** Characters that can appear inside a credential or a `NAME=value` pair. */
 const TOKEN_CHAR_RE = /[A-Za-z0-9_\-=.:/+"'[\]]/;
 
+/** Words that can announce a value later on the same line or the next (see maskSecretForms). */
+const LABEL_HINT_RE = /pass|\bpw\b|secret|token|key|cookie|authorization|credential|bearer|basic|mysql|mariadb|curl|wget|(?:^|\s)(?:-u|--user)\s|密码|口令|密钥|秘钥|令牌|授权码/i;
+
+/** A line that ends where its value should follow. */
+const AWAITS_VALUE_RE = /[:=：]\s*$/;
+
 /** Known secret names, upper-cased, for O(1) lookup. */
 const KNOWN_SECRET_NAMES = new Set<string>(SECRET_REDACTION_CONSTANTS.KNOWN_SECRET_ENV_NAMES);
 
@@ -143,6 +155,11 @@ export function redactSecretsWithCount(text: string, knownSecrets: readonly Secr
 		out = parts.join(`${REDACTED_PREFIX} ${name}]`);
 	}
 
+	// Before the token shapes: it needs the original quoting to find where a value ends.
+	const forms = maskSecretForms(out, isSecretAssignmentName);
+	out = forms.text;
+	count += forms.count;
+
 	out = out.replace(ASSIGNMENT_RE, (match: string, name: string, quote: string, value: string) => {
 		if (!isSecretAssignmentName(name) || value.startsWith('$') || value.startsWith(REDACTED_PREFIX)) return match;
 		count++;
@@ -158,7 +175,8 @@ export function redactSecretsWithCount(text: string, knownSecrets: readonly Secr
 	for (const p of TOKEN_PATTERNS) {
 		p.regex.lastIndex = 0;
 		out = out.replace(p.regex, (match: string) => {
-			if (match === p.mask) return match;
+			// A value masked by an earlier layer stays as it reads and is not counted again.
+			if (match === p.mask || match.includes(REDACTED_PREFIX)) return match;
 			count++;
 			return p.mask;
 		});
@@ -252,6 +270,8 @@ export class StreamingSecretRedactor {
 			cut = this.forcedCut(buf);
 		}
 
+		cut = this.keepLabelWithValue(buf, cut);
+
 		this.carry = buf.slice(cut);
 		return cut > 0 ? redactSecrets(buf.slice(0, cut), this.knownSecrets) : '';
 	}
@@ -265,6 +285,32 @@ export class StreamingSecretRedactor {
 		const rest = this.carry;
 		this.carry = '';
 		return rest ? redactSecrets(rest, this.knownSecrets) : '';
+	}
+
+	/**
+	 * Moves a cut back so that a label and the value after it are masked
+	 * together: an unfinished line with a label, and a finished one that ends
+	 * where its value should follow, stay in the carry. When that would
+	 * outgrow the carry the original cut stands.
+	 *
+	 * @param buf - Buffered text
+	 * @param cut - Proposed cut
+	 * @returns The cut to use, never later than the proposed one
+	 */
+	private keepLabelWithValue(buf: string, cut: number): number {
+		let at = cut;
+		while (at > 0) {
+			const start = at > 1 ? buf.lastIndexOf('\n', at - 2) + 1 : 0;
+			const line = buf.slice(start, at);
+			// Indentation alone: what it belongs to may be the label above.
+			if (!line.trim() && !line.endsWith('\n')) {
+				at = start;
+				continue;
+			}
+			if (!LABEL_HINT_RE.test(line) || (line.endsWith('\n') && !AWAITS_VALUE_RE.test(line))) break;
+			at = start;
+		}
+		return buf.length - at > this.maxCarry ? cut : at;
 	}
 
 	/**
