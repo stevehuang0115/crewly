@@ -69,6 +69,8 @@ export interface SlackAgentPostServiceDeps {
     Partial<Pick<SlackTypingPlaceholderService, 'owes' | 'noteAnswerPosted'>>) | null;
   /** Links `@Name` to real Slack mentions (agents' bots and known people). */
   linkMentions?: SlackMentionLinker;
+  /** What to tell the author about names the post could not tag. */
+  mentionNote?: (text: string, channelId: string) => Promise<string | null>;
   /**
    * Channel a Crewly team room is mapped to, by its Slack name. Consulted
    * before `conversations.list`, which does not return a private channel the
@@ -156,6 +158,8 @@ export interface SlackAgentPostResult {
   filesSent?: string[];
   /** Files Slack did not take, with Slack's own error code. */
   filesFailed?: Array<{ path: string; error: string }>;
+  /** Something the author should know, e.g. a name that tagged nobody. */
+  note?: string;
 }
 
 /**
@@ -243,6 +247,18 @@ export class SlackAgentPostService {
    *   cannot be resolved, `slack_error` when Slack refuses the send
    */
   async post(request: SlackAgentPostRequest): Promise<SlackAgentPostResult> {
+    const result = await this.send(request);
+    const note = await this.deps.mentionNote?.(request.text ?? '', result.channelId).catch(() => null);
+    return note ? { ...result, note } : result;
+  }
+
+  /**
+   * The send itself; {@link post} adds what the author should know.
+   *
+   * @param request - Who is posting, where, and what
+   * @returns Where it landed
+   */
+  private async send(request: SlackAgentPostRequest): Promise<SlackAgentPostResult> {
     let req = request;
     const agentSession = (req.agentSession ?? '').trim();
     const target = (req.target ?? '').trim();

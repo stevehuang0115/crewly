@@ -43,6 +43,17 @@ describe('resolveColleague', () => {
     expect(resolveColleague(both, 'Pia', { fromSession: 'steamfun-fern', team: 'other' })).toEqual({ kind: 'found', entry: pia2 });
   });
 
+  it('asks which one when a plain name matches here and, with a team suffix, on another machine (CREW-1318)', () => {
+    const here = entry({ name: 'Ella', agentSession: 'mkt-ella', team: 'Marketing' });
+    const there = entry({ name: 'Ella (Personal Assistant)', agentSession: 'pa-ella', team: 'Personal Assistant', machine: 'studio', source: 'this-account' });
+    const both = [here, there, fern];
+    const r = resolveColleague(both, '@ella', { fromSession: 'steamfun-fern' });
+    expect(r.kind === 'ambiguous' && r.candidates.map((c) => c.session)).toEqual(['mkt-ella', 'pa-ella']);
+    expect(resolveColleague(both, 'pa-ella', { fromSession: 'steamfun-fern' })).toEqual({ kind: 'found', entry: there });
+    expect(resolveColleague(both, 'Ella (Personal Assistant)', { fromSession: 'steamfun-fern' })).toEqual({ kind: 'found', entry: there });
+    expect(resolveColleague(both, 'Ella', { fromSession: 'steamfun-fern', team: 'marketing' })).toEqual({ kind: 'found', entry: here });
+  });
+
   it('treats the same colleague listed twice as one', () => {
     expect(resolveColleague([pia, { ...pia }], 'Pia')).toEqual({ kind: 'found', entry: pia });
   });

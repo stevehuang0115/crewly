@@ -207,19 +207,18 @@ async function attachAgentFiles(req: Request): Promise<AttachResult | null> {
 
 /**
  * An agent's post in a Slack team room thread that has agents on ANOTHER
- * machine (CREW-860): Cloud drops a cross-machine post that @-names nobody,
- * so add the @names of the other-machine agents already in the thread, or say
- * nobody there got it. Rewrites `req.body.content` in place when names are
- * added. Never throws and never blocks a post.
+ * machine (CREW-860): Cloud drops a cross-machine post that tags nobody, so
+ * tell the author who in the thread did not get it. The post is never edited
+ * (CREW-1318). Never throws and never blocks a post.
  *
  * @param req - The send request
  * @param service - Chat service (reads the thread)
- * @returns What was added or not reached, plus a one-line note; null when nothing applies
+ * @returns Who was not reached, plus a one-line note; null when nothing applies
  */
 async function applyCrossMachineMention(
   req: Request,
   service: ChatV2Service,
-): Promise<{ note: string; added: string[]; unreached: string[] } | null> {
+): Promise<{ note: string; unreached: string[] } | null> {
   try {
     const agentSession = principalFromRequestSafe(req).agentSession;
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -240,8 +239,7 @@ async function applyCrossMachineMention(
       .slice(-CROSS_MACHINE_MENTION_CONSTANTS.THREAD_READ_LIMIT)
       .map((m): import('../../services/slack/cross-machine-mention.js').ThreadTurn => {
         const remote = m.metadata?.[OWNER_EVIDENCE_METADATA.REMOTE_AGENT_SESSION];
-        if (typeof remote === 'string') return { by: 'remote-agent', remoteSession: remote, mentions: m.mentions };
-        return { by: m.senderType === 'agent' ? 'agent' : 'human', mentions: m.mentions };
+        return { ...(typeof remote === 'string' ? { remoteSession: remote } : {}), mentions: m.mentions };
       });
     const { planCrossMachineMention } = await import('../../services/slack/cross-machine-mention.js');
     // This machine's bots weigh in on whether a short name is unique (the linker counts them).
@@ -249,10 +247,32 @@ async function applyCrossMachineMention(
     const localNames = ((await getSlackAgentIdentityService()?.load())?.identities ?? [])
       .filter((r) => r.status === 'installed' && !!r.botUserId && !!r.displayName)
       .map((r) => r.displayName as string);
-    const plan = planCrossMachineMention(body.content, room, turns, process.env, localNames);
+    const plan = planCrossMachineMention(body.content, room, turns, localNames);
     if (!plan.note) return null;
-    if (plan.added.length > 0) body.content = plan.content;
-    return { note: plan.note, added: plan.added.map((a) => a.name), unreached: plan.unreached.map((a) => a.name) };
+    return { note: plan.note, unreached: plan.unreached.map((a) => a.name) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What to tell an agent whose post to a Slack room uses a name that more than
+ * one agent answers to: nobody was tagged for it. Never throws.
+ *
+ * @param req - The send request
+ * @returns The note, or null when every name resolved
+ */
+async function ambiguousMentionNote(req: Request): Promise<string | null> {
+  try {
+    const session = principalFromRequestSafe(req).agentSession;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const conversationId = req.params?.id ? String(req.params.id) : '';
+    if (!session || !conversationId || typeof body.content !== 'string' || !body.content.includes('@')) return null;
+    const { getSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
+    const teams = getSlackTeamChannelService();
+    const mapping = teams?.findByChatChannelId(conversationId);
+    if (!teams || !mapping) return null;
+    return await teams.mentionAmbiguityNote(body.content, mapping.slackChannelId);
   } catch {
     return null;
   }
@@ -960,8 +980,10 @@ export function createChatV2Controller(
       if (await holdAlreadyAnsweredReply(req, res)) return;
       // Files an agent attached (`--file`) or mentioned by path travel as Cloud
       // handoffs; their marker lines are appended to the text before it is stored.
-      // Other-machine agents in this thread: add their @names, or say nobody there got it (CREW-860).
+      // Other-machine agents in this thread that this post reaches nobody of (CREW-860),
+      // and names too ambiguous to tag. Both only inform the author.
       const crossMachine = await applyCrossMachineMention(req, service);
+      const mentionNote = await ambiguousMentionNote(req);
       const fileHandoff = await attachAgentFiles(req);
       // Why an agent is posting: the provenance record and, when the post is
       // not its answer to the owner here, a muted "Triggered by" line.
@@ -1001,7 +1023,7 @@ export function createChatV2Controller(
         // An agent's reply waits for its Slack mirror before it is acked
         // (below), so a refused Slack post is not reported as delivered.
         if (message.senderType === 'agent') ackDeferred = true;
-        else res.status(201).json({ success: true, data: message, ...(fileHandoff ? { fileHandoff: { attached: fileHandoff.attached, failed: fileHandoff.failed } } : {}), ...(crossMachine ? { crossMachine } : {}) });
+        else res.status(201).json({ success: true, data: message, ...(fileHandoff ? { fileHandoff: { attached: fileHandoff.attached, failed: fileHandoff.failed } } : {}), ...(crossMachine ? { crossMachine } : {}), ...(mentionNote ? { mentionNote } : {}) });
         persisted = message;
         // Look up channel for gateway + dispatcher wiring. `getChannel`
         // requires `principal.userId === channel.owner_user_id` — which
@@ -1031,7 +1053,7 @@ export function createChatV2Controller(
             data: { ...persisted, slackDelivered: false },
           });
         } else {
-          res.status(201).json({ success: true, data: persisted, ...(fileHandoff ? { fileHandoff: { attached: fileHandoff.attached, failed: fileHandoff.failed } } : {}), ...(crossMachine ? { crossMachine } : {}) });
+          res.status(201).json({ success: true, data: persisted, ...(fileHandoff ? { fileHandoff: { attached: fileHandoff.attached, failed: fileHandoff.failed } } : {}), ...(crossMachine ? { crossMachine } : {}), ...(mentionNote ? { mentionNote } : {}) });
         }
       }
 

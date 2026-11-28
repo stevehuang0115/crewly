@@ -452,6 +452,19 @@ describe('mention linking', () => {
     await broken.post({ agentSession: 'crewly-a-sam', target: '#general', text: '@Ella hi', newTopLevel: true });
     expect(slack.sent[1].text).toBe('@Ella hi');
   });
+
+  it('returns the note about a name that tagged nobody, and nothing otherwise', async () => {
+    const service = new SlackAgentPostService({
+      slack,
+      storage: { getTeams: async () => TEAMS },
+      identities,
+      mentionNote: async (t, channelId) => (channelId === 'C-GEN' && t.includes('@Ella') ? '"@Ella" matches more than one agent' : null),
+    });
+    const told = await service.post({ agentSession: 'crewly-a-sam', target: '#general', text: '@Ella hi', newTopLevel: true });
+    expect(told.note).toBe('"@Ella" matches more than one agent');
+    const quiet = await service.post({ agentSession: 'crewly-a-sam', target: '#general', text: 'hi', newTopLevel: true });
+    expect(quiet).not.toHaveProperty('note');
+  });
 });
 
 describe('app-less agents: mapped channel names and file uploads (2026-10-13)', () => {

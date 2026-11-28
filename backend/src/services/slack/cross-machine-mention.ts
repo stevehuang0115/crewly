@@ -2,23 +2,20 @@
  * Cross-machine mentions in a shared Slack room thread (CREW-860).
  *
  * Cloud drops a post by one of our agents that @-names no OTHER agent (the loop
- * guard in crewly-services `slack-routing.service.ts`, kept as is), so a reply
- * in a thread where the agents it means run on another machine reached nobody
- * and the author was never told. This module decides, for one outgoing post:
+ * guard in crewly-services `slack-routing.service.ts`), so a reply in a thread
+ * where the agents it means run on another machine reaches none of them. This
+ * module decides what to tell the author about one outgoing post.
  *
- * - it already addresses an other-machine agent: nothing to do or say;
- * - it addresses none, and other-machine agents are in the thread: their
- *   @names are added (those agents only, never anyone else), unless the thread
- *   is already a long run of agent turns, or the kill switch is set;
- * - otherwise (could not or must not add): the author is told who did not get it.
+ * It never edits the post. Adding the thread's other-machine @names to a post
+ * that named nobody tagged them on EVERY such post (CREW-1318): it woke agents
+ * the text was not for, and each tag kept them "in the thread" for the next one.
+ * Only the author tags someone.
  *
  * Addressing mirrors what Cloud counts as a mention: `<@botUser>`, `@Name`
  * anywhere, or the text opening with the name.
  *
  * @module services/slack/cross-machine-mention
  */
-
-import { CROSS_MACHINE_MENTION_CONSTANTS as C } from '../../constants.js';
 
 /** An agent of this account that runs on another machine and is in the room. */
 export interface RemoteRoomAgent {
@@ -34,27 +31,21 @@ export interface RemoteRoomAgent {
 
 /** One message of the thread, as far as this machine has it. */
 export interface ThreadTurn {
-	/** `agent` = one of ours, `remote-agent` = an agent on another machine, `human` otherwise */
-	by: 'agent' | 'remote-agent' | 'human';
-	/** Session of the remote agent, when `by` is `remote-agent` */
+	/** Session of the other-machine agent that posted it, when one did */
 	remoteSession?: string;
 	/** Sessions @-mentioned in it */
 	mentions?: readonly string[];
 }
 
-/** What to do with the post. */
+/** What to tell the author about the post. */
 export interface CrossMachinePlan {
-	/** The text to post (the original, or with @names put in front) */
-	content: string;
-	/** Other-machine agents whose @name was added */
-	added: RemoteRoomAgent[];
-	/** Other-machine agents in the thread that this post reached nobody of (not added) */
+	/** Other-machine agents in the thread that this post reaches nobody of */
 	unreached: RemoteRoomAgent[];
-	/** One line for the author, or null when there is nothing new to say */
+	/** One line for the author, or null when there is nothing to say */
 	note: string | null;
 }
 
-const NO_PLAN = (content: string): CrossMachinePlan => ({ content, added: [], unreached: [], note: null });
+const NO_PLAN = (): CrossMachinePlan => ({ unreached: [], note: null });
 
 /** @param s - Text @returns The text escaped for a RegExp */
 function escapeRegExp(s: string): string {
@@ -126,57 +117,30 @@ export function remoteAgentsInThread(room: readonly RemoteRoomAgent[], turns: re
 }
 
 /**
- * Agent turns at the end of the thread with no human message between them.
- *
- * @param turns - The thread's messages, oldest first
- * @returns The run length
- */
-export function trailingAgentTurns(turns: readonly ThreadTurn[]): number {
-	let n = 0;
-	for (let i = turns.length - 1; i >= 0 && turns[i].by !== 'human'; i--) n++;
-	return n;
-}
-
-/**
- * Plan one outgoing post.
+ * Check one outgoing post.
  *
  * @param content - What the agent wrote
- * @param room - Other-machine agents in the room (empty: nothing to do)
+ * @param room - Other-machine agents in the room (empty: nothing to say)
  * @param turns - The thread's messages as this machine has them
- * @param env - Environment (kill switch)
  * @param localNames - Display names of this machine's agents with a bot (see {@link addresses})
- * @returns What to post and what to tell the author
+ * @returns What to tell the author; the post itself is never changed
  */
 export function planCrossMachineMention(
 	content: string,
 	room: readonly RemoteRoomAgent[],
 	turns: readonly ThreadTurn[],
-	env: NodeJS.ProcessEnv = process.env,
 	localNames: readonly string[] = [],
 ): CrossMachinePlan {
-	if (room.length === 0 || !content.trim()) return NO_PLAN(content);
-	if (room.some((a) => addresses(content, a, room, localNames))) return NO_PLAN(content);
+	if (room.length === 0 || !content.trim()) return NO_PLAN();
+	if (room.some((a) => addresses(content, a, room, localNames))) return NO_PLAN();
 	const inThread = remoteAgentsInThread(room, turns);
-	if (inThread.length === 0) return NO_PLAN(content);
+	if (inThread.length === 0) return NO_PLAN();
 
-	const where = (agents: RemoteRoomAgent[]): string => [...new Set(agents.map((a) => a.machine ?? 'another machine'))].join(', ');
-	const names = (agents: RemoteRoomAgent[]): string => agents.map((a) => a.name).join(', ');
-	const autoAdd =
-		env[C.AUTO_ADD_ENV] !== C.AUTO_ADD_OFF_VALUE && trailingAgentTurns(turns) < C.MAX_CONSECUTIVE_AGENT_TURNS;
-	if (autoAdd) {
-		// An agent with its own bot is reached only through `<@BOTID>`; an app-less one by name.
-		const tags = inThread.map((a) => (a.botUserId ? `<@${a.botUserId}>` : `@${a.name.replace(/\s*\(.*$/, '').trim() || a.name}`)).join(' ');
-		return {
-			content: `${tags} ${content}`,
-			added: inThread,
-			unreached: [],
-			note: `Added ${inThread.map((a) => `@${a.name.replace(/\s*\(.*$/, '').trim() || a.name}`).join(' ')} so this reaches ${names(inThread)} on ${where(inThread)}: a post to another machine is dropped unless it @-names someone there.`,
-		};
-	}
+	const where = [...new Set(inThread.map((a) => a.machine ?? 'another machine'))].join(', ');
+	// A bot's id is the one tag that cannot land on a namesake.
+	const how = inThread.map((a) => `${a.name}: ${a.botUserId ? `<@${a.botUserId}>` : `@${a.name}`}`).join('; ');
 	return {
-		content,
-		added: [],
 		unreached: inThread,
-		note: `This post reached nobody on ${where(inThread)}: it @-names none of ${names(inThread)}, who are in this thread, and a post to another machine is dropped without an @name. Post again with @name if you mean them.`,
+		note: `Posted as written. It tags nobody on ${where}, so these agents in the thread did not get it (a post to another machine is dropped without a tag). Nothing to do if it was not for them; otherwise tag them in your next post — ${how}.`,
 	};
 }
