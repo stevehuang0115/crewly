@@ -16,7 +16,7 @@
  * @module services/team-move/team-move-importer
  */
 
-import { TRIGGER_RECORD, isTriggerStorePath, triggerReport, triggerWarnings, type TeamMoveTriggerStore } from './team-move-triggers.js';
+import { TRIGGER_RECORD, isTriggerStorePath, remapTriggerChannelIds, triggerReport, triggerWarnings, type TeamMoveTriggerStore } from './team-move-triggers.js';
 import type { TeamMoveTriggerReport } from './team-move.types.js';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -232,8 +232,16 @@ function sourceDataDir(project: PackageProject): string {
   return project.dataDir === 'home' ? "the source's Crewly home" : `${project.sourcePath}/${project.dataDir} on the source`;
 }
 
+/** What taking over the shared rooms of a move gave. */
+interface SharedRooms {
+  adopted: number;
+  /** Source huddle id to this machine's, where they differ */
+  channelIdMap: Map<string, string>;
+}
+
 /** The importer. */
 export class TeamMoveImporter {
+  private readonly sharedRooms = new Map<string, SharedRooms>();
   private readonly home: string;
   private readonly now: () => string;
   private readonly restore: typeof restoreRepo;
@@ -731,6 +739,33 @@ export class TeamMoveImporter {
     }
   }
 
+  /**
+   * Take over the Crewly channels shared with other teams. A channel this
+   * machine already has for that Slack channel keeps its own huddle, so its
+   * history and roster follow that id. The chat records and the triggers both
+   * need the answer, so it is asked once per move; a resumed import asks again
+   * and gets the same ids.
+   *
+   * @param moveId - The move
+   * @param mappings - The package's ad-hoc mappings
+   * @returns How many were added, and source huddle id to this machine's where they differ
+   */
+  private async adoptSharedRooms(moveId: string, mappings: ReadonlyArray<Record<string, unknown>>): Promise<SharedRooms> {
+    const known = this.sharedRooms.get(moveId);
+    if (known) return known;
+    const channelIdMap = new Map<string, string>();
+    let adopted = 0;
+    for (const m of mappings) {
+      const result = this.deps.adoptAdhocMapping ? await this.deps.adoptAdhocMapping(m) : null;
+      if (!result) continue;
+      if (result.added) adopted += 1;
+      const from = String(m['chatChannelId'] ?? '');
+      if (from && result.chatChannelId !== from) channelIdMap.set(from, result.chatChannelId);
+    }
+    this.sharedRooms.set(moveId, { adopted, channelIdMap });
+    return { adopted, channelIdMap };
+  }
+
   /** Task-pool items, decisions, scheduled messages, chat channels, Slack mapping. */
   private async importRecords(staging: string, manifest: TeamMoveManifest, mappings: ProjectMapping[]): Promise<Record<string, number>> {
     const rewrites = this.rewritesFor(manifest, mappings);
@@ -743,16 +778,9 @@ export class TeamMoveImporter {
 
     const chat = await this.readRecord<ChatRecords>(staging, 'records/chat-channels.json', rewrites, { channels: [], members: [] });
 
-    // Crewly channels shared with other teams: the channel keeps the huddle the target already has for
-    // that Slack channel, so its history and roster follow that id.
-    const channelIdMap = new Map<string, string>();
-    for (const m of slack.adhocMappings ?? []) {
-      const result = this.deps.adoptAdhocMapping ? await this.deps.adoptAdhocMapping(m) : null;
-      if (!result) continue;
-      if (result.added) adopted += 1;
-      const from = String(m['chatChannelId'] ?? '');
-      if (from && result.chatChannelId !== from) channelIdMap.set(from, result.chatChannelId);
-    }
+    const rooms = await this.adoptSharedRooms(manifest.moveId, slack.adhocMappings ?? []);
+    adopted += rooms.adopted;
+    const channelIdMap = rooms.channelIdMap;
     out['slackMappingAdopted'] = adopted;
     const remapped = channelIdMap.size === 0 ? chat : remapChatChannels(chat, channelIdMap);
 
@@ -800,7 +828,9 @@ export class TeamMoveImporter {
     for (const row of record.triggers as unknown[]) {
       ((row as { teamId?: unknown } | null)?.teamId === manifest.team.id ? own : foreign).push(row);
     }
-    const result = await this.deps.triggers.restore(own);
+    const slack = await this.readRecord<{ adhocMappings?: Array<Record<string, unknown>> }>(staging, 'records/slack-team-channel.json', this.rewritesFor(manifest, mappings), {});
+    const { channelIdMap } = await this.adoptSharedRooms(manifest.moveId, slack.adhocMappings ?? []);
+    const result = await this.deps.triggers.restore(remapTriggerChannelIds(own, channelIdMap));
     for (const row of foreign) result.failed.push({ row, reason: 'it does not belong to the moving team' });
     return { report: triggerReport(result), armIds: result.imported.map((t) => t.id) };
   }
